@@ -33,7 +33,7 @@ just docs-check
 
 `docs-check` runs a strict Zensical build and parses the public KDL examples with the existing Go test. Zensical validates Markdown links and anchors.
 
-Keep pages task-oriented and examples grounded in supported syntax. Add new pages to `zensical.toml`. Use system body fonts and preserve the accepted logo outlines. Local preview does not publish anything.
+Keep pages task-oriented and examples grounded in supported syntax. Add new pages to `zensical.toml`. Use system body fonts and preserve the accepted logo outlines.
 
 ## Runtime checks
 
@@ -43,4 +43,4 @@ Keep pages task-oriented and examples grounded in supported syntax. Add new page
 
 GitHub Actions builds the Nix flake checks on pushes, pull requests, and manual dispatch. These cover tests, vet, lint, formatting, workflow validation, public KDL examples, and builds of the CLI, container, and documentation. Live rootless acceptance requires a configured Linux host and remains available through the runtime commands above.
 
-`nix-github-actions` generates the CI matrix from the flake's checks and supported platforms. `nix/ci.nix` connects the checks to the generator, using its default GitHub runners; adding a flake check adds it to the matrix. CI does not publish images, releases, or the documentation site.
+`nix-github-actions` generates the CI matrix from the flake's checks and supported platforms. `nix/ci.nix` connects the checks to the generator, using its default GitHub runners; adding a flake check adds it to the matrix.

@@ -10,7 +10,7 @@ permissions:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   matrix:
@@ -49,4 +49,33 @@ jobs:
       - name: Build check
         env:
           NIX_ATTR: ${{ matrix.attr }}
-        run: nix build --no-link --no-update-lock-file --print-build-logs "path:.#$NIX_ATTR"
+        run: nix build --out-link result --no-update-lock-file --print-build-logs "path:.#$NIX_ATTR"
+      - name: Upload documentation
+        if: >-
+          github.ref == 'refs/heads/main' &&
+          github.event_name != 'pull_request' &&
+          matrix.name == 'docs' &&
+          matrix.system == 'x86_64-linux'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: result/
+
+  pages:
+    name: Publish documentation
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: github-pages
+      cancel-in-progress: false
+    steps:
+      - name: Deploy documentation
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

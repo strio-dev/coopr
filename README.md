@@ -35,6 +35,6 @@ nix develop path:. -c just docs-check
 nix develop path:. -c just test
 ```
 
-The local Zensical Modern site is configured for the future `coopr.strio.dev` address. See [contributing](CONTRIBUTING.md) for development and documentation checks.
+See [contributing](CONTRIBUTING.md) for development and documentation checks.
 
 Coopr is licensed under [MIT License](LICENSE).
