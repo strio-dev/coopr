@@ -1,0 +1,366 @@
+package buildah
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+
+	"coopr/internal/definition"
+	"coopr/internal/planner"
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+)
+
+func TestPlannedOperationHistoryUsesContainerfileInstructions(t *testing.T) {
+	tests := []struct {
+		name string
+		op   planner.Operation
+		want string
+	}{
+		{
+			name: "shell run with declared arguments",
+			op: planner.Operation{
+				Instruction:      definition.Instruction{Name: "run", Form: "shell", Arguments: []string{"printf '%s' \"$release\""}},
+				ArgumentsInScope: map[string]string{"release": "stable", "arch": "amd64"},
+			},
+			want: "RUN |2 arch=amd64 release=stable printf '%s' \"$release\"",
+		},
+		{
+			name: "exec command",
+			op: planner.Operation{Instruction: definition.Instruction{
+				Name: "cmd", Form: "exec", Arguments: []string{"/bin/echo", "hello world"},
+			}},
+			want: `CMD ["/bin/echo","hello world"]`,
+		},
+		{
+			name: "copy flags are stable",
+			op: planner.Operation{Instruction: definition.Instruction{
+				Name: "copy", Arguments: []string{"source", "/target"},
+				Properties: map[string]string{"chown": "1:2", "chmod": "0755"},
+			}},
+			want: "COPY --chmod=0755 --chown=1:2 source /target",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok := plannedOperationHistory(test.op, nil)
+			if !ok || got != test.want {
+				t.Fatalf("plannedOperationHistory() = %q, %v; want %q, true", got, ok, test.want)
+			}
+		})
+	}
+}
+
+func TestPlannedOperationHistoryOmitsRuntimeProxyValues(t *testing.T) {
+	op := planner.Operation{
+		Instruction:      definition.Instruction{Name: "run", Form: "shell", Arguments: []string{"test -n \"$HTTP_PROXY\""}},
+		ArgumentsInScope: map[string]string{"release": "stable"},
+	}
+	got, ok := plannedOperationHistory(op, nil)
+	if !ok {
+		t.Fatal("RUN did not produce history")
+	}
+	if strings.Contains(got, "proxy.example") || got != `RUN |1 release=stable test -n "$HTTP_PROXY"` {
+		t.Fatalf("RUN history = %q", got)
+	}
+
+	op.ArgumentsInScope["HTTP_PROXY"] = "http://proxy.example"
+	got, _ = plannedOperationHistory(op, nil)
+	if !strings.Contains(got, "HTTP_PROXY=http://proxy.example") {
+		t.Fatalf("explicit proxy ARG missing from RUN history: %q", got)
+	}
+}
+
+func TestMergeHistoryOperationsValidatesAndPreservesPositions(t *testing.T) {
+	operations := []planner.Operation{
+		{Instruction: definition.Instruction{Name: "env", Properties: map[string]string{"one": "1"}}},
+		{Instruction: definition.Instruction{Name: "run", Arguments: []string{"true"}}},
+	}
+	history := []planner.HistoryOperation{
+		{Before: 0, Operation: planner.Operation{Instruction: definition.Instruction{Name: "arg", Arguments: []string{"first", "1"}}}},
+		{Before: 1, Operation: planner.Operation{Instruction: definition.Instruction{Name: "arg", Arguments: []string{"second"}}}},
+	}
+	merged, err := mergeHistoryOperations(operations, history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, len(merged))
+	for index := range merged {
+		got[index] = merged[index].Name
+	}
+	if strings.Join(got, ",") != "arg,env,arg,run" {
+		t.Fatalf("merged operation order = %v", got)
+	}
+
+	history[1].Operation.Name = "run"
+	if _, err := mergeHistoryOperations(operations, history); err == nil || !strings.Contains(err.Error(), "executable") {
+		t.Fatalf("invalid history instruction error = %v", err)
+	}
+}
+
+func TestNormalizeZeroLayerExecutorConfigOnlyRepairsEmptyRootFS(t *testing.T) {
+	raw := []byte(`{"architecture":"amd64","os":"linux","rootfs":{"type":"layers"},"history":[{"created_by":"LABEL x=y","empty_layer":true}]}`)
+	normalized, err := normalizeZeroLayerExecutorConfig(raw, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var image struct {
+		RootFS struct {
+			DiffIDs []string `json:"diff_ids"`
+		} `json:"rootfs"`
+	}
+	if err := json.Unmarshal(normalized, &image); err != nil {
+		t.Fatal(err)
+	}
+	if image.RootFS.DiffIDs == nil || len(image.RootFS.DiffIDs) != 0 {
+		t.Fatalf("normalized diff IDs = %#v, want present empty list", image.RootFS.DiffIDs)
+	}
+
+	invalid := []byte(`{"architecture":"amd64","os":"linux","rootfs":{"type":"layers"},"history":[{"created_by":"RUN true"}]}`)
+	unchanged, err := normalizeZeroLayerExecutorConfig(invalid, true)
+	if err != nil || string(unchanged) != string(invalid) {
+		t.Fatalf("layered invalid config changed: %s, %v", unchanged, err)
+	}
+
+	missingHistory := []byte(`{"architecture":"amd64","os":"linux","rootfs":{"type":"layers"}}`)
+	unchanged, err = normalizeZeroLayerExecutorConfig(missingHistory, false)
+	if err != nil || string(unchanged) != string(missingHistory) {
+		t.Fatalf("unproven zero-layer config changed: %s, %v", unchanged, err)
+	}
+}
+
+func TestBuildDefinitionRecordsInstructionHistory(t *testing.T) {
+	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
+		t.Skip("set COOPR_TEST_BUILDAH=1 for live instruction-history coverage")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	root := t.TempDir()
+	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
+	base := newLiveBusyBoxStorage(t, ctx, root, store)
+	policy := filepath.Join(root, "policy.json")
+	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	def, err := definition.Parse(strings.NewReader(fmt.Sprintf(`
+from %q
+arg "channel" "stable"
+env release="stable"
+label "org.example.release" "stable"
+run "printf history >/proof" network="none"
+user "0"
+workdir "/workspace"
+cmd { exec "/bin/true" }
+`, base.reference)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	epoch := int64(1_700_000_000)
+	layout := filepath.Join(root, "layout")
+	_, err = BuildDefinitionSupervised(ctx, def, planner.Options{
+		Mode: planner.Build, Platform: runtime.GOOS + "/" + runtime.GOARCH,
+		Arguments: map[string]string{"SOURCE_DATE_EPOCH": fmt.Sprint(epoch)},
+	}, SupervisedPlanOptions{
+		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
+		Output: Output{Path: layout}, ImageStoreDir: base.imageStoreDir,
+		SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, image := readPlanImage(t, layout)
+	want := []struct {
+		prefix string
+		empty  bool
+	}{
+		{"ARG channel=stable", true},
+		{"ENV release=stable", true},
+		{"LABEL org.example.release=stable", true},
+		{"RUN |1 channel=stable --network=none printf history >/proof", false},
+		{"USER 0", true},
+		{"WORKDIR /workspace", false},
+		{`CMD ["/bin/true"]`, true},
+	}
+	if len(image.History) < len(want) {
+		t.Fatalf("history has %d entries, want at least %d: %+v", len(image.History), len(want), image.History)
+	}
+	tail := image.History[len(image.History)-len(want):]
+	for index, expected := range want {
+		entry := tail[index]
+		if entry.CreatedBy != expected.prefix || entry.EmptyLayer != expected.empty {
+			t.Errorf("history[%d] = {%q empty=%v}, want {%q empty=%v}", index, entry.CreatedBy, entry.EmptyLayer, expected.prefix, expected.empty)
+		}
+		if entry.Created == nil || entry.Created.Unix() != epoch {
+			t.Errorf("history[%d] created = %v, want epoch %d", index, entry.Created, epoch)
+		}
+	}
+	nonempty := 0
+	for _, entry := range image.History {
+		if !entry.EmptyLayer {
+			nonempty++
+		}
+	}
+	if nonempty != len(manifest.Layers) {
+		t.Fatalf("history has %d filesystem entries for %d layers: %+v", nonempty, len(manifest.Layers), image.History)
+	}
+}
+
+func TestBuildPlanCacheRewritesCurrentMetadataHistory(t *testing.T) {
+	requireLiveInstructionCache(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	root := t.TempDir()
+	store := cacheTestStore(root)
+	base := newLiveBusyBoxStorage(t, ctx, root, store)
+	policy := filepath.Join(root, "policy.json")
+	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var proof string
+	tests := []struct {
+		metadata string
+		want     []string
+	}{
+		{metadata: `label release="one"
+cmd { exec "/bin/echo" "one" }`, want: []string{`LABEL release=one`, `CMD ["/bin/echo","one"]`}},
+		{metadata: `label release="two"`, want: []string{`LABEL release=two`}},
+		{metadata: `label release="three"
+cmd { exec "/bin/echo" "three" }
+entrypoint { exec "/bin/sh" }`, want: []string{`LABEL release=three`, `CMD ["/bin/echo","three"]`, `ENTRYPOINT ["/bin/sh"]`}},
+		{metadata: "", want: nil},
+	}
+	for attempt, test := range tests {
+		plan := testPlan(t, fmt.Sprintf(`
+from %q
+%s
+run "od -An -N16 -tx1 /dev/urandom | tr -d ' \n' >/proof" network="none"
+`, base.reference, test.metadata))
+		layout := filepath.Join(root, fmt.Sprintf("layout-%d", attempt))
+		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
+			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
+			Output: Output{Path: layout}, ImageStoreDir: base.imageStoreDir,
+			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifest, image := readPlanImage(t, layout)
+		gotProof := readLayerFile(t, filepath.Join(layout, "blobs", "sha256", manifest.Layers[len(manifest.Layers)-1].Digest.Encoded()), "proof")
+		if attempt == 0 {
+			proof = gotProof
+		} else if gotProof != proof {
+			t.Fatalf("warm RUN executed again: %q != %q", gotProof, proof)
+		}
+		suffixLength := len(test.want) + 1
+		tail := image.History[len(image.History)-suffixLength:]
+		for index, want := range test.want {
+			if tail[index].CreatedBy != want || !tail[index].EmptyLayer {
+				t.Fatalf("build %d history[%d] = %+v, want metadata %q", attempt+1, index, tail[index], want)
+			}
+		}
+		if !strings.HasPrefix(tail[len(tail)-1].CreatedBy, "RUN ") || tail[len(tail)-1].EmptyLayer {
+			t.Fatalf("build %d filesystem history = %+v", attempt+1, tail[len(tail)-1])
+		}
+	}
+}
+
+func TestBuildPlanOrdersMetadataAfterNonCacheableRun(t *testing.T) {
+	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
+		t.Skip("set COOPR_TEST_BUILDAH=1 for live non-cacheable RUN history coverage")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	root := t.TempDir()
+	store := cacheTestStore(root)
+	base := newLiveBusyBoxStorage(t, ctx, root, store)
+	secret := filepath.Join(root, "secret")
+	if err := os.WriteFile(secret, []byte("proof\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plan := testPlan(t, fmt.Sprintf(`
+from %q
+run "cat /run/secrets/token >/proof" network="none" { mount "secret" id="token" required="true" }
+label after="run"
+`, base.reference))
+	layout := filepath.Join(root, "layout")
+	_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
+		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
+		Output: Output{Path: layout}, ImageStoreDir: base.imageStoreDir,
+		Secrets: []string{"id=token,src=" + secret}, Stdout: io.Discard, Stderr: io.Discard,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, image := readPlanImage(t, layout)
+	tail := image.History[len(image.History)-2:]
+	if !strings.HasPrefix(tail[0].CreatedBy, "RUN ") || tail[0].EmptyLayer || tail[1].CreatedBy != "LABEL after=run" || !tail[1].EmptyLayer {
+		t.Fatalf("RUN/LABEL history order = %+v", tail)
+	}
+}
+
+func TestBuildPlanLinkedCopyUsesPlannedHistory(t *testing.T) {
+	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
+		t.Skip("set COOPR_TEST_BUILDAH=1 for live linked COPY history coverage")
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "payload"), []byte("linked\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plan := testPlan(t, `from "scratch"
+copy "payload" "/payload" link="true"
+`)
+	layout := filepath.Join(root, "layout")
+	_, err := BuildPlan(context.Background(), plan, PlanOptions{
+		Store:      StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"},
+		ContextDir: root, Isolation: "rootless", Output: Output{Path: layout},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, image := readPlanImage(t, layout)
+	last := image.History[len(image.History)-1]
+	if last.CreatedBy != "COPY --link=true payload /payload" || last.EmptyLayer {
+		t.Fatalf("linked COPY history = %+v", last)
+	}
+}
+
+func TestBuildPlanComponentMetadataTailKeepsLayerHistory(t *testing.T) {
+	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
+		t.Skip("set COOPR_TEST_BUILDAH=1 for live component history coverage")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	root := t.TempDir()
+	resolver, _, _ := localComponentResolver(t, ctx, v1.Platform{OS: "linux", Architecture: runtime.GOARCH})
+	policy := writeComponentTestPolicy(t, root)
+	plan := testPlan(t, `
+from "scratch"
+component "local:tool" channel="stable"
+label final="yes"
+`)
+	layout := filepath.Join(root, "layout")
+	options := componentTestOptions(root, layout, resolver, policy)
+	if _, err := BuildPlan(ctx, plan, options); err != nil {
+		t.Fatal(err)
+	}
+	manifest, image := readPlanImage(t, layout)
+	nonempty := 0
+	for _, entry := range image.History {
+		if !entry.EmptyLayer {
+			nonempty++
+		}
+	}
+	if nonempty != len(manifest.Layers) || nonempty != 1 {
+		t.Fatalf("component history has %d filesystem entries for %d layers: %+v", nonempty, len(manifest.Layers), image.History)
+	}
+	tail := image.History[len(image.History)-2:]
+	if !strings.HasPrefix(tail[0].CreatedBy, "COMPONENT ") || tail[0].EmptyLayer || tail[1].CreatedBy != "LABEL final=yes" || !tail[1].EmptyLayer {
+		t.Fatalf("component/LABEL history order = %+v", tail)
+	}
+}

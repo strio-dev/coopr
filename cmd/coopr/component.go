@@ -1,0 +1,185 @@
+package main
+
+import (
+	"fmt"
+	"runtime"
+
+	"coopr/internal/build"
+	"coopr/internal/buildcontext"
+	"coopr/internal/oci"
+	"github.com/spf13/cobra"
+)
+
+func newComponentCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use: "component", Short: "Build reusable OCI components",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 0 {
+				return fmt.Errorf("unknown command %q for %q", args[0], cmd.CommandPath())
+			}
+			return cmd.Help()
+		},
+	}
+	cmd.AddCommand(newComponentBuildCommand())
+	cmd.AddCommand(newCopyCommand(oci.Component))
+	addComponentMaintenanceCommands(cmd)
+	return cmd
+}
+
+func newComponentBuildCommand() *cobra.Command {
+	var ignoreFile string
+	var contextDir, definitionFile, from, target, network, pullPolicy string
+	var osName, arch, variant string
+	var tags []string
+	var metadataFile string
+	platform := runtime.GOOS + "/" + runtime.GOARCH
+	args := namedValues{values: make(map[string]string)}
+	var plainHTTP, push, pull, noCache, rewriteTimestamp bool
+	var plainHTTPRegistries []string
+	var platforms []string
+	var secrets, ssh []string
+	var allow []string
+	var addHosts []string
+	var buildContexts []string
+	var buildArgFiles []string
+	var caches []string
+	var cacheFrom, cacheTo []string
+	var times buildTimeFlags
+	var controls buildControlFlags
+	var registry registryFlags
+	var runStdin bool
+	var quiet, logSplit bool
+	var logRusage bool
+	var logFile string
+	var rusageLogFile string
+	cmd := &cobra.Command{
+		Use: "build [file|context]", Short: "Build a component into the local OCI store",
+		Long: "Build a selected component output into Coopr's local OCI store. Supply a definition file path or --file with a build context; no filename is selected automatically. Use --tag NAME for a local tag or --tag registry:NAME or oci-archive:PATH to copy it. --push publishes the name supplied by --tag to a registry.",
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, paths []string) error {
+			argument := ""
+			if len(paths) != 0 {
+				argument = paths[0]
+			}
+			file, resolvedContext, definitionInContext, err := resolveBuildInput(argument, definitionFile, contextDir)
+			if err != nil {
+				return err
+			}
+			store, catalogue, err := commandStorage(cmd)
+			if err != nil {
+				return err
+			}
+			resolvedArgs, err := readBuildArgFiles(buildArgFiles, args.values)
+			if err != nil {
+				return err
+			}
+			if _, err := oci.NormalizePullPolicy(pullPolicy, pull); err != nil {
+				return err
+			}
+			timestamp, epoch, ttl, err := times.values(cmd)
+			if err != nil {
+				return err
+			}
+			runControls, err := controls.controls()
+			if err != nil {
+				return err
+			}
+			contexts, err := buildcontext.Parse(buildContexts)
+			if err != nil {
+				return err
+			}
+			cacheLocalDir, cacheRepository, err := parseBuildCaches(caches)
+			if err != nil {
+				return err
+			}
+			cacheSources, err := parseCacheSpecs(cacheFrom)
+			if err != nil {
+				return fmt.Errorf("cache-from: %w", err)
+			}
+			cacheDestinations, err := parseCacheSpecs(cacheTo)
+			if err != nil {
+				return fmt.Errorf("cache-to: %w", err)
+			}
+			if push && len(tags) == 0 {
+				return fmt.Errorf("--push requires --tag")
+			}
+			for _, tag := range tags {
+				if tag == "" {
+					return fmt.Errorf("--tag requires a nonempty component name")
+				}
+			}
+			requestedPlatform, err := buildPlatform(cmd, platform, osName, arch, variant)
+			if err != nil {
+				return err
+			}
+			var executionStdin interface{ Read([]byte) (int, error) }
+			if runStdin {
+				executionStdin = cmd.InOrStdin()
+			}
+			ref, err := build.BuildComponent(cmd.Context(), build.ComponentOptions{
+				File: file, Context: resolvedContext, DefinitionInContext: definitionInContext, From: from, IgnoreFile: ignoreFile, Tags: tags, MetadataFile: metadataFile, Push: push, Pull: pull, PullPolicy: pullPolicy, NoCache: noCache, Network: network, AddHosts: addHosts,
+				Lifecycle: controls.lifecycle(), Quiet: quiet, LogFile: logFile, LogSplit: logSplit, LogRusage: logRusage && !quiet, RusageLogFile: rusageLogFile,
+				BuildStore: store, ImageStoreDir: catalogue,
+				RunControls: runControls, Jobs: controls.jobs,
+				RewriteTimestamp: rewriteTimestamp,
+				Timestamp:        timestamp, SourceDateEpoch: epoch, CacheTTL: ttl,
+				Platform: requestedPlatform, Platforms: platforms, Target: target, Args: resolvedArgs,
+				Secrets: secrets, SSH: ssh,
+				Allow:         allow,
+				BuildContexts: contexts,
+				CacheLocalDir: cacheLocalDir, CacheRepository: cacheRepository,
+				CacheFrom: cacheSources, CacheTo: cacheDestinations,
+				PlainHTTP: plainHTTP, PlainHTTPRegistries: plainHTTPRegistries,
+				AuthFile: registry.authFile, CertDir: registry.certDir, SkipTLSVerify: !registry.tlsVerify,
+				Credentials: registry.credentials, Retry: registry.retry, RetrySet: cmd.Flags().Changed("retry"), RetryDelay: registry.retryDelay, DecryptionKeys: registry.decryptionKeys, SignaturePolicyPath: registry.signaturePolicy,
+				Stdin: cmd.InOrStdin(), RunStdin: executionStdin, Stdout: cmd.OutOrStdout(), Stderr: cmd.ErrOrStderr(),
+			})
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), ref)
+			return err
+		},
+	}
+	f := cmd.Flags()
+	f.StringVarP(&definitionFile, "file", "f", "", "definition file path (required when supplying a build context)")
+	f.StringVar(&from, "from", "", "replace the image in the first FROM instruction")
+	f.StringVar(&metadataFile, "metadata-file", "", "write component index and per-platform digests as JSON")
+	f.StringVar(&ignoreFile, "ignorefile", "", "context ignore file (default: first of .cooprignore, .containerignore, .dockerignore at the context root)")
+	f.StringArrayVarP(&tags, "tag", "t", nil, "name or copy the component; unprefixed names use the local store; prefixes: registry:, oci-archive:")
+	f.BoolVar(&push, "push", false, "publish the component to a registry (requires --tag)")
+	addPullFlags(cmd, &pullPolicy, &pull)
+	f.BoolVar(&noCache, "no-cache", false, "rebuild without reading cached results; save fresh results to the build cache")
+	f.StringVar(&network, "network", "default", "RUN network mode: default, private, none, host, ns:PATH, pasta[:OPTIONS], or named network")
+	f.StringArrayVar(&addHosts, "add-host", nil, "add HOST:IP to build containers (repeatable)")
+	f.BoolVar(&rewriteTimestamp, "rewrite-timestamp", false, "clamp layer timestamps newer than SOURCE_DATE_EPOCH")
+	f.StringVar(&contextDir, "context", "", "build context: local directory, local tar, stdin (-), Git URL, or HTTP(S) tar archive (default: definition directory)")
+	f.StringArrayVar(&platforms, "platform", nil, "target platform as os/arch (repeatable or comma-separated; default: host platform)")
+	f.StringVar(&osName, "os", "", "target operating system")
+	f.StringVar(&arch, "arch", "", "target architecture")
+	f.StringVar(&variant, "variant", "", "target architecture variant")
+	f.StringVar(&target, "target", "", "named component output to build")
+	f.Var(&args, "build-arg", "build argument (repeatable NAME[=VALUE]; NAME inherits from the environment when set)")
+	f.StringArrayVar(&buildArgFiles, "build-arg-file", nil, "read build arguments from a file (repeatable; --build-arg wins)")
+	f.BoolVar(&runStdin, "stdin", false, "pass stdin to RUN instructions")
+	f.BoolVarP(&quiet, "quiet", "q", false, "suppress build progress")
+	f.StringVar(&logFile, "logfile", "", "write build output to a file")
+	f.BoolVar(&logSplit, "logsplit", false, "split logfile output by target platform")
+	f.BoolVar(&logRusage, "log-rusage", false, "log resource usage between build instructions")
+	f.StringVar(&rusageLogFile, "rusage-logfile", "", "write resource usage logs to a file")
+	_ = f.MarkHidden("log-rusage")
+	_ = f.MarkHidden("rusage-logfile")
+	f.StringArrayVar(&buildContexts, "build-context", nil, "additional build context: NAME=PATH|URL|docker-image://REFERENCE|oci-layout://PATH:TAG (repeatable)")
+	f.BoolVar(&plainHTTP, "plain-http", false, "allow Coopr HTTP transport for loopback OCI registries")
+	f.StringArrayVar(&plainHTTPRegistries, "plain-http-registry", nil, "allow Coopr HTTP transport for an exact registry host[:port] (repeatable)")
+	f.StringArrayVar(&secrets, "secret", nil, "secret source for RUN mounts: id=ID[,src=PATH|env=NAME] (repeatable)")
+	f.StringArrayVar(&ssh, "ssh", nil, "SSH agent or key source for RUN mounts: ID[=PATH] (repeatable)")
+	f.StringArrayVar(&allow, "allow", nil, "allow an elevated build entitlement (repeatable: network.host, security.insecure, device, or device=SELECTOR)")
+	f.StringArrayVar(&caches, "cache", nil, "optional portable instruction and package cache: oci-layout:PATH or registry:HOST/REPOSITORY (repeatable)")
+	f.StringArrayVar(&cacheFrom, "cache-from", nil, "read cached results from oci-layout:PATH or registry:HOST/REPOSITORY (repeatable)")
+	f.StringArrayVar(&cacheTo, "cache-to", nil, "write cached results to oci-layout:PATH or registry:HOST/REPOSITORY (repeatable)")
+	times.addTo(cmd)
+	controls.addTo(cmd)
+	registry.addTo(cmd)
+	return cmd
+}

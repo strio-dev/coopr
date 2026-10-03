@@ -1,0 +1,19 @@
+// Capture component-local files when building the component.
+package as="config"
+copy "./defaults.json" "/defaults.json"
+
+// Continue from the consuming build's filesystem and image configuration.
+extend as="base"
+
+arg "channel" "stable"
+env company_channel="${channel}"
+
+run "mkdir -p /etc/company"
+copy "/defaults.json" "/etc/company/defaults.json" from="config"
+
+// Both component targets derive from the same extended base.
+from "base" as="debug"
+env company_debug="true"
+
+// The final stage remains the default target.
+from "base" as="runtime"

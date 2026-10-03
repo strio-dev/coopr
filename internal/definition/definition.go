@@ -1,0 +1,598 @@
+// Package definition parses the ordered instructions in a Coopr definition.
+package definition
+
+import (
+	"fmt"
+	"io"
+	"math"
+	"math/big"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	kdl "github.com/njreid/gokdl2"
+	"github.com/njreid/gokdl2/document"
+)
+
+// Definition is the parsed, unevaluated instruction sequence.
+type Definition struct {
+	Instructions []Instruction `json:"instructions"`
+}
+
+// Instruction retains its source order and string values for later planning.
+type Instruction struct {
+	Name        string            `json:"name"`
+	Form        string            `json:"form,omitempty"`
+	Arguments   []string          `json:"arguments,omitempty"`
+	Properties  map[string]string `json:"properties,omitempty"`
+	Children    []Instruction     `json:"children,omitempty"`
+	InlineFiles []InlineFile      `json:"inline_files,omitempty"`
+	// ProcessQuotes marks Dockerfile words imported from ONBUILD metadata.
+	// The planner processes their Docker quoting and expansion together in the
+	// child stage, then clears this internal marker from the normalized result.
+	ProcessQuotes bool `json:"process_quotes,omitempty"`
+}
+
+// InlineFile is a Dockerfile heredoc source retained through planning.
+type InlineFile struct {
+	Path   string `json:"path"`
+	Data   string `json:"data"`
+	Expand bool   `json:"expand,omitempty"`
+}
+
+var optionName = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+var mountTypeParameter = regexp.MustCompile(`^\$\{[a-zA-Z_][a-zA-Z0-9_]*\}$`)
+
+// Validate checks an already decoded definition using the same instruction
+// rules as Parse. Publication metadata is decoded from JSON, so it must not
+// bypass these checks before planning.
+func Validate(def *Definition) error {
+	if def == nil || len(def.Instructions) == 0 {
+		return fmt.Errorf("empty Coopr definition")
+	}
+	for i, inst := range def.Instructions {
+		if err := validateInstruction(inst, fmt.Sprintf("instruction %d", i+1), false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ValidateResolved checks an instruction after argument substitution. Call it
+// on instructions selected for execution; deferred component instructions are
+// checked when their invocation arguments become available.
+func ValidateResolved(inst Instruction) error {
+	if err := validateInstruction(inst, "resolved instruction", false); err != nil {
+		return err
+	}
+	for _, child := range inst.Children {
+		if child.Name == "mount" && !optionName.MatchString(child.Arguments[0]) {
+			return fmt.Errorf("resolved mount type %q is invalid", child.Arguments[0])
+		}
+	}
+	return nil
+}
+
+func validateInstruction(inst Instruction, position string, child bool) error {
+	if child && inst.Name != "mount" && inst.Name != "device" && inst.Name != "exclude" {
+		return fmt.Errorf("%s: unsupported child %q", position, inst.Name)
+	}
+	if err := validate(inst, len(inst.Children), child); err != nil {
+		return fmt.Errorf("%s %q: %w", position, inst.Name, err)
+	}
+	for i, nested := range inst.Children {
+		if inst.Name == "extend" {
+			if err := validateExtendRequirement(nested); err != nil {
+				return fmt.Errorf("%s %q child %d: %w", position, inst.Name, i+1, err)
+			}
+			continue
+		}
+		if (nested.Name == "mount" || nested.Name == "device") && inst.Name != "run" {
+			return fmt.Errorf("%s %q child %d: %s children require run", position, inst.Name, i+1, nested.Name)
+		}
+		if nested.Name == "exclude" && inst.Name != "copy" && inst.Name != "add" {
+			return fmt.Errorf("%s %q child %d: exclude children require copy or add", position, inst.Name, i+1)
+		}
+		if err := validateInstruction(nested, fmt.Sprintf("%s %q child %d", position, inst.Name, i+1), true); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Parse reads a KDL v2 Coopr definition and validates individual instructions.
+// References, argument expansion, and phase dependencies are planner concerns.
+func Parse(r io.Reader) (*Definition, error) {
+	doc, err := kdl.ParseWithOptions(r, kdl.ParseOptions{Version: kdl.ParseVersionV2})
+	if err != nil {
+		return nil, fmt.Errorf("parse KDL v2: %w", err)
+	}
+	if len(doc.Nodes) == 0 {
+		return nil, fmt.Errorf("empty Coopr definition")
+	}
+	def := &Definition{Instructions: make([]Instruction, 0, len(doc.Nodes))}
+	for i, node := range doc.Nodes {
+		inst, err := parseNode(node, fmt.Sprintf("instruction %d", i+1), false)
+		if err != nil {
+			return nil, err
+		}
+		def.Instructions = append(def.Instructions, inst)
+	}
+	return def, nil
+}
+
+func parseNode(node *document.Node, position string, child bool) (Instruction, error) {
+	inst := Instruction{Name: node.Name.ValueString()}
+	healthcheckDisabled := false
+	command := inst.Name == "run" || inst.Name == "cmd" || inst.Name == "entrypoint" || inst.Name == "healthcheck"
+	if node.Type != "" || node.Name.Type != "" {
+		return inst, fmt.Errorf("%s %q: annotations are not supported", position, inst.Name)
+	}
+	if child && inst.Name != "mount" && inst.Name != "device" && inst.Name != "exclude" {
+		return inst, fmt.Errorf("%s: unsupported child %q", position, inst.Name)
+	}
+	arguments := node.Arguments
+	for i, nested := range node.Children {
+		if nested.Name.ValueString() != "exec" {
+			continue
+		}
+		if !command {
+			return inst, fmt.Errorf("%s %q child %d: exec requires run, cmd, entrypoint, or healthcheck", position, inst.Name, i+1)
+		}
+		if len(node.Arguments) != 0 {
+			return inst, fmt.Errorf("%s %q: cannot combine shell text and an exec child", position, inst.Name)
+		}
+		if inst.Form == "exec" {
+			return inst, fmt.Errorf("%s %q: expected exactly one exec child", position, inst.Name)
+		}
+		if nested.Type != "" || nested.Name.Type != "" {
+			return inst, fmt.Errorf("%s %q child %d: annotations are not supported", position, inst.Name, i+1)
+		}
+		if len(nested.Properties.Unordered()) != 0 || len(nested.Children) != 0 {
+			return inst, fmt.Errorf("%s %q child %d: exec accepts arguments only", position, inst.Name, i+1)
+		}
+		inst.Form = "exec"
+		arguments = nested.Arguments
+	}
+	for i, value := range arguments {
+		if value.Type != "" {
+			return inst, fmt.Errorf("%s %q: argument %d annotations are not supported", position, inst.Name, i+1)
+		}
+		if inst.Name == "healthcheck" && inst.Form != "exec" && value.Flag.Has(document.FlagBare) && value.ResolvedValueV2() == "NONE" {
+			if len(arguments) != 1 {
+				return inst, fmt.Errorf("%s %q: NONE must be the only argument", position, inst.Name)
+			}
+			healthcheckDisabled = true
+			inst.Arguments = []string{"NONE"}
+			continue
+		}
+		s, err := normalizeScalar(value, false)
+		if err != nil {
+			return inst, fmt.Errorf("%s %q: argument %d %w", position, inst.Name, i+1, err)
+		}
+		inst.Arguments = append(inst.Arguments, s)
+	}
+	for name, value := range node.Properties.Unordered() {
+		if command && (name == "shell" || name == "form") {
+			return inst, fmt.Errorf("%s %q: %s property is not supported; use shell text or an exec child", position, inst.Name, name)
+		}
+		s, err := normalizeScalar(value, name == "chmod" || name == "mode")
+		if err != nil {
+			return inst, fmt.Errorf("%s %q: property %q %w", position, inst.Name, name, err)
+		}
+		if inst.Properties == nil {
+			inst.Properties = make(map[string]string, len(node.Properties.Unordered()))
+		}
+		inst.Properties[name] = s
+	}
+	applyCommandDefaults(&inst, healthcheckDisabled)
+	if healthcheckDisabled && (inst.Form != "" || len(inst.Properties) != 0) {
+		return inst, fmt.Errorf("%s %q: NONE does not accept properties", position, inst.Name)
+	}
+	if inst.Name == "healthcheck" && !healthcheckDisabled && (len(inst.Arguments) > 0 || inst.Form == "exec") {
+		if inst.Form == "exec" {
+			inst.Arguments = append([]string{"CMD"}, inst.Arguments...)
+		} else {
+			inst.Arguments = append([]string{"CMD-SHELL"}, inst.Arguments...)
+		}
+		inst.Form = ""
+	}
+	if inst.Name == "run" && inst.Form == "shell" && len(node.Arguments) == 1 && node.Arguments[0].Flag.Has(document.FlagMultiLine) && strings.HasPrefix(inst.Arguments[0], "#!") {
+		inst.Form = "exec"
+		inst.InlineFiles = []InlineFile{{Path: "script", Data: inst.Arguments[0]}}
+		inst.Arguments = []string{"/run/coopr-heredoc/script"}
+	}
+	if inst.Name == "onbuild" {
+		if len(node.Arguments) != 0 || len(node.Properties.Unordered()) != 0 {
+			return inst, fmt.Errorf("%s %q: expected no arguments or properties and exactly one child", position, inst.Name)
+		}
+		if len(node.Children) != 1 {
+			return inst, fmt.Errorf("%s %q: expected exactly one child", position, inst.Name)
+		}
+		triggerInstruction, err := parseNode(node.Children[0], position+` "onbuild" child 1`, false)
+		if err != nil {
+			return inst, err
+		}
+		trigger, err := formatOnBuild(triggerInstruction)
+		if err != nil {
+			return inst, fmt.Errorf("%s %q: %w", position, inst.Name, err)
+		}
+		inst.Arguments = []string{trigger}
+		if err := validate(inst, 0, child); err != nil {
+			return inst, fmt.Errorf("%s %q: %w", position, inst.Name, err)
+		}
+		return inst, nil
+	}
+	if len(node.Children) > 0 && (child || (!command && inst.Name != "copy" && inst.Name != "add" && inst.Name != "extend")) {
+		return inst, fmt.Errorf("%s %q: children are only allowed on command, copy, add, extend, or onbuild instructions", position, inst.Name)
+	}
+	for i, childNode := range node.Children {
+		if childNode.Name.ValueString() == "exec" {
+			continue
+		}
+		if inst.Name == "extend" {
+			requirement, err := parseExtendRequirement(childNode)
+			if err != nil {
+				return inst, fmt.Errorf("%s %q child %d: %w", position, inst.Name, i+1, err)
+			}
+			inst.Children = append(inst.Children, requirement)
+			continue
+		}
+		nested, err := parseNode(childNode, fmt.Sprintf("%s %q child %d", position, inst.Name, i+1), true)
+		if err != nil {
+			return inst, err
+		}
+		if (nested.Name == "mount" || nested.Name == "device") && inst.Name != "run" {
+			return inst, fmt.Errorf("%s %q child %d: %s children require run", position, inst.Name, i+1, nested.Name)
+		}
+		if nested.Name == "exclude" && inst.Name != "copy" && inst.Name != "add" {
+			return inst, fmt.Errorf("%s %q child %d: exclude children require copy or add", position, inst.Name, i+1)
+		}
+		inst.Children = append(inst.Children, nested)
+	}
+	if err := validate(inst, len(inst.Children), child); err != nil {
+		return inst, fmt.Errorf("%s %q: %w", position, inst.Name, err)
+	}
+	return inst, nil
+}
+
+func parseExtendRequirement(node *document.Node) (Instruction, error) {
+	requirement := Instruction{Name: node.Name.ValueString()}
+	if node.Type != "" || node.Name.Type != "" {
+		return requirement, fmt.Errorf("annotations are not supported")
+	}
+	for i, value := range node.Arguments {
+		if value.Type != "" {
+			return requirement, fmt.Errorf("argument %d annotations are not supported", i+1)
+		}
+		s, ok := value.ResolvedValueV2().(string)
+		if !ok {
+			return requirement, fmt.Errorf("argument %d must be a string", i+1)
+		}
+		requirement.Arguments = append(requirement.Arguments, s)
+	}
+	if len(node.Properties.Unordered()) != 0 || len(node.Children) != 0 {
+		return requirement, fmt.Errorf("compatibility requirement must contain only string values")
+	}
+	if err := validateExtendRequirement(requirement); err != nil {
+		return requirement, err
+	}
+	return requirement, nil
+}
+
+func validateExtendRequirement(requirement Instruction) error {
+	if requirement.Form != "" || len(requirement.Properties) != 0 || len(requirement.Children) != 0 || len(requirement.InlineFiles) != 0 {
+		return fmt.Errorf("compatibility requirement must contain only string values")
+	}
+	switch requirement.Name {
+	case "architecture", "distro", "distro-version", "package-manager":
+	default:
+		return fmt.Errorf("unknown compatibility requirement %q", requirement.Name)
+	}
+	if len(requirement.Arguments) == 0 {
+		return fmt.Errorf("compatibility requirement %q needs at least one value", requirement.Name)
+	}
+	return nil
+}
+
+func applyCommandDefaults(inst *Instruction, healthcheckDisabled bool) {
+	switch inst.Name {
+	case "run", "cmd", "entrypoint":
+		if inst.Form == "" {
+			inst.Form = "shell"
+			if inst.Name != "run" && len(inst.Arguments) == 0 {
+				inst.Form = "exec"
+			}
+		}
+	case "healthcheck":
+		if len(inst.Arguments) > 0 && !healthcheckDisabled && inst.Form == "" {
+			inst.Form = "shell"
+		}
+	}
+}
+
+func normalizeScalar(value *document.Value, permission bool) (string, error) {
+	if value.Type != "" {
+		return "", fmt.Errorf("annotations are not supported")
+	}
+	if permission && value.Flag.Has(document.FlagOctal) {
+		octal := value.ValueString()
+		if !strings.HasPrefix(octal, "0o") || strings.ContainsRune(octal, '-') {
+			return "", fmt.Errorf("permission must be nonnegative")
+		}
+		return "0" + strings.TrimPrefix(octal, "0o"), nil
+	}
+	switch resolved := value.ResolvedValueV2().(type) {
+	case nil:
+		return "", fmt.Errorf("null is not supported")
+	case string:
+		return resolved, nil
+	case bool:
+		return strconv.FormatBool(resolved), nil
+	case int:
+		return strconv.Itoa(resolved), nil
+	case int8:
+		return strconv.FormatInt(int64(resolved), 10), nil
+	case int16:
+		return strconv.FormatInt(int64(resolved), 10), nil
+	case int32:
+		return strconv.FormatInt(int64(resolved), 10), nil
+	case int64:
+		return strconv.FormatInt(resolved, 10), nil
+	case uint:
+		return strconv.FormatUint(uint64(resolved), 10), nil
+	case uint8:
+		return strconv.FormatUint(uint64(resolved), 10), nil
+	case uint16:
+		return strconv.FormatUint(uint64(resolved), 10), nil
+	case uint32:
+		return strconv.FormatUint(uint64(resolved), 10), nil
+	case uint64:
+		return strconv.FormatUint(resolved, 10), nil
+	case float32:
+		if math.IsInf(float64(resolved), 0) || math.IsNaN(float64(resolved)) {
+			return "", fmt.Errorf("must be a finite number")
+		}
+		return strconv.FormatFloat(float64(resolved), 'g', -1, 32), nil
+	case float64:
+		if math.IsInf(resolved, 0) || math.IsNaN(resolved) {
+			return "", fmt.Errorf("must be a finite number")
+		}
+		return strconv.FormatFloat(resolved, 'g', -1, 64), nil
+	case *big.Int:
+		return resolved.String(), nil
+	case *big.Float:
+		if resolved.IsInf() {
+			return "", fmt.Errorf("must be a finite number")
+		}
+		return resolved.Text('g', -1), nil
+	default:
+		return "", fmt.Errorf("must be a string, boolean, or finite number")
+	}
+}
+
+func validate(inst Instruction, childCount int, child bool) error {
+	n, p, a := inst.Name, inst.Properties, len(inst.Arguments)
+	if len(inst.InlineFiles) != 0 && n != "run" && n != "copy" && n != "add" {
+		return fmt.Errorf("inline files are only allowed on run, copy, or add")
+	}
+	for _, file := range inst.InlineFiles {
+		if file.Path == "" || !filepath.IsLocal(filepath.FromSlash(file.Path)) || file.Path == "." || strings.ContainsRune(file.Path, '\x00') || strings.ContainsRune(file.Data, '\x00') {
+			return fmt.Errorf("inline file path and data must be nonempty-path, NUL-free strings")
+		}
+	}
+	if inst.Form != "" && inst.Form != "exec" && inst.Form != "shell" {
+		return fmt.Errorf("unknown instruction form %q", inst.Form)
+	}
+	if inst.Form != "" && n != "run" && n != "cmd" && n != "entrypoint" {
+		return fmt.Errorf("instruction form is only allowed on run, cmd, or entrypoint")
+	}
+	if childCount > 0 && (child || (n != "run" && n != "copy" && n != "add" && n != "extend")) {
+		return fmt.Errorf("children are only allowed on run, copy, add, or extend instructions")
+	}
+	switch n {
+	case "exec":
+		return fmt.Errorf("exec must be a child of run, cmd, entrypoint, or healthcheck")
+	case "from":
+		if a != 1 || !onlyProps(p, "as", "platform") {
+			return fmt.Errorf("expected one source and optional as/platform properties")
+		}
+	case "extend":
+		if a != 0 || !onlyProps(p, "as", "distro", "distro-version", "package-manager", "architecture") {
+			return fmt.Errorf("expected no arguments and optional as/distro/distro-version/package-manager/architecture properties")
+		}
+		declared := make(map[string]bool, len(inst.Children))
+		for _, requirement := range inst.Children {
+			if err := validateExtendRequirement(requirement); err != nil {
+				return err
+			}
+			_, scalar := p[requirement.Name]
+			if declared[requirement.Name] || scalar {
+				return fmt.Errorf("duplicate compatibility requirement %q", requirement.Name)
+			}
+			declared[requirement.Name] = true
+		}
+		_, versionProperty := p["distro-version"]
+		_, distroProperty := p["distro"]
+		if (versionProperty || declared["distro-version"]) && !distroProperty && !declared["distro"] {
+			return fmt.Errorf("distro-version requires distro")
+		}
+	case "package":
+		if a != 0 || !onlyProps(p, "as") || strings.TrimSpace(p["as"]) == "" {
+			return fmt.Errorf("expected no arguments and a nonempty as property")
+		}
+	case "arg":
+		if (a != 1 && a != 2) || len(p) != 0 {
+			return fmt.Errorf("expected a name, optional default, and no properties")
+		}
+	case "run":
+		if _, hidden := p["mount"]; hidden {
+			return fmt.Errorf("use a mount child for mount options")
+		}
+		if a < 1 || (inst.Form != "exec" && a != 1) {
+			return fmt.Errorf("expected one shell command or exec arguments")
+		}
+		if len(inst.InlineFiles) != 0 && (inst.Form != "exec" || a != 1 || len(inst.InlineFiles) != 1) {
+			return fmt.Errorf("RUN inline executable requires one exec argument and one inline file")
+		}
+	case "copy", "add":
+		if a < 1 || a-1+len(inst.InlineFiles) < 1 {
+			return fmt.Errorf("expected source(s) and destination")
+		}
+		if _, ok := p["from"]; ok && strings.TrimSpace(p["from"]) == "" {
+			return fmt.Errorf("from property cannot be empty")
+		}
+		if _, ok := p["chown"]; ok && strings.TrimSpace(p["chown"]) == "" {
+			return fmt.Errorf("chown property cannot be empty")
+		}
+		if _, ok := p["chmod"]; ok && strings.TrimSpace(p["chmod"]) == "" {
+			return fmt.Errorf("chmod property cannot be empty")
+		}
+	case "env", "label":
+		if len(p) == 0 && a != 2 {
+			return fmt.Errorf("expected properties or a key and value")
+		}
+		if len(p) > 0 && a != 0 {
+			return fmt.Errorf("cannot mix arguments and properties")
+		}
+		if a == 2 && (inst.Arguments[0] == "" || strings.ContainsAny(inst.Arguments[0], "=\x00")) {
+			return fmt.Errorf("expected a nonempty key without equals sign")
+		}
+		if n == "env" && a == 2 && strings.ContainsRune(inst.Arguments[1], '\x00') {
+			return fmt.Errorf("environment value cannot contain NUL")
+		}
+		for key := range p {
+			if key == "" || strings.ContainsAny(key, "=\x00") {
+				return fmt.Errorf("expected a nonempty key without equals sign")
+			}
+			if n == "env" && strings.ContainsRune(p[key], '\x00') {
+				return fmt.Errorf("environment value cannot contain NUL")
+			}
+		}
+	case "workdir", "user":
+		if a != 1 || len(p) != 0 || strings.TrimSpace(inst.Arguments[0]) == "" {
+			return fmt.Errorf("expected one nonempty argument and no properties")
+		}
+	case "cmd", "entrypoint":
+		if len(p) != 0 || (inst.Form == "shell" && a != 1) {
+			return fmt.Errorf("expected exec arguments (empty resets) or one shell command and no properties")
+		}
+	case "healthcheck":
+		if err := validateHealthcheck(inst); err != nil {
+			return err
+		}
+	case "onbuild":
+		if a != 1 || len(p) != 0 || strings.TrimSpace(inst.Arguments[0]) == "" {
+			return fmt.Errorf("expected one nonempty Dockerfile instruction and no properties")
+		}
+		if strings.ContainsRune(inst.Arguments[0], '\x00') {
+			return fmt.Errorf("dockerfile instruction cannot contain NUL")
+		}
+	case "component":
+		if a != 1 || strings.TrimSpace(inst.Arguments[0]) == "" || childCount != 0 {
+			return fmt.Errorf("expected one component reference, argument properties, and no children")
+		}
+	case "mount":
+		if !child || a != 1 || (!optionName.MatchString(inst.Arguments[0]) && !mountTypeParameter.MatchString(inst.Arguments[0])) || childCount != 0 {
+			return fmt.Errorf("expected a mount type and optional properties, and no children")
+		}
+		for key := range p {
+			if !optionName.MatchString(key) {
+				return fmt.Errorf("invalid mount property name %q", key)
+			}
+		}
+	case "device":
+		if !child || a < 1 || !onlyProps(p, "required") || childCount != 0 {
+			return fmt.Errorf("expected one or more device selectors, optional required property, and no children")
+		}
+		for _, selector := range inst.Arguments {
+			if strings.TrimSpace(selector) == "" {
+				return fmt.Errorf("device selector cannot be empty")
+			}
+		}
+		if required, ok := p["required"]; ok && required != "true" && required != "false" {
+			return fmt.Errorf("required property must be a boolean")
+		}
+	case "exclude":
+		if !child || a < 1 || len(p) != 0 || childCount != 0 {
+			return fmt.Errorf("expected one or more exclude patterns and no properties or children")
+		}
+	default:
+		if n == "" || strings.ToLower(n) != n || strings.ContainsAny(n, " \t\r\n\x00") {
+			return fmt.Errorf("invalid instruction name")
+		}
+	}
+	return nil
+}
+
+func validateHealthcheck(inst Instruction) error {
+	if len(inst.Arguments) == 0 {
+		return fmt.Errorf("expected CMD, CMD-SHELL, or NONE")
+	}
+	for _, argument := range inst.Arguments {
+		if strings.ContainsRune(argument, '\x00') {
+			return fmt.Errorf("healthcheck arguments cannot contain NUL")
+		}
+	}
+	switch inst.Arguments[0] {
+	case "NONE":
+		if len(inst.Arguments) != 1 {
+			return fmt.Errorf("NONE does not accept command arguments")
+		}
+		if len(inst.Properties) != 0 {
+			return fmt.Errorf("NONE does not accept properties")
+		}
+		return nil
+	case "CMD":
+		if len(inst.Arguments) < 2 {
+			return fmt.Errorf("CMD requires at least one command argument")
+		}
+	case "CMD-SHELL":
+		if len(inst.Arguments) != 2 {
+			return fmt.Errorf("CMD-SHELL requires exactly one command")
+		}
+	default:
+		return fmt.Errorf("expected CMD, CMD-SHELL, or NONE")
+	}
+	if !onlyProps(inst.Properties, "interval", "timeout", "start-period", "start-interval", "retries") {
+		return fmt.Errorf("expected only supported timing properties interval/timeout/start-period/start-interval/retries")
+	}
+	for _, name := range []string{"interval", "timeout", "start-period", "start-interval"} {
+		value, exists := inst.Properties[name]
+		if !exists || strings.Contains(value, "$") {
+			continue
+		}
+		duration, err := time.ParseDuration(value)
+		if err != nil {
+			return fmt.Errorf("%s property must be a duration: %w", name, err)
+		}
+		if duration != 0 && duration < time.Millisecond {
+			return fmt.Errorf("%s property cannot be less than 1ms", name)
+		}
+	}
+	if value, exists := inst.Properties["retries"]; exists && !strings.Contains(value, "$") {
+		retries, err := strconv.Atoi(value)
+		if err != nil || retries < 0 {
+			return fmt.Errorf("retries property must be a nonnegative integer")
+		}
+	}
+	return nil
+}
+
+func onlyProps(props map[string]string, allowed ...string) bool {
+	for key := range props {
+		found := false
+		for _, name := range allowed {
+			if key == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}

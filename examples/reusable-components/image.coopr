@@ -1,0 +1,6 @@
+from "coopr-demo:base"
+component "local:coopr-demo-settings" channel="preview"
+component "local:coopr-demo-policy"
+cmd {
+    exec "cat" "/etc/demo/settings.conf" "/etc/demo/policy.txt"
+}

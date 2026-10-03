@@ -1,0 +1,8 @@
+package as="settings"
+copy "components/settings.conf" "/settings.conf"
+
+extend as="configured"
+arg "channel" "stable"
+env coopr_channel="${channel}"
+copy "/settings.conf" "/etc/coopr/settings.conf" from="settings"
+run "test -s /etc/coopr/settings.conf" network="none"

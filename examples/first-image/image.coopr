@@ -1,0 +1,7 @@
+from "docker.io/redhat/ubi9:latest"
+run "dnf install -y nginx && dnf clean all"
+copy "index.html" "/usr/share/nginx/html/index.html"
+expose "80/tcp"
+cmd {
+    exec "nginx" "-g" "daemon off;"
+}

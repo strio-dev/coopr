@@ -1,0 +1,75 @@
+[project]
+site_name = "Coopr"
+site_description = "Build container images from reusable OCI components."
+site_url = "https://coopr.strio.dev"
+docs_dir = "docs"
+site_dir = "site"
+dev_addr = "127.0.0.1:8000"
+extra_css = ["stylesheets/coopr.css"]
+nav = [
+  { "Overview" = "index.md" },
+  { "Getting started" = "getting-started/index.md" },
+  { "Tutorials" = [
+    { "Build your first image" = "tutorials/first-image.md" },
+    { "Reuse two components" = "tutorials/reusable-components.md" },
+  ] },
+  { "Guides" = [
+    { "Build images" = "guides/builds.md" },
+    { "Package components" = "guides/components.md" },
+    { "Image and component storage" = "guides/storage.md" },
+    { "Caching" = "guides/caching.md" },
+    { "Security and rootless builds" = "guides/security.md" },
+  ] },
+  { "Concepts" = [
+    { "Architecture" = "concepts/architecture.md" },
+    { "Stages and component phases" = "concepts/stages.md" },
+  ] },
+  { "Reference" = [
+    { "Definition syntax" = "reference/definition.md" },
+    { "CLI" = "reference/cli.md" },
+    { "Execution contract" = "reference/execution.md" },
+    { "Configuration" = "reference/configuration.md" },
+  ] },
+  { "Contributing" = "contributing.md" },
+]
+
+[project.theme]
+variant = "modern"
+custom_dir = "docs/.overrides"
+language = "en"
+logo = "assets/coopr-wordmark.svg"
+favicon = "assets/coopr-favicon.svg"
+font = false
+features = [
+  "navigation.instant",
+  "navigation.instant.progress",
+  "navigation.sections",
+  "navigation.path",
+  "navigation.footer",
+  "search.highlight",
+  "content.code.copy",
+]
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+primary = "black"
+accent = "grey"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+primary = "black"
+accent = "grey"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to light mode"
+
+[project.markdown_extensions]
+attr_list = {}
+md_in_html = {}
+"pymdownx.highlight" = { anchor_linenums = true }
+"pymdownx.superfences" = {}
+"pymdownx.tabbed" = { alternate_style = true }
+toc = { permalink = true }

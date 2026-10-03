@@ -1,0 +1,6 @@
+{
+  "logging": {
+    "format": "json",
+    "level": "info"
+  }
+}

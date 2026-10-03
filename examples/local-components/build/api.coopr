@@ -1,0 +1,5 @@
+from "docker.io/library/ubuntu:24.04"
+component "./components/shared.coopr" channel="api"
+cmd {
+    exec "cat" "/etc/coopr/settings.conf"
+}

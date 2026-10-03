@@ -1,0 +1,69 @@
+/* System fonts keep local previews independent of third-party font services.
+   The logo contains the accepted, unmodified Nimbus Sans Bold outlines. */
+:root {
+  --md-text-font: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --md-code-font: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: #111;
+  --md-primary-bg-color: #fff;
+  --md-accent-fg-color: #333;
+  --md-accent-fg-color--transparent: #0000000d;
+  --md-typeset-a-color: #202020;
+}
+[data-md-color-scheme="slate"] {
+  --md-default-bg-color: #151515;
+  --md-default-fg-color: #ededed;
+  --md-default-fg-color--light: #bcbcbc;
+  --md-primary-fg-color: #111;
+  --md-primary-bg-color: #fff;
+  --md-accent-fg-color: #ddd;
+  --md-accent-fg-color--transparent: #ffffff12;
+  --md-typeset-a-color: #e4e4e4;
+  --md-code-bg-color: #202020;
+}
+.md-header__button.md-logo img { width: 6.6rem; height: 1.9rem; }
+.md-logo img { filter: none; }
+[data-md-color-scheme="slate"] .md-logo img { filter: invert(1); }
+.md-nav--primary > .md-nav__title[for="__drawer"] { font-size: 0; }
+.md-nav--primary > .md-nav__title[for="__drawer"] .md-logo { width: 6rem; height: auto; }
+.md-nav--primary > .md-nav__title[for="__drawer"] .md-logo img { width: 100%; height: auto; }
+.md-header__title { margin-left: .5rem; }
+.md-typeset h1 { font-weight: 650; letter-spacing: -.035em; }
+.md-typeset h2 { font-weight: 600; letter-spacing: -.02em; }
+.md-typeset a:not(.md-button) { text-decoration: underline; text-underline-offset: .15em; }
+.md-typeset .md-button { border-radius: .2rem; }
+.md-typeset .md-button--primary { background: var(--md-default-fg-color); border-color: var(--md-default-fg-color); color: var(--md-default-bg-color); }
+.coopr-actions { display: flex; flex-wrap: wrap; gap: .6rem; }
+.coopr-intro { font-size: 1.15rem; max-width: 35rem; }
+.coopr-paths { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin: 1.5rem 0 2rem; }
+.coopr-path { border: 1px solid var(--md-default-fg-color--lightest); border-radius: .3rem; padding: 1.1rem; }
+.coopr-path h2 { margin-top: 0; font-size: 1rem; }
+.coopr-path p { margin-bottom: 0; }
+@media (max-width: 600px) { .coopr-paths { grid-template-columns: 1fr; } }
+
+/* Keep standalone code blocks within the article gutters on mobile. */
+@media screen and (max-width: 44.984375em) {
+  .md-content__inner > .highlight,
+  .md-content__inner > pre {
+    margin-inline: 0;
+  }
+
+  .md-content__inner > .highlight > pre > code,
+  .md-content__inner > pre > code {
+    border-radius: .4rem;
+  }
+}
+
+/* Modern gives slate links a scheme-specific colour; retain the monochrome palette. */
+[data-md-color-scheme="default"] .md-typeset { --md-typeset-a-color: #202020; }
+[data-md-color-scheme="slate"] .md-typeset { --md-typeset-a-color: #e4e4e4; }
+@media (max-width: 76.2344em) {
+  .md-header__button[for="__drawer"] { order: -1; }
+  body .md-header__button.md-logo { display: inline-flex; padding: .2rem; }
+  .md-header__button.md-logo img { width: 4.2rem; height: auto; }
+  .md-header__topic:first-child { display: none; }
+}
+
+.md-header__title .md-header__topic:first-child { opacity: 0; }
+.md-header__inner:has(.md-header__title--active) > .md-header__button.md-logo { display: none; }

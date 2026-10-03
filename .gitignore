@@ -1,0 +1,12 @@
+.direnv/
+result
+result-*
+/bin/
+/coverage.out
+
+# Private session/audit evidence and generated documentation.
+/site/
+/.cache/
+
+# Python documentation checker bytecode.
+__pycache__/

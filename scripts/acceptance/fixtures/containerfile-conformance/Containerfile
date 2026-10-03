@@ -1,0 +1,26 @@
+ARG message=fixture-default
+
+FROM scratch AS producer
+ARG message
+COPY busybox /bin/busybox
+RUN --network=none ["/bin/busybox", "sh", "-c", "/bin/busybox mkdir -p /proof && printf 'stage:%s\n' \"$message\" > /proof/stage"]
+
+FROM scratch
+ARG message
+COPY --from=producer /bin/busybox /bin/busybox
+COPY --from=producer /proof/stage /proof/stage
+COPY --chmod=0640 context.txt /proof/context
+ADD payload.tar /proof/
+ENV COOPR_PARITY=containerfile
+SHELL ["/bin/busybox", "sh", "-c"]
+RUN --network=none printf 'final:%s\n' "$message" > /proof/final && printf 'env:%s\n' "$COOPR_PARITY" > /proof/env
+LABEL dev.strio.coopr.conformance=ordered
+WORKDIR /proof
+USER 0:0
+EXPOSE 8080/tcp 5353/udp
+VOLUME /data
+STOPSIGNAL SIGTERM
+HEALTHCHECK --interval=30s --timeout=3s --retries=2 CMD ["/bin/busybox", "test", "-s", "/proof/final"]
+ONBUILD ENV inherited=yes
+ENTRYPOINT ["/bin/busybox", "cat"]
+CMD ["/proof/stage", "/proof/context", "/proof/final", "/proof/env", "/proof/archive-data"]

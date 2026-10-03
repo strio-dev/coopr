@@ -1,0 +1,40 @@
+arg "message" "fixture-default"
+
+from "scratch" as="producer"
+arg "message"
+copy "busybox" "/bin/busybox"
+run network="none" {
+    exec "/bin/busybox" "sh" "-c" """
+        /bin/busybox mkdir -p /proof &&
+        printf 'stage:%s\\n' "$message" > /proof/stage
+        """
+}
+
+from "scratch"
+arg "message"
+copy "/bin/busybox" "/bin/busybox" from="producer"
+copy "/proof/stage" "/proof/stage" from="producer"
+copy "context.txt" "/proof/context" chmod="0640"
+add "payload.tar" "/proof/"
+env COOPR_PARITY="containerfile"
+shell "/bin/busybox" "sh" "-c"
+run """
+    printf 'final:%s\\n' "$message" > /proof/final &&
+    printf 'env:%s\\n' "$COOPR_PARITY" > /proof/env
+    """ network="none"
+label dev.strio.coopr.conformance="ordered"
+workdir "/proof"
+user "0:0"
+expose "8080/tcp" "5353/udp"
+volume "/data"
+stopsignal "SIGTERM"
+healthcheck interval="30s" timeout="3s" retries=2 {
+    exec "/bin/busybox" "test" "-s" "/proof/final"
+}
+onbuild { env inherited="yes" }
+entrypoint {
+    exec "/bin/busybox" "cat"
+}
+cmd {
+    exec "/proof/stage" "/proof/context" "/proof/final" "/proof/env" "/proof/archive-data"
+}
