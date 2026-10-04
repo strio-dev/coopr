@@ -15,13 +15,17 @@ import (
 )
 
 func newBuildCommand() *cobra.Command {
+	return newBuildCommandWithGlobals(true)
+}
+
+func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 	var ignoreFile string
 	var contextDir, definitionFile, from, target, format, network, pullPolicy string
 	var osName, arch, variant string
 	var tags []string
 	var metadataFile, iidFile string
 	platform := runtime.GOOS + "/" + runtime.GOARCH
-	args := namedValues{values: make(map[string]string)}
+	var args []string
 	var push, pull, noCache, plainHTTP, rewriteTimestamp bool
 	var plainHTTPRegistries []string
 	var platforms []string
@@ -65,7 +69,7 @@ func newBuildCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			resolvedArgs, err := readBuildArgFiles(buildArgFiles, args.values)
+			resolvedArgs, err := readBuildArgFiles(buildArgFiles, args)
 			if err != nil {
 				return err
 			}
@@ -175,7 +179,7 @@ func newBuildCommand() *cobra.Command {
 				Platform:         requestedPlatform, Platforms: platforms, Target: target, Format: format, Args: resolvedArgs,
 				PlainHTTP: plainHTTP, PlainHTTPRegistries: plainHTTPRegistries,
 				AuthFile: registry.authFile, CertDir: registry.certDir, SkipTLSVerify: !registry.tlsVerify,
-				Credentials: registry.credentials, Retry: registry.retry, RetrySet: cmd.Flags().Changed("retry"), RetryDelay: registry.retryDelay, DecryptionKeys: registry.decryptionKeys, SignaturePolicyPath: registry.signaturePolicy,
+				Credentials: registry.credentials, Retry: registry.retry, RetrySet: cmd.Flags().Changed("retry"), RetryDelay: registry.retryDelay, DecryptionKeys: registry.decryptionKeys, SignaturePolicyPath: commandSignaturePolicy(cmd),
 				CacheLocalDir: cacheLocalDir, CacheRepository: cacheRepository,
 				CacheFrom: cacheSources, CacheTo: cacheDestinations,
 				Secrets: secrets, SSH: ssh,
@@ -236,7 +240,7 @@ func newBuildCommand() *cobra.Command {
 	cmd.MarkFlagsMutuallyExclusive("all-platforms", "platform")
 	f.StringVar(&target, "target", "", "named output stage")
 	f.StringVar(&format, "format", defaultBuildFormat(), "image format: oci (default) or docker")
-	f.Var(&args, "build-arg", "build argument (repeatable NAME[=VALUE]; NAME inherits from the environment when set)")
+	f.StringArrayVar(&args, "build-arg", nil, "build argument (repeatable NAME[=VALUE]; NAME inherits from the environment when set)")
 	f.StringArrayVar(&buildArgFiles, "build-arg-file", nil, "read build arguments from a file (repeatable; --build-arg wins)")
 	f.BoolVar(&runStdin, "stdin", false, "pass stdin to RUN instructions")
 	f.StringArrayVar(&buildContexts, "build-context", nil, "additional build context: NAME=PATH|URL|docker-image://REFERENCE|oci-layout://PATH:TAG (repeatable)")
@@ -249,6 +253,10 @@ func newBuildCommand() *cobra.Command {
 	f.StringArrayVar(&ssh, "ssh", nil, "SSH agent or key source for RUN mounts: ID[=PATH] (repeatable)")
 	f.StringArrayVar(&allow, "allow", nil, "allow an elevated build entitlement (repeatable: network.host, security.insecure, device, or device=SELECTOR)")
 	times.addTo(cmd)
+	if standalone {
+		addGlobalRunFlags(cmd.Flags())
+		addSignaturePolicyFlag(cmd.Flags())
+	}
 	controls.addTo(cmd)
 	registry.addTo(cmd)
 	return cmd

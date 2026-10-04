@@ -652,3 +652,33 @@ func createInstructionCacheTestImage(t *testing.T, store storage.Store, names ..
 	}
 	return image.ID
 }
+
+type unavailableInstructionCacheStore struct{ err error }
+
+func (s unavailableInstructionCacheStore) LookupImage(context.Context, cache.ImageKey) (*cache.ImageRecord, string, error) {
+	return nil, "", s.err
+}
+func (s unavailableInstructionCacheStore) PutImage(context.Context, cache.ImageKey, cache.ImageRecord, string) (v1.Descriptor, error) {
+	return v1.Descriptor{}, s.err
+}
+func TestInstructionCacheOptionalReadWarnsWithCause(t *testing.T) {
+	failure := errors.New("injected instruction-cache read failure")
+	c := &portableInstructionCache{readStores: []instructionCacheStore{unavailableInstructionCacheStore{err: failure}}}
+	warning := packageWarningOutput(t, func() {
+		entry, err := c.lookup(context.Background(), nil, cache.ImageKey{}, "", nil)
+		if err != nil || entry.ImageID != "" || c.stats.Errors != 1 || c.stats.Misses != 1 {
+			t.Fatalf("optional miss=%+v err=%v stats=%+v", entry, err, c.stats)
+		}
+	})
+	if !strings.Contains(warning, failure.Error()) {
+		t.Fatalf("lost cache cause: %q", warning)
+	}
+}
+func TestInstructionCacheCandidateFailureWarnsWithCause(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "absent", "staging")
+	c := &portableInstructionCache{stagingDir: path, writeStores: []instructionCacheStore{unavailableInstructionCacheStore{}}}
+	warning := packageWarningOutput(t, func() { c.record(context.Background(), nil, cache.ImageKey{}, "", "", nil, nil) })
+	if c.stats.Errors != 1 || len(c.candidates) != 0 || !strings.Contains(warning, "stage instruction cache candidate") || !strings.Contains(warning, "no such file") {
+		t.Fatalf("candidate failure hidden: warning=%q stats=%+v", warning, c.stats)
+	}
+}

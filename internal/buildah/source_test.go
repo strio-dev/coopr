@@ -4,22 +4,30 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"coopr/internal/imagecatalog"
 	"coopr/internal/oci"
+	"github.com/google/go-containerregistry/pkg/registry"
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/storage"
+	"oras.land/oras-go/v2"
 	"oras.land/oras-go/v2/content"
 	orasoci "oras.land/oras-go/v2/content/oci"
+	"oras.land/oras-go/v2/registry/remote"
 )
 
 func TestResolveImageSourceReusesCatalogSelectionFromBuildahStore(t *testing.T) {
@@ -325,4 +333,104 @@ func sourceTestIndex(t *testing.T, ctx context.Context, store *orasoci.Store, ma
 		t.Fatal(err)
 	}
 	return root
+}
+
+func TestResolveImageSourceSharedWrongPlatformPullPolicies(t *testing.T) {
+	ctx := context.Background()
+	var requests atomic.Int64
+	registryHandler := registry.New()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requests.Add(1); registryHandler.ServeHTTP(w, r) }))
+	defer server.Close()
+	parsed, _ := url.Parse(server.URL)
+	reference := parsed.Host + "/base:latest"
+	sourceDir := t.TempDir()
+	source, err := orasoci.NewWithContext(ctx, sourceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	amd := v1.Platform{OS: "linux", Architecture: "amd64"}
+	arm := v1.Platform{OS: "linux", Architecture: "arm64"}
+	amdManifest, _ := sourceTestImage(t, ctx, source, amd, "amd")
+	armManifest, _ := sourceTestImage(t, ctx, source, arm, "arm")
+	amdChild, armChild := amdManifest, armManifest
+	amdChild.Platform = &amd
+	armChild.Platform = &arm
+	index := sourceTestIndex(t, ctx, source, amdChild, armChild)
+	if err := source.Tag(ctx, index, "latest"); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := remote.NewRepository(reference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo.PlainHTTP = true
+	if _, err := oras.Copy(ctx, source, "latest", repo, "latest", oras.CopyOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, policy := range []oci.PullPolicy{oci.PullMissing, oci.PullNewer, oci.PullNever} {
+		t.Run(string(policy), func(t *testing.T) {
+			root := t.TempDir()
+			backend, err := storage.GetStore(storage.StoreOptions{GraphDriverName: "vfs", GraphRoot: filepath.Join(root, "graph"), RunRoot: filepath.Join(root, "run")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _, _ = backend.Shutdown(true) })
+			policyFile := filepath.Join(root, "policy.json")
+			if err := os.WriteFile(policyFile, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0600); err != nil {
+				t.Fatal(err)
+			}
+			system := &types.SystemContext{SignaturePolicyPath: policyFile, BigFilesTemporaryDir: root}
+			id, err := ImportSelectedImage(ctx, backend, system, sourceDir, amdManifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := backend.AddNames(id, []string{reference}); err != nil {
+				t.Fatal(err)
+			}
+			catalog := filepath.Join(root, "images")
+			resolver, err := oci.NewResolver(oci.Options{ImageStoreDir: catalog, NativeStoreShared: true, PullPolicy: string(policy), PlainHTTPRegistries: []string{parsed.Host}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Seed a now-stale arm64 alias, then ensure authoritative native naming invalidates it.
+			data, err := content.FetchAll(ctx, source, armManifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var manifest v1.Manifest
+			if err := json.Unmarshal(data, &manifest); err != nil {
+				t.Fatal(err)
+			}
+			configData, err := content.FetchAll(ctx, source, manifest.Config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := imagecatalog.Commit(ctx, catalog, reference, arm, imagecatalog.Selection{Root: index, Manifest: armManifest, ImageID: manifest.Config.Digest.Encoded(), ConfigData: configData}); err != nil {
+				t.Fatal(err)
+			}
+			before := requests.Load()
+			resolved, err := ResolveImageSource(ctx, resolver, reference, arm, backend, system)
+			if policy == oci.PullNever {
+				if !errors.Is(err, oci.ErrStoredPlatformUnavailable) || requests.Load() != before {
+					t.Fatalf("never error=%v registry requests=%d", err, requests.Load()-before)
+				}
+				return
+			}
+			if err != nil || resolved.Selected.Digest != armManifest.Digest {
+				t.Fatalf("resolved=%+v error=%v", resolved, err)
+			}
+			if requests.Load() == before {
+				t.Fatal("permitted pull did not contact registry")
+			}
+			// Genuine stored-content corruption must still fail before remote contact.
+			if err := backend.SetImageBigData(resolved.ImageID, manifest.Config.Digest.String(), []byte("invalid"), nil); err != nil {
+				t.Fatal(err)
+			}
+			before = requests.Load()
+			_, err = ResolveImageSource(ctx, resolver, reference, arm, backend, system)
+			if err == nil || errors.Is(err, oci.ErrStoredPlatformUnavailable) || requests.Load() != before {
+				t.Fatalf("corrupt error=%v registry requests=%d", err, requests.Load()-before)
+			}
+		})
+	}
 }

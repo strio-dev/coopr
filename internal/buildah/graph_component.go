@@ -241,6 +241,7 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 	}
 	localNames := make(map[string]bool, len(resolved.Plan.Stages))
 	for _, stage := range resolved.Plan.Stages {
+		localNames[stage.ID] = true
 		if stage.Name != "" {
 			localNames[strings.ToLower(stage.Name)] = true
 		}
@@ -339,6 +340,9 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 					var hit bool
 					if !executor.options.NoCache {
 						componentImageID, componentConfig, hit, configErr = executor.componentCache.lookup(ctx, executor, key, callerImageID, postCommitConfig, rootBaseline, platform, builderOptions.SystemContext)
+						if configErr != nil {
+							return nil, fmt.Errorf("component cache lookup: %w", configErr)
+						}
 						if hit {
 							cacheHit = true
 							progress.line("--> Using component cache %s", resolved.Identity)
@@ -355,6 +359,7 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
+			packageCacheWarning("prepare component cache", configErr)
 			executor.componentCache.stats.Skipped++
 		} else if candidateKey == nil {
 			executor.componentCache.stats.Skipped++

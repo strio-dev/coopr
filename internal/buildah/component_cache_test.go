@@ -2,11 +2,17 @@ package buildah
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	registryserver "github.com/google/go-containerregistry/pkg/registry"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"coopr/internal/cache"
 	"coopr/internal/definition"
@@ -15,6 +21,7 @@ import (
 	"coopr/internal/stateidentity"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"go.podman.io/storage"
 )
 
 func TestComponentCacheRelaysDeferredCandidate(t *testing.T) {
@@ -262,5 +269,103 @@ func TestComponentCacheExportReturnsAllFailuresAfterCleanup(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("staged component cache remains: %v", err)
+	}
+}
+
+func TestComponentCacheOptionalReadWarnsWithCause(t *testing.T) {
+	failure := errors.New("injected cache read permission failure")
+	store := cancelCacheStore{lookup: func(context.Context) (*cache.Record, string, error) { return nil, "", failure }}
+	c := &componentCache{readStores: []cache.Store{store}}
+	warning := packageWarningOutput(t, func() {
+		_, _, hit, err := c.lookup(context.Background(), nil, cache.Key{}, "", nil, nil, v1.Platform{}, nil)
+		if hit || err != nil || c.stats.Errors != 1 || c.stats.Misses != 1 {
+			t.Fatalf("optional read changed result: hit=%v err=%v stats=%+v", hit, err, c.stats)
+		}
+	})
+	if !strings.Contains(warning, failure.Error()) || !strings.Contains(warning, "read component cache") {
+		t.Fatalf("causal warning missing: %q", warning)
+	}
+}
+
+func TestComponentCacheSeedFailurePreservesCause(t *testing.T) {
+	ctx := context.Background()
+	native := newInstructionCacheTestStore(t)
+	imageID := createInstructionCacheTestImage(t, native)
+	config := []byte(`{"os":"linux","architecture":"amd64","rootfs":{"type":"layers","diff_ids":[]}}`)
+	configDescriptor := oci.Descriptor(v1.MediaTypeImageConfig, config)
+	manifestData, _ := json.Marshal(oci.VersionedManifest(configDescriptor, nil, ""))
+	for name, data := range map[string][]byte{storage.ImageDigestBigDataKey: manifestData, configDescriptor.Digest.String(): config, "config": config} {
+		if err := native.SetImageBigData(imageID, name, data, func(data []byte) (digest.Digest, error) { return digest.FromBytes(data), nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	root := &PackageRootMetadata{Mode: 0755}
+	platform := v1.Platform{OS: "linux", Architecture: "amd64"}
+	staging := t.TempDir()
+	identity, _, path, eligible, err := snapshotPortableState(ctx, native, nil, imageID, config, config, root, platform, staging)
+	if path != "" {
+		_ = os.Remove(path)
+	}
+	if err != nil || !eligible {
+		t.Fatalf("empty-image fixture not cacheable: eligible=%v err=%v", eligible, err)
+	}
+	record := cache.Record{Output: identity, Config: config}
+	failure := errors.New("injected explicit cache seed write failure")
+	source := cancelCacheStore{lookup: func(context.Context) (*cache.Record, string, error) { return &record, "", nil }}
+	destination := cancelCacheStore{put: func(context.Context) (v1.Descriptor, error) { return v1.Descriptor{}, failure }}
+	c := &componentCache{stagingDir: staging, readStores: []cache.Store{source}, writeStores: []cache.Store{destination}}
+	_, _, hit, err := c.lookup(ctx, &graphExecutor{store: native}, cache.Key{}, imageID, config, root, platform, nil)
+	if hit || !errors.Is(err, failure) || !strings.Contains(err.Error(), "seed component cache") || c.stats.Errors != 1 {
+		t.Fatalf("seed failure lost: hit=%v err=%v stats=%+v", hit, err, c.stats)
+	}
+}
+
+func TestComponentCacheSeedFailureReachesBuildCaller(t *testing.T) {
+	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
+		t.Skip("set COOPR_TEST_BUILDAH=1 for rootless graph error propagation")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	root := t.TempDir()
+	componentResolver := localConfigComponentResolver(t, ctx, root, "extend\nenv CACHE_PROOF=\"yes\"\n", false)
+	destination := filepath.Join(root, "seed-destination")
+	var inject atomic.Bool
+	var injected atomic.Bool
+	registry := registryserver.New()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if inject.Load() && r.Method == http.MethodGet && (strings.Contains(r.URL.Path, "/manifests/") || strings.Contains(r.URL.Path, "/blobs/")) && injected.CompareAndSwap(false, true) {
+			lock := filepath.Join(destination, ".coopr-cache.lock")
+			if err := os.Remove(lock); err != nil {
+				t.Errorf("remove fixture lock: %v", err)
+			}
+			if err := os.Mkdir(lock, 0700); err != nil {
+				t.Errorf("inject seed failure: %v", err)
+			}
+		}
+		registry.ServeHTTP(w, r)
+	}))
+	defer server.Close()
+	host := strings.TrimPrefix(server.URL, "http://")
+	resolver, err := oci.NewResolver(oci.Options{ComponentStoreDir: componentResolver.ComponentStoreDir(), ImageStoreDir: componentResolver.ImageStoreDir(), PlainHTTPRegistries: []string{host}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := testPlan(t, "from \"scratch\"\ncomponent \"local:config\"\n")
+	policy := writeComponentTestPolicy(t, root)
+	options := componentTestOptions(root, filepath.Join(root, "cold"), resolver, policy)
+	options.CacheRepository = host + "/coopr/cache"
+	if _, err := BuildPlan(ctx, plan, options); err != nil {
+		t.Fatal(err)
+	}
+	options = componentTestOptions(root, filepath.Join(root, "warm"), resolver, policy)
+	options.CacheFrom = []CacheSpec{{Transport: "registry", Reference: host + "/coopr/cache"}}
+	options.CacheTo = []CacheSpec{{Transport: "oci-layout", Reference: destination}}
+	inject.Store(true)
+	_, err = BuildPlan(ctx, plan, options)
+	if !injected.Load() || err == nil || !strings.Contains(err.Error(), "component cache lookup") || !strings.Contains(err.Error(), "seed component cache") || !strings.Contains(err.Error(), "is a directory") {
+		t.Fatalf("seed cause did not reach graph caller: injected=%v err=%v", injected.Load(), err)
+	}
+	if _, err := os.Stat(options.Output.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("seed failure published required output: %v", err)
 	}
 }

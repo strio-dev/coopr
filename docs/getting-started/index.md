@@ -1,41 +1,39 @@
 # Getting started
 
-Coopr builds Linux images and reusable OCI components. Build from a checkout with Nix, then run the native CLI on a Linux host.
+Coopr builds Linux images and reusable OCI components. Install a release binary, then run the CLI on a Linux host.
+
+## Install
+
+```sh
+curl -fsSL https://coopr.strio.dev/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+coopr --help
+```
+
+The installer selects the latest stable [GitHub release](https://github.com/strio-dev/coopr/releases), checks its SHA256 checksum, and installs the static amd64 or arm64 binary in `~/.local/bin`. It keeps the accompanying licenses in `~/.local/share/licenses/coopr`. It does not require Nix or change your shell configuration.
+
+To install an exact release, pass its unprefixed tag:
+
+```sh
+curl -fsSL https://coopr.strio.dev/install.sh | sh -s -- 1.2.3
+```
+
+Set `COOPR_INSTALL_PREFIX` on the shell command to choose another location:
+
+```sh
+curl -fsSL https://coopr.strio.dev/install.sh | COOPR_INSTALL_PREFIX="$HOME/tools/coopr" sh
+```
+
+You can also download the [installer](../install.sh) or release archives directly. Corresponding dependency sources and rebuild instructions are in each release's `coopr-sources.tar.gz` archive.
 
 ## Requirements
 
 - Linux with user and mount namespaces enabled; rootless builds need subordinate UID/GID ranges and working `newuidmap`/`newgidmap` helpers.
 - A host configured for [rootless container builds](../guides/security.md#native-rootless-requirements).
-- Nix with flakes enabled for the pinned build and development environment.
+- An OCI runtime such as `crun`, working UID-map helpers, and the networking helpers required by your rootless container configuration. The release binary does not install these host tools.
 - Registry access for uncached image inputs. The first tutorial uses Red Hat UBI9 and installs NGINX from its public package repositories.
 
 Other kernels, namespace policies, and nested-container environments can reject builds. See [security and rootless execution](../guides/security.md) for the container profile and limitations. Multi-platform assembly is supported; executing foreign binaries needs host `binfmt_misc` emulation.
-
-## Build the CLI
-
-From the repository root:
-
-```sh
-nix build path:.#coopr -o result-coopr
-./result-coopr/bin/coopr --help
-nix develop path:.
-```
-
-Inside the development shell, `coopr` is ready to use:
-
-```sh
-coopr --help
-```
-
-The shell provides the packaged CLI built from your checkout. To run current source edits without rebuilding that package, use:
-
-```sh
-go run ./cmd/coopr --help
-```
-
-Direnv loads the same environment.
-
-Use `path:.` during development so Nix sees untracked source files. Dependencies and tools come from `go.sum` and `flake.lock`.
 
 ## Build something useful
 
@@ -43,13 +41,23 @@ Use `path:.` during development so Nix sees untracked source files. Dependencies
 
 A plain `--tag NAME` names a result locally. Publishing uses an explicit registry destination; see [builds](../guides/builds.md) and [storage](../guides/storage.md).
 
-## Build the CLI container
+## Run the published container
+
+The Coopr image is available from GHCR:
 
 ```sh
-nix build path:.#container.copyTo -o result-container-copy
-podman_store=$(podman info --format '{{.Store.GraphDriverName}}@{{.Store.GraphRoot}}+{{.Store.RunRoot}}')
-podman unshare ./result-container-copy/bin/copy-to "containers-storage:[$podman_store]localhost/coopr:nix"
-podman run --rm --network=none localhost/coopr:nix --help
+podman run --rm --network=none ghcr.io/strio-dev/coopr:latest --help
 ```
 
-Running `--help` does not exercise nested builds. Actual builds need the [nested rootless profile](../guides/security.md#nested-container-profile), writable project/state mounts, and the required outer permissions.
+Use a release tag in place of `latest` to select an exact version. To build images inside the container, use the [nested rootless profile](../guides/security.md#nested-container-profile) with writable project and state mounts.
+
+## Build from source with Nix
+
+You can also build Coopr from a checkout using Nix with flakes enabled. From the repository root:
+
+```sh
+nix build path:.#coopr -o result-coopr
+./result-coopr/bin/coopr --help
+```
+
+For the development shell, source-edit workflow, and tests, see [Contributing](../contributing.md).

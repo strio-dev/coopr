@@ -137,9 +137,11 @@ func ResolveImageSource(ctx context.Context, resolver *oci.Resolver, reference s
 					return ResolvedImageSource{}, fmt.Errorf("refresh shared-store image %q: %w", reference, err)
 				}
 			}
-		} else if errors.Is(storedErr, storage.ErrImageUnknown) {
+		} else if errors.Is(storedErr, storage.ErrImageUnknown) ||
+			(errors.Is(storedErr, oci.ErrStoredPlatformUnavailable) && resolver.PullPolicy() != oci.PullNever) {
 			// Native names are authoritative in a shared store. Remove stale
-			// Coopr aliases after Podman retags/removes an image; immutable digest
+			// Coopr aliases after Podman retags/removes an image or the requested
+			// platform is unavailable and policy permits pulling; immutable digest
 			// records remain available for exact references.
 			for _, selector := range localImageSelectors(reference) {
 				if _, err := imagecatalog.RemoveReference(ctx, resolver.ImageStoreDir(), selector); err != nil {

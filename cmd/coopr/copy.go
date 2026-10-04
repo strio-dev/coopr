@@ -12,6 +12,10 @@ import (
 )
 
 func newCopyCommand(kind oci.Kind) *cobra.Command {
+	return newCopyCommandWithGlobals(kind, true)
+}
+
+func newCopyCommandWithGlobals(kind oci.Kind, standalone bool) *cobra.Command {
 	var plainHTTP bool
 	var plainHTTPRegistries []string
 	var registry registryFlags
@@ -61,7 +65,7 @@ func newCopyCommand(kind oci.Kind) *cobra.Command {
 				BuildStore: store, ImageStoreDir: catalogue,
 				PlainHTTP: plainHTTP, PlainHTTPRegistries: plainHTTPRegistries,
 				AuthFile: registry.authFile, CertDir: registry.certDir, SkipTLSVerify: !registry.tlsVerify,
-				Credentials: registry.credentials, Retry: registry.retry, RetrySet: cmd.Flags().Changed("retry"), RetryDelay: registry.retryDelay, DecryptionKeys: registry.decryptionKeys, SignaturePolicyPath: registry.signaturePolicy,
+				Credentials: registry.credentials, Retry: registry.retry, RetrySet: cmd.Flags().Changed("retry"), RetryDelay: registry.retryDelay, DecryptionKeys: registry.decryptionKeys, SignaturePolicyPath: commandSignaturePolicy(cmd),
 				Platform: platforms.Normalize(platform), PlatformExplicit: cmd.Flags().Changed("platform"),
 				Signing: signing.options(),
 			})
@@ -75,6 +79,9 @@ func newCopyCommand(kind oci.Kind) *cobra.Command {
 	flags := cmd.Flags()
 	flags.BoolVar(&plainHTTP, "plain-http", false, "allow Coopr HTTP transport for loopback OCI registries")
 	flags.StringArrayVar(&plainHTTPRegistries, "plain-http-registry", nil, "allow Coopr HTTP transport for an exact registry host[:port] (repeatable)")
+	if standalone {
+		addSignaturePolicyFlag(cmd.Flags())
+	}
 	registry.addTo(cmd)
 	if kind == oci.Image {
 		flags.StringVar(&platformValue, "platform", platformValue, "select the stored image platform")

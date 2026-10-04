@@ -289,6 +289,7 @@ func selectPublicationBases(ctx context.Context, options PlanOptions, stages []p
 				}
 			}
 		}
+		aliases[stage.ID] = true
 		if stage.Name != "" {
 			aliases[strings.ToLower(stage.Name)] = true
 		}
@@ -392,6 +393,7 @@ func validatePublicationGraph(plan *planner.Plan, paths map[string]string) ([]pl
 		}
 		knownIDs[stage.ID] = stage
 		stagePlatforms[stage.ID] = stage.Platform
+		aliases[stage.ID] = stage.ID
 		if stage.Name != "" {
 			aliases[strings.ToLower(stage.Name)] = stage.ID
 		}

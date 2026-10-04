@@ -68,7 +68,7 @@ func TestInstructionImageStorePreservesExactGraph(t *testing.T) {
 	if raw, err := os.ReadFile(filepath.Join(sourcePath, "blobs", "sha256", config.Digest.Encoded())); err != nil || len(raw) != len(configData) {
 		t.Fatalf("stored config bytes = %d, %v; want %d", len(raw), err, len(configData))
 	}
-	store, err := NewLocalStore(ctx, filepath.Join(staging, "cache"), staging)
+	store, err := NewLocalStore(ctx, filepath.Join(staging, "cache"), staging, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,10 +101,24 @@ func TestInstructionImageStorePreservesExactGraph(t *testing.T) {
 	if _, _, err := store.LookupImage(ctx, wrong); err != ErrMiss {
 		t.Fatalf("different key lookup error = %v, want cache miss", err)
 	}
+	// Existing destination blobs do not bypass source integrity verification.
+	configPath := filepath.Join(sourcePath, "blobs", "sha256", config.Digest.Encoded())
+	if err := os.Chmod(configPath, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, bytes.Repeat([]byte("x"), len(configData)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutImage(ctx, key, record, sourcePath); err == nil {
+		t.Fatal("existing cache destination hid corrupt source config")
+	}
+	if err := os.WriteFile(configPath, configData, 0600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Remove(filepath.Join(sourcePath, "blobs", "sha256", layer.Digest.Encoded())); err != nil {
 		t.Fatal(err)
 	}
-	broken, err := NewLocalStore(ctx, filepath.Join(staging, "broken-cache"), staging)
+	broken, err := NewLocalStore(ctx, filepath.Join(staging, "broken-cache"), staging, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

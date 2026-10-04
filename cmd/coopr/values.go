@@ -36,7 +36,3 @@ func (v *namedValues) Set(value string) error {
 	v.values[name] = val
 	return nil
 }
-
-// String supplies pflag's current/default value, not the argument syntax.
-func (v *namedValues) String() string { return "" }
-func (v *namedValues) Type() string   { return "name[=value]" }

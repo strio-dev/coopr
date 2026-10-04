@@ -105,26 +105,33 @@ func finalizationArtifacts(opts Options, artifacts []string) ([]string, error) {
 		return nil, err
 	}
 	inputs := append([]string{opts.File}, signingInputs...)
-	for i, path := range allPaths {
+	if err := validateArtifactOverlaps(allPaths, inputs); err != nil {
+		return nil, err
+	}
+	return paths, nil
+}
+
+func validateArtifactOverlaps(paths, inputs []string) error {
+	for i, path := range paths {
 		for _, input := range inputs {
 			if input == "" || input == "-" || isHTTPDefinition(input) {
 				continue
 			}
 			if overlaps, err := pathsOverlap(path, input); err != nil {
-				return nil, err
+				return err
 			} else if overlaps {
-				return nil, fmt.Errorf("output %s overlaps input %s", path, definitionDisplayName(input))
+				return fmt.Errorf("output %s overlaps input %s", path, definitionDisplayName(input))
 			}
 		}
-		for _, other := range allPaths[:i] {
+		for _, other := range paths[:i] {
 			if overlaps, err := pathsOverlap(path, other); err != nil {
-				return nil, err
+				return err
 			} else if overlaps {
-				return nil, fmt.Errorf("output destinations overlap: %s and %s", path, other)
+				return fmt.Errorf("output destinations overlap: %s and %s", path, other)
 			}
 		}
 	}
-	return paths, nil
+	return nil
 }
 
 func pathsOverlap(a, b string) (bool, error) {

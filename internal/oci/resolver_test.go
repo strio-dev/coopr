@@ -515,7 +515,14 @@ func TestAuthUsesDockerCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repo.Client = store.client
+	refForPublish, err := ParseReference(host + "/coopr/auth:private")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err = store.repository(refForPublish)
+	if err != nil {
+		t.Fatal(err)
+	}
 	platform := v1.Platform{OS: "linux", Architecture: "amd64"}
 	manifest, _ := imageManifest(t, repo, platform, "private")
 	ref := host + "/coopr/auth@" + manifest.Digest.String()

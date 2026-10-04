@@ -214,7 +214,14 @@ func (s *OCIStore) LookupImage(ctx context.Context, key ImageKey) (*ImageRecord,
 	if !sameDescriptor(artifact.Layers[0], record.Image) {
 		return nil, "", errors.New("instruction image differs from cache artifact")
 	}
-	if err := verifyImageGraph(ctx, target, record.Image); err != nil {
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
+	if !RecordFresh(record.CreatedAt, s.ttl, time.Now()) {
+		return nil, "", ErrMiss
+	}
+	descriptors, err := imageGraphDescriptors(ctx, target, record.Image)
+	if err != nil {
 		return nil, "", fmt.Errorf("verify cached instruction image graph: %w", err)
 	}
 	dir, err := os.MkdirTemp(s.stagingDir, "coopr-instruction-image-*")
@@ -231,7 +238,16 @@ func (s *OCIStore) LookupImage(ctx context.Context, key ImageKey) (*ImageRecord,
 	if err != nil {
 		return nil, "", err
 	}
-	if err := oras.CopyGraph(ctx, target, destination, record.Image, oras.DefaultCopyGraphOptions); err != nil {
+	options := oras.DefaultCopyGraphOptions
+	// The fresh destination verifies payload ingestion. Reuse the manifest
+	// already checked above instead of draining config/layers before copying.
+	options.FindSuccessors = func(ctx context.Context, fetcher content.Fetcher, desc v1.Descriptor) ([]v1.Descriptor, error) {
+		if desc.Digest == record.Image.Digest {
+			return descriptors, nil
+		}
+		return content.Successors(ctx, fetcher, desc)
+	}
+	if err := oras.CopyGraph(ctx, target, destination, record.Image, options); err != nil {
 		return nil, "", err
 	}
 	if err := destination.Tag(ctx, record.Image, record.Image.Digest.String()); err != nil {
@@ -241,29 +257,39 @@ func (s *OCIStore) LookupImage(ctx context.Context, key ImageKey) (*ImageRecord,
 	return &record, dir, nil
 }
 
-func verifyImageGraph(ctx context.Context, target oras.Target, root v1.Descriptor) error {
+func imageGraphDescriptors(ctx context.Context, target oras.Target, root v1.Descriptor) ([]v1.Descriptor, error) {
 	if err := validDescriptor(root); err != nil {
-		return err
+		return nil, err
 	}
 	manifestData, err := fetchVerified(ctx, target, root, maxImageRecordBytes)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var manifest v1.Manifest
 	if err := json.Unmarshal(manifestData, &manifest); err != nil {
-		return err
+		return nil, err
 	}
 	if manifest.SchemaVersion != 2 || manifest.MediaType != "" && manifest.MediaType != root.MediaType || manifest.ArtifactType != "" || len(manifest.Layers) > 2048 || manifest.Subject != nil {
-		return errors.New("invalid cached image manifest")
+		return nil, errors.New("invalid cached image manifest")
 	}
 	if manifest.Config.MediaType != v1.MediaTypeImageConfig && manifest.Config.MediaType != "application/vnd.docker.container.image.v1+json" {
-		return fmt.Errorf("unsupported cached image config media type %q", manifest.Config.MediaType)
+		return nil, fmt.Errorf("unsupported cached image config media type %q", manifest.Config.MediaType)
 	}
 	descriptors := append([]v1.Descriptor{manifest.Config}, manifest.Layers...)
 	for _, descriptor := range descriptors {
 		if err := validDescriptor(descriptor); err != nil {
-			return err
+			return nil, err
 		}
+	}
+	return descriptors, nil
+}
+
+func verifyImageGraph(ctx context.Context, target oras.Target, root v1.Descriptor) error {
+	descriptors, err := imageGraphDescriptors(ctx, target, root)
+	if err != nil {
+		return err
+	}
+	for _, descriptor := range descriptors {
 		stream, err := target.Fetch(ctx, descriptor)
 		if err != nil {
 			return err

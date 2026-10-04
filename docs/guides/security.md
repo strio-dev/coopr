@@ -30,7 +30,7 @@ Image inputs honor native registry routing and signature policy. Pin every selec
 
 ## Nested container profile
 
-The Nix scratch distribution includes Coopr, `crun`, networking helpers, UID-map helpers, Git/SSH, GPGME/GnuPG, certificates, and archive support. It runs as UID/GID 1000 and has no distribution package manager or builder daemon.
+Coopr's container image is built from scratch and includes Coopr, `crun`, networking helpers, UID-map helpers, Git/SSH, GPGME/GnuPG, certificates, and archive support. It runs as UID/GID 1000 and has no distribution package manager or builder daemon.
 
 The Linux/amd64 acceptance profile needs nested user/mount namespaces, working setuid UID-map helpers, namespace-scoped `CAP_SYS_ADMIN`, writable project/state mounts, and outer security policies permitting clone/unshare/mount. Networked builds require `/dev/net/tun` and outer networking. Persist `/home/user/.local/share` to retain images and components.
 

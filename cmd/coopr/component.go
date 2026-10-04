@@ -10,7 +10,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newComponentCommand() *cobra.Command {
+func newComponentCommandWithGlobals(standalone bool) *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "component", Short: "Build reusable OCI components",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -20,20 +20,24 @@ func newComponentCommand() *cobra.Command {
 			return cmd.Help()
 		},
 	}
-	cmd.AddCommand(newComponentBuildCommand())
-	cmd.AddCommand(newCopyCommand(oci.Component))
+	cmd.AddCommand(newComponentBuildCommandWithGlobals(standalone))
+	cmd.AddCommand(newCopyCommandWithGlobals(oci.Component, standalone))
 	addComponentMaintenanceCommands(cmd)
 	return cmd
 }
 
 func newComponentBuildCommand() *cobra.Command {
+	return newComponentBuildCommandWithGlobals(true)
+}
+
+func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
 	var ignoreFile string
 	var contextDir, definitionFile, from, target, network, pullPolicy string
 	var osName, arch, variant string
 	var tags []string
 	var metadataFile string
 	platform := runtime.GOOS + "/" + runtime.GOARCH
-	args := namedValues{values: make(map[string]string)}
+	var args []string
 	var plainHTTP, push, pull, noCache, rewriteTimestamp bool
 	var plainHTTPRegistries []string
 	var platforms []string
@@ -69,7 +73,7 @@ func newComponentBuildCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			resolvedArgs, err := readBuildArgFiles(buildArgFiles, args.values)
+			resolvedArgs, err := readBuildArgFiles(buildArgFiles, args)
 			if err != nil {
 				return err
 			}
@@ -131,7 +135,7 @@ func newComponentBuildCommand() *cobra.Command {
 				CacheFrom: cacheSources, CacheTo: cacheDestinations,
 				PlainHTTP: plainHTTP, PlainHTTPRegistries: plainHTTPRegistries,
 				AuthFile: registry.authFile, CertDir: registry.certDir, SkipTLSVerify: !registry.tlsVerify,
-				Credentials: registry.credentials, Retry: registry.retry, RetrySet: cmd.Flags().Changed("retry"), RetryDelay: registry.retryDelay, DecryptionKeys: registry.decryptionKeys, SignaturePolicyPath: registry.signaturePolicy,
+				Credentials: registry.credentials, Retry: registry.retry, RetrySet: cmd.Flags().Changed("retry"), RetryDelay: registry.retryDelay, DecryptionKeys: registry.decryptionKeys, SignaturePolicyPath: commandSignaturePolicy(cmd),
 				Stdin: cmd.InOrStdin(), RunStdin: executionStdin, Stdout: cmd.OutOrStdout(), Stderr: cmd.ErrOrStderr(),
 			})
 			if err != nil {
@@ -159,7 +163,7 @@ func newComponentBuildCommand() *cobra.Command {
 	f.StringVar(&arch, "arch", "", "target architecture")
 	f.StringVar(&variant, "variant", "", "target architecture variant")
 	f.StringVar(&target, "target", "", "named component output to build")
-	f.Var(&args, "build-arg", "build argument (repeatable NAME[=VALUE]; NAME inherits from the environment when set)")
+	f.StringArrayVar(&args, "build-arg", nil, "build argument (repeatable NAME[=VALUE]; NAME inherits from the environment when set)")
 	f.StringArrayVar(&buildArgFiles, "build-arg-file", nil, "read build arguments from a file (repeatable; --build-arg wins)")
 	f.BoolVar(&runStdin, "stdin", false, "pass stdin to RUN instructions")
 	f.BoolVarP(&quiet, "quiet", "q", false, "suppress build progress")
@@ -179,6 +183,10 @@ func newComponentBuildCommand() *cobra.Command {
 	f.StringArrayVar(&cacheFrom, "cache-from", nil, "read cached results from oci-layout:PATH or registry:HOST/REPOSITORY (repeatable)")
 	f.StringArrayVar(&cacheTo, "cache-to", nil, "write cached results to oci-layout:PATH or registry:HOST/REPOSITORY (repeatable)")
 	times.addTo(cmd)
+	if standalone {
+		addGlobalRunFlags(cmd.Flags())
+		addSignaturePolicyFlag(cmd.Flags())
+	}
 	controls.addTo(cmd)
 	registry.addTo(cmd)
 	return cmd

@@ -31,7 +31,7 @@ just docs-serve
 just docs-check
 ```
 
-`docs-check` runs a strict Zensical build and parses the public KDL examples with the existing Go test. Zensical validates Markdown links and anchors.
+`docs-check` runs a strict Zensical build, parses the public KDL examples with the existing Go test, and exercises the release installer with local fixtures. Zensical validates Markdown links and anchors. The Nix docs build also checks that `install.sh` is copied unchanged to the site root.
 
 Keep pages task-oriented and examples grounded in supported syntax. Add new pages to `zensical.toml`. Use system body fonts and preserve the accepted logo outlines.
 
@@ -41,6 +41,12 @@ Keep pages task-oriented and examples grounded in supported syntax. Add new page
 
 ## Continuous integration
 
-GitHub Actions builds the Nix flake checks on pushes, pull requests, and manual dispatch. These cover tests, vet, lint, formatting, workflow validation, public KDL examples, and builds of the CLI, container, and documentation. Live rootless acceptance requires a configured Linux host and remains available through the runtime commands above.
+GitHub Actions builds the Nix flake checks on pushes, pull requests, and manual dispatch. These cover tests, vet, lint, formatting, workflow validation, public KDL examples, and builds of the CLI, container, documentation, and release archives. Native checks extract each binary archive, check its bundled notices, and run the static executable without a system library path. The source archive is checked once on amd64. Live rootless acceptance requires a configured Linux host and remains available through the runtime commands above.
 
-`nix-github-actions` generates the CI matrix from the flake's checks and supported platforms. `nix/ci.nix` connects the checks to the generator, using its default GitHub runners; adding a flake check adds it to the matrix.
+`nix-github-actions` generates the CI matrix from the flake's checks and supported platforms. `nix/ci.nix` connects the checks to the generator, using its default GitHub runners. Checks are registered explicitly in the quality, documentation, or native categories in `nix/ci.nix`; adding a flake check also requires adding it to the appropriate category.
+
+Release pushes use unprefixed version tags such as `1.2.3`, `1.2.3-rc.1`, and `1.2.3+build.1`. GitHub's native tag globs select these version shapes; they do not enforce all SemVer rules, such as leading-zero and identifier restrictions. Underscores are excluded so build metadata can use Helm's registry convention of replacing `+` with `_` without colliding with prerelease tags. Branch pushes and pull requests still run all CI categories.
+
+Nix produces the downloadable binary and source archives. On a tag push, native release runners run the same checks and push containers directly with nix2container. Registry write access is confined to these tag jobs and the final publishing job. Only binary archives pass between jobs; regctl combines the registry images into a multi-platform index. Intermediate tags use `build-<run-id>-amd64` and `build-<run-id>-arm64`, so retrying a failed job can reuse the successful architecture's push. The GitHub release action uploads the archives and notices to a draft before publication.
+
+Releases queue through GitHub's native concurrency queue, which holds up to 100 pending jobs. A rerun completes an unfinished `latest` container alias using the published version's digest, while preserving published release assets and versioned container tags. Only the current latest stable GitHub release updates that alias.

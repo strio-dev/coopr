@@ -170,9 +170,9 @@ func newPortableInstructionCache(ctx context.Context, options PlanOptions) (*por
 	for _, binding := range bindings {
 		var store instructionCacheStore
 		if binding.spec.Transport == "oci-layout" {
-			store, err = cache.NewLocalStore(ctx, binding.spec.Reference, dir)
+			store, err = cache.NewLocalStore(ctx, binding.spec.Reference, dir, options.CacheTTL)
 		} else {
-			store, err = cache.NewRegistryStore(options.Resolver, binding.spec.Reference, dir)
+			store, err = cache.NewRegistryStore(options.Resolver, binding.spec.Reference, dir, options.CacheTTL)
 		}
 		if err != nil {
 			if binding.write || binding.spec.Transport == "registry" {
@@ -339,20 +339,23 @@ func (c *portableInstructionCache) lookup(ctx context.Context, executor *graphEx
 		}
 		if err != nil {
 			if !errors.Is(err, cache.ErrMiss) {
+				packageCacheWarning("read instruction cache", err)
 				c.stats.Errors++
 			}
 			continue
 		}
 		if record == nil || layout == "" {
+			packageCacheWarning("read instruction cache", errors.New("cache returned an incomplete image record"))
 			c.stats.Errors++
 			continue
 		}
-		if !cacheRecordFresh(record.CreatedAt, c.cacheTTL, time.Now()) {
+		if !cache.RecordFresh(record.CreatedAt, c.cacheTTL, time.Now()) {
 			_ = os.RemoveAll(layout)
 			continue
 		}
 		imageID, err := ImportSelectedImage(ctx, executor.store, system, layout, record.Image)
 		if err != nil {
+			packageCacheWarning("import instruction cache image", err)
 			_ = os.RemoveAll(layout)
 			c.stats.Errors++
 			continue
@@ -361,6 +364,7 @@ func (c *portableInstructionCache) lookup(ctx context.Context, executor *graphEx
 		if len(record.RootMetadata) != 0 {
 			root = new(PackageRootMetadata)
 			if err := json.Unmarshal(record.RootMetadata, root); err != nil {
+				packageCacheWarning("parse instruction cache root metadata", err)
 				_ = os.RemoveAll(layout)
 				c.stats.Errors++
 				continue
@@ -368,6 +372,7 @@ func (c *portableInstructionCache) lookup(ctx context.Context, executor *graphEx
 			var ok bool
 			root, ok = cacheablePackageRootMetadata(root)
 			if !ok {
+				packageCacheWarning("read instruction cache", errors.New("cached root metadata is not portable"))
 				_ = os.RemoveAll(layout)
 				c.stats.Errors++
 				continue
@@ -413,18 +418,24 @@ func (c *portableInstructionCache) record(ctx context.Context, executor *graphEx
 	}
 	dir, err := os.MkdirTemp(c.stagingDir, "candidate-*")
 	if err != nil {
+		packageCacheWarning("stage instruction cache candidate", err)
 		c.stats.Errors++
 		return
 	}
 	layout := filepath.Join(dir, "layout")
 	result, err := exportStoredImageVariantRaw(ctx, executor.store, imageID, Output{Path: layout, Format: key.Format}, system, optionalDigest(manifest))
 	if err != nil {
+		packageCacheWarning("export instruction cache candidate", err)
 		_ = os.RemoveAll(dir)
 		c.stats.Errors++
 		return
 	}
 	descriptor, err := oci.LayoutRoot(result.Layout)
 	if err != nil || descriptor.Digest != manifest {
+		if err == nil {
+			err = errors.New("exported manifest differs from instruction cache candidate")
+		}
+		packageCacheWarning("verify instruction cache candidate", err)
 		_ = os.RemoveAll(dir)
 		c.stats.Errors++
 		return
@@ -433,6 +444,7 @@ func (c *portableInstructionCache) record(ctx context.Context, executor *graphEx
 	if root != nil {
 		metadata, err = json.Marshal(root)
 		if err != nil {
+			packageCacheWarning("marshal instruction cache candidate", err)
 			_ = os.RemoveAll(dir)
 			c.stats.Errors++
 			return
@@ -617,7 +629,7 @@ func findInstructionCacheEntry(store storage.Store, key digest.Digest, ttlValues
 	if record.Schema != instructionCacheSchema || record.Key != key {
 		return instructionCacheEntry{}, nil
 	}
-	if !cacheRecordFresh(record.CreatedAt, ttl, time.Now()) {
+	if !cache.RecordFresh(record.CreatedAt, ttl, time.Now()) {
 		return instructionCacheEntry{}, nil
 	}
 	if record.RootMetadata != nil {

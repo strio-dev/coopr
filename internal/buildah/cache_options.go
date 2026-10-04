@@ -24,16 +24,6 @@ func validateCacheTTL(ttl *time.Duration) error {
 	return nil
 }
 
-func cacheRecordFresh(created time.Time, ttl *time.Duration, now time.Time) bool {
-	if ttl == nil {
-		return true
-	}
-	if *ttl <= 0 || created.IsZero() {
-		return false
-	}
-	return !created.Before(now.Add(-*ttl))
-}
-
 func sameCacheStore(a, b any) bool {
 	left, right := reflect.ValueOf(a), reflect.ValueOf(b)
 	if !left.IsValid() || !right.IsValid() || left.Type() != right.Type() {

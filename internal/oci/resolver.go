@@ -36,6 +36,7 @@ import (
 	"oras.land/oras-go/v2/registry/remote"
 	"oras.land/oras-go/v2/registry/remote/auth"
 	"oras.land/oras-go/v2/registry/remote/credentials"
+	orasretry "oras.land/oras-go/v2/registry/remote/retry"
 )
 
 const (
@@ -102,7 +103,6 @@ type Options struct {
 }
 
 type Resolver struct {
-	client              *auth.Client
 	httpClient          *http.Client
 	credential          auth.CredentialFunc
 	certDir             string
@@ -207,13 +207,12 @@ func NewResolver(opts Options) (*Resolver, error) {
 			return nil, err
 		}
 	}
-	client := &auth.Client{Client: opts.Client, Credential: credential}
 	retryOptions, err := RegistryRetryOptions(opts)
 	if err != nil {
 		return nil, err
 	}
 	return &Resolver{
-		client: client, httpClient: opts.Client, credential: credential, certDir: opts.CertDir, skipTLSVerify: opts.SkipTLSVerify,
+		httpClient: opts.Client, credential: credential, certDir: opts.CertDir, skipTLSVerify: opts.SkipTLSVerify,
 		plainHTTP: opts.PlainHTTP, plainHTTPRegistries: plainHTTPRegistries, pullPolicy: pullPolicy,
 		componentStoreDir: componentStoreDir, imageStoreDir: imageStoreDir,
 		system: system, credentials: opts.Credentials, retry: opts.Retry, retrySet: opts.RetrySet,
@@ -551,20 +550,54 @@ func (r *Resolver) repository(ref registry.Reference) (*remote.Repository, error
 	if err != nil {
 		return nil, err
 	}
-	client := r.client
+	client := http.Client{}
+	if r.httpClient != nil {
+		client = *r.httpClient
+	}
+	transport := client.Transport
+	retryTransport, alreadyRetries := transport.(*orasretry.Transport)
+	if alreadyRetries {
+		clone := *retryTransport
+		retryTransport = &clone
+		transport = retryTransport.Base
+	} else {
+		retryTransport = orasretry.NewTransport(transport)
+	}
 	if r.certDir != "" || r.skipTLSVerify {
-		transport := tlsclientconfig.NewTransport()
-		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: r.skipTLSVerify} //nolint:gosec // Explicit --tls-verify=false policy.
+		var configured *http.Transport
+		if transport == nil {
+			configured = tlsclientconfig.NewTransport()
+		} else if native, ok := transport.(*http.Transport); ok {
+			configured = native.Clone()
+		} else {
+			return nil, fmt.Errorf("registry TLS options require an HTTP transport, got %T", transport)
+		}
+		if configured.TLSClientConfig == nil {
+			configured.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		} else {
+			configured.TLSClientConfig = configured.TLSClientConfig.Clone()
+		}
+		configured.TLSClientConfig.InsecureSkipVerify = r.skipTLSVerify //nolint:gosec // Explicit --tls-verify=false policy.
 		if r.certDir != "" {
-			if err := tlsclientconfig.SetupCertificates(r.certDir, transport.TLSClientConfig); err != nil {
+			if err := tlsclientconfig.SetupCertificates(r.certDir, configured.TLSClientConfig); err != nil {
 				return nil, fmt.Errorf("load registry certificates for %s: %w", ref.Registry, err)
 			}
 		}
-		client = &auth.Client{Client: &http.Client{Transport: transport}, Credential: r.credential}
-	} else if r.httpClient != nil {
-		client = &auth.Client{Client: r.httpClient, Credential: r.credential}
+		retryTransport.Base = configured
 	}
-	repo.Client = client
+	if !alreadyRetries || r.retrySet || r.retryDelay != 0 {
+		retryTransport.Policy = func() orasretry.Policy {
+			policy := *orasretry.DefaultPolicy.(*orasretry.GenericPolicy)
+			policy.MaxRetry = r.retryOptions.MaxRetry
+			if r.retryOptions.Delay != 0 {
+				policy.Backoff = func(int, *http.Response) time.Duration { return r.retryOptions.Delay }
+				policy.MinWait, policy.MaxWait = r.retryOptions.Delay, r.retryOptions.Delay
+			}
+			return &policy
+		}
+	}
+	client.Transport = retryTransport
+	repo.Client = &auth.Client{Client: &client, Credential: r.credential}
 	repo.PlainHTTP = r.usePlainHTTP(ref.Registry)
 	return repo, nil
 }

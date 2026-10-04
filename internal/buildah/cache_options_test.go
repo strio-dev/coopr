@@ -8,22 +8,24 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"coopr/internal/cache"
 )
 
 func TestCacheRecordFresh(t *testing.T) {
 	now := time.Unix(10_000, 0)
 	ttl := time.Hour
-	if !cacheRecordFresh(now.Add(-time.Minute), &ttl, now) {
+	if !cache.RecordFresh(now.Add(-time.Minute), &ttl, now) {
 		t.Fatal("recent cache record was rejected")
 	}
-	if cacheRecordFresh(now.Add(-2*time.Hour), &ttl, now) {
+	if cache.RecordFresh(now.Add(-2*time.Hour), &ttl, now) {
 		t.Fatal("expired cache record was accepted")
 	}
 	zero := time.Duration(0)
-	if cacheRecordFresh(now, &zero, now) {
+	if cache.RecordFresh(now, &zero, now) {
 		t.Fatal("zero cache TTL accepted a record")
 	}
-	if !cacheRecordFresh(time.Time{}, nil, now) {
+	if !cache.RecordFresh(time.Time{}, nil, now) {
 		t.Fatal("unspecified cache TTL rejected legacy record")
 	}
 }

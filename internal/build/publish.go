@@ -133,6 +133,9 @@ func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retEr
 	if opts.RusageLogFile != "" {
 		outputArtifacts = append(outputArtifacts, opts.RusageLogFile)
 	}
+	if err := validateArtifactOverlaps(outputArtifacts, []string{opts.File}); err != nil {
+		return "", err
+	}
 	if opts.StoreDir == "" {
 		var err error
 		opts.StoreDir, err = componentstore.DefaultDir()
@@ -146,6 +149,9 @@ func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retEr
 	}
 	defer func() { _ = cleanupPrimary() }()
 	opts.File, opts.Context = definitionFile, primary.Path
+	if err := validateArtifactOverlaps(outputArtifacts, []string{opts.File}); err != nil {
+		return "", err
+	}
 	applyFromOverride(def, opts.From)
 	opts.IgnoreFile, err = selectIgnoreFile(opts.Context, opts.IgnoreFile)
 	if err != nil {

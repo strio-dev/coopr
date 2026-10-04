@@ -3,7 +3,8 @@
   pkgs,
   coopr,
   docs,
-  container,
+  container-archive,
+  release,
 }:
 let
   goCheck =
@@ -48,7 +49,11 @@ in
   lint = goCheck "lint" "golangci-lint run --build-tags=${lib.concatStringsSep "," coopr.tags}" [
     pkgs.golangci-lint
   ];
-  inherit docs container;
+  inherit docs;
+  installer = pkgs.callPackage ./installer-check.nix { };
+  container = container-archive;
+  release-binary = release.check;
+  release-source = release.sourceCheck;
   docs-examples =
     (goCheck "docs-examples"
       "COOPR_TEST_DOCS=1 go test -count=1 ./internal/definition -run '^TestDocumentationKDLExamples$'"
@@ -70,7 +75,11 @@ in
         ];
       }
       ''
-        actionlint ${../.github/workflows/ci.yml}
+        # actionlint 1.7.12 does not yet recognize GitHub's native queue field.
+        # Remove this exact diagnostic exception when upstream supports it:
+        # https://github.com/rhysd/actionlint/issues/680
+        actionlint -ignore '^unexpected key "queue" for "concurrency" section\. expected one of "cancel-in-progress", "group"$' \
+          ${../.github/workflows/ci.yml}
         touch "$out"
       '';
   justfile = pkgs.runCommand "coopr-justfile-check" { nativeBuildInputs = [ pkgs.just ]; } ''
@@ -81,7 +90,8 @@ in
     shellcheck \
       ${../scripts/acceptance/release.sh} \
       ${../scripts/acceptance/docker.sh} \
-      ${../scripts/benchmarks/run.sh}
+      ${../scripts/benchmarks/run.sh} \
+      ${../docs/install.sh}
     touch "$out"
   '';
   formatting =

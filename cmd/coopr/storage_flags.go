@@ -10,6 +10,7 @@ import (
 	"coopr/internal/localstore"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 type storageSelection struct {
@@ -33,12 +34,8 @@ func addGlobalFlags(root *cobra.Command) {
 	f.StringVar(&imageStoreDir, "imagestore", "", "separate native image storage directory")
 	f.StringVar(&imageStoreMode, "image-store", "", "default image store: coopr or podman (overrides config.toml)")
 	f.BoolVar(&transient, "transient-store", false, "keep transient container metadata in the runtime root")
-	f.String("cgroup-manager", "", "cgroup manager: systemd or cgroupfs")
-	f.StringArray("module", nil, "containers.conf module (repeatable)")
-	f.StringArray("cdi-spec-dir", nil, "CDI specification directory (repeatable)")
-	f.String("network-config-dir", "", "native network configuration directory")
-	f.String("network-cmd-path", "", "slirp4netns helper executable")
-	f.String("signature-policy", "", "containers/image signature policy file")
+	addGlobalRunFlags(f)
+	addSignaturePolicyFlag(f)
 	root.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
 		level, err := logrus.ParseLevel(logLevel)
 		if err != nil {
@@ -46,9 +43,6 @@ func addGlobalFlags(root *cobra.Command) {
 		}
 		logrus.SetLevel(level)
 		logrus.SetOutput(cmd.ErrOrStderr())
-		if err := applyGlobalBuildFlags(cmd); err != nil {
-			return err
-		}
 		config, err := loadCooprConfig()
 		if err != nil {
 			return err
@@ -128,34 +122,17 @@ func selectedStoreCatalog(store buildah.StoreOptions) (string, error) {
 	return filepath.Join(base, "catalogs", identity), nil
 }
 
-// Commands also expose these flags locally for standalone Cobra construction.
-// Root values act as defaults; an explicit command-local scalar wins.
-func applyGlobalBuildFlags(cmd *cobra.Command) error {
-	root := cmd.Root().PersistentFlags()
-	for _, name := range []string{"cgroup-manager", "module", "cdi-spec-dir", "network-config-dir", "network-cmd-path", "signature-policy"} {
-		global, local := root.Lookup(name), cmd.LocalNonPersistentFlags().Lookup(name)
-		if global == nil || !global.Changed || local == nil {
-			continue
-		}
-		if values, ok := global.Value.(interface{ GetSlice() []string }); ok {
-			combined := append([]string(nil), values.GetSlice()...)
-			localValues := local.Value.(interface {
-				GetSlice() []string
-				Replace([]string) error
-			})
-			if local.Changed {
-				combined = append(combined, localValues.GetSlice()...)
-			}
-			if err := localValues.Replace(combined); err != nil {
-				return err
-			}
-		} else if !local.Changed {
-			if err := local.Value.Set(global.Value.String()); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+// Standalone constructors use the same declarations as root persistent flags.
+func addGlobalRunFlags(set *pflag.FlagSet) {
+	set.String("cgroup-manager", "", "cgroup manager: systemd or cgroupfs")
+	set.StringArray("module", nil, "containers.conf module (repeatable)")
+	set.StringArray("cdi-spec-dir", nil, "CDI specification directory (repeatable)")
+	set.String("network-config-dir", "", "native network configuration directory")
+	set.String("network-cmd-path", "", "slirp4netns helper executable")
+}
+
+func addSignaturePolicyFlag(set *pflag.FlagSet) {
+	set.String("signature-policy", "", "containers/image signature policy file")
 }
 
 func commandStorage(cmd *cobra.Command) (buildah.StoreOptions, string, error) {

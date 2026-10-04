@@ -44,14 +44,12 @@ type buildControlFlags struct {
 	isolation                                              string
 	runtime                                                string
 	noHosts, noHostname                                    bool
-	cgroupManager                                          string
-	configModules, cdiSpecDirs                             []string
-	networkConfigDir                                       string
-	networkCmdPath                                         string
+	command                                                *cobra.Command
 	jobs                                                   int
 }
 
 func (flags *buildControlFlags) addTo(command *cobra.Command) {
+	flags.command = command
 	set := command.Flags()
 	set.BoolVar(&flags.httpProxy, "http-proxy", true, "pass host HTTP proxy environment variables to RUN instructions")
 	set.StringArrayVar(&flags.dns, "dns", nil, "set a DNS server for RUN instructions (repeatable; use none to disable DNS configuration)")
@@ -94,15 +92,20 @@ func (flags *buildControlFlags) addTo(command *cobra.Command) {
 	set.BoolVar(&flags.compatVolumes, "compat-volumes", false, "discard RUN changes under declared image volumes")
 	set.BoolVar(&flags.noHosts, "no-hosts", false, "preserve the image /etc/hosts during RUN")
 	set.BoolVar(&flags.noHostname, "no-hostname", false, "preserve the image /etc/hostname during RUN")
-	set.StringVar(&flags.cgroupManager, "cgroup-manager", "", "cgroup manager: systemd or cgroupfs (default: containers.conf)")
-	set.StringArrayVar(&flags.configModules, "module", nil, "load a containers.conf module (repeatable)")
-	set.StringArrayVar(&flags.cdiSpecDirs, "cdi-spec-dir", nil, "directory containing CDI device specifications (repeatable)")
-	set.StringVar(&flags.networkConfigDir, "network-config-dir", "", "native network configuration directory")
-	set.StringVar(&flags.networkCmdPath, "network-cmd-path", "", "slirp4netns helper executable")
 	set.IntVarP(&flags.jobs, "jobs", "j", 1, "maximum concurrent build jobs (0 is unlimited)")
 }
 
 func (flags buildControlFlags) controls() (buildah.RunControls, error) {
+	var cgroupManager, networkConfigDir, networkCmdPath string
+	var configModules, cdiSpecDirs []string
+	if flags.command != nil {
+		set := flags.command.Flags()
+		cgroupManager, _ = set.GetString("cgroup-manager")
+		configModules, _ = set.GetStringArray("module")
+		cdiSpecDirs, _ = set.GetStringArray("cdi-spec-dir")
+		networkConfigDir, _ = set.GetString("network-config-dir")
+		networkCmdPath, _ = set.GetString("network-cmd-path")
+	}
 	return buildah.ParseRunControls(buildah.RunControlInput{
 		HTTPProxy: flags.httpProxy, DNSServers: flags.dns, DNSSearch: flags.dnsSearch, DNSOptions: flags.dnsOption,
 		Memory: flags.memory, MemorySwap: flags.memorySwap, CPUPeriod: flags.cpuPeriod, CPUQuota: flags.cpuQuota,
@@ -115,20 +118,19 @@ func (flags buildControlFlags) controls() (buildah.RunControls, error) {
 		HooksDirs:    flags.hooksDirs,
 		RuntimeFlags: flags.runtimeFlags,
 		Isolation:    flags.isolation, Runtime: flags.runtime,
-		NoHosts: flags.noHosts, NoHostname: flags.noHostname, CgroupManager: flags.cgroupManager,
-		ConfigModules: flags.configModules, CDISpecDirs: flags.cdiSpecDirs, NetworkConfigDir: flags.networkConfigDir, NetworkCmdPath: flags.networkCmdPath,
+		NoHosts: flags.noHosts, NoHostname: flags.noHostname, CgroupManager: cgroupManager,
+		ConfigModules: configModules, CDISpecDirs: cdiSpecDirs, NetworkConfigDir: networkConfigDir, NetworkCmdPath: networkCmdPath,
 	})
 }
 
 type registryFlags struct {
-	authFile        string
-	certDir         string
-	tlsVerify       bool
-	credentials     string
-	retry           uint
-	retryDelay      time.Duration
-	decryptionKeys  []string
-	signaturePolicy string
+	authFile       string
+	certDir        string
+	tlsVerify      bool
+	credentials    string
+	retry          uint
+	retryDelay     time.Duration
+	decryptionKeys []string
 }
 
 func (flags *registryFlags) addTo(command *cobra.Command) {
@@ -139,7 +141,6 @@ func (flags *registryFlags) addTo(command *cobra.Command) {
 	set.UintVar(&flags.retry, "retry", 3, "number of registry retries after the first attempt")
 	set.DurationVar(&flags.retryDelay, "retry-delay", 0, "delay between registry retries (default: native exponential backoff)")
 	set.StringArrayVar(&flags.decryptionKeys, "decryption-key", nil, "key used to decrypt image inputs (repeatable)")
-	set.StringVar(&flags.signaturePolicy, "signature-policy", "", "containers/image signature policy file")
 	set.BoolVar(&flags.tlsVerify, "tls-verify", true, "require valid HTTPS certificates for registry connections")
 }
 
@@ -157,4 +158,9 @@ func parseCacheSpecs(values []string) ([]buildah.CacheSpec, error) {
 
 func (flags buildControlFlags) lifecycle() buildah.LifecycleControls {
 	return buildah.LifecycleControls{NoLayers: !flags.layers, KeepIntermediate: !flags.remove && !flags.forceRemove, KeepFailed: !flags.forceRemove, BuildUnusedStages: !flags.skipUnused, CompatVolumes: flags.compatVolumes}
+}
+
+func commandSignaturePolicy(cmd *cobra.Command) string {
+	value, _ := cmd.Flags().GetString("signature-policy")
+	return value
 }

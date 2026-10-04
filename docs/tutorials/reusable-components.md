@@ -2,7 +2,7 @@
 
 Apply shared settings, then a policy check, to the image from the [first tutorial](first-image.md). Each component captures its own files during publication; the consuming build needs only the component reference.
 
-Run from the repository root with the development shell and native CLI available. This tutorial relies on the locally named `coopr-demo:base` image.
+Run from the same checkout with Coopr and Podman available. This tutorial relies on the locally named `coopr-demo:base` image.
 
 ## Package settings
 

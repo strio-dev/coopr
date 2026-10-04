@@ -2,7 +2,6 @@ package buildah
 
 import (
 	"fmt"
-	"net"
 	"runtime"
 	"slices"
 	"sort"
@@ -14,6 +13,7 @@ import (
 	"coopr/internal/imageconfig"
 	"coopr/internal/oci"
 	"coopr/internal/planner"
+	"github.com/docker/go-connections/nat"
 	buildkitinstructions "github.com/moby/buildkit/frontend/dockerfile/instructions"
 	"go.podman.io/common/pkg/signal"
 	"go.podman.io/image/v5/types"
@@ -395,111 +395,15 @@ func lowerOperationWithCacheMountIDs(operation planner.Operation, shell []string
 func normalizeExposedPorts(ports []string) ([]string, error) {
 	result := make([]string, 0, len(ports))
 	for _, rawPort := range ports {
-		normalized, err := normalizeExposedPort(rawPort)
+		mappings, err := nat.ParsePortSpec(rawPort)
 		if err != nil {
 			return nil, fmt.Errorf("invalid port %q: %w", rawPort, err)
 		}
-		result = append(result, normalized...)
+		for _, mapping := range mappings {
+			result = append(result, string(mapping.Port))
+		}
 	}
 	return result, nil
-}
-
-func normalizeExposedPort(rawPort string) ([]string, error) {
-	ip, hostPort, containerPort := splitExposedPortParts(rawPort)
-	containerPort, proto, _ := strings.Cut(containerPort, "/")
-	if containerPort == "" {
-		return nil, fmt.Errorf("no port specified")
-	}
-	switch strings.ToLower(proto) {
-	case "":
-		proto = "tcp"
-	case "tcp", "udp", "sctp":
-		proto = strings.ToLower(proto)
-	default:
-		return nil, fmt.Errorf("invalid proto: %s", proto)
-	}
-
-	if ip != "" && ip[0] == '[' {
-		rawIP, _, err := net.SplitHostPort(ip + ":")
-		if err != nil {
-			return nil, fmt.Errorf("invalid IP address %s: %w", ip, err)
-		}
-		ip = rawIP
-	}
-	if ip != "" && net.ParseIP(ip) == nil {
-		return nil, fmt.Errorf("invalid IP address: %s", ip)
-	}
-
-	startPort, endPort, err := parseExposedPortRange(containerPort)
-	if err != nil {
-		return nil, fmt.Errorf("invalid containerPort: %s", containerPort)
-	}
-	if hostPort != "" {
-		startHostPort, endHostPort, err := parseExposedPortRange(hostPort)
-		if err != nil {
-			return nil, fmt.Errorf("invalid hostPort: %s", hostPort)
-		}
-		if endPort-startPort != endHostPort-startHostPort && endPort != startPort {
-			return nil, fmt.Errorf("invalid ranges specified for container and host Ports: %s and %s", containerPort, hostPort)
-		}
-	}
-
-	result := make([]string, 0, endPort-startPort+1)
-	for port := startPort; port <= endPort; port++ {
-		result = append(result, strconv.Itoa(port)+"/"+proto)
-	}
-	return result, nil
-}
-
-func parseExposedPortRange(ports string) (int, int, error) {
-	if ports == "" {
-		return 0, 0, fmt.Errorf("empty string specified for ports")
-	}
-	start, end, rangeSpecified := strings.Cut(ports, "-")
-	startPort, err := parseExposedPortNumber(start)
-	if err != nil {
-		return 0, 0, fmt.Errorf("invalid start port %q: %w", start, err)
-	}
-	if !rangeSpecified || start == end {
-		return startPort, startPort, nil
-	}
-	endPort, err := parseExposedPortNumber(end)
-	if err != nil {
-		return 0, 0, fmt.Errorf("invalid end port %q: %w", end, err)
-	}
-	if endPort < startPort {
-		return 0, 0, fmt.Errorf("invalid port range: %s", ports)
-	}
-	return startPort, endPort, nil
-}
-
-func parseExposedPortNumber(rawPort string) (int, error) {
-	if rawPort == "" {
-		return 0, fmt.Errorf("value is empty")
-	}
-	port, err := strconv.ParseInt(rawPort, 10, 0)
-	if err != nil {
-		return 0, err
-	}
-	if port < 0 || port > 65535 {
-		return 0, fmt.Errorf("value out of range (0-65535)")
-	}
-	return int(port), nil
-}
-
-func splitExposedPortParts(rawPort string) (hostIP, hostPort, containerPort string) {
-	parts := strings.Split(rawPort, ":")
-	switch len(parts) {
-	case 1:
-		return "", "", parts[0]
-	case 2:
-		return "", parts[0], parts[1]
-	case 3:
-		return parts[0], parts[1], parts[2]
-	default:
-		last := len(parts)
-		return strings.Join(parts[:last-2], ":"), parts[last-2], parts[last-1]
-	}
 }
 
 func lowerRunDevices(instruction definition.Instruction) ([]runDeviceRequest, error) {

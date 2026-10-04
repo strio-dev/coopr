@@ -22,8 +22,8 @@ func TestNormalizeBuildLogRequiresFileForSplit(t *testing.T) {
 	}
 }
 
-func TestPlatformLogPathUsesPodmanSuffix(t *testing.T) {
-	if got := platformLogPath("build.log", "linux/arm64/v8"); got != "build.log_linux_arm64" {
+func TestPlatformLogPathIncludesFullPlatform(t *testing.T) {
+	if got := platformLogPath("build.log", "linux/arm64/v8"); got != "build.log_linux_arm64_v8" {
 		t.Fatalf("path=%q", got)
 	}
 }
@@ -105,5 +105,47 @@ func TestCompletedTagProgressDoesNotCallRegistryDigestPublicationATag(t *testing
 	want := "Successfully tagged example.com/app:release\nSuccessfully tagged example.com/app\n"
 	if got := output.String(); got != want {
 		t.Fatalf("registry completion = %q, want %q", got, want)
+	}
+}
+
+func TestPlatformLogPathKeepsDistinctARMVariants(t *testing.T) {
+	if platformLogPath("build.log", "linux/arm/v6") == platformLogPath("build.log", "linux/arm/v7") {
+		t.Fatal("variant logs share a destination")
+	}
+}
+
+func TestVariantLogsPassImageFinalizationAndRetainEachPlatform(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "build.log")
+	targets, err := requestedPlatforms("", []string{"linux/arm/v6", "linux/arm/v7"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := make([]string, len(targets))
+	for i, platform := range targets {
+		paths[i] = platformLogPath(base, platform)
+	}
+	if _, err := finalizationArtifacts(Options{}, paths); err != nil {
+		t.Fatalf("distinct platform logs rejected: %v", err)
+	}
+	for i, platform := range targets {
+		log, err := openBuildLog(paths[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(log, platform); err != nil {
+			t.Fatal(err)
+		}
+		if err := log.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, platform := range targets {
+		data, err := os.ReadFile(paths[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != platform {
+			t.Fatalf("platform %s lost its log: %q", platform, data)
+		}
 	}
 }

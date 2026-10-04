@@ -258,6 +258,12 @@ func (s *OCIStore) LookupPackage(ctx context.Context, key PackageKey) (*PackageR
 	if !sameDescriptor(manifest.Layers[0], record.Descriptor) {
 		return nil, "", errors.New("package cache snapshot differs from manifest")
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
+	if !RecordFresh(record.CreatedAt, s.ttl, time.Now()) {
+		return nil, "", ErrMiss
+	}
 	file, err := os.CreateTemp(s.stagingDir, "coopr-package-cache-*.tar")
 	if err != nil {
 		return nil, "", err

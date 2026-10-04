@@ -326,7 +326,11 @@ func layerContainsPath(t *testing.T, blobPath, wanted string) bool {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer file.Close() //nolint:errcheck
+	defer func() {
+		if err := file.Close(); err != nil {
+			t.Errorf("close layer: %v", err)
+		}
+	}() //nolint:errcheck
 	stream, err := storagearchive.DecompressStream(file)
 	if err != nil {
 		t.Fatal(err)
@@ -353,7 +357,11 @@ func readLayerHeader(t *testing.T, blobPath, wanted string) *tar.Header {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer file.Close() //nolint:errcheck
+	defer func() {
+		if err := file.Close(); err != nil {
+			t.Errorf("close layer: %v", err)
+		}
+	}() //nolint:errcheck
 	stream, err := storagearchive.DecompressStream(file)
 	if err != nil {
 		t.Fatal(err)
@@ -371,6 +379,117 @@ func readLayerHeader(t *testing.T, blobPath, wanted string) *tar.Header {
 		if strings.TrimSuffix(strings.TrimPrefix(header.Name, "./"), "/") == strings.TrimSuffix(wanted, "/") {
 			copy := *header
 			return &copy
+		}
+	}
+}
+
+func TestBuildRemoteRootURLUsesNativeDestinationTyping(t *testing.T) {
+	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
+		t.Skip("set COOPR_TEST_BUILDAH=1 for isolated Buildah root URL destinations")
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("download\n")) }))
+	defer server.Close()
+	for _, tc := range []struct {
+		name, destination, workdir string
+		directory, existingFile    bool
+		want                       string
+	}{
+		{name: "missing file", destination: "/payload", want: "payload"},
+		{name: "existing file", destination: "/payload", existingFile: true, want: "payload"},
+		{name: "relative file", destination: "payload", workdir: "/nested", want: "nested/payload"},
+		{name: "existing directory", destination: "/directory", directory: true},
+		{name: "trailing slash", destination: "/directory/"},
+		{name: "workdir", destination: ".", workdir: "/directory"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			root := t.TempDir()
+			contextDir := filepath.Join(root, "context")
+			if err := os.Mkdir(contextDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			operations := []Operation{}
+			if tc.directory {
+				operations = append(operations, WorkDir("/directory"), WorkDir("/"))
+			}
+			if tc.existingFile {
+				if err := os.WriteFile(filepath.Join(contextDir, "initial"), []byte("before"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				operations = append(operations, Copy{Sources: []string{"initial"}, Destination: tc.destination})
+			}
+			if tc.workdir != "" {
+				operations = append(operations, WorkDir(tc.workdir))
+			}
+			operations = append(operations, Add{Sources: []string{server.URL + "/"}, Destination: tc.destination})
+			layout := filepath.Join(root, "layout")
+			_, err := Build(ctx, Request{Store: cacheTestStore(root), Base: "scratch", ContextDir: contextDir, Isolation: "rootless", Operations: operations, Output: Output{Path: layout, Reference: "root-url"}})
+			if tc.want == "" {
+				if err == nil || !strings.Contains(err.Error(), "has no filename") {
+					t.Fatalf("directory error=%v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			manifest, _ := readPlanImage(t, layout)
+			layer := filepath.Join(layout, "blobs", "sha256", manifest.Layers[0].Digest.Encoded())
+			if got := readLayerFile(t, layer, tc.want); got != "download\n" {
+				t.Fatalf("payload=%q", got)
+			}
+		})
+	}
+}
+
+func TestBuildRemoteAddMissingLastModifiedCopiesEpoch(t *testing.T) {
+	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
+		t.Skip("set COOPR_TEST_BUILDAH=1 for copied HTTP metadata")
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("download\n")) }))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	root := t.TempDir()
+	layout := filepath.Join(root, "layout")
+	_, err := Build(ctx, Request{Store: cacheTestStore(root), Base: "scratch", ContextDir: root, Isolation: "rootless", Operations: []Operation{Add{Sources: []string{server.URL + "/payload"}, Destination: "/payload"}}, Output: Output{Path: layout, Reference: "epoch"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, _ := readPlanImage(t, layout)
+	file, err := os.Open(filepath.Join(layout, "blobs", "sha256", manifest.Layers[0].Digest.Encoded()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := file.Close(); err != nil {
+			t.Errorf("close layer: %v", err)
+		}
+	}()
+	reader, err := storagearchive.DecompressStream(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := reader.Close(); err != nil {
+			t.Errorf("close layer reader: %v", err)
+		}
+	}()
+	archive := tar.NewReader(reader)
+	for {
+		header, err := archive.Next()
+		if err == io.EOF {
+			t.Fatal("copied payload absent")
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.TrimPrefix(header.Name, "./") == "payload" {
+			if !header.ModTime.Equal(time.Unix(0, 0)) {
+				t.Fatalf("copied mtime=%v", header.ModTime)
+			}
+			return
 		}
 	}
 }

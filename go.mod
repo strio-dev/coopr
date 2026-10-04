@@ -6,6 +6,7 @@ require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/containerd/platforms v1.0.0-rc.5
 	github.com/distribution/reference v0.6.0
+	github.com/docker/go-connections v0.8.1
 	github.com/gofrs/flock v0.13.0
 	github.com/google/go-containerregistry v0.22.1
 	github.com/moby/buildkit v0.33.0
@@ -17,6 +18,7 @@ require (
 	github.com/opencontainers/runtime-spec v1.3.0
 	github.com/sirupsen/logrus v1.10.1
 	github.com/spf13/cobra v1.10.2
+	github.com/spf13/pflag v1.0.10
 	go.podman.io/buildah v1.45.1
 	go.podman.io/common v0.69.2
 	go.podman.io/image/v5 v5.41.2
@@ -55,7 +57,6 @@ require (
 	github.com/disiqueira/gotree/v3 v3.0.2 // indirect
 	github.com/docker/distribution v2.8.3+incompatible // indirect
 	github.com/docker/docker-credential-helpers v0.9.8 // indirect
-	github.com/docker/go-connections v0.8.1 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
@@ -107,7 +108,6 @@ require (
 	github.com/sigstore/protobuf-specs v0.5.1 // indirect
 	github.com/sigstore/sigstore v1.10.8 // indirect
 	github.com/smallstep/pkcs7 v0.2.1 // indirect
-	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/stefanberger/go-pkcs11uri v0.0.0-20230803200340-78284954bff6 // indirect
 	github.com/sylabs/sif/v2 v2.24.1 // indirect
 	github.com/tchap/go-patricia/v2 v2.3.3 // indirect

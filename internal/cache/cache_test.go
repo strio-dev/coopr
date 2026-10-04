@@ -91,9 +91,9 @@ func TestStoreLocalAndRegistryRoundTrip(t *testing.T) {
 				if e != nil {
 					t.Fatal(e)
 				}
-				store, err = NewRegistryStore(resolver, strings.TrimPrefix(server.URL, "http://")+"/coopr/cache", stage)
+				store, err = NewRegistryStore(resolver, strings.TrimPrefix(server.URL, "http://")+"/coopr/cache", stage, nil)
 			} else {
-				store, err = NewLocalStore(ctx, filepath.Join(t.TempDir(), "layout"), stage)
+				store, err = NewLocalStore(ctx, filepath.Join(t.TempDir(), "layout"), stage, nil)
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -157,11 +157,11 @@ func TestStoreLocalAndRegistryRoundTrip(t *testing.T) {
 
 func TestLocalStoreConcurrentInstancesRetainBothTags(t *testing.T) {
 	root, stage := filepath.Join(t.TempDir(), "layout"), t.TempDir()
-	first, err := NewLocalStore(context.Background(), root, stage)
+	first, err := NewLocalStore(context.Background(), root, stage, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := NewLocalStore(context.Background(), root, stage)
+	second, err := NewLocalStore(context.Background(), root, stage, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +201,7 @@ func TestLocalStoreConcurrentInstancesRetainBothTags(t *testing.T) {
 	_, _, err = second.Lookup(ctx, keys[0])
 	constructorCtx, constructorCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer constructorCancel()
-	_, constructorErr := NewLocalStore(constructorCtx, root, stage)
+	_, constructorErr := NewLocalStore(constructorCtx, root, stage, nil)
 	_ = lock.Unlock()
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("lock wait did not respect cancellation: %v", err)
@@ -215,7 +215,7 @@ func TestStoreRejectsCorruptMetadataAndMissingBlob(t *testing.T) {
 	ctx := context.Background()
 	key := testKey()
 	stage := t.TempDir()
-	store, err := NewLocalStore(ctx, filepath.Join(t.TempDir(), "layout"), stage)
+	store, err := NewLocalStore(ctx, filepath.Join(t.TempDir(), "layout"), stage, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -61,9 +61,9 @@ func newPackageResultCache(ctx context.Context, options PlanOptions) (*packageRe
 	for _, binding := range bindings {
 		var store cache.PackageStore
 		if binding.spec.Transport == "oci-layout" {
-			store, err = cache.NewLocalStore(ctx, binding.spec.Reference, dir)
+			store, err = cache.NewLocalStore(ctx, binding.spec.Reference, dir, options.CacheTTL)
 		} else {
-			store, err = cache.NewRegistryStore(options.Resolver, binding.spec.Reference, dir)
+			store, err = cache.NewRegistryStore(options.Resolver, binding.spec.Reference, dir, options.CacheTTL)
 		}
 		if err != nil {
 			if ctx.Err() != nil {
@@ -271,6 +271,7 @@ func resolvePackageClosureBases(closure []planner.Stage, selected map[ResolvedBa
 				}
 			}
 		}
+		aliases[stage.ID] = true
 		if stage.Name != "" {
 			aliases[strings.ToLower(stage.Name)] = true
 		}
@@ -430,7 +431,7 @@ func (c *packageResultCache) lookupAll(ctx context.Context, keys map[string]cach
 				packageCacheWarning("read package cache", errors.New("cache returned an incomplete package record"))
 				continue
 			}
-			if !cacheRecordFresh(record.CreatedAt, c.cacheTTL, time.Now()) {
+			if !cache.RecordFresh(record.CreatedAt, c.cacheTTL, time.Now()) {
 				_ = os.Remove(path)
 				continue
 			}

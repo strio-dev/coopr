@@ -2,7 +2,14 @@
 
 Build a Red Hat UBI9 image that serves your own web page with NGINX.
 
-Run these commands from the repository root after [building the CLI](../getting-started/index.md). Enter `nix develop path:.` to use Coopr and Podman. The first build needs access to Docker Hub and UBI's public package repositories; no Red Hat subscription is needed.
+After [installing Coopr](../getting-started/index.md), clone the repository to use its examples:
+
+```sh
+git clone https://github.com/strio-dev/coopr.git
+cd coopr
+```
+
+Run the following commands from that checkout with Coopr and Podman available. The first build needs access to Docker Hub and UBI's public package repositories; no Red Hat subscription is needed.
 
 ## Prepare the context
 

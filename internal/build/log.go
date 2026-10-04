@@ -21,10 +21,6 @@ func normalizeBuildLog(path string, split bool) (string, error) {
 }
 
 func platformLogPath(path, platform string) string {
-	parts := strings.Split(platform, "/")
-	if len(parts) >= 2 {
-		return path + "_" + parts[0] + "_" + parts[1]
-	}
 	return path + "_" + strings.ReplaceAll(platform, "/", "_")
 }
 

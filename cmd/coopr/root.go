@@ -16,11 +16,11 @@ func newRootCommand() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(newBuildCommand())
-	root.AddCommand(newCopyCommand(oci.Image))
+	root.AddCommand(newBuildCommandWithGlobals(false))
+	root.AddCommand(newCopyCommandWithGlobals(oci.Image, false))
 	root.AddCommand(newImageCommand())
 	root.AddCommand(newImagesCommand())
-	root.AddCommand(newComponentCommand())
+	root.AddCommand(newComponentCommandWithGlobals(false))
 	root.AddCommand(newComponentsCommand())
 	root.AddCommand(newSystemCommand())
 	root.AddCommand(newCacheCommand())

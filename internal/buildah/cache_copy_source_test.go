@@ -166,9 +166,13 @@ func TestSimpleLocalCopyDigestCandidatesConfineAncestorSwap(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	done := make(chan struct{})
+	firstSwap := make(chan struct{})
+	resumeSwap := make(chan struct{}, 1)
+	defer close(resumeSwap)
+	t.Cleanup(func() { <-done })
 	go func() {
 		defer close(done)
-		for range 500 {
+		for index := range 500 {
 			if err := os.Rename(parent, saved); err != nil {
 				errCh <- err
 				return
@@ -176,6 +180,10 @@ func TestSimpleLocalCopyDigestCandidatesConfineAncestorSwap(t *testing.T) {
 			if err := os.Symlink(outside, parent); err != nil {
 				errCh <- err
 				return
+			}
+			if index == 0 {
+				close(firstSwap)
+				<-resumeSwap
 			}
 			runtime.Gosched()
 			if err := os.Remove(parent); err != nil {
@@ -188,20 +196,36 @@ func TestSimpleLocalCopyDigestCandidatesConfineAncestorSwap(t *testing.T) {
 			}
 		}
 	}()
-	fallbacks := 0
+	// Hold the first swapped ancestor until the reader verifies rejection.
+	// Gosched alone cannot guarantee a probe during a short symlink window.
+	select {
+	case err := <-errCh:
+		t.Fatal(err)
+	case <-firstSwap:
+	}
+	got, eligible := simpleLocalCopyDigestCandidates(contextDir, nil, operation)
+	if eligible || got != nil {
+		t.Fatalf("swapped symlink ancestor accepted: candidates %v, eligible %v", got, eligible)
+	}
+	resumeSwap <- struct{}{}
 	for {
 		select {
 		case err := <-errCh:
 			t.Fatal(err)
 		case <-done:
-			if fallbacks == 0 {
-				t.Fatal("ancestor swap never exercised the fallback path")
+			select {
+			case err := <-errCh:
+				t.Fatal(err)
+			default:
+			}
+			got, eligible := simpleLocalCopyDigestCandidates(contextDir, nil, operation)
+			if !eligible || !slices.Equal(got, want) {
+				t.Fatalf("restored ancestor changed confined source: candidates %v, eligible %v, want %v", got, eligible, want)
 			}
 			return
 		default:
 			got, eligible := simpleLocalCopyDigestCandidates(contextDir, nil, operation)
 			if !eligible {
-				fallbacks++
 				continue
 			}
 			if !slices.Equal(got, want) {

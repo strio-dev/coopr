@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
+	"coopr/internal/oci"
 	"github.com/spf13/cobra"
 )
 
@@ -128,6 +130,97 @@ func TestBuildConsumesLocalImageWithGlobalStorageOverrides(t *testing.T) {
 		}
 		if args[0] == "image" && !strings.Contains(stdout.String(), "local-child:latest") {
 			t.Fatalf("inspect=%s", &stdout)
+		}
+	}
+}
+
+func TestRootBuildFlagsUseCobraInheritance(t *testing.T) {
+	root := newRootCommand()
+	for _, path := range [][]string{{"build"}, {"component", "build"}, {"copy"}, {"component", "copy"}} {
+		cmd, _, err := root.Find(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"cgroup-manager", "module", "cdi-spec-dir", "network-config-dir", "network-cmd-path", "signature-policy"} {
+			if cmd.LocalNonPersistentFlags().Lookup(name) != nil {
+				t.Fatalf("%v shadows root --%s", path, name)
+			}
+			if cmd.InheritedFlags().Lookup(name) != root.PersistentFlags().Lookup(name) {
+				t.Fatalf("%v has independent --%s", path, name)
+			}
+		}
+	}
+}
+
+func TestInheritedBuildFlagsPreserveDefaultsAndOrderedOverrides(t *testing.T) {
+	for _, path := range [][]string{{"build"}, {"component", "build"}} {
+		for _, before := range []bool{false, true} {
+			root := newRootCommand()
+			config := t.TempDir()
+			t.Setenv("XDG_CONFIG_HOME", config)
+			modules := []string{filepath.Join(config, "default.conf"), filepath.Join(config, "one.conf"), filepath.Join(config, "two.conf")}
+			for _, module := range modules {
+				if err := os.WriteFile(module, []byte("[engine]\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := root.PersistentFlags().Set("cgroup-manager", "systemd"); err != nil {
+				t.Fatal(err)
+			}
+			if err := root.PersistentFlags().Set("module", modules[0]); err != nil {
+				t.Fatal(err)
+			}
+			cmd, _, err := root.Find(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd.RunE = func(cmd *cobra.Command, _ []string) error {
+				flags := buildControlFlags{command: cmd}
+				controls, err := flags.controls()
+				if err != nil {
+					return err
+				}
+				if controls.CgroupManager != "cgroupfs" || controls.NetworkConfigDir != "/config" || controls.NetworkCmdPath != "/slirp" || !reflect.DeepEqual(controls.ConfigModules, modules) || !reflect.DeepEqual(controls.CDISpecDirs, []string{"/cdi-one", "/cdi-two"}) {
+					t.Fatalf("%v before=%v: controls=%+v", path, before, controls)
+				}
+				if commandSignaturePolicy(cmd) != "/policy.json" {
+					t.Fatal("signature policy was not inherited")
+				}
+				return nil
+			}
+			globals := []string{"--cgroup-manager=cgroupfs", "--module=" + modules[1], "--module=" + modules[2], "--cdi-spec-dir=/cdi-one", "--cdi-spec-dir=/cdi-two", "--network-config-dir=/config", "--network-cmd-path=/slirp", "--signature-policy=/policy.json"}
+			args := append(append([]string(nil), path...), globals...)
+			if before {
+				args = append(globals, path...)
+			}
+			root.SetArgs(args)
+			if err := root.Execute(); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
+func TestStandaloneCommandsKeepSharedFlagDefaults(t *testing.T) {
+	for _, cmd := range []*cobra.Command{newBuildCommand(), newComponentBuildCommand(), newCopyCommand(oci.Image), newCopyCommand(oci.Component)} {
+		if cmd.Flags().Lookup("signature-policy") == nil || commandSignaturePolicy(cmd) != "" {
+			t.Fatalf("%s lost signature policy default", cmd.Name())
+		}
+		if cmd.Name() == "build" {
+			flags := buildControlFlags{command: cmd}
+			controls, err := flags.controls()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if controls.CgroupManagerSet || len(controls.ConfigModules) != 0 || len(controls.CDISpecDirs) != 0 || controls.NetworkConfigDir != "" || controls.NetworkCmdPath != "" {
+				t.Fatalf("changed defaults: %+v", controls)
+			}
+			if err := cmd.ParseFlags([]string{"--cgroup-manager=invalid"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := flags.controls(); err == nil {
+				t.Fatal("invalid cgroup manager was accepted")
+			}
 		}
 	}
 }

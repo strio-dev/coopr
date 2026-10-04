@@ -25,17 +25,34 @@
         { config, pkgs, ... }:
         let
           coopr = pkgs.callPackage ./nix/package.nix { };
+          coopr-static = pkgs.callPackage ./nix/package-static.nix { inherit pkgs; };
+          release-sources = pkgs.callPackage ./nix/release-sources.nix {
+            inherit pkgs inputs coopr-static;
+          };
+          release = import ./nix/release-artifacts.nix {
+            inherit pkgs coopr-static release-sources;
+          };
           zensical = pkgs.callPackage ./nix/zensical.nix { };
           docs = pkgs.callPackage ./nix/docs.nix { inherit zensical; };
           container = pkgs.callPackage ./nix/container.nix {
             inherit coopr;
             nix2container = (import inputs.nix2container { inherit pkgs; }).nix2container;
           };
+          container-archive = pkgs.callPackage ./nix/container-archive.nix { inherit container; };
         in
         {
           packages = {
             default = coopr;
-            inherit coopr docs container;
+            inherit
+              coopr
+              coopr-static
+              docs
+              container
+              container-archive
+              release-sources
+              ;
+            release-binary = release.binary;
+            release-source = release.sources;
           };
           apps = {
             default = config.apps.coopr;
@@ -49,12 +66,14 @@
               pkgs
               coopr
               docs
-              container
+              release
+              container-archive
               ;
             inherit (pkgs) lib;
           };
           formatter = pkgs.nixfmt-tree;
           devShells.default = pkgs.callPackage ./nix/devshell.nix { inherit coopr zensical; };
+          devShells.release = pkgs.callPackage ./nix/release.nix { };
         };
     };
 }

@@ -26,9 +26,9 @@ check:
 build:
     nix build path:.#coopr --out-link result-coopr
 
-# Build the Coopr CLI container definition.
+# Build a loadable Coopr CLI container archive.
 container:
-    nix build path:.#container --out-link result-container
+    nix build path:.#container-archive --out-link result-container
 
 # Check the exact Git source that would be released.
 release-check:
@@ -64,3 +64,4 @@ docs-serve:
 # Build documentation strictly and parse its KDL examples.
 docs-check: docs-build
     nix develop path:. -c env COOPR_TEST_DOCS=1 go test -count=1 ./internal/definition -run TestDocumentationKDLExamples
+    nix develop path:. -c python3 nix/tests/installer.py docs/install.sh

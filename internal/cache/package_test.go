@@ -70,11 +70,11 @@ func TestPackageStoreRegistrySeedsIndependentLocalLayout(t *testing.T) {
 		t.Fatal(err)
 	}
 	remoteStage, localStage := t.TempDir(), t.TempDir()
-	remote, err := NewRegistryStore(resolver, strings.TrimPrefix(server.URL, "http://")+"/coopr/package-cache", remoteStage)
+	remote, err := NewRegistryStore(resolver, strings.TrimPrefix(server.URL, "http://")+"/coopr/package-cache", remoteStage, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	local, err := NewLocalStore(ctx, filepath.Join(t.TempDir(), "layout"), localStage)
+	local, err := NewLocalStore(ctx, filepath.Join(t.TempDir(), "layout"), localStage, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

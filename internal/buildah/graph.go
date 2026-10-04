@@ -1004,6 +1004,7 @@ func validateStandaloneGraph(plan *planner.Plan) ([]planner.Stage, string, error
 		}
 		knownIDs[stage.ID] = true
 		stagePlatforms[stage.ID] = stage.Platform
+		aliases[stage.ID] = stage.ID
 		if stage.Name != "" {
 			aliases[strings.ToLower(stage.Name)] = stage.ID
 		}

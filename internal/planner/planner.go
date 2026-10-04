@@ -203,8 +203,9 @@ type PublishedComponent struct {
 // binding intentionally does not pin the reference here; OCI resolution does so
 // later, while invocation arguments may select another external image.
 type FromBinding struct {
-	Kind  string `json:"kind"` // stage, image, or scratch
-	Stage string `json:"stage,omitempty"`
+	Kind        string `json:"kind"` // stage, image, or scratch
+	Stage       string `json:"stage,omitempty"`
+	SourceIndex string `json:"source_index,omitempty"`
 }
 
 // StageReferenceBinding freezes each COPY/ADD and mount dependency to the
@@ -288,6 +289,7 @@ type graph struct {
 	reservedStageNames  map[string]bool
 	contexts            map[string]buildcontext.Spec
 	contextOverrides    map[int]buildcontext.Spec
+	published           *PublishedComponent
 	contextBindings     map[string][]ContextBinding
 }
 
@@ -485,7 +487,7 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 		return nil, err
 	}
 	g := &graph{
-		opts: opts, globals: scope{}, automatic: automaticPlatformScope(opts),
+		opts: opts, globals: scope{}, automatic: automaticPlatformScope(opts), published: published,
 		aliases: map[string]int{}, declared: map[string]bool{}, bindResolver: bindResolver,
 		reservedStageNames: map[string]bool{}, contexts: contexts,
 		contextOverrides: map[int]buildcontext.Spec{}, contextBindings: map[string][]ContextBinding{},
@@ -944,6 +946,9 @@ func (g *graph) component(output int, reachable, dormant []int, args map[string]
 			switch {
 			case g.bases[id] >= 0:
 				binding = FromBinding{Kind: "stage", Stage: newIDs[g.bases[id]]}
+				if _, err := strconv.Atoi(g.stages[id].Source); err == nil {
+					binding.SourceIndex = g.stages[id].Source
+				}
 			case strings.EqualFold(g.stages[id].Source, "scratch"):
 				binding.Kind = "scratch"
 			}
@@ -1013,7 +1018,7 @@ func (g *graph) stageReferences(newIDs map[int]string) []StageReferenceBinding {
 					}
 					ref.Target = index(target)
 					if _, numeric := strconv.Atoi(op.Properties["from"]); numeric == nil {
-						ref.SourceIndex = op.Properties["from"]
+						ref.SourceIndex = g.publishedSourceIndex(index(id), origin, sourceIndex, -1, op.Properties["from"])
 					}
 				} else {
 					ref.Kind = "image"
@@ -1029,7 +1034,7 @@ func (g *graph) stageReferences(newIDs map[int]string) []StageReferenceBinding {
 						}
 						ref.Target = index(target)
 						if _, numeric := strconv.Atoi(mount.Properties["from"]); numeric == nil {
-							ref.SourceIndex = mount.Properties["from"]
+							ref.SourceIndex = g.publishedSourceIndex(index(id), origin, sourceIndex, childIndex, mount.Properties["from"])
 						}
 					} else {
 						ref.Kind = "image"
@@ -1064,6 +1069,7 @@ func (g *graph) checkFromBindings(bindings map[string]FromBinding, reserved []st
 		switch {
 		case g.bases[id] >= 0:
 			actual = FromBinding{Kind: "stage", Stage: strconv.Itoa(g.bases[id])}
+			actual.SourceIndex = expected.SourceIndex
 		case strings.EqualFold(g.stages[id].Source, "scratch"):
 			actual.Kind = "scratch"
 		}
@@ -1323,6 +1329,15 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 		if source == "" || strings.ContainsAny(source, " \t\r\n$") {
 			return fmt.Errorf("invalid from source %q", source)
 		}
+		if g.published != nil {
+			binding := g.published.FromBindings[stage.ID]
+			if binding.SourceIndex != "" {
+				source, err = bindPublishedNumericSource(source, binding.SourceIndex, binding.Stage)
+				if err != nil {
+					return fmt.Errorf("stage %s FROM: %w", stage.ID, err)
+				}
+			}
+		}
 		stage.Source = source
 		if context, ok := g.contextForSource(source, g.contextsAvailable(packagePhase)); ok {
 			stage.SourceContext = context.Name
@@ -1503,6 +1518,20 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 		}
 		dynamicInherited := g.opts.Mode == Invoke && instructionIndex < inheritedCount && !g.packageDerived[i]
 		operationIndex := len(stage.Operations)
+		if g.published != nil {
+			origin, ordinal := "authored", operationIndex-g.inheritedOperations[i]
+			if instructionIndex < inheritedCount {
+				origin, ordinal = "onbuild", operationIndex
+			}
+			if err := g.bindPublishedNumericReference(stage.ID, origin, ordinal, -1, normalized.Properties); err != nil {
+				return err
+			}
+			for childIndex, mount := range normalized.Children {
+				if err := g.bindPublishedNumericReference(stage.ID, origin, ordinal, childIndex, mount.Properties); err != nil {
+					return err
+				}
+			}
+		}
 		inputContext := ""
 		if inst.Name == "copy" || inst.Name == "add" {
 			var err error
@@ -1969,4 +1998,39 @@ func sortedKeys[V any](m map[string]V) []string {
 	keys := slices.Collect(maps.Keys(m))
 	slices.Sort(keys)
 	return keys
+}
+
+// Rebind only numeric executable selectors after expansion. Published authored
+// definitions retain their original selectors and invocation must agree with them.
+func bindPublishedNumericSource(source, original, target string) (string, error) {
+	if source != original {
+		return "", fmt.Errorf("numeric stage reference %q changed from published index %q", source, original)
+	}
+	return target, nil
+}
+
+func (g *graph) bindPublishedNumericReference(stage, origin string, operation, mount int, props map[string]string) error {
+	for _, ref := range g.published.StageReferences {
+		if ref.Stage != stage || ref.Origin != origin || ref.Operation != operation || ref.MountIndex != mount || ref.SourceIndex == "" {
+			continue
+		}
+		source, err := bindPublishedNumericSource(props["from"], ref.SourceIndex, ref.Target)
+		if err != nil {
+			return fmt.Errorf("stage %s %s operation %d: %w", stage, origin, operation, err)
+		}
+		props["from"] = source
+		break
+	}
+	return nil
+}
+
+func (g *graph) publishedSourceIndex(stage, origin string, operation, mount int, source string) string {
+	if g.published != nil {
+		for _, ref := range g.published.StageReferences {
+			if ref.Stage == stage && ref.Origin == origin && ref.Operation == operation && ref.MountIndex == mount && ref.SourceIndex != "" {
+				return ref.SourceIndex
+			}
+		}
+	}
+	return source
 }

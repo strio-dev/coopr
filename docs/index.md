@@ -9,6 +9,15 @@ Package common build steps and files as OCI components, then apply them to other
 [Build your first image](tutorials/first-image.md){ .md-button }
 { .coopr-actions }
 
+## Install Coopr
+
+```sh
+curl -fsSL https://coopr.strio.dev/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+The installer downloads a release binary for Linux amd64 or arm64 and verifies its checksum. See [getting started](getting-started/index.md) for installation options and host requirements.
+
 <div class="coopr-paths" markdown>
 <div class="coopr-path" markdown>
 ## Start with an image

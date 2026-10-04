@@ -3,6 +3,7 @@ package main
 import (
 	"archive/tar"
 	"bytes"
+	"github.com/spf13/cobra"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,7 +53,7 @@ func TestBuildArgFilesPrecedeExplicitArguments(t *testing.T) {
 	if err := os.WriteFile(path, []byte("one=file\ntwo=value\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got, err := readBuildArgFiles([]string{path}, map[string]string{"one": "flag"})
+	got, err := readBuildArgFiles([]string{path}, []string{"one=flag"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,6 +130,119 @@ func TestBuildCommandsRequireDefinitionFile(t *testing.T) {
 		var stdout, stderr bytes.Buffer
 		if code := run(args, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "definition file is required") {
 			t.Fatalf("%v: code=%d, stderr=%q", args, code, stderr.String())
+		}
+	}
+}
+
+func TestBuildArgFilesPreserveOrderedCLIUnset(t *testing.T) {
+	const name = "COOPR_TEST_ARG_UNSET"
+	t.Setenv(name, "temporary")
+	if err := os.Unsetenv(name); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "args")
+	if err := os.WriteFile(path, []byte(name+"=file\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, explicit := range [][]string{{name}, {name + "=explicit", name}, {name, name + "=last"}} {
+		got, err := readBuildArgFiles([]string{path}, explicit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if explicit[len(explicit)-1] == name {
+			if _, exists := got[name]; exists {
+				t.Fatalf("%v retained file value: %v", explicit, got)
+			}
+		} else if got[name] != "last" {
+			t.Fatalf("%v: %v", explicit, got)
+		}
+	}
+}
+
+func TestBuildArgFilesAcceptLongLines(t *testing.T) {
+	value := strings.Repeat("x", 70000)
+	path := filepath.Join(t.TempDir(), "args")
+	if err := os.WriteFile(path, []byte("LARGE="+value+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readBuildArgFiles([]string{path}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["LARGE"] != value {
+		t.Fatal("long argument changed")
+	}
+}
+
+func TestBuildCommandsRetainRawOrderedArguments(t *testing.T) {
+	const name = "COOPR_TEST_RAW_ARGS"
+	t.Setenv(name, "temporary")
+	if err := os.Unsetenv(name); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "args")
+	if err := os.WriteFile(path, []byte(name+"=file\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range []*cobra.Command{newBuildCommand(), newComponentBuildCommand()} {
+		if err := cmd.ParseFlags([]string{"--build-arg=" + name + "=explicit", "--build-arg=" + name}); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := cmd.Flags().GetStringArray("build-arg")
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := readBuildArgFiles([]string{path}, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, exists := got[name]; exists {
+			t.Fatalf("%s retained deleted file argument", cmd.Name())
+		}
+	}
+}
+
+func TestBuildArgFilesPreserveEnvironmentEmptyAndLineSemantics(t *testing.T) {
+	t.Setenv("COOPR_TEST_FILE_ENV", "environment")
+	dir := t.TempDir()
+	first, second := filepath.Join(dir, "first"), filepath.Join(dir, "second")
+	if err := os.WriteFile(first, []byte("#comment\r\n\r\nVALUE=first\r\nCOOPR_TEST_FILE_ENV\r\nEMPTY=\r\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(second, []byte("VALUE=second"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readBuildArgFiles([]string{first, second}, []string{"VALUE=explicit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["VALUE"] != "explicit" || got["COOPR_TEST_FILE_ENV"] != "environment" {
+		t.Fatalf("arguments: %v", got)
+	}
+	if value, exists := got["EMPTY"]; !exists || value != "" {
+		t.Fatalf("empty value lost: %v", got)
+	}
+}
+
+func TestBuildArgFilesReportReadAndArgumentErrors(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "missing")
+	if _, err := readBuildArgFiles([]string{missing}, nil); err == nil || !strings.Contains(err.Error(), missing) {
+		t.Fatalf("missing file error: %v", err)
+	}
+	if _, err := readBuildArgFiles([]string{dir}, nil); err == nil || !strings.Contains(err.Error(), dir) {
+		t.Fatalf("directory read error: %v", err)
+	}
+	invalid := filepath.Join(dir, "invalid")
+	if err := os.WriteFile(invalid, []byte("BAD NAME=value\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readBuildArgFiles([]string{invalid}, nil); err == nil || !strings.Contains(err.Error(), invalid) {
+		t.Fatalf("invalid file argument error: %v", err)
+	}
+	for _, value := range []string{"=value", "BAD NAME=value", "UTF8=\xff"} {
+		if _, err := readBuildArgFiles(nil, []string{value}); err == nil {
+			t.Fatalf("invalid explicit argument accepted: %q", value)
 		}
 	}
 }

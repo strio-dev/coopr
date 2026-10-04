@@ -2,6 +2,14 @@ name: CI
 
 on:
   push:
+    branches: ['**']
+    # Native globs select unprefixed version-shaped tags, not strict SemVer.
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+      - '[0-9]+.[0-9]+.[0-9]+-*'
+      - '[0-9]+.[0-9]+.[0-9]+\+*'
+      # Reserve underscore for the registry's build-metadata encoding.
+      - '!**_*'
   pull_request:
   workflow_dispatch:
 
@@ -14,68 +22,263 @@ concurrency:
 
 jobs:
   matrix:
-    name: Generate check matrix
+    name: Generate check matrices
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
-      matrix: ${{ steps.matrix.outputs.matrix }}
+      quality: ${{ steps.matrix.outputs.quality }}
+      docs: ${{ steps.matrix.outputs.docs }}
+      native: ${{ steps.matrix.outputs.native }}
+      published: ${{ steps.release.outputs.published }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
+      image: ${{ steps.release.outputs.image }}
+      image-tag: ${{ steps.release.outputs.image-tag }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - &checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      - &nix
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
       - id: matrix
         run: |
-          matrix=$(nix eval --json path:.#githubActions.matrix)
-          printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
+          matrices=$(nix eval --json --no-update-lock-file path:.#githubActions.matrices)
+          for category in quality docs native; do
+            printf '%s=%s\n' "$category" "$(jq -c --arg category "$category" '.[$category]' <<< "$matrices")" >> "$GITHUB_OUTPUT"
+          done
+      - name: Read release metadata
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        id: release
+        uses: &github-script actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const tag = process.env.GITHUB_REF_NAME;
+            let release;
+            try {
+              ({ data: release } = await github.rest.repos.getReleaseByTag({ ...context.repo, tag }));
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            core.setOutput('published', Boolean(release && !release.draft));
+            core.setOutput('prerelease', tag.split('+', 1)[0].includes('-'));
+            core.setOutput('image', `ghcr.io/${context.repo.owner}/${context.repo.repo}`.toLowerCase());
+            core.setOutput('image-tag', tag.replaceAll('+', '_'));
 
-  checks:
-    name: ${{ matrix.name }} (${{ matrix.system }})
+  quality:
+    name: Quality checks
     needs: matrix
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ fromJSON(needs.matrix.outputs.quality).include[0].os }}
     timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.matrix.outputs.matrix) }}
+    env:
+      NIX_ATTRS: ${{ toJSON(fromJSON(needs.matrix.outputs.quality).include[0].attrs) }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
-        with:
-          github_access_token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build check
-        env:
-          NIX_ATTR: ${{ matrix.attr }}
-        run: nix build --out-link result --no-update-lock-file --print-build-logs "path:.#$NIX_ATTR"
+      - *checkout
+      - *nix
+      - &check
+        name: Run checks
+        run: |
+          mapfile -t attrs < <(jq -r '.[] | "path:.#" + .' <<< "$NIX_ATTRS")
+          nix build --no-link --no-update-lock-file --print-build-logs "${attrs[@]}"
+
+  documentation:
+    name: Documentation checks
+    needs: matrix
+    runs-on: ${{ fromJSON(needs.matrix.outputs.docs).include[0].os }}
+    timeout-minutes: 30
+    env:
+      NIX_ATTRS: ${{ toJSON(fromJSON(needs.matrix.outputs.docs).include[0].attrs) }}
+    steps:
+      - *checkout
+      - *nix
+      - *check
+      - name: Locate documentation
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        id: site
+        run: |
+          site=$(nix path-info --no-update-lock-file path:.#checks.x86_64-linux.docs)
+          printf 'path=%s\n' "$site" >> "$GITHUB_OUTPUT"
       - name: Upload documentation
-        if: >-
-          github.ref == 'refs/heads/main' &&
-          github.event_name != 'pull_request' &&
-          matrix.name == 'docs' &&
-          matrix.system == 'x86_64-linux'
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
-          path: result/
+          path: ${{ steps.site.outputs.path }}
 
-  pages:
-    name: Publish documentation
+  native:
+    name: Native checks (${{ matrix.system }})
+    if: github.event_name != 'push' || github.ref_type != 'tag'
+    needs: matrix
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.matrix.outputs.native) }}
+    env:
+      NIX_ATTRS: ${{ toJSON(matrix.attrs) }}
+    steps:
+      - *checkout
+      - *nix
+      - *check
+
+  release-native:
+    name: Native release checks (${{ matrix.system }})
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [matrix, quality, documentation]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.matrix.outputs.native) }}
+    env:
+      NIX_ATTRS: ${{ toJSON(matrix.attrs) }}
+      IMAGE: ${{ needs.matrix.outputs.image }}
+      BUILD_TAG: build-${{ github.run_id }}
+    steps:
+      - *checkout
+      - *nix
+      - *check
+      - name: Locate release archive
+        if: needs.matrix.outputs.published != 'true'
+        run: nix build --out-link result-release --no-update-lock-file path:.#release-binary
+      - name: Upload release artifacts
+        if: needs.matrix.outputs.published != 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ matrix.system }}
+          path: result-release/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+          overwrite: true
+      - name: Log in to GHCR
+        if: needs.matrix.outputs.published != 'true'
+        uses: &registry-login docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with: &registry-credentials
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push native container
+        if: needs.matrix.outputs.published != 'true'
+        env:
+          ARCH: ${{ matrix.system == 'x86_64-linux' && 'amd64' || 'arm64' }}
+        run: nix run --no-update-lock-file path:.#container.copyTo -- "docker://$IMAGE:$BUILD_TAG-$ARCH"
+
+  docs:
+    name: docs
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    needs: checks
+    needs: [quality, documentation, native]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       pages: write
       id-token: write
     environment:
-      name: github-pages
+      name: docs
       url: ${{ steps.deployment.outputs.page_url }}
     concurrency:
-      group: github-pages
+      group: docs
       cancel-in-progress: false
     steps:
       - name: Deploy documentation
         id: deployment
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+
+  release:
+    name: Publish binaries and containers
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [matrix, quality, documentation, release-native]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    concurrency:
+      group: release
+      queue: max
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      packages: write
+    env:
+      IMAGE: ${{ needs.matrix.outputs.image }}
+      IMAGE_TAG: ${{ needs.matrix.outputs.image-tag }}
+      BUILD_TAG: build-${{ github.run_id }}
+    steps:
+      - *checkout
+      - *nix
+      - name: Read current release state
+        id: state
+        uses: *github-script
+        with:
+          script: |
+            const releases = await github.paginate(github.rest.repos.listReleases, { ...context.repo, per_page: 100 });
+            const release = releases.find(item => item.tag_name === process.env.GITHUB_REF_NAME);
+            core.setOutput('exists', Boolean(release));
+            core.setOutput('published', Boolean(release && !release.draft));
+      - name: Download release artifacts
+        if: steps.state.outputs.published != 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist/
+      - name: Collect source archive and checksums
+        if: steps.state.outputs.published != 'true'
+        run: |
+          nix build --out-link result-sources --no-update-lock-file --print-build-logs path:.#release-source
+          cp result-sources/*.tar.gz dist/
+          (cd dist && nix develop --no-update-lock-file path:..#release --command sha256sum ./*.tar.gz > SHA256SUMS)
+      - name: Log in to GHCR
+        uses: *registry-login
+        with: *registry-credentials
+      - name: Publish multi-platform index
+        if: steps.state.outputs.published != 'true'
+        run: |
+          nix develop --no-update-lock-file path:.#release --command regctl index create "$IMAGE:$IMAGE_TAG" \
+            --ref "$IMAGE:$BUILD_TAG-amd64" --platform linux/amd64 \
+            --ref "$IMAGE:$BUILD_TAG-arm64" --platform linux/arm64
+      - name: Upload release assets
+        if: steps.state.outputs.published != 'true'
+        id: assets
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          draft: true
+          prerelease: ${{ needs.matrix.outputs.prerelease }}
+          make_latest: 'false'
+          generate_release_notes: ${{ steps.state.outputs.exists != 'true' }}
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/coopr-linux-amd64.tar.gz
+            dist/coopr-linux-arm64.tar.gz
+            dist/coopr-sources.tar.gz
+            dist/SHA256SUMS
+      - name: Publish release and check latest
+        id: latest
+        uses: *github-script
+        env:
+          RELEASE_ID: ${{ steps.assets.outputs.id }}
+          PRERELEASE: ${{ needs.matrix.outputs.prerelease }}
+        with:
+          script: |
+            if (process.env.RELEASE_ID) {
+              await github.rest.repos.updateRelease({
+                ...context.repo,
+                release_id: Number(process.env.RELEASE_ID),
+                draft: false,
+                make_latest: process.env.PRERELEASE === 'true' ? 'false' : 'legacy',
+              });
+            }
+            let latest;
+            try {
+              ({ data: latest } = await github.rest.repos.getLatestRelease(context.repo));
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            core.setOutput('current', Boolean(latest && latest.tag_name === process.env.GITHUB_REF_NAME));
+      - name: Update latest container alias
+        if: steps.latest.outputs.current == 'true'
+        run: |
+          digest=$(nix develop --no-update-lock-file path:.#release --command regctl image digest "$IMAGE:$IMAGE_TAG")
+          nix develop --no-update-lock-file path:.#release --command regctl image copy "$IMAGE@$digest" "$IMAGE:latest"

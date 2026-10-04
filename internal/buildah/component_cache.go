@@ -76,9 +76,9 @@ func newComponentCache(ctx context.Context, options PlanOptions) (*componentCach
 	for _, binding := range bindings {
 		var store cache.Store
 		if binding.spec.Transport == "oci-layout" {
-			store, err = cache.NewLocalStore(ctx, binding.spec.Reference, dir)
+			store, err = cache.NewLocalStore(ctx, binding.spec.Reference, dir, options.CacheTTL)
 		} else {
-			store, err = cache.NewRegistryStore(options.Resolver, binding.spec.Reference, dir)
+			store, err = cache.NewRegistryStore(options.Resolver, binding.spec.Reference, dir, options.CacheTTL)
 		}
 		if err != nil {
 			if ctx.Err() != nil {
@@ -542,6 +542,7 @@ func (c *componentCache) lookup(ctx context.Context, executor *graphExecutor, ke
 				return "", nil, false, ctx.Err()
 			}
 			if !errors.Is(err, cache.ErrMiss) {
+				packageCacheWarning("read component cache", err)
 				c.stats.Errors++
 			}
 			continue
@@ -550,21 +551,24 @@ func (c *componentCache) lookup(ctx context.Context, executor *graphExecutor, ke
 			defer func() { _ = os.Remove(path) }()
 		}
 		if record == nil {
+			packageCacheWarning("read component cache", errors.New("cache returned an incomplete component record"))
 			c.stats.Errors++
 			continue
 		}
-		if !cacheRecordFresh(record.CreatedAt, c.cacheTTL, time.Now()) {
+		if !cache.RecordFresh(record.CreatedAt, c.cacheTTL, time.Now()) {
 			continue
 		}
 		imageID := callerImageID
 		snapshotConfig := callerConfig
 		if record.ChangedFS {
 			if record.Snapshot == nil || path == "" {
+				packageCacheWarning("read component cache", errors.New("cache returned an incomplete component snapshot"))
 				c.stats.Errors++
 				continue
 			}
 			file, openErr := os.Open(path)
 			if openErr != nil {
+				packageCacheWarning("open component cache snapshot", openErr)
 				c.stats.Errors++
 				continue
 			}
@@ -573,7 +577,11 @@ func (c *componentCache) lookup(ctx context.Context, executor *graphExecutor, ke
 			if err := ctx.Err(); err != nil {
 				return "", nil, false, err
 			}
-			if errors.Join(identityErr, closeErr) != nil || claimed != record.Output {
+			if verifyErr := errors.Join(identityErr, closeErr); verifyErr != nil || claimed != record.Output {
+				if verifyErr == nil {
+					verifyErr = errors.New("snapshot identity differs from cache record")
+				}
+				packageCacheWarning("verify component cache snapshot", verifyErr)
 				c.stats.Errors++
 				continue
 			}
@@ -582,12 +590,14 @@ func (c *componentCache) lookup(ctx context.Context, executor *graphExecutor, ke
 				return "", nil, false, cancelErr
 			}
 			if err != nil {
+				packageCacheWarning("import component cache snapshot", err)
 				c.stats.Errors++
 				continue
 			}
 		}
 		config, err := imageconfig.Parse(record.Config)
 		if err != nil {
+			packageCacheWarning("parse component cache config", err)
 			c.stats.Errors++
 			continue
 		}
@@ -599,6 +609,10 @@ func (c *componentCache) lookup(ctx context.Context, executor *graphExecutor, ke
 			return "", nil, false, cancelErr
 		}
 		if err != nil || !eligible || observed != record.Output {
+			if err == nil {
+				err = errors.New("restored state does not match cache record")
+			}
+			packageCacheWarning("verify restored component cache", err)
 			c.stats.Errors++
 			continue
 		}
@@ -645,11 +659,13 @@ func (c *componentCache) record(ctx context.Context, executor *graphExecutor, ke
 	}
 	raw, err := outputConfig.MarshalJSON()
 	if err != nil {
+		packageCacheWarning("prepare component cache candidate", err)
 		c.stats.Errors++
 		return
 	}
 	identity, pkg, path, eligible, err := snapshotPortableState(ctx, executor.store, system, outputImageID, raw, raw, root, platform, c.stagingDir)
 	if err != nil || !eligible {
+		packageCacheWarning("snapshot component cache candidate", err)
 		c.stats.Skipped++
 		return
 	}
@@ -660,6 +676,7 @@ func (c *componentCache) record(ctx context.Context, executor *graphExecutor, ke
 		record.Snapshot = &pkg
 		importedID, importedConfig, importErr := ImportPackageSnapshot(ctx, executor.store, system, pkg, path, platform)
 		if importErr != nil {
+			packageCacheWarning("import component cache candidate", importErr)
 			_ = os.Remove(path)
 			c.stats.Skipped++
 			return
@@ -669,6 +686,7 @@ func (c *componentCache) record(ctx context.Context, executor *graphExecutor, ke
 			_ = os.Remove(roundtripPath)
 		}
 		if observeErr != nil || !ok || roundtrip != identity {
+			packageCacheWarning("verify component cache candidate", observeErr)
 			_ = os.Remove(path)
 			c.stats.Skipped++
 			return

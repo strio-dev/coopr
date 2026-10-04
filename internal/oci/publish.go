@@ -15,6 +15,7 @@ import (
 	"oras.land/oras-go/v2"
 	"oras.land/oras-go/v2/content"
 	orasoci "oras.land/oras-go/v2/content/oci"
+	"oras.land/oras-go/v2/errdef"
 )
 
 // PublishComponent publishes a complete single-platform component. packagePaths
@@ -115,15 +116,29 @@ func writeComponent(ctx context.Context, target oras.Target, meta ComponentMetad
 		}
 		pushErr := target.Push(ctx, pkg.Descriptor, file)
 		_ = file.Close() // ORAS may close it; cover failures before ORAS takes ownership.
+		// Existing persistent blobs must still match their descriptor.
+		if errors.Is(pushErr, errdef.ErrAlreadyExists) {
+			pushErr = verifySourceContent(ctx, target, pkg.Descriptor)
+		}
 		if pushErr != nil {
 			return v1.Descriptor{}, fmt.Errorf("push package %q: %w", pkg.Stage, pushErr)
 		}
 	}
 	if err := target.Push(ctx, config, bytes.NewReader(configBytes)); err != nil {
-		return v1.Descriptor{}, fmt.Errorf("push component config: %w", err)
+		if errors.Is(err, errdef.ErrAlreadyExists) {
+			err = verifySourceContent(ctx, target, config)
+		}
+		if err != nil {
+			return v1.Descriptor{}, fmt.Errorf("push component config: %w", err)
+		}
 	}
 	if err := target.Push(ctx, root, bytes.NewReader(manifestBytes)); err != nil {
-		return v1.Descriptor{}, fmt.Errorf("push component manifest: %w", err)
+		if errors.Is(err, errdef.ErrAlreadyExists) {
+			err = verifySourceContent(ctx, target, root)
+		}
+		if err != nil {
+			return v1.Descriptor{}, fmt.Errorf("push component manifest: %w", err)
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return v1.Descriptor{}, err

@@ -7,5 +7,6 @@ runCommand "coopr-docs" { nativeBuildInputs = [ zensical ]; } ''
   cd source
   export HOME="$TMPDIR"
   zensical build --clean --strict
+  cmp docs/install.sh site/install.sh
   mv site "$out"
 ''

@@ -78,19 +78,23 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 			switch binding.Kind {
 			case "stage":
 				target, parseErr := strconv.Atoi(binding.Stage)
-				if parseErr != nil || target < 0 || target >= len(stages) {
+				if parseErr != nil || target < 0 || target >= len(stages) || strconv.Itoa(target) != binding.Stage {
 					return nil, fmt.Errorf("invalid FROM stage binding %d", id)
 				}
-				if name := stages[target].head.Properties["as"]; name == "" || !strings.Contains(source, "$") && canonicalStageName(source) != canonicalStageName(name) {
+				if binding.SourceIndex != "" {
+					if !canonicalSourceIndex(binding.SourceIndex) || !strings.Contains(source, "$") && source != binding.SourceIndex {
+						return nil, fmt.Errorf("FROM stage binding %d conflicts with numeric source %q", id, source)
+					}
+				} else if name := stages[target].head.Properties["as"]; name == "" || !strings.Contains(source, "$") && canonicalStageName(source) != canonicalStageName(name) {
 					return nil, fmt.Errorf("FROM stage binding %d conflicts with source %q", id, source)
 				}
 				deps[id] = append(deps[id], target)
 			case "scratch":
-				if binding.Stage != "" || !strings.Contains(source, "$") && !strings.EqualFold(source, "scratch") {
+				if binding.Stage != "" || binding.SourceIndex != "" || !strings.Contains(source, "$") && !strings.EqualFold(source, "scratch") {
 					return nil, fmt.Errorf("invalid scratch binding for stage %d", id)
 				}
 			case "image":
-				if binding.Stage != "" || !strings.Contains(source, "$") && strings.EqualFold(source, "scratch") {
+				if binding.Stage != "" || binding.SourceIndex != "" || !strings.Contains(source, "$") && strings.EqualFold(source, "scratch") {
 					return nil, fmt.Errorf("invalid image binding for stage %d", id)
 				}
 				_, alias := aliases[canonicalStageName(source)]
@@ -132,11 +136,11 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 		if err != nil || stageID < 0 || stageID >= len(stages) || stages[stageID].head.Name != "from" {
 			return nil, fmt.Errorf("ONBUILD stage reference has invalid source %q", ref.Stage)
 		}
-		if ref.Operation < 0 || ref.MountIndex < -1 || ref.SourceIndex != "" {
+		if ref.Operation < 0 || ref.MountIndex < -1 || ref.SourceIndex != "" && !canonicalSourceIndex(ref.SourceIndex) {
 			return nil, fmt.Errorf("invalid ONBUILD stage reference at stage %s operation %d", ref.Stage, ref.Operation)
 		}
 		if ref.Kind == "image" {
-			if ref.Target != "" {
+			if ref.Target != "" || ref.SourceIndex != "" {
 				return nil, fmt.Errorf("invalid ONBUILD image reference target %q", ref.Target)
 			}
 			continue
@@ -145,7 +149,7 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 			return nil, fmt.Errorf("invalid ONBUILD stage reference at stage %s operation %d", ref.Stage, ref.Operation)
 		}
 		target, err := strconv.Atoi(ref.Target)
-		if err != nil || target < 0 || target >= len(stages) || stages[target].head.Properties["as"] == "" {
+		if err != nil || target < 0 || target >= len(stages) || strconv.Itoa(target) != ref.Target || ref.SourceIndex == "" && stages[target].head.Properties["as"] == "" {
 			return nil, fmt.Errorf("invalid ONBUILD stage reference target %q", ref.Target)
 		}
 		packageBase := false
@@ -314,7 +318,7 @@ func checkPublishedReference(refs []StageReferenceBinding, deps *[]int, aliases 
 			return fmt.Errorf("invalid stage reference kind %q", ref.Kind)
 		}
 		target, err := strconv.Atoi(ref.Target)
-		if err != nil || target < 0 || target >= stageCount {
+		if err != nil || target < 0 || target >= stageCount || strconv.Itoa(target) != ref.Target {
 			return fmt.Errorf("invalid stage reference target %q", ref.Target)
 		}
 		aliased := false
@@ -325,8 +329,7 @@ func checkPublishedReference(refs []StageReferenceBinding, deps *[]int, aliases 
 			return fmt.Errorf("stage reference target %q has no stage name", ref.Target)
 		}
 		if ref.SourceIndex != "" {
-			index, err := strconv.Atoi(ref.SourceIndex)
-			if err != nil || index < 0 || !strings.Contains(source, "$") && source != ref.SourceIndex {
+			if !canonicalSourceIndex(ref.SourceIndex) || !strings.Contains(source, "$") && source != ref.SourceIndex {
 				return fmt.Errorf("stage reference %q changed from published numeric index", source)
 			}
 		} else if !strings.Contains(source, "$") {
@@ -366,4 +369,9 @@ func samePlatform(a, b string) bool {
 		return parts[2]
 	}
 	return variant(aParts) == variant(bParts)
+}
+
+func canonicalSourceIndex(value string) bool {
+	index, err := strconv.Atoi(value)
+	return err == nil && index >= 0 && strconv.Itoa(index) == value
 }

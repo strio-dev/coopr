@@ -58,9 +58,21 @@ type OCIStore struct {
 	target     oras.Target
 	stagingDir string
 	localRoot  string
+	ttl        *time.Duration
 }
 
-func NewLocalStore(ctx context.Context, root, stagingDir string) (*OCIStore, error) {
+// RecordFresh applies the optional portable-cache age limit to validated metadata.
+func RecordFresh(created time.Time, ttl *time.Duration, now time.Time) bool {
+	if ttl == nil {
+		return true
+	}
+	if *ttl <= 0 || created.IsZero() {
+		return false
+	}
+	return !created.Before(now.Add(-*ttl))
+}
+
+func NewLocalStore(ctx context.Context, root, stagingDir string, ttl *time.Duration) (*OCIStore, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -97,10 +109,10 @@ func NewLocalStore(ctx context.Context, root, stagingDir string) (*OCIStore, err
 	if err != nil {
 		return nil, err
 	}
-	return &OCIStore{target: target, stagingDir: stagingDir, localRoot: root}, nil
+	return &OCIStore{target: target, stagingDir: stagingDir, localRoot: root, ttl: ttl}, nil
 }
 
-func NewRegistryStore(resolver *oci.Resolver, repository, stagingDir string) (*OCIStore, error) {
+func NewRegistryStore(resolver *oci.Resolver, repository, stagingDir string, ttl *time.Duration) (*OCIStore, error) {
 	if err := checkStaging(stagingDir); err != nil {
 		return nil, err
 	}
@@ -111,7 +123,7 @@ func NewRegistryStore(resolver *oci.Resolver, repository, stagingDir string) (*O
 	if err != nil {
 		return nil, err
 	}
-	return &OCIStore{target: target, stagingDir: stagingDir}, nil
+	return &OCIStore{target: target, stagingDir: stagingDir, ttl: ttl}, nil
 }
 
 func checkStaging(dir string) error {
@@ -348,6 +360,12 @@ func (s *OCIStore) Lookup(ctx context.Context, key Key) (*Record, string, error)
 	}
 	if len(manifest.Layers) == 0 && record.Snapshot != nil || len(manifest.Layers) == 1 && (record.Snapshot == nil || !sameDescriptor(manifest.Layers[0], record.Snapshot.Descriptor)) {
 		return nil, "", errors.New("cache snapshot differs from manifest")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
+	if !RecordFresh(record.CreatedAt, s.ttl, time.Now()) {
+		return nil, "", ErrMiss
 	}
 	if record.Snapshot == nil {
 		record.Descriptor = root

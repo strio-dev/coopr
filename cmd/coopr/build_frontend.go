@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"net/url"
@@ -93,36 +92,28 @@ func definitionNeedsContextExtraction(context string) (bool, error) {
 	return primary.Kind != buildcontext.Local || archive.IsArchivePath(primary.Path), nil
 }
 
-func readBuildArgFiles(paths []string, explicit map[string]string) (map[string]string, error) {
+func readBuildArgFiles(paths, explicit []string) (map[string]string, error) {
 	result := make(map[string]string)
 	values := namedValues{values: result}
 	for _, path := range paths {
-		file, err := os.Open(path)
+		data, err := os.ReadFile(path)
 		if err != nil {
-			return nil, fmt.Errorf("open build argument file %s: %w", path, err)
+			return nil, fmt.Errorf("read build argument file %s: %w", path, err)
 		}
-		scanner := bufio.NewScanner(file)
-		for scanner.Scan() {
-			line := scanner.Text()
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSuffix(line, "\r")
 			if line == "" || strings.HasPrefix(line, "#") {
 				continue
 			}
 			if err := values.Set(line); err != nil {
-				_ = file.Close()
 				return nil, fmt.Errorf("%s: %w", path, err)
 			}
 		}
-		err = scanner.Err()
-		closeErr := file.Close()
-		if err != nil {
-			return nil, fmt.Errorf("read build argument file %s: %w", path, err)
-		}
-		if closeErr != nil {
-			return nil, closeErr
-		}
 	}
-	for name, value := range explicit {
-		result[name] = value
+	for _, value := range explicit {
+		if err := values.Set(value); err != nil {
+			return nil, fmt.Errorf("build argument %q: %w", value, err)
+		}
 	}
 	return result, nil
 }

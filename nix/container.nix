@@ -14,6 +14,7 @@
   passt,
   slirp4netns,
   shadow,
+  util-linux,
   xz,
   cacert,
 }:
@@ -28,6 +29,7 @@ let
     openssh
     passt
     slirp4netns
+    util-linux
     xz
   ];
   uidmapTools = runCommand "coopr-uidmap-tools" { } ''

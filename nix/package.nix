@@ -20,7 +20,7 @@
       ../examples
     ];
   };
-  vendorHash = "sha256-P/ipWaeaN9OXg9m7bnnxSik7yurkycxkssHMg73BNMU=";
+  vendorHash = "sha256-VoZsv17TDOCMiClseSpzGiL6x5o2rf+7a4THscKbpw4=";
   subPackages = [ "./cmd/coopr" ];
   tags = [
     "exclude_graphdriver_btrfs"

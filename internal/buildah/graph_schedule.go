@@ -71,6 +71,7 @@ func stageAliases(stages []planner.Stage) []map[string]string {
 	prior := make(map[string]string, len(stages))
 	for index, stage := range stages {
 		aliases[index] = maps.Clone(prior)
+		prior[stage.ID] = stage.ID
 		if stage.Name != "" {
 			prior[strings.ToLower(stage.Name)] = stage.ID
 		}

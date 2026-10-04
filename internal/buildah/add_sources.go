@@ -340,6 +340,9 @@ func resolveGitCommit(repository string) (string, error) {
 }
 
 func applyRemoteAddSource(ctx context.Context, builder operationBuilder, operation Add, options upstream.AddAndCopyOptions, source string) (retErr error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	directory, err := os.MkdirTemp("", "coopr-add-unpack-")
 	if err != nil {
 		return fmt.Errorf("create ADD download directory: %w", err)
@@ -350,7 +353,7 @@ func applyRemoteAddSource(ctx context.Context, builder operationBuilder, operati
 		}
 	}()
 
-	name, err := remoteSourceName(source)
+	name, err := remoteAddSourceName(builder, operation.Destination, source)
 	if err != nil {
 		return err
 	}
@@ -402,12 +405,18 @@ func applyRemoteAddSource(ctx context.Context, builder operationBuilder, operati
 	if closeErr != nil {
 		return fmt.Errorf("close downloaded ADD source %q: %w", source, closeErr)
 	}
-	if modified := response.Header.Get("Last-Modified"); modified != "" {
-		if parsed, err := http.ParseTime(modified); err == nil {
-			if err := os.Chtimes(file.Name(), parsed, parsed); err != nil {
-				return fmt.Errorf("preserve Last-Modified for ADD source %q: %w", source, err)
-			}
+	modified := time.Unix(0, 0).UTC()
+	if options.Timestamp != nil {
+		modified = options.Timestamp.UTC()
+	} else if header := response.Header.Get("Last-Modified"); header != "" {
+		parsed, err := time.Parse(time.RFC1123, header)
+		if err != nil {
+			return fmt.Errorf("parsing last-modified time %q for ADD source %q: %w", header, source, err)
 		}
+		modified = parsed.UTC()
+	}
+	if err := os.Chtimes(file.Name(), modified, modified); err != nil {
+		return fmt.Errorf("preserve timestamp for ADD source %q: %w", source, err)
 	}
 	if operation.Checksum != "" {
 		expected, _ := opencontainersdigest.Parse(operation.Checksum)
@@ -486,4 +495,59 @@ func remoteSourceName(source string) (string, error) {
 		return "", fmt.Errorf("ADD URL %q has no filename", source)
 	}
 	return name, nil
+}
+
+// remoteAddSourceName permits private staging names only when native destination
+// typing can rename the incoming file, so directory copies still require a URL basename.
+func remoteAddSourceName(builder operationBuilder, destination, source string) (string, error) {
+	name, err := remoteSourceName(source)
+	if err == nil {
+		return name, nil
+	}
+	parsed, parseErr := url.Parse(source)
+	if parseErr != nil || parsed.User != nil {
+		return "", err
+	}
+	needsName := strings.HasSuffix(destination, "/") || strings.HasSuffix(destination, "/.") || destination == "" || path.Clean(destination) == "."
+	if checker, ok := builder.(interface{ remoteAddDestinationNeedsName(string) (bool, error) }); ok {
+		var checkErr error
+		needsName, checkErr = checker.remoteAddDestinationNeedsName(destination)
+		if checkErr != nil {
+			return "", checkErr
+		}
+	}
+	if needsName {
+		return "", err
+	}
+	return "coopr-http-source", nil
+}
+
+func (b nativeBuilder) remoteAddDestinationNeedsName(destination string) (needsName bool, retErr error) {
+	needsName = strings.HasSuffix(destination, "/") || strings.HasSuffix(destination, "/.") || destination == ""
+	if !filepath.IsAbs(destination) {
+		destination = filepath.Join("/"+b.WorkDir(), destination)
+	}
+	if filepath.Clean(destination) == filepath.Clean(b.WorkDir()) {
+		needsName = true
+	}
+	if needsName {
+		return true, nil
+	}
+	mountPoint, err := b.Mount(b.MountLabel)
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		if err := b.Unmount(); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("unmount after checking ADD destination: %w", err))
+		}
+	}()
+	stats, err := copier.Stat(mountPoint, filepath.Join(mountPoint, b.WorkDir()), copier.StatOptions{}, []string{filepath.Join(mountPoint, destination)})
+	if err != nil {
+		return false, fmt.Errorf("check ADD destination %q: %w", destination, err)
+	}
+	if len(stats) == 1 && len(stats[0].Globbed) == 1 {
+		return !stats[0].Results[stats[0].Globbed[0]].IsRegular, nil
+	}
+	return false, nil
 }
