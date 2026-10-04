@@ -1,18 +1,22 @@
 # Security and rootless builds
 
-Build definitions execute code. Review image inputs, component transformations, remote sources, and requested privileges before using untrusted artifacts. Descriptor verification establishes byte identity; it does not establish publisher trust.
+Build definitions and components execute code. Review their inputs, transformations, and requested privileges before running them. A verified digest establishes byte identity; it does not establish publisher trust.
 
 ## Native rootless requirements
 
-Linux must permit user and mount namespaces, suitable subordinate UID/GID mappings, and a supported native storage driver. RUN uses the configured OCI runtime. Networked rootless RUNs need the configured network stack and helper. Memory/CPU controls require delegated cgroup controllers; rootless cgroup v1 or missing delegation fail explicitly.
+For native rootless builds, provide:
 
-Host network, insecure RUN, and devices require explicit authorization:
+- Linux user and mount namespaces, subordinate UID/GID mappings, and a supported storage driver.
+- An OCI runtime and, for networked RUNs, the configured network stack and helper.
+- Delegated cgroup controllers when using memory or CPU limits. Rootless cgroup v1 or missing delegation fails explicitly.
+
+Authorize host-network RUNs explicitly:
 
 ```sh
 coopr build image.coopr --allow network.host
 ```
 
-`run network="host"` needs that entitlement, including on cache hits. Insecure execution requires `--allow security.insecure`; CDI devices need `device` or a matching `device=SELECTOR` entitlement unless authorized by CDI metadata. Effective privileges remain bounded by the outer environment. Insecure execution requires OCI/rootless isolation; chroot is rejected.
+`run network="host"` requires `network.host`, including on cache hits. Insecure RUNs require `--allow security.insecure` and OCI/rootless isolation; chroot is rejected. CDI devices require `device` or a matching `device=SELECTOR` entitlement unless authorized by CDI metadata. These authorizations cannot grant privileges unavailable in the outer environment.
 
 ## Credentials and remote sources
 
@@ -22,21 +26,21 @@ Supply secret and SSH sources per build:
 coopr build image.coopr --secret id=token,src=./token --ssh default
 ```
 
-Mount declarations affect cache identity; credential bytes and agent contents do not. Refresh cached results when changed credentials must change the output. Avoid copying credentials into the context or writing them into layers.
+Keep credentials out of the context and image layers. Use `--no-cache` when changed credentials must change a cached result; credential bytes and SSH agent contents do not invalidate it. See [caching](caching.md#refresh-deliberately).
 
-HTTPS Git uses host-scoped `GIT_AUTH_HEADER.<host>` or `GIT_AUTH_TOKEN.<host>` secrets. Authenticated Git rejects redirects and does not send a parent repository's authorization to out-of-scope submodules. SSH Git requires an explicit `GIT_KNOWN_HOSTS[.host]` secret and supplied SSH source. HTTP file ADD selects authorization per redirect host. Registry operations share request-scoped authentication, certificate, TLS, and retry options.
+HTTPS Git accepts host-scoped `GIT_AUTH_HEADER.<host>` or `GIT_AUTH_TOKEN.<host>` secrets. Authenticated Git rejects redirects and withholds parent credentials from out-of-scope submodules. SSH Git needs `GIT_KNOWN_HOSTS[.host]` and an SSH source. HTTP ADD selects authorization per redirect host. Registry requests use the configured authentication, certificate, TLS, and retry options.
 
-Image inputs honor native registry routing and signature policy. Pin every selected reference, including nested component/image inputs, when immutable selection matters. Component artifact digests do not establish a publisher signature policy by themselves. Keep TLS verification enabled outside deliberately configured local test registries.
+Image inputs honor native registry routing and signature policy. Keep TLS verification enabled outside deliberately configured local test registries. For immutable selection, pin image and component references by digest, including nested references. A component digest alone does not establish publisher trust or signature policy.
 
 ## Nested container profile
 
-Coopr's container image is built from scratch and includes Coopr, `crun`, networking helpers, UID-map helpers, Git/SSH, GPGME/GnuPG, certificates, and archive support. It runs as UID/GID 1000 and has no distribution package manager or builder daemon.
+The scratch-based container image includes Coopr, `crun`, network and UID-map helpers, Git/SSH, GPGME/GnuPG, certificates, and archive support. It runs as UID/GID 1000, without a distribution package manager or builder daemon.
 
-The Linux/amd64 acceptance profile needs nested user/mount namespaces, working setuid UID-map helpers, namespace-scoped `CAP_SYS_ADMIN`, writable project/state mounts, and outer security policies permitting clone/unshare/mount. Networked builds require `/dev/net/tun` and outer networking. Persist `/home/user/.local/share` to retain images and components.
+The tested Linux/amd64 profile requires nested user/mount namespaces, working setuid UID-map helpers, namespace-scoped `CAP_SYS_ADMIN`, and outer policies permitting clone/unshare/mount. Mount a writable project directory and persist `/home/user/.local/share` for images and components. Networked builds also require `/dev/net/tun` and outer networking.
 
-The tested Podman profile uses `--userns=keep-id:uid=1000,gid=1000`, `--user=1000:1000`, `--cap-add=SYS_ADMIN`, `--security-opt=seccomp=unconfined`, `--security-opt=label=disable`, and `--security-opt=unmask=ALL`. This is a permissive acceptance profile: a narrower policy must still permit the required operations.
+The tested Podman profile uses `--userns=keep-id:uid=1000,gid=1000`, `--user=1000:1000`, `--cap-add=SYS_ADMIN`, and unconfined seccomp, disabled labeling, and `unmask=ALL`. This permissive acceptance profile demonstrates nested execution; a narrower policy must still permit the required operations.
 
-Native overlay worked on the tested host without `/dev/fuse`; other kernels/drivers may require it. A nested OCI failure remains a failure. Switching to chroot would weaken the `network="none"` boundary, so Coopr does not silently do that.
+Native overlay worked without `/dev/fuse` on the tested host; other drivers/kernels may require it. Nested OCI failures do not trigger a chroot fallback, which would weaken `network="none"` isolation.
 
 ## Supported limitations
 
@@ -45,5 +49,5 @@ Native overlay worked on the tested host without `/dev/fuse`; other kernels/driv
 - Healthcheck and ONBUILD extensions are preserved with OCI/Docker output; receiving runtimes decide whether to honor them.
 - Docker's classic store requires a selected child for multi-platform transfer. Auxiliary attestation descriptors and duplicate runnable platform entries are rejected by current image selection.
 - Keyless signing is unsupported. Keyed Sigstore signatures do not include a Rekor transparency-log entry.
-- Network responses, secret/cache-mount contents, and mutable host-volume/device contents are outside reproducibility guarantees and may not invalidate caches.
-- Host kernels, nested runtime policies, cgroups, device access, and credential helpers remain requirements. A successful test on one host does not establish support on every CI environment.
+- Mutable external inputs may not invalidate caches; see [refresh rules](caching.md#refresh-deliberately).
+- The tested host profile does not establish support for every kernel or CI runtime policy.

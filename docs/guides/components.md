@@ -1,6 +1,6 @@
 # Package components
 
-A definition containing `extend` is a component. Invoke a local definition directly, or build an OCI component to share outside your checkout.
+Components apply shared changes to images. Their `extend` stage starts from the consuming image. Use a local definition directly, or package it as an OCI component to share outside your checkout.
 
 ## Share a component within a repository
 
@@ -11,9 +11,9 @@ from "docker.io/library/ubuntu:24.04"
 component "./components/shared.coopr" channel="api"
 ```
 
-Coopr builds the required package stages locally, then applies the component's selected transformation to the caller's image. You do not need a separate `coopr component build` command or a registry. Package results use the existing build cache.
+Coopr packages the required stages and applies the selected transformation during the consuming build. Package results use the existing build cache.
 
-The definitions in `examples/local-components/build` supply shared settings to two images. The `build` directory is the build context:
+The checked-in `examples/local-components/build` example supplies shared settings to two images:
 
 ```text
 local-components/
@@ -25,7 +25,7 @@ local-components/
         └── settings.conf
 ```
 
-Build both from that directory:
+Build both with the same context:
 
 ```sh
 cd examples/local-components/build
@@ -33,11 +33,11 @@ coopr build -f api.coopr . --tag coopr-local:api
 coopr build -f worker.coopr . --tag coopr-local:worker
 ```
 
-Paths follow context COPY rules: `./components/shared.coopr` resolves from the selected build-context root. Its package uses `copy "components/settings.conf" "/settings.conf"` to read the file beside it. Package COPY sources and nested local component paths use that same root, even when a definition is in a subdirectory, and the consuming build's ignore policy applies. An invocation-time COPY continues to read the caller's context.
+Definition paths, package COPY sources, and nested local references resolve from the context root, using the consumer’s ignore policy. Here, `./components/shared.coopr` packages `components/settings.conf`. A definition’s subdirectory does not change that root. Invocation-time COPY also reads the caller’s context.
 
-Local definitions require a leading `./`, `../`, or `/`, regardless of their file extension. Other names are OCI references: `team/shared.coopr` names a registry repository, while `./team/shared.coopr` selects a context file. The presence of a matching local file does not change registry resolution. Paths remain confined to the context; `/` means its root, and `../` does not grant access to its parent. A glob must select exactly one definition file.
+Local paths must start with `./`, `../`, or `/`. Thus `team/shared.coopr` is a registry reference; `./team/shared.coopr` is a context file. Paths stay confined to the context: `/` means its root and `../` cannot escape it. A glob must match exactly one definition.
 
-Component properties supply arguments to local packaging and invocation. Package-scope arguments are fixed for that invocation's artifact; later invocations with different values can build another variant. Arguments declared after `extend` configure the caller transformation.
+Properties such as `channel="api"` supply component arguments. See [outputs and arguments](#select-outputs-and-arguments) for when their values become fixed.
 
 ## Build an OCI component
 
@@ -49,19 +49,19 @@ coopr component copy settings oci-archive:settings.oci.tar
 coopr component copy settings registry:registry.example.com/team/settings:1
 ```
 
-The registry command publishes to your chosen repository. An unprefixed build tag names the local component; `local:settings` explicitly selects it at invocation. A registry reference does not fall back to a local tag.
+The registry command publishes the component. Invoke the local tag as `local:settings`; registry references never fall back to local tags.
 
 ## Capture component-owned files
 
-Put files in a `package` stage or its producer stages, then copy from the stored package after `extend`. Invocation of an OCI component does not read files beside its original definition. An ordinary context COPY at invocation instead reads the consuming caller's context.
+Capture owned files in a `package` stage or its producers, then copy from that package after `extend`. OCI invocation cannot read the publisher’s checkout. An ordinary context COPY reads the consumer’s context.
 
-Packages begin with empty filesystem and image configuration. `from "package-name"` inherits both; `copy ... from="package-name"` copies files without replacing the caller's configuration. Producer stages cannot depend on `extend` because the caller is unavailable during packaging.
+Packages start empty. `from "package-name"` inherits their filesystem and configuration; `copy ... from="package-name"` copies only files. Producers cannot depend on `extend`, because packaging has no caller.
 
 ## Select outputs and arguments
 
-`--target NAME` selects a component output when building it. The output must descend from `extend` through FROM links. Publication fixes that output; invocation has no target selector. Publish different outputs under different references.
+`--target NAME` selects an output descended from `extend` through FROM links. Publication fixes it; invocation has no target selector. Publish other outputs under separate references.
 
-Properties on a component call are string arguments, including a property named `target`. Arguments in package-producer scope become fixed during component build. Declare adjustable arguments after `extend` where possible. The [two-component tutorial](../tutorials/reusable-components.md) demonstrates this boundary.
+Properties on a component call are string arguments, including a property named `target`. Arguments in package-producer scope become fixed during component build. For local references, different property values can package another variant. Declare invocation arguments after `extend`. The [two-component tutorial](../tutorials/reusable-components.md) demonstrates this boundary.
 
 ## Declare compatibility
 
@@ -73,7 +73,7 @@ extend as="configured" {
 }
 ```
 
-Any value in one field may match; every declared field and retained extend root must match. `distro-version` requires exact versions and a `distro` declaration. Version ranges and inferred distribution-family matches are unsupported. Compatibility checks inspect the caller image before executing the component.
+Coopr checks the caller before execution. Any listed value may match within a field; every declared field and retained extend root must match. `distro-version` requires exact versions and `distro`. Ranges and inferred family matches are unsupported.
 
 ## Share across platforms
 

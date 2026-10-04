@@ -1,10 +1,6 @@
 # Examples
 
-Run all commands from the repository root inside the pinned development environment:
-
-```sh
-nix develop path:.
-```
+[Install Coopr](../docs/getting-started/index.md), then run the example commands from the repository root. Examples that run containers also need Podman.
 
 | Example | Purpose |
 | --- | --- |

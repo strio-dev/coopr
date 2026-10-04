@@ -1,27 +1,27 @@
 # Architecture
 
-Coopr separates definition parsing, graph planning, OCI resolution, and execution. The definition and component artifact formats belong to Coopr; Buildah provides image-building primitives.
+Coopr reads KDL v2, plans the selected output’s dependencies, and executes them through embedded Buildah. Images use a native graph; components use a separate OCI store.
 
-| Boundary | Responsibility |
+| Part | Responsibility |
 | --- | --- |
-| Definition | Parse ordered KDL v2 instructions and options. |
-| Planner | Resolve stage dependencies, argument scopes, selected outputs, and component phase boundaries. |
-| Resolver and stores | Select Linux platform descriptors, verify bytes, and retain image or component inputs. |
-| Embedded Buildah | Apply filesystem and image-configuration operations to the planned state. |
-| Transfer | Copy retained artifacts to explicit local, archive, registry, or engine destinations. |
+| Definition parser | Read instructions and options in authored order. |
+| Planner | Resolve dependencies, argument scopes, outputs, and component phases. |
+| Resolver and stores | Select Linux platform descriptors, verify bytes, and retain inputs. |
+| Embedded Buildah | Apply filesystem and image-configuration changes. |
+| Transfer | Copy results to local tags, archives, registries, or engine stores. |
 
-The production pipeline uses Go APIs. It does not generate Containerfiles or invoke builder/engine CLIs. RUN starts the configured OCI runtime; networking, storage, Git, SSH, and credentials may require their configured host helpers. No builder daemon is required, though an explicit Docker destination requires Docker's Engine API.
+The pipeline uses Go APIs, without generated Containerfiles, builder CLIs, or a builder daemon. RUN starts an OCI runtime; storage, networking, Git, SSH, and credentials may need host helpers. Explicit Docker destinations use the Engine API.
 
 ## State and dependencies
 
-A stage holds a Linux filesystem, logical image configuration, target platform, and argument scope. Instructions execute in order within that stage. FROM, COPY/ADD sources, and RUN mount sources introduce graph dependencies. The planner rejects cycles and ambiguous references before execution.
+A stage holds a filesystem, image configuration, target platform, and argument scope. Its instructions execute in order. FROM, COPY/ADD sources, and RUN mount sources create dependencies on other stages or inputs.
 
-Independent stages can execute concurrently within the build's shared `--jobs` budget. Publication and invocation have different available inputs; see [component phases](stages.md).
+The planner rejects cycles and ambiguous references. Independent stages can execute concurrently within the shared `--jobs` budget. Component packaging and invocation have different inputs; see [stages and component phases](stages.md).
 
 ## Portable artifacts
 
-Images live in the selected native image graph. Components live in an OCI layout containing the retained invocation graph, selected output, fixed arguments, platform, and immutable package snapshots. This makes component invocation independent of the publisher's checkout.
+An image contains its filesystem layers and runtime configuration. A component contains a retained transformation, selected output, fixed arguments, target platform, and immutable package snapshots. Those snapshots let it run without the publisher's checkout.
 
-Descriptor digests and sizes are checked before use. Digest pins select exact bytes; trust policy and runtime permissions remain separate concerns. An outer component pin does not freeze mutable image/component references nested inside it.
+Descriptor sizes and digests are verified. An outer component pin fixes its bytes, but mutable references inside it can change. See [security](../guides/security.md) for trust and permissions.
 
-Coopr preserves raw image configuration it does not change. Portable state identity excludes layer history and rootfs provenance; the final artifact retains them. The [execution contract](../reference/execution.md) records cache identity, metadata, ONBUILD, and phase rules.
+Coopr preserves image configuration fields it does not change. Cache identity omits layer history and rootfs provenance, which the final artifact retains. The [execution reference](../reference/execution.md) defines the detailed cache, metadata, and ONBUILD rules.

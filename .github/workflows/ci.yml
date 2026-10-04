@@ -139,6 +139,9 @@ jobs:
       BUILD_TAG: build-${{ github.run_id }}
     steps:
       - *checkout
+      - &release-version
+        name: Set release version
+        run: printf '%s\n' "$GITHUB_REF_NAME" > nix/release-version
       - *nix
       - *check
       - name: Locate release archive
@@ -206,6 +209,7 @@ jobs:
       BUILD_TAG: build-${{ github.run_id }}
     steps:
       - *checkout
+      - *release-version
       - *nix
       - name: Read current release state
         id: state

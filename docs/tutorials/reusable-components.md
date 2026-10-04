@@ -1,6 +1,6 @@
 # Reuse two components
 
-Apply shared settings, then a policy check, to the image from the [first tutorial](first-image.md). Each component captures its own files during publication; the consuming build needs only the component reference.
+Apply shared settings, then a policy check, to the image from the [first tutorial](first-image.md). Each component captures its files during packaging; the consuming build needs only the component reference.
 
 Run from the same checkout with Coopr and Podman available. This tutorial relies on the locally named `coopr-demo:base` image.
 

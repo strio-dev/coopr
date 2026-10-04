@@ -125,3 +125,13 @@ func TestCompletion(t *testing.T) {
 		t.Fatalf("status %d, stdout %q, stderr %q", status, out.String(), errOut.String())
 	}
 }
+
+func TestVersion(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if status := run([]string{"--version"}, &out, &errOut); status != 0 {
+		t.Fatalf("version status %d: %s", status, errOut.String())
+	}
+	if got, want := out.String(), "coopr version dev\n"; got != want {
+		t.Fatalf("version output = %q, want %q", got, want)
+	}
+}

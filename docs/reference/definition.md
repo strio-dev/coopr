@@ -48,7 +48,7 @@ A multiline RUN starting with a `#!` interpreter line executes as a script with 
 | `expose`, `volume`, `stopsignal` | Set runtime configuration. |
 | `healthcheck`, `onbuild` | Preserve healthcheck or inherited build-trigger configuration. |
 
-Unknown instructions or unsupported options fail explicitly. Parser acceptance alone is not runtime support.
+Unknown instructions or unsupported options fail explicitly. See the [execution reference](execution.md) for stage, input, and runtime rules.
 
 ## Arguments
 
@@ -59,7 +59,7 @@ arg "channel" "stable"
 env APP_CHANNEL="${channel}"
 ```
 
-Global ARGs precede the first stage. Local ARGs apply from declaration onward and pass to a stage inheriting that stage with FROM. Independent extend roots get global and explicitly supplied component arguments, rather than caller-local arguments. Values are strings; unset declarations expand to empty text. Structural references must still be valid after expansion.
+Global ARGs precede the first stage and support structural expansion; redeclare them in a stage for RUN exposure. Local ARGs apply from declaration and pass through FROM inheritance. Independent EXTEND roots get global and explicitly supplied component arguments. Values are strings; unset references expand to empty text. Structural references must remain valid after expansion. Package-producing arguments are fixed at component build; see [argument scope](execution.md#arguments-and-normalization).
 
 ## Files and mounts
 
@@ -82,6 +82,24 @@ healthcheck interval="30s" timeout="3s" retries=3 {
 onbuild { copy "generated" "/generated" }
 ```
 
-`healthcheck NONE` disables a healthcheck and takes no other options. Quoted `"NONE"` remains a shell command; `exec "NONE"` remains an executable argument. ONBUILD takes one ordinary instruction; nested ONBUILD, FROM, and MAINTAINER are rejected as inherited triggers. Later FROM executes inherited triggers in stored order using the child's context, then clears them.
+Timing properties are `interval`, `timeout`, `start-period`, and `start-interval`; `retries` is a nonnegative integer. `healthcheck NONE` disables a healthcheck and takes no other options. Quoted `"NONE"` remains a shell command; `exec "NONE"` remains an executable argument. ONBUILD takes one ordinary instruction; nested ONBUILD, FROM, and MAINTAINER are rejected as inherited triggers. Later FROM executes inherited triggers in stored order using the child's context, then clears them.
 
-For exact phase, resolution, metadata, timestamp, and cache behavior, see the [execution contract](execution.md).
+EXTEND compatibility fields (`distro`, `distro-version`, `package-manager`, `architecture`) accept a string property or one child listing allowed strings. See [compatibility requirements](execution.md#compatibility-requirements) for matching rules.
+
+## Instruction options
+
+COPY accepts local or declared stage/image inputs; HTTP/Git sources fail before connection. ADD supports remote sources, archive extraction via `unpack="true"|"false"`, and Git metadata retention via `keep-git-dir="true"`. COPY/ADD `link="true"` creates an independent layer, committed before the next filesystem instruction so later instructions see it.
+
+Healthcheck and ONBUILD configuration extensions survive OCI and Docker outputs, though receiving runtimes may ignore them. Imported Docker ONBUILD heredocs retain their Dockerfile semantics, including executable/empty RUN scripts and COPY/ADD filenames. This does not add authored inline COPY/ADD syntax.
+
+RUN supports bind, cache, tmpfs, secret, and SSH mounts. Mount types/properties may use arguments and are validated after resolution. Mount children retain source order. Secret/SSH mounts accept `id`, `target`, `required`, `uid`, `gid`, and `mode`; secrets also accept `env`.
+
+Both build commands accept `--secret id=NAME,src=PATH`, `--secret id=NAME,env=VARIABLE`, and `--ssh ID[=PATH]`. Credential bytes are read when needed and do not enter definitions or cache keys. Changed credentials require `--no-cache` or another measured input change when they must change the output.
+
+## Remote inputs
+
+| Source | Credentials |
+| --- | --- |
+| HTTP file ADD | `HTTP_AUTH_HEADER_<host>` or `HTTP_AUTH_TOKEN_<host>` secrets, selected separately for each redirect host. |
+| Private HTTPS Git | Host-scoped `GIT_AUTH_HEADER.<host>` or `GIT_AUTH_TOKEN.<host>`. Authenticated redirects fail; submodules outside the selected parent-repository scope receive no parent authorization header. |
+| SSH/SCP Git | `--ssh default` plus `GIT_KNOWN_HOSTS.<host>` or `GIT_KNOWN_HOSTS`, with strict host-key verification. |

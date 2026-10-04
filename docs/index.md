@@ -13,10 +13,10 @@ Package common build steps and files as OCI components, then apply them to other
 
 ```sh
 curl -fsSL https://coopr.strio.dev/install.sh | sh
-export PATH="$HOME/.local/bin:$PATH"
+coopr --version
 ```
 
-The installer downloads a release binary for Linux amd64 or arm64 and verifies its checksum. See [getting started](getting-started/index.md) for installation options and host requirements.
+Installs a Linux release to `/usr/local/bin`, using sudo for non-root installs. See [getting started](getting-started/index.md) for requirements and installation options.
 
 <div class="coopr-paths" markdown>
 <div class="coopr-path" markdown>
@@ -53,7 +53,7 @@ cmd {
 coopr build image.coopr -t hello:latest
 ```
 
-The definition language uses KDL, not a Containerfile. Instructions run in order within a stage; named stages connect through `from` and `copy`. See the [definition reference](reference/definition.md) for the exact syntax and supported options.
+Definitions use KDL. Instructions run in order within a stage; named stages connect through `from` and `copy`. See the [definition reference](reference/definition.md) for syntax and options.
 
 ## Find your next step
 
@@ -62,5 +62,3 @@ The definition language uses KDL, not a Containerfile. Instructions run in order
 - [Storage](guides/storage.md): local images, components, and registry transfers.
 - [Security](guides/security.md): rootless requirements, mounts, secrets, and nested containers.
 - [Architecture](concepts/architecture.md): how resolution, planning, execution, and storage fit together.
-
-Coopr runs on Linux. Rootless builds still depend on host kernel, namespace, and runtime configuration; see [getting started](getting-started/index.md) before building.

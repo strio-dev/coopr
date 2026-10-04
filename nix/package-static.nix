@@ -1,4 +1,7 @@
-{ pkgs }:
+{
+  pkgs,
+  version ? "dev",
+}:
 let
   gpgme = pkgs.pkgsStatic.gpgme.overrideAttrs (old: {
     # Let GPGME find the host's GnuPG engines through PATH.
@@ -61,7 +64,7 @@ let
   );
 in
 (pkgs.pkgsStatic.callPackage ./package.nix {
-  inherit gpgme;
+  inherit gpgme version;
   inherit (pkgs) go_1_27;
 }).overrideAttrs
   (

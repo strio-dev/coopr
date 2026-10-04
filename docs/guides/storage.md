@@ -1,6 +1,6 @@
 # Image and component storage
 
-Coopr separates image execution/storage from component artifacts. Selecting Podman's graph affects images; components always retain their own OCI store.
+Choose where images are built and retained: Coopr’s private graph or Podman’s graph. Components use a separate OCI store in either mode.
 
 | Data | Default location |
 | --- | --- |
@@ -8,7 +8,7 @@ Coopr separates image execution/storage from component artifacts. Selecting Podm
 | Component artifacts | `$XDG_DATA_HOME/coopr/components` |
 | Runtime state | `$XDG_RUNTIME_DIR/coopr/buildah` when available |
 
-The data-home fallback is `~/.local/share`. Instruction snapshots and cache mounts share the selected image graph. Removing that graph loses locally built images and imported image inputs as well as caches.
+Data home defaults to `~/.local/share`. Instruction snapshots and cache mounts share the selected graph; deleting it also loses built and imported images.
 
 ## Select Podman storage
 
@@ -19,7 +19,7 @@ coopr --image-store podman build image.coopr --tag app:dev
 coopr --image-store coopr build image.coopr --tag private-app:dev
 ```
 
-Podman mode uses effective native storage configuration and user mappings. Ordinary output names become visible to Podman. Catalogs below Coopr's data directory hold selection metadata, not another payload graph. Shared storage requires compatible configuration and native locking; Coopr's activity lease does not exclude external Podman processes.
+In Podman mode, ordinary output tags are visible to Podman. Coopr uses the effective native storage configuration and user mappings; both tools must use compatible settings when sharing a graph. Coopr’s activity lease does not exclude external Podman processes.
 
 ## Copy explicitly
 
@@ -31,9 +31,15 @@ coopr copy app:dev docker:app:dev
 coopr copy app:dev registry:registry.example.com/team/app:dev
 ```
 
-These retain the local result. Engine sources `podman:SOURCE` and `docker:SOURCE` can also be imported through `coopr copy`. Ordinary FROM inputs resolve from the selected image graph or a registry.
+Copies retain the local result. Import an engine image with the same command:
 
-A complete locally built index can be copied as a whole to a registry, OCI archive, Podman, or Docker's containerd store. Docker's classic store requires `--platform` to select one child. Single-image Docker imports can convert manifest format and change the digest. Components support local names, OCI archives, and registries, but cannot be copied into engine image stores.
+```sh
+coopr copy podman:app:dev local:app:imported
+```
+
+`docker:SOURCE` also selects an engine source. Ordinary FROM inputs resolve from the selected graph or a registry.
+
+Copy complete indexes to registries, OCI archives, Podman, or Docker’s containerd store. Docker’s classic store needs `--platform` to select one child. Docker imports may convert format and change the digest. Components support local names, OCI archives, and registries, but no engine destinations.
 
 ## Inspect and maintain
 
@@ -46,4 +52,4 @@ coopr system prune --dry-run
 coopr cache prune --dry-run
 ```
 
-Review a dry run before pruning. Named and in-use roots are protected; unrelated objects in a selected shared Podman graph are retained. Docker and other unselected graphs are outside this scope. See [configuration](../reference/configuration.md) for low-level native storage overrides.
+Review the dry run, then omit `--dry-run` to prune. Named and in-use roots are protected; unrelated objects in a shared Podman graph are retained. Pruning applies to the selected graph. See [configuration](../reference/configuration.md) for native storage overrides.

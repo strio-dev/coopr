@@ -1,6 +1,6 @@
 # Stages and component phases
 
-`from`, `package`, and `extend` start stages. Named stages provide filesystem and configuration at the end of their authored body.
+A stage is a sequence of instructions operating on a filesystem and image configuration. `from`, `package`, and `extend` choose its initial state. A named stage refers to the state at the end of its body.
 
 | Start | Initial state |
 | --- | --- |
@@ -9,20 +9,20 @@
 | `package as="payload"` | Empty filesystem and image configuration, saved as an immutable package. |
 | `extend as="configured"` | Current consuming image filesystem and configuration. |
 
-Each extend root starts independently from the same caller state. A second extend does not inherit the first extend's changes; use `from "configured"` to continue them.
+Each `extend` starts from the same caller state. To continue another extend stage’s changes, use `from "configured"`.
 
 ## Build phase
 
-A component build executes packages reachable from the selected output and their producer dependencies. Producers cannot depend on extend, because no consuming filesystem exists yet. Package arguments are fixed at this phase. Publication retains the selected transformation and snapshots needed for invocation.
+Packaging happens before the component has a caller. It executes the packages needed by the selected output and their producer stages, fixes package arguments, and stores the snapshots alongside the transformation. Producers cannot depend on `extend`: the consuming filesystem is not available yet.
 
-A local file reference performs this packaging automatically as part of the consuming build. Its definition, package sources, and nested local references use the consumer's build-context root. The resulting artifact follows the same invocation path as an explicitly built component; see [local component workflows](../guides/components.md#share-a-component-within-a-repository).
+`coopr component build` packages an OCI component explicitly. A [local file reference](../guides/components.md#share-a-component-within-a-repository) packages it during the consuming build, using the consumer’s context root for definitions and package sources. Both produce an artifact for invocation against a consuming image.
 
 ## Invocation phase
 
-A component call starts the retained transformation against the caller's current state. Stored packages become input leaves; their producers do not rerun. A derived stage needed at invocation can still execute there. Local file inputs used at invocation belong to the caller's context.
+Invocation starts the retained transformation from the caller’s current state. Stored packages supply their snapshots without rerunning producers. Other derived stages needed by the transformation execute during invocation. Context COPY instructions read the caller’s context.
 
 The selected output must descend from extend through FROM links. COPY dependencies supply files but do not make a package an acceptable caller-replacing output.
 
-A call returns the selected filesystem and image configuration. Caller argument declarations remain in scope; private component arguments do not leak into it. Returned ENV values win collisions until a later caller ARG declaration reapplies its own CLI override. Like a FROM boundary, an entrypoint after the call clears inherited CMD unless a later CMD supplies one.
+The selected output replaces the caller’s filesystem and configuration. Caller arguments stay in scope; component arguments stay private. Returned ENV wins collisions until a later caller ARG reapplies its CLI override. As after FROM, a new entrypoint clears inherited CMD; a later CMD restores a default.
 
-FROM consumes inherited ONBUILD triggers before authored instructions. Extend does not consume the caller's stored triggers. See the [execution contract](../reference/execution.md) for deferred references and inherited trigger planning.
+FROM consumes inherited ONBUILD triggers before authored instructions. Extend does not consume the caller's stored triggers. See the [execution reference](../reference/execution.md) for deferred references and inherited trigger planning.

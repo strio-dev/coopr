@@ -1,13 +1,19 @@
 # Build images
 
-`coopr build FILE` builds the exact definition path you supply. There is no default filename or automatic `.coopr` suffix. To supply a context directory, archive, Git source, or stdin, select its definition with `--file FILE`. `--context` selects a different input tree for a definition supplied as the positional argument.
+Choose a definition file and a tag:
+
+```sh
+coopr build image.coopr --tag app:dev
+```
+
+Coopr reads KDL v2 from the exact path supplied; it does not choose a default filename or add `.coopr`. A positional definition uses its directory as the context. With `--file FILE`, the context defaults to the current directory. Supply a context or use `--context` to choose another:
 
 ```sh
 coopr build . --file build/release.coopr --tag app:dev
 coopr build image.coopr --target runtime --build-arg VERSION=1.2
 ```
 
-Local COPY/ADD sources stay inside the context after symlink resolution. Coopr selects the first available ignore file at the context root: `.cooprignore`, `.containerignore`, then `.dockerignore`. `--ignorefile PATH` overrides that selection. All three use Docker/Podman ignore patterns, including `!` negation. Coopr excludes its selected stores and temporary artifacts from the context.
+Local COPY/ADD sources stay inside the context, including through symlinks. Ignore-file precedence is `.cooprignore`, `.containerignore`, then `.dockerignore` at the context root; `--ignorefile PATH` overrides it. Docker/Podman patterns and `!` negation apply. Selected stores and temporary artifacts are excluded.
 
 ## Stages and inputs
 
@@ -24,7 +30,7 @@ entrypoint {
 }
 ```
 
-This pattern assumes the application builds a self-contained executable; choose a runtime base or explicitly build statically when it needs libraries. The final stage is the default output. `--target` chooses a named stage, and unrelated stages are skipped by default.
+The scratch example requires a self-contained executable; otherwise choose a runtime base. The final stage is the default output. `--target` selects a named stage; unrelated stages are skipped by default.
 
 Named inputs can be supplied separately:
 
@@ -42,12 +48,17 @@ coopr copy app:multi oci-archive:app.oci.tar
 coopr copy app:multi docker:app:amd64 --platform linux/amd64
 ```
 
-Several platforms produce an OCI index, or a Docker manifest list with `--format docker`. Only Linux is supported. Foreign-architecture RUNs require host emulation; copying files or assembling an index does not prove those binaries execute.
+Multiple platforms produce an OCI index, or a Docker manifest list with `--format docker`. Only Linux is supported. Foreign-architecture RUNs need host emulation; an assembled index does not prove the binaries execute.
 
-Image format and destination are separate choices. `--format docker` changes the stored manifest/config format; `docker:` selects an Engine destination. Healthchecks and ONBUILD extensions are retained in both formats, but runtime handling varies.
+Image format and destination are separate choices. `--format docker` changes the stored manifest/config format; `docker:` selects an Engine destination. See [security and limitations](security.md#supported-limitations) for runtime compatibility.
 
-`--output type=local,dest=PATH` exports the final filesystem, and `--output type=tar,dest=PATH` exports a tar archive. Consult `coopr build --help` for output controls, resource limits, lifecycle flags, and metadata options.
+`--output type=local,dest=PATH` exports the final filesystem, and `--output type=tar,dest=PATH` exports a tar archive. Run `coopr build --help` for the full option list.
 
 ## Refresh inputs
 
-Image pulls default to `--pull-policy missing`, reusing a local selection. `--pull` selects `always`; `--pull-policy never` requires local inputs. `newer` compares the registry selection and permits local fallback on registry failure. Component registry tags resolve on each build. Use digest pins for immutable selection, including references nested in a component.
+```sh
+coopr build image.coopr --pull
+coopr build image.coopr --pull-policy never
+```
+
+The default `missing` policy reuses locally selected images. `--pull` selects `always`; `never` requires local images. `newer` compares registry content and permits local reuse if the registry request fails. Component registry tags resolve on each build. Pin references by digest when selection must be immutable, including references inside components.

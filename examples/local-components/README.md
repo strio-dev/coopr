@@ -1,6 +1,6 @@
 # Local components
 
-Two image definitions share `build/components/shared.coopr`. Their `./components/shared.coopr` references resolve within the `build/` context; the component packages `components/settings.conf` from that same context.
+The API and worker definitions share `build/components/shared.coopr`. Each invokes it with a different `channel` argument; no component build or upload is needed.
 
 ```sh
 coopr build -f examples/local-components/build/api.coopr examples/local-components/build --tag coopr-local:api
@@ -9,4 +9,4 @@ coopr copy coopr-local:api podman:localhost/coopr-local:api
 podman run --rm --network=none localhost/coopr-local:api
 ```
 
-Both builds apply the shared settings automatically, with different `channel` arguments. No separate component build or upload is required. See the [local-component guide](../../docs/guides/components.md#share-a-component-within-a-repository) for path rules.
+Paths resolve within the `build/` context. The component packages `components/settings.conf` from that context, then installs it in each image. See [local component paths](../../docs/guides/components.md#share-a-component-within-a-repository).

@@ -27,7 +27,7 @@ nav = [
   { "Reference" = [
     { "Definition syntax" = "reference/definition.md" },
     { "CLI" = "reference/cli.md" },
-    { "Execution contract" = "reference/execution.md" },
+    { "Execution" = "reference/execution.md" },
     { "Configuration" = "reference/configuration.md" },
   ] },
   { "Contributing" = "contributing.md" },

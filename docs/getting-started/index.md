@@ -1,49 +1,31 @@
 # Getting started
 
-Coopr builds Linux images and reusable OCI components. Install a release binary, then run the CLI on a Linux host.
+Coopr runs on Linux. Install the CLI, then follow the first-image tutorial.
 
 ## Install
 
 ```sh
 curl -fsSL https://coopr.strio.dev/install.sh | sh
-export PATH="$HOME/.local/bin:$PATH"
-coopr --help
+coopr --version
 ```
 
-The installer selects the latest stable [GitHub release](https://github.com/strio-dev/coopr/releases), checks its SHA256 checksum, and installs the static amd64 or arm64 binary in `~/.local/bin`. It keeps the accompanying licenses in `~/.local/share/licenses/coopr`. It does not require Nix or change your shell configuration.
-
-To install an exact release, pass its unprefixed tag:
-
-```sh
-curl -fsSL https://coopr.strio.dev/install.sh | sh -s -- 1.2.3
-```
-
-Set `COOPR_INSTALL_PREFIX` on the shell command to choose another location:
-
-```sh
-curl -fsSL https://coopr.strio.dev/install.sh | COOPR_INSTALL_PREFIX="$HOME/tools/coopr" sh
-```
-
-You can also download the [installer](../install.sh) or release archives directly. Corresponding dependency sources and rebuild instructions are in each release's `coopr-sources.tar.gz` archive.
+The installer downloads the latest stable [release](https://github.com/strio-dev/coopr/releases), verifies its checksum, and installs Coopr to `/usr/local/bin`. It uses sudo for non-root installs and leaves your shell configuration alone. Dependency licenses are kept in `/usr/local/share/licenses/coopr`.
 
 ## Requirements
 
-- Linux with user and mount namespaces enabled; rootless builds need subordinate UID/GID ranges and working `newuidmap`/`newgidmap` helpers.
-- A host configured for [rootless container builds](../guides/security.md#native-rootless-requirements).
-- An OCI runtime such as `crun`, working UID-map helpers, and the networking helpers required by your rootless container configuration. The release binary does not install these host tools.
-- Registry access for uncached image inputs. The first tutorial uses Red Hat UBI9 and installs NGINX from its public package repositories.
+- Linux with user and mount namespaces enabled. Rootless builds need subordinate UID/GID ranges and working `newuidmap`/`newgidmap` helpers.
+- An OCI runtime such as `crun` and the storage and networking helpers required by your container configuration. The release binary does not install these host tools.
+- Registry access for uncached images and network access for package installation steps.
 
-Other kernels, namespace policies, and nested-container environments can reject builds. See [security and rootless execution](../guides/security.md) for the container profile and limitations. Multi-platform assembly is supported; executing foreign binaries needs host `binfmt_misc` emulation.
+See [rootless setup](../guides/security.md#native-rootless-requirements) for host requirements and [security](../guides/security.md) for nested-container profiles and limitations.
 
-## Build something useful
+## Build an image
 
-[Build your first image](../tutorials/first-image.md) serves a web page with NGINX. [Reuse two components](../tutorials/reusable-components.md) packages settings and policy files and applies them in order to that image.
-
-A plain `--tag NAME` names a result locally. Publishing uses an explicit registry destination; see [builds](../guides/builds.md) and [storage](../guides/storage.md).
+[Build your first image](../tutorials/first-image.md) builds an NGINX image and runs it with Podman. Then [reuse two components](../tutorials/reusable-components.md) to add shared settings and a policy check.
 
 ## Run the published container
 
-The Coopr image is available from GHCR:
+Run Coopr from GHCR:
 
 ```sh
 podman run --rm --network=none ghcr.io/strio-dev/coopr:latest --help
@@ -51,13 +33,30 @@ podman run --rm --network=none ghcr.io/strio-dev/coopr:latest --help
 
 Use a release tag in place of `latest` to select an exact version. To build images inside the container, use the [nested rootless profile](../guides/security.md#nested-container-profile) with writable project and state mounts.
 
+## Other installation options
+
+To pin a release, pass its unprefixed version tag:
+
+```sh
+curl -fsSL https://coopr.strio.dev/install.sh | sh -s -- 1.2.3
+```
+
+You can download the [installer](../install.sh) or binary archives from [GitHub releases](https://github.com/strio-dev/coopr/releases). Each release also includes dependency sources and rebuild instructions in `coopr-sources.tar.gz`.
+
+For an unprivileged installation, choose a writable prefix:
+
+```sh
+curl -fsSL https://coopr.strio.dev/install.sh | COOPR_INSTALL_PREFIX="$HOME/.local" sh
+"$HOME/.local/bin/coopr" --version
+```
+
 ## Build from source with Nix
 
-You can also build Coopr from a checkout using Nix with flakes enabled. From the repository root:
+From a checkout, with Nix flakes enabled:
 
 ```sh
 nix build path:.#coopr -o result-coopr
-./result-coopr/bin/coopr --help
+./result-coopr/bin/coopr --version
 ```
 
-For the development shell, source-edit workflow, and tests, see [Contributing](../contributing.md).
+For the development shell and tests, see [Contributing](../contributing.md).

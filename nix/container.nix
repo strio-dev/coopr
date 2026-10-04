@@ -126,6 +126,7 @@ nix2container.buildImage {
     User = "1000:1000";
     WorkingDir = "/work";
     Entrypoint = [ "${coopr}/bin/coopr" ];
+    Labels."org.opencontainers.image.version" = coopr.version;
     Env = [
       "PATH=/usr/bin:${lib.makeBinPath runtimeTools}"
       "HOME=/home/user"

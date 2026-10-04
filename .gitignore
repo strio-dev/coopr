@@ -3,6 +3,7 @@ result
 result-*
 /bin/
 /coverage.out
+/nix/release-version
 
 # Private session/audit evidence and generated documentation.
 /site/

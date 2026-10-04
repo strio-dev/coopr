@@ -9,9 +9,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var version = "dev"
+
 func newRootCommand() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "coopr",
+		Version:       version,
 		Short:         "Compose OCI container builds and reusable components",
 		SilenceUsage:  true,
 		SilenceErrors: true,

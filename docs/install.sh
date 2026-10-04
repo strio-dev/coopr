@@ -9,7 +9,7 @@ fail() {
 main() {
     case "${1:-}" in
         -h|--help)
-            printf 'Usage: sh install.sh [VERSION]\nInstall the latest stable release, or an exact release tag.\nCOOPR_INSTALL_PREFIX defaults to ~/.local.\n'
+            printf 'Usage: sh install.sh [VERSION]\nInstall the latest stable release, or an exact release tag.\nCOOPR_INSTALL_PREFIX defaults to /usr/local.\n'
             return
             ;;
     esac
@@ -39,7 +39,12 @@ main() {
         download_url="$releases/download/$1"
     fi
 
-    prefix=${COOPR_INSTALL_PREFIX:-"$HOME/.local"}
+    prefix=${COOPR_INSTALL_PREFIX:-/usr/local}
+    sudo_cmd=
+    if [ "$prefix" = /usr/local ] && [ "$(id -u)" -ne 0 ]; then
+        command -v sudo >/dev/null 2>&1 || fail 'Installing to /usr/local requires sudo. Set COOPR_INSTALL_PREFIX to a writable prefix to install without it.'
+        sudo_cmd=sudo
+    fi
     temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/coopr-install.XXXXXX")
     trap 'chmod -R u+w "$temp_dir"; rm -rf "$temp_dir"' 0
     trap 'exit 1' 1 2 15
@@ -53,15 +58,15 @@ main() {
     (cd "$temp_dir" && sha256sum -c checksum)
     tar -xzf "$temp_dir/$asset" -C "$temp_dir" coopr LICENSE third-party
     chmod -R u+w "$temp_dir"
-    mkdir -p "$prefix/bin" "$prefix/share/licenses/coopr"
-    cp -R "$temp_dir/third-party" "$prefix/share/licenses/coopr/"
-    install -m 644 "$temp_dir/LICENSE" "$prefix/share/licenses/coopr/LICENSE"
-    install -m 755 "$temp_dir/coopr" "$prefix/bin/coopr"
+    $sudo_cmd mkdir -p "$prefix/bin" "$prefix/share/licenses/coopr"
+    $sudo_cmd cp -R "$temp_dir/third-party" "$prefix/share/licenses/coopr/"
+    $sudo_cmd install -m 644 "$temp_dir/LICENSE" "$prefix/share/licenses/coopr/LICENSE"
+    $sudo_cmd install -m 755 "$temp_dir/coopr" "$prefix/bin/coopr"
 
     printf 'Installed Coopr to %s/bin/coopr\n' "$prefix"
     case ":${PATH:-}:" in
         *":$prefix/bin:"*) ;;
-        *) printf 'Add %s/bin to your PATH.\n' "$prefix" ;;
+        *) printf 'The install directory is not on PATH; run %s/bin/coopr directly.\n' "$prefix" ;;
     esac
 }
 

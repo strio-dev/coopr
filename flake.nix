@@ -24,8 +24,13 @@
       perSystem =
         { config, pkgs, ... }:
         let
-          coopr = pkgs.callPackage ./nix/package.nix { };
-          coopr-static = pkgs.callPackage ./nix/package-static.nix { inherit pkgs; };
+          version =
+            if builtins.pathExists ./nix/release-version then
+              pkgs.lib.fileContents ./nix/release-version
+            else
+              "dev";
+          coopr = pkgs.callPackage ./nix/package.nix { inherit version; };
+          coopr-static = pkgs.callPackage ./nix/package-static.nix { inherit pkgs version; };
           release-sources = pkgs.callPackage ./nix/release-sources.nix {
             inherit pkgs inputs coopr-static;
           };

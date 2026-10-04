@@ -572,7 +572,7 @@ func mergePredefinedProxyEnvironment(environment []string, proxyArgs map[string]
 			blocked[name] = true
 		}
 	}
-	values := make(map[string]string, len(environment)+len(proxyArgs))
+	values := make(map[string]string)
 	for _, item := range environment {
 		name, value, found := strings.Cut(item, "=")
 		if found {

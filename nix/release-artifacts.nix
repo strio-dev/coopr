@@ -64,6 +64,7 @@ in
         fi
         env -i PATH=/nonexistent HOME="$TMPDIR" ./package/coopr --help > help
         grep -q 'Usage:' help
+        test "$(env -i PATH=/nonexistent HOME="$TMPDIR" ./package/coopr --version)" = ${pkgs.lib.escapeShellArg "coopr version ${coopr-static.version}"}
         touch "$out"
       '';
   sourceCheck =

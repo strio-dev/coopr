@@ -5,10 +5,11 @@
   pkg-config,
   gpgme,
   libseccomp,
+  version ? "dev",
 }:
 (buildGoModule.override { go = go_1_27; }) {
   pname = "coopr";
-  version = "0.1.0-dev";
+  inherit version;
   src = lib.fileset.toSource {
     root = ../.;
     fileset = lib.fileset.unions [
@@ -22,6 +23,7 @@
   };
   vendorHash = "sha256-VoZsv17TDOCMiClseSpzGiL6x5o2rf+7a4THscKbpw4=";
   subPackages = [ "./cmd/coopr" ];
+  ldflags = [ "-X main.version=${version}" ];
   tags = [
     "exclude_graphdriver_btrfs"
     "systemd"
