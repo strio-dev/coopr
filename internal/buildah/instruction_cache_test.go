@@ -102,13 +102,13 @@ func TestPortableInstructionCacheRelaysDeferredCandidate(t *testing.T) {
 
 func instructionCacheTestInput(operation planner.Operation) instructionCacheInput {
 	return instructionCacheInput{
-		ParentImageID: "parent-one",
-		Logical:       imageconfig.New(),
-		Operation:     operation,
-		Platform:      v1.Platform{OS: "linux", Architecture: "amd64"},
-		Isolation:     "rootless",
-		Runtime:       "crun",
-		Format:        "oci",
+		ParentRootFS: "parent-one",
+		Logical:      imageconfig.New(),
+		Operation:    operation,
+		Platform:     v1.Platform{OS: "linux", Architecture: "amd64"},
+		Isolation:    "rootless",
+		Runtime:      "crun",
+		Format:       "oci",
 	}
 }
 
@@ -135,8 +135,10 @@ func TestInstructionCacheKeyCapturesRunInputs(t *testing.T) {
 		name   string
 		mutate func(*instructionCacheInput)
 	}{
-		{"parent", func(value *instructionCacheInput) { value.ParentImageID = "parent-two" }},
+		{"parent", func(value *instructionCacheInput) { value.ParentRootFS = "parent-two" }},
 		{"platform", func(value *instructionCacheInput) { value.Platform.Architecture = "arm64" }},
+		{"OS version", func(value *instructionCacheInput) { value.Platform.OSVersion = "new" }},
+		{"OS features", func(value *instructionCacheInput) { value.Platform.OSFeatures = []string{"required"} }},
 		{"isolation", func(value *instructionCacheInput) { value.Isolation = "chroot" }},
 		{"runtime", func(value *instructionCacheInput) { value.Runtime = "runc" }},
 		{"format", func(value *instructionCacheInput) { value.Format = "docker" }},
@@ -153,6 +155,13 @@ func TestInstructionCacheKeyCapturesRunInputs(t *testing.T) {
 		{"config", func(value *instructionCacheInput) {
 			value.Logical = value.Logical.Clone()
 			if err := value.Logical.Apply(definition.Instruction{Name: "env", Arguments: []string{"MODE", "two"}}); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"hostname", func(value *instructionCacheInput) {
+			var err error
+			value.Logical, err = imageconfig.Parse([]byte(`{"config":{"Env":["MODE=one"],"Hostname":"explicit-host"}}`))
+			if err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -181,17 +190,17 @@ func TestPortableInstructionDigestUsesOCIParent(t *testing.T) {
 	input := instructionCacheTestInput(planner.Operation{
 		Instruction: definition.Instruction{Name: "run", Form: "shell", Arguments: []string{"printf ready >/proof"}, Properties: map[string]string{"network": "none"}},
 	})
-	parent := digest.FromString("selected parent manifest")
+	parent := digest.FromString("parent rootfs chain")
 	first, cacheable, err := portableInstructionDigest(input, parent)
 	if err != nil || !cacheable {
 		t.Fatalf("portableInstructionDigest() = %q, %v, %v", first, cacheable, err)
 	}
-	input.ParentImageID = "a different private store image ID"
+	input.ParentRootFS = "a different local parent spelling"
 	second, cacheable, err := portableInstructionDigest(input, parent)
 	if err != nil || !cacheable || second != first {
 		t.Fatalf("private image ID changed portable digest: first=%s second=%s cacheable=%v err=%v", first, second, cacheable, err)
 	}
-	changedParent, cacheable, err := portableInstructionDigest(input, digest.FromString("other selected parent manifest"))
+	changedParent, cacheable, err := portableInstructionDigest(input, digest.FromString("other parent rootfs chain"))
 	if err != nil || !cacheable || changedParent == first {
 		t.Fatalf("OCI parent did not change portable digest: first=%s changed=%s cacheable=%v err=%v", first, changedParent, cacheable, err)
 	}
@@ -201,9 +210,12 @@ func TestPortableInstructionParentUsesDomainSeparatedScratchIdentity(t *testing.
 	if got := portableInstructionParent(""); got != portableInstructionScratchParent || got.Validate() != nil {
 		t.Fatalf("scratch parent = %q, want valid %q", got, portableInstructionScratchParent)
 	}
-	manifest := digest.FromString("manifest")
-	if got := portableInstructionParent(manifest); got != manifest {
-		t.Fatalf("manifest parent = %q, want %q", got, manifest)
+	chain := digest.FromString("rootfs chain")
+	if got := portableInstructionParent(chain.String()); got != chain {
+		t.Fatalf("rootfs parent = %q, want %q", got, chain)
+	}
+	if got := portableInstructionParent("empty"); got != portableInstructionScratchParent {
+		t.Fatalf("empty rootfs parent = %q", got)
 	}
 }
 

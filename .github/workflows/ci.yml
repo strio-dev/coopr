@@ -265,6 +265,9 @@ jobs:
           RELEASE_ID: ${{ steps.assets.outputs.id }}
           PRERELEASE: ${{ needs.matrix.outputs.prerelease }}
         with:
+          retries: 3
+          # Newly published releases may not be immediately discoverable.
+          retry-exempt-status-codes: '400,401,403,422'
           script: |
             if (process.env.RELEASE_ID) {
               await github.rest.repos.updateRelease({
@@ -274,13 +277,12 @@ jobs:
                 make_latest: process.env.PRERELEASE === 'true' ? 'false' : 'legacy',
               });
             }
-            let latest;
-            try {
-              ({ data: latest } = await github.rest.repos.getLatestRelease(context.repo));
-            } catch (error) {
-              if (error.status !== 404) throw error;
+            if (process.env.PRERELEASE === 'true') {
+              core.setOutput('current', false);
+              return;
             }
-            core.setOutput('current', Boolean(latest && latest.tag_name === process.env.GITHUB_REF_NAME));
+            const { data: latest } = await github.rest.repos.getLatestRelease(context.repo);
+            core.setOutput('current', latest.tag_name === process.env.GITHUB_REF_NAME);
       - name: Update latest container alias
         if: steps.latest.outputs.current == 'true'
         run: |

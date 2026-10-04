@@ -62,7 +62,7 @@ func TestPackageRootMetadataFromMountMatchesArchiveHeader(t *testing.T) {
 	uidMap := []idtools.IDMap{{ContainerID: 123, HostID: int(stat.Uid), Size: 1}}
 	gidMap := []idtools.IDMap{{ContainerID: 456, HostID: int(stat.Gid), Size: 1}}
 
-	got, err := packageRootMetadataFromMount(root, uidMap, gidMap, "")
+	got, err := packageRootMetadataFromMount(root, uidMap, gidMap, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func BenchmarkPackageRootMetadataCapture(b *testing.B) {
 	}
 	b.Run("direct", func(b *testing.B) {
 		for range b.N {
-			if _, err := packageRootMetadataFromMount(root, nil, nil, ""); err != nil {
+			if _, err := packageRootMetadataFromMount(root, nil, nil, "", ""); err != nil {
 				b.Fatal(err)
 			}
 		}

@@ -41,7 +41,7 @@ type instructionCacheResolvedInput struct {
 }
 
 type instructionCacheInput struct {
-	ParentImageID          string
+	ParentRootFS           string
 	Logical                *imageconfig.Config
 	Operation              planner.Operation
 	Platform               v1.Platform
@@ -63,7 +63,7 @@ type instructionCacheInput struct {
 type instructionCacheDocument struct {
 	Schema           string                          `json:"schema"`
 	BuildahVersion   string                          `json:"buildah_version"`
-	ParentImageID    string                          `json:"parent_image_id"`
+	ParentRootFS     string                          `json:"parent_rootfs"`
 	ExecutionConfig  instructionCacheExecutionConfig `json:"execution_config"`
 	Operation        planner.Operation               `json:"operation"`
 	Platform         v1.Platform                     `json:"platform"`
@@ -85,6 +85,7 @@ type instructionCacheDocument struct {
 // cache hit, while these fields can change how Buildah performs filesystem work.
 type instructionCacheExecutionConfig struct {
 	Env         []string            `json:"Env,omitempty"`
+	Hostname    string              `json:"Hostname,omitempty"`
 	User        string              `json:"User,omitempty"`
 	WorkingDir  string              `json:"WorkingDir,omitempty"`
 	Shell       []string            `json:"Shell,omitempty"`
@@ -277,18 +278,18 @@ func portableInstructionEligible(_ planner.Operation, lowered Operation, control
 	}
 }
 
-func portableInstructionParent(parent digest.Digest) digest.Digest {
-	if parent == "" {
+func portableInstructionParent(parent string) digest.Digest {
+	if parent == "" || parent == "empty" {
 		return portableInstructionScratchParent
 	}
-	return parent
+	return digest.Digest(parent)
 }
 
-func portableInstructionKey(executor *graphExecutor, input instructionCacheInput, parent digest.Digest) (cache.ImageKey, bool, error) {
+func portableInstructionKey(executor *graphExecutor, input instructionCacheInput, parentIdentity string) (cache.ImageKey, bool, error) {
 	if executor == nil || executor.instructionPortableCache == nil {
 		return cache.ImageKey{}, false, nil
 	}
-	parent = portableInstructionParent(parent)
+	parent := portableInstructionParent(parentIdentity)
 	if parent.Validate() != nil {
 		return cache.ImageKey{}, false, nil
 	}
@@ -321,10 +322,9 @@ func portableInstructionDigest(input instructionCacheInput, parent digest.Digest
 	if parent.Validate() != nil {
 		return "", false, nil
 	}
-	// containers/storage image IDs are private to one store. Re-key the same
-	// complete instruction input with the selected parent OCI manifest so the
-	// identity is stable across otherwise independent Buildah stores.
-	input.ParentImageID = parent.String()
+	// Use the same ordered OCI layer identity across stores. The scratch
+	// sentinel needs a domain-separated digest for the portable record.
+	input.ParentRootFS = parent.String()
 	return instructionCacheKey(input)
 }
 
@@ -529,7 +529,7 @@ func instructionCacheKey(input instructionCacheInput) (digest.Digest, bool, erro
 	}
 	document, err := json.Marshal(instructionCacheDocument{
 		Schema: instructionCacheSchema, BuildahVersion: upstreamdefine.Version,
-		ParentImageID: input.ParentImageID, ExecutionConfig: config, Operation: input.Operation,
+		ParentRootFS: input.ParentRootFS, ExecutionConfig: config, Operation: input.Operation,
 		Platform: input.Platform, Isolation: input.Isolation, Runtime: input.Runtime, Format: format,
 		InputDigest: input.InputDigest, ResolvedInputs: input.ResolvedInputs,
 		RootMetadata: rootMetadata, Timestamp: input.Timestamp,

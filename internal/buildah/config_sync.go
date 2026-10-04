@@ -23,6 +23,7 @@ type builderConfigDocument struct {
 // in raw image configuration for Dockerfile-compatible subsequent RUNs.
 type builderRuntimeConfig struct {
 	User         string              `json:"User"`
+	Hostname     string              `json:"Hostname"`
 	ExposedPorts map[string]struct{} `json:"ExposedPorts"`
 	Env          []string            `json:"Env"`
 	Entrypoint   []string            `json:"Entrypoint"`
@@ -57,6 +58,11 @@ func syncBuilderConfig(builder *upstream.Builder, logical *imageconfig.Config) e
 
 	builder.SetMaintainer(document.Author)
 	builder.SetUser(document.Config.User)
+	// Generated builder hostnames are session inputs. Preserve only an
+	// explicitly inherited hostname as part of the logical execution config.
+	if document.Config.Hostname != "" {
+		builder.SetHostname(document.Config.Hostname)
+	}
 	builder.SetWorkDir(document.Config.WorkingDir)
 	builder.SetCmd(document.Config.Cmd)
 	builder.SetEntrypoint(document.Config.Entrypoint)

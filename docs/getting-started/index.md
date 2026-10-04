@@ -9,7 +9,7 @@ curl -fsSL https://coopr.strio.dev/install.sh | sh
 coopr --version
 ```
 
-The installer downloads the latest stable [release](https://github.com/strio-dev/coopr/releases), verifies its checksum, and installs Coopr to `/usr/local/bin`. It uses sudo for non-root installs and leaves your shell configuration alone. Dependency licenses are kept in `/usr/local/share/licenses/coopr`.
+Other options include [release binaries](https://github.com/strio-dev/coopr/releases), the [container image](#run-the-published-container), and [Nix](#build-from-source-with-nix).
 
 ## Requirements
 

@@ -270,6 +270,121 @@ run "od -An -N16 -tx1 /dev/urandom | tr -d ' \n' >/proof" network="none"
 	}
 }
 
+func TestBuildPlanNoOpRunCachePreservesHistoryAfterCopy(t *testing.T) {
+	requireLiveInstructionCache(t)
+	for _, format := range []string{outputFormatOCI, outputFormatDocker} {
+		for _, intermediate := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/intermediate=%t", format, intermediate), func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+				defer cancel()
+				root := t.TempDir()
+				store := StoreOptions{GraphRoot: filepath.Join(root, "graph"), RunRoot: filepath.Join(root, "run"), GraphDriverName: "overlay"}
+				base := newLiveBusyBoxStorage(t, ctx, root, store)
+				policy := writeComponentTestPolicy(t, root)
+				if err := os.WriteFile(filepath.Join(root, "payload"), []byte("unchanged payload\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(root, "marker"), []byte("after read-only RUN\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				afterRun := ""
+				cacheHits := 3
+				if intermediate {
+					afterRun = "copy \"marker\" \"/marker\""
+					cacheHits++
+				}
+				var coldImage v1.Image
+				var coldLayers []v1.Descriptor
+				for attempt, release := range []string{"cold", "warm"} {
+					plan := testPlan(t, fmt.Sprintf(`
+from %q
+run "/bin/busybox true" network="none"
+copy "payload" "/payload"
+env channel="stable"
+label release="%s"
+run "/bin/busybox test -s /payload" network="none"
+%s
+cmd { exec "/bin/cat" "/payload" }
+`, base.reference, release, afterRun))
+					layout := filepath.Join(root, release)
+					var progress strings.Builder
+					_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
+						Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
+						Output: Output{Path: layout, Format: format}, ImageStoreDir: base.imageStoreDir,
+						SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: &progress,
+					})
+					if err != nil {
+						t.Fatalf("%s build: %v\n%s", release, err, progress.String())
+					}
+					if attempt == 1 && strings.Count(progress.String(), "--> Using cache ") != cacheHits {
+						t.Fatalf("warm instructions did not all hit cache:\n%s", progress.String())
+					}
+					manifest, image := readPlanImage(t, layout)
+					if image.Config.Labels["release"] != release {
+						t.Fatalf("%s release label = %q", release, image.Config.Labels["release"])
+					}
+					if len(manifest.Layers) < 3 {
+						t.Fatalf("%s has %d layers, want BusyBox, prepared runtime files, and copied payload", release, len(manifest.Layers))
+					}
+					if got := readLayerFile(t, filepath.Join(layout, "blobs", "sha256", manifest.Layers[2].Digest.Encoded()), "payload"); got != "unchanged payload\n" {
+						t.Fatalf("%s payload = %q", release, got)
+					}
+					if intermediate {
+						last := manifest.Layers[len(manifest.Layers)-1]
+						if got := readLayerFile(t, filepath.Join(layout, "blobs", "sha256", last.Digest.Encoded()), "marker"); got != "after read-only RUN\n" {
+							t.Fatalf("%s marker = %q", release, got)
+						}
+					}
+					filesystemEntries := 0
+					for _, entry := range image.History {
+						if !entry.EmptyLayer {
+							filesystemEntries++
+						}
+					}
+					if filesystemEntries != len(manifest.Layers) || len(image.RootFS.DiffIDs) != len(manifest.Layers) {
+						t.Fatalf("%s history filesystem entries=%d layers=%d diffIDs=%d", release, filesystemEntries, len(manifest.Layers), len(image.RootFS.DiffIDs))
+					}
+					want := []string{"COPY payload /payload", "ENV channel=stable", "LABEL release=" + release, "RUN --network=none /bin/busybox test -s /payload", `CMD ["/bin/cat","/payload"]`}
+					if intermediate {
+						want = append(want[:4], "COPY marker /marker", want[4])
+					}
+					t.Logf("%s layers=%d history=%+v", release, len(manifest.Layers), image.History)
+					if len(image.History) < len(want) {
+						t.Fatalf("%s history = %+v", release, image.History)
+					}
+					tail := image.History[len(image.History)-len(want):]
+					// OCI omits an empty diff; Docker represents it as a layer.
+					if format == outputFormatOCI && !tail[3].EmptyLayer {
+						t.Fatalf("%s read-only RUN produced a filesystem layer: %+v", release, tail[3])
+					}
+					for index, instruction := range want {
+						if tail[index].CreatedBy != instruction {
+							t.Fatalf("%s history[%d] = %q, want %q", release, index, tail[index].CreatedBy, instruction)
+						}
+					}
+					if attempt == 0 {
+						coldImage, coldLayers = image, manifest.Layers
+						continue
+					}
+					if len(image.History) != len(coldImage.History) || !digestSlicesEqual(image.RootFS.DiffIDs, coldImage.RootFS.DiffIDs) || len(manifest.Layers) != len(coldLayers) {
+						t.Fatalf("warm no-op RUN changed history or filesystem counts: cold history=%d layers=%d; warm history=%d layers=%d", len(coldImage.History), len(coldLayers), len(image.History), len(manifest.Layers))
+					}
+					for index, layer := range manifest.Layers {
+						if layer.Digest != coldLayers[index].Digest {
+							t.Fatalf("warm layer %d changed from %s to %s", index, coldLayers[index].Digest, layer.Digest)
+						}
+					}
+					for index, entry := range image.History {
+						if entry.EmptyLayer != coldImage.History[index].EmptyLayer {
+							t.Fatalf("warm history[%d] empty-layer flag changed", index)
+						}
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestBuildPlanOrdersMetadataAfterNonCacheableRun(t *testing.T) {
 	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
 		t.Skip("set COOPR_TEST_BUILDAH=1 for live non-cacheable RUN history coverage")

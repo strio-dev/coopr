@@ -166,6 +166,8 @@ Registry component tags resolve on each build. Image tags default to local cache
 
 Reuse requires matching input state, arguments, platform, execution settings, and declared sources.
 
+Instruction keys use the ordered OCI filesystem layers rather than the image's creation time. Execution configuration and captured root metadata still participate. Repeated component builds can reuse instructions without timestamp flags; cached results retain the current caller's history, labels, and annotations.
+
 | Cache | Reuses | Limits |
 | --- | --- | --- |
 | Local instruction | RUN, COPY, ADD, and WORKDIR checkpoints across image and component phases. | Metadata-only changes need no filesystem checkpoint. |

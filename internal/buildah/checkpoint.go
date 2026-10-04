@@ -85,12 +85,14 @@ func checkpointSelected(ctx context.Context, store storage.Store, builder *upstr
 	}
 	options.FromImage = selectedBase
 	options.PullPolicy = define.PullNever
+	// This is an internal rebase, not a new user-selected base image.
+	options.PreserveBaseImageAnns = true
 	replacement, err := upstream.NewBuilder(ctx, store, options)
 	if err != nil {
 		return nil, imageID, manifestDigest, fmt.Errorf("create Buildah builder from checkpoint %q: %w", imageID, err)
 	}
 	// The alias selects the exact manifest for initialization. The committed
-	// image ID remains the stage's public identity and cache parent.
+	// image ID remains the stage's public identity. Cache inputs use its rootfs.
 	replacement.FromImageID = imageID
 	replacement.FromImage = imageID
 	return replacement, imageID, manifestDigest, nil

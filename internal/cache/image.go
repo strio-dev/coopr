@@ -30,8 +30,8 @@ const (
 )
 
 // ImageKey identifies one exact instruction checkpoint image. Parent is the
-// selected OCI manifest rather than a containers/storage ID, so the key is
-// stable across machines and private stores.
+// ordered OCI rootfs chain rather than image/config creation metadata, so the
+// key is stable across machines and equivalent checkpoint configurations.
 type ImageKey struct {
 	Instruction digest.Digest `json:"instruction"`
 	Parent      digest.Digest `json:"parent"`

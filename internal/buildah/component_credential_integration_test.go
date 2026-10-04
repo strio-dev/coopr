@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,7 +16,7 @@ import (
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
 
-func TestComponentInvocationReceivesSecretWithoutCachingIt(t *testing.T) {
+func TestComponentInvocationSecretUsesConventionalInstructionCache(t *testing.T) {
 	requireLiveInstructionCache(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -51,31 +52,42 @@ run "cat /run/secrets/token >/proof" network="none" { mount "secret" id="token" 
 	}
 	secretPath := filepath.Join(root, "token")
 	caller := parseWorkerDefinition(t, fmt.Sprintf("from %q\ncomponent \"local:credential\"\n", base.reference))
-	build := func(name, value string) string {
+	build := func(name, value string, noCache bool) string {
 		t.Helper()
 		if err := os.WriteFile(secretPath, []byte(value), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		layout := filepath.Join(root, name)
+		var logs strings.Builder
 		_, err := BuildDefinitionSupervised(ctx, caller, planner.Options{
 			Mode: planner.Build, Platform: "linux/" + runtime.GOARCH,
 		}, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
 			Output: Output{Path: layout}, ImageStoreDir: base.imageStoreDir, ComponentStoreDir: componentDir,
 			Secrets:             []string{"id=token,src=" + secretPath},
-			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
+			NoCache:             noCache,
+			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: &logs,
 		})
 		if err != nil {
 			t.Fatal(err)
+		}
+		t.Logf("%s worker progress:\n%s", name, logs.String())
+		hit := strings.Contains(logs.String(), "--> Using cache ")
+		if hit != (name == "second") {
+			t.Errorf("%s instruction cache hit = %v", name, hit)
 		}
 		manifest, _ := readPlanImage(t, layout)
 		last := manifest.Layers[len(manifest.Layers)-1]
 		return readLayerFile(t, filepath.Join(layout, "blobs", "sha256", last.Digest.Encoded()), "proof")
 	}
-	if got := build("first", "first\n"); got != "first\n" {
+	if got := build("first", "first\n", false); got != "first\n" {
 		t.Fatalf("first component secret output = %q", got)
 	}
-	if got := build("second", "second\n"); got != "second\n" {
-		t.Fatalf("second component secret output = %q; credential RUN was cached", got)
+	// Secret contents do not invalidate RUN, including inside components.
+	if got := build("second", "second\n", false); got != "first\n" {
+		t.Fatalf("warm component secret output = %q, want cached first value", got)
+	}
+	if got := build("no-cache", "second\n", true); got != "second\n" {
+		t.Fatalf("uncached component secret output = %q, want current value", got)
 	}
 }

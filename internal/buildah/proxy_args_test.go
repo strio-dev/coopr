@@ -59,7 +59,7 @@ func TestUndeclaredProxyValueDoesNotChangeInstructionCacheKey(t *testing.T) {
 	operation := plan.Stages[0].Operations[0]
 	config := imageconfig.New()
 	input := instructionCacheInput{
-		ParentImageID: "parent", Logical: config, Operation: operation,
+		ParentRootFS: "parent", Logical: config, Operation: operation,
 		Platform:  v1.Platform{OS: "linux", Architecture: runtime.GOARCH},
 		Isolation: "rootless", Runtime: digest.FromString("runtime").String(), Format: "oci",
 	}
@@ -77,7 +77,7 @@ func TestExplicitProxyARGValueChangesInstructionCacheKey(t *testing.T) {
 	key := func(value string) digest.Digest {
 		plan := proxyTestPlan(t, map[string]string{"HTTP_PROXY": value}, true)
 		cacheKey, cacheable, err := instructionCacheKey(instructionCacheInput{
-			ParentImageID: "parent", Logical: imageconfig.New(), Operation: plan.Stages[0].Operations[0],
+			ParentRootFS: "parent", Logical: imageconfig.New(), Operation: plan.Stages[0].Operations[0],
 			Platform:  v1.Platform{OS: "linux", Architecture: runtime.GOARCH},
 			Isolation: "rootless", Runtime: digest.FromString("runtime").String(), Format: "oci",
 		})

@@ -56,8 +56,8 @@ type PackageRootMetadata struct {
 	// The archive exporter omits some xattrs. This flag is used only to
 	// disqualify portable cache snapshots; ordinary package export is unchanged.
 	UnportableXattrs bool
-	// Buildah applies this label to the mount as host policy. It is not OCI
-	// content unless a file has a different label.
+	// Host policy allocated by Buildah or independently observed in storage.
+	// A different file label makes portable snapshots ineligible.
 	AmbientSELinux string
 }
 

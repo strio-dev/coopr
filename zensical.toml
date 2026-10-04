@@ -2,6 +2,8 @@
 site_name = "Coopr"
 site_description = "Build container images from reusable OCI components."
 site_url = "https://coopr.strio.dev"
+repo_url = "https://github.com/strio-dev/coopr"
+repo_name = "strio-dev/coopr"
 docs_dir = "docs"
 site_dir = "site"
 dev_addr = "127.0.0.1:8000"
@@ -49,6 +51,9 @@ features = [
   "search.highlight",
   "content.code.copy",
 ]
+
+[project.theme.icon]
+repo = "fontawesome/brands/github"
 
 [[project.theme.palette]]
 media = "(prefers-color-scheme: light)"

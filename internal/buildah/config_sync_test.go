@@ -23,6 +23,7 @@ func TestSyncBuilderConfigReplacesRuntimeFieldsAndPreservesLogicalExtensions(t *
   "x-top":{"preserve":true},
   "config":{
     "User":"1000:1001",
+    "Hostname":"explicit-component",
     "ExposedPorts":{"8443/tcp":{},"5353/udp":{}},
 	    "Env":["A=one","B=two=parts","A=last","REMOVE"],
     "Entrypoint":["/usr/bin/component","--flag"],
@@ -51,6 +52,9 @@ func TestSyncBuilderConfigReplacesRuntimeFieldsAndPreservesLogicalExtensions(t *
 	}
 	if builder.Maintainer() != "component author" || builder.User() != "1000:1001" || builder.WorkDir() != "/srv/component" || builder.StopSignal() != "SIGQUIT" {
 		t.Fatalf("scalar config was not synchronized: author=%q user=%q workdir=%q signal=%q", builder.Maintainer(), builder.User(), builder.WorkDir(), builder.StopSignal())
+	}
+	if builder.Hostname() != "explicit-component" {
+		t.Fatalf("explicit hostname = %q", builder.Hostname())
 	}
 	if !reflect.DeepEqual(builder.Cmd(), []string{"serve"}) || !reflect.DeepEqual(builder.Entrypoint(), []string{"/usr/bin/component", "--flag"}) || !reflect.DeepEqual(builder.Shell(), []string{"/bin/bash", "-ceu"}) {
 		t.Fatalf("vector config was not synchronized: cmd=%v entrypoint=%v shell=%v", builder.Cmd(), builder.Entrypoint(), builder.Shell())
@@ -118,6 +122,17 @@ func TestSyncBuilderConfigValidatesInputs(t *testing.T) {
 	}
 	if err := syncBuilderConfig(configSyncBuilder(), nil); err == nil || !strings.Contains(err.Error(), "logical") {
 		t.Fatalf("nil logical config error = %v", err)
+	}
+}
+
+func TestSyncBuilderConfigRetainsGeneratedHostnameWhenUnspecified(t *testing.T) {
+	builder := configSyncBuilder()
+	builder.SetHostname("generated-for-builder")
+	if err := syncBuilderConfig(builder, imageconfig.New()); err != nil {
+		t.Fatal(err)
+	}
+	if builder.Hostname() != "generated-for-builder" {
+		t.Fatalf("unspecified hostname replaced builder default: %q", builder.Hostname())
 	}
 }
 

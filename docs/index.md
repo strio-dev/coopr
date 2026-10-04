@@ -16,7 +16,7 @@ curl -fsSL https://coopr.strio.dev/install.sh | sh
 coopr --version
 ```
 
-Installs a Linux release to `/usr/local/bin`, using sudo for non-root installs. See [getting started](getting-started/index.md) for requirements and installation options.
+For other installation options, see the [installation guide](getting-started/index.md).
 
 <div class="coopr-paths" markdown>
 <div class="coopr-path" markdown>

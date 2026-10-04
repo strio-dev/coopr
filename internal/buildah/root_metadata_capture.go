@@ -16,7 +16,7 @@ import (
 // full containers/storage tar walk would place in its first header. Keeping
 // the archive package's header and ID-mapping primitives preserves the exact
 // ownership and mode semantics without traversing the rootfs.
-func packageRootMetadataFromMount(root string, uidMap, gidMap []idtools.IDMap, mountLabel string) (*PackageRootMetadata, error) {
+func packageRootMetadataFromMount(root string, uidMap, gidMap []idtools.IDMap, mountLabel, ambientSELinux string) (*PackageRootMetadata, error) {
 	info, err := os.Lstat(root)
 	if err != nil {
 		return nil, err
@@ -45,7 +45,6 @@ func packageRootMetadataFromMount(root string, uidMap, gidMap []idtools.IDMap, m
 	if err := archive.ReadFileFlagsToTarHeader(root, header); err != nil {
 		return nil, err
 	}
-	ambientSELinux := storageAmbientSELinux(mountLabel)
 	portable, portableErr := hasPortableXattrs(root, ambientSELinux)
 	if portableErr == nil && !portable && mountLabel != "" && mountLabel != ambientSELinux {
 		// Buildah can apply an MCS category to the live builder mount. Accept

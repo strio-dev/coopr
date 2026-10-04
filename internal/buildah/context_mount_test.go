@@ -17,7 +17,7 @@ import (
 	upstream "go.podman.io/buildah"
 )
 
-func TestRunMountRootFSIdentity(t *testing.T) {
+func TestRootFSIdentity(t *testing.T) {
 	first := digest.FromString("first")
 	second := digest.FromString("second")
 	tests := []struct {
@@ -38,7 +38,7 @@ func TestRunMountRootFSIdentity(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := runMountRootFSIdentity(test.rootFS)
+			got, err := rootFSIdentity(test.rootFS)
 			if test.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
 					t.Fatalf("error = %v, want containing %q", err, test.wantErr)

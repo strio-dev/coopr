@@ -141,16 +141,16 @@ func runMountImageRootDigest(ctx context.Context, _ operationBuilder, store stor
 	if err := json.Unmarshal(configData, &image); err != nil {
 		return "", fmt.Errorf("decode RUN mount source image config: %w", err)
 	}
-	return runMountRootFSIdentity(image.RootFS)
+	return rootFSIdentity(image.RootFS)
 }
 
-func runMountRootFSIdentity(rootFS v1.RootFS) (string, error) {
+func rootFSIdentity(rootFS v1.RootFS) (string, error) {
 	if rootFS.Type != "layers" {
-		return "", fmt.Errorf("RUN mount source image has unsupported rootfs type %q", rootFS.Type)
+		return "", fmt.Errorf("image has unsupported rootfs type %q", rootFS.Type)
 	}
 	for index, diffID := range rootFS.DiffIDs {
 		if err := diffID.Validate(); err != nil {
-			return "", fmt.Errorf("RUN mount source image has invalid diff ID %d: %w", index, err)
+			return "", fmt.Errorf("image has invalid diff ID %d: %w", index, err)
 		}
 	}
 	chainID := identity.ChainID(rootFS.DiffIDs)

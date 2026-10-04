@@ -9,7 +9,7 @@ curl -fsSL https://coopr.strio.dev/install.sh | sh
 coopr --version
 ```
 
-The installer writes to `/usr/local/bin` and uses sudo for non-root installs. Coopr requires Linux and host tools for rootless container builds; see [installation and requirements](docs/getting-started/index.md).
+For other installation options, see the [installation guide](docs/getting-started/index.md).
 
 ## Build an image
 

@@ -2,6 +2,7 @@ package buildah
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -20,6 +21,17 @@ import (
 
 func TestBuildPlanReusesExactInstructionImageFromRegistryAcrossStores(t *testing.T) {
 	requireLiveInstructionCache(t)
+	for _, format := range []string{"oci", "docker"} {
+		for _, stages := range []int{1, 2} {
+			t.Run(fmt.Sprintf("%s/%d-stages", format, stages), func(t *testing.T) {
+				testExactInstructionImageFromRegistryAcrossStores(t, format, stages)
+			})
+		}
+	}
+}
+
+func testExactInstructionImageFromRegistryAcrossStores(t *testing.T, format string, stages int) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	root := t.TempDir()
@@ -28,14 +40,18 @@ func TestBuildPlanReusesExactInstructionImageFromRegistryAcrossStores(t *testing
 	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	plan := testPlan(t, "from \""+base+"\"\nrun \"od -An -N16 -tx1 /dev/urandom | tr -d ' \\\\n' >/proof\" network=\"none\"\n")
+	definition := "from \"" + base + "\" as=\"producer\"\nrun \"od -An -N16 -tx1 /dev/urandom | tr -d ' \\\\n' >/proof\" network=\"none\"\n"
+	if stages == 2 {
+		definition += "from \"producer\"\nrun \"cat /proof >/forwarded\" network=\"none\"\n"
+	}
+	plan := testPlan(t, definition)
 	localCache := filepath.Join(root, "local-cache")
 	build := func(name, cacheLocalDir, cacheRepository string) Result {
 		t.Helper()
 		baseDir := filepath.Join(root, name)
 		result, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store:      StoreOptions{RunRoot: filepath.Join(baseDir, "run"), GraphRoot: filepath.Join(baseDir, "graph"), GraphDriverName: "vfs"},
-			ContextDir: root, Isolation: "rootless", Runtime: "crun", Output: Output{Path: filepath.Join(baseDir, "layout")},
+			ContextDir: root, Isolation: "rootless", Runtime: "crun", Output: Output{Path: filepath.Join(baseDir, "layout"), Format: format},
 			ImageStoreDir: filepath.Join(baseDir, "images"), CacheLocalDir: cacheLocalDir, CacheRepository: cacheRepository,
 			PlainHTTPRegistries: []string{host}, SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		})
@@ -46,21 +62,23 @@ func TestBuildPlanReusesExactInstructionImageFromRegistryAcrossStores(t *testing
 	}
 	cold := build("cold", "", host+"/coopr/cache")
 	warm := build("warm", localCache, host+"/coopr/cache")
-	if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 1 || cold.CacheStats.Hits != 0 {
+	if cold.CacheStats.Misses != stages || cold.CacheStats.Stored != stages || cold.CacheStats.Hits != 0 {
 		t.Fatalf("cold instruction cache stats = %+v", cold.CacheStats)
 	}
-	if warm.CacheStats.Hits != 1 || warm.CacheStats.Misses != 0 || warm.CacheStats.Stored != 1 {
+	if warm.CacheStats.Hits != stages || warm.CacheStats.Misses != 0 || warm.CacheStats.Stored != stages {
 		t.Fatalf("warm instruction cache stats = %+v", warm.CacheStats)
 	}
 	if warm.ManifestDigest != cold.ManifestDigest {
-		t.Fatalf("restored manifest = %s, want exact %s", warm.ManifestDigest, cold.ManifestDigest)
+		coldConfig, coldErr := oci.ReadImageConfigLayout(ctx, cold.Layout)
+		warmConfig, warmErr := oci.ReadImageConfigLayout(ctx, warm.Layout)
+		t.Fatalf("restored manifest = %s, want exact %s; cold config (%v)=%s; warm config (%v)=%s", warm.ManifestDigest, cold.ManifestDigest, coldErr, coldConfig, warmErr, warmConfig)
 	}
 	warmStore := StoreOptions{RunRoot: filepath.Join(root, "warm", "run"), GraphRoot: filepath.Join(root, "warm", "graph"), GraphDriverName: "vfs"}
-	if count := instructionCacheRecordCount(t, warmStore); count != 1 {
-		t.Fatalf("remote hit seeded %d local instruction records, want 1", count)
+	if count := instructionCacheRecordCount(t, warmStore); count != stages {
+		t.Fatalf("remote hit seeded %d local instruction records, want %d", count, stages)
 	}
 	offline := build("offline", localCache, "")
-	if offline.CacheStats.Hits != 1 || offline.CacheStats.Misses != 0 {
+	if offline.CacheStats.Hits != stages || offline.CacheStats.Misses != 0 {
 		t.Fatalf("local seeded instruction cache stats = %+v", offline.CacheStats)
 	}
 	if offline.ManifestDigest != cold.ManifestDigest {
@@ -343,6 +361,15 @@ func TestBuildPlanReusesScratchCopyFromRegistryAcrossStores(t *testing.T) {
 
 func TestBuildPlanPromotesOrdinaryInstructionHitToRegistry(t *testing.T) {
 	requireLiveInstructionCache(t)
+	for _, format := range []string{"oci", "docker"} {
+		t.Run(format, func(t *testing.T) {
+			testOrdinaryInstructionHitPromotion(t, format)
+		})
+	}
+}
+
+func testOrdinaryInstructionHitPromotion(t *testing.T, format string) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	root := t.TempDir()
@@ -358,7 +385,7 @@ func TestBuildPlanPromotesOrdinaryInstructionHitToRegistry(t *testing.T) {
 		t.Helper()
 		result, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store:      StoreOptions{RunRoot: filepath.Join(baseDir, "run"), GraphRoot: filepath.Join(baseDir, "graph"), GraphDriverName: "vfs"},
-			ContextDir: root, Isolation: "rootless", Runtime: "crun", Output: Output{Path: filepath.Join(root, name+"-layout")},
+			ContextDir: root, Isolation: "rootless", Runtime: "crun", Output: Output{Path: filepath.Join(root, name+"-layout"), Format: format},
 			ImageStoreDir: filepath.Join(baseDir, "images"), CacheRepository: cacheRepository,
 			PlainHTTPRegistries: []string{host}, SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		})

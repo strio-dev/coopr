@@ -65,9 +65,12 @@ func snapshotPortableState(ctx context.Context, store storage.Store, system *typ
 }
 
 // SELinux adds per-builder MCS categories to MountLabel, while VFS roots have
-// the same base context without those categories. Only that base context is
-// treated as executor-applied ambient policy.
-func storageAmbientSELinux(mountLabel string) string {
+// the same base context without those categories. With no allocated mount
+// label, use the independently observed storage context, including its range.
+func storageAmbientSELinux(mountLabel string, storageLabel []byte) string {
+	if mountLabel == "" {
+		return strings.TrimSuffix(string(storageLabel), "\x00")
+	}
 	parts := strings.SplitN(mountLabel, ":", 5)
 	if len(parts) == 5 {
 		return strings.Join(parts[:4], ":")

@@ -146,6 +146,8 @@ func TestBuildPlanSourceDateEpochMetadataAndCache(t *testing.T) {
 		t.Fatal("different epochs produced the same manifest")
 	}
 	if secondDigest != thirdDigest || !reflect.DeepEqual(secondImage, thirdImage) {
-		t.Fatal("warm cache changed output for identical SOURCE_DATE_EPOCH")
+		secondManifest, _ := readPlanImage(t, filepath.Join(root, "epoch-b1"))
+		thirdManifest, _ := readPlanImage(t, filepath.Join(root, "epoch-b2"))
+		t.Fatalf("warm cache changed output for identical SOURCE_DATE_EPOCH: cold annotations=%v warm annotations=%v cold config=%+v warm config=%+v", secondManifest.Annotations, thirdManifest.Annotations, secondImage, thirdImage)
 	}
 }

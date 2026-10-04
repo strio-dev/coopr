@@ -12,7 +12,7 @@ import (
 
 func TestInstructionCacheKeySupportsFilesystemInstructions(t *testing.T) {
 	base := instructionCacheInput{
-		ParentImageID: "parent", Logical: imageconfig.New(),
+		ParentRootFS: "parent", Logical: imageconfig.New(),
 		Platform:  v1.Platform{OS: "linux", Architecture: "amd64"},
 		Isolation: "rootless", Runtime: "/usr/bin/crun@sha256:runtime", Format: "oci",
 	}
@@ -54,7 +54,7 @@ func TestInstructionCacheKeyIncludesCopyAddInputDigest(t *testing.T) {
 	for _, name := range []string{"copy", "add"} {
 		t.Run(name, func(t *testing.T) {
 			input := instructionCacheInput{
-				ParentImageID: "parent", Logical: imageconfig.New(),
+				ParentRootFS: "parent", Logical: imageconfig.New(),
 				Operation: cacheTestOperation(name, "source", "/destination"),
 				Platform:  v1.Platform{OS: "linux", Architecture: "amd64"},
 				Isolation: "rootless", Format: "oci", InputDigest: digest.FromString("first input"),
