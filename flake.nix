@@ -70,6 +70,8 @@
             inherit
               pkgs
               coopr
+              coopr-static
+              container
               docs
               release
               container-archive
@@ -78,6 +80,10 @@
           };
           formatter = pkgs.nixfmt-tree;
           devShells.default = pkgs.callPackage ./nix/devshell.nix { inherit coopr zensical; };
+          devShells.runtime = pkgs.callPackage ./nix/devshell.nix {
+            inherit coopr;
+            withDevelopmentTools = false;
+          };
           devShells.release = pkgs.callPackage ./nix/release.nix { };
         };
     };

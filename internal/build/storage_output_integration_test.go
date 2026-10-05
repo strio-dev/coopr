@@ -191,7 +191,7 @@ func TestStorageFailureCleansStagingAndDoesNotTag(t *testing.T) {
 		}
 		dataHome = filepath.Join(originalHome, ".local", "share")
 	}
-	childEnv := []string{"HOME=" + home, "XDG_DATA_HOME=" + dataHome}
+	childEnv := []string{"HOME=" + home, "XDG_CONFIG_HOME=" + filepath.Join(home, ".config"), "XDG_DATA_HOME=" + dataHome}
 	_, err := runStorageCLI(ctx, cli, file, tag, childEnv)
 	if err == nil || !strings.Contains(err.Error(), "policy") {
 		t.Fatalf("policy rejection after build = %v", err)
@@ -231,6 +231,12 @@ func loadTestBackend(t *testing.T) {
 
 func storageTestCLI(t *testing.T, ctx context.Context) string {
 	t.Helper()
+	if path, supplied := os.LookupEnv("COOPR_TEST_CLI"); supplied {
+		if err := validateStorageTestCLI(path); err != nil {
+			t.Fatalf("COOPR_TEST_CLI: %v", err)
+		}
+		return path
+	}
 	path := filepath.Join(t.TempDir(), "coopr")
 	command := exec.CommandContext(ctx, "go", "build", "-tags", "exclude_graphdriver_btrfs,systemd,seccomp", "-o", path, "./cmd/coopr")
 	command.Dir = filepath.Join("..", "..")
@@ -239,6 +245,20 @@ func storageTestCLI(t *testing.T, ctx context.Context) string {
 		t.Fatalf("build Coopr CLI for native storage test: %v: %s", err, output)
 	}
 	return path
+}
+
+func validateStorageTestCLI(path string) error {
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("must be an absolute path to an executable file")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return fmt.Errorf("must be an executable file: %s", path)
+	}
+	return nil
 }
 
 func runStorageCLI(ctx context.Context, binary, definition, tag string, extraEnv []string) (string, error) {

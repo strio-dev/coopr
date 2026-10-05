@@ -2,6 +2,8 @@
   lib,
   pkgs,
   coopr,
+  coopr-static,
+  container,
   docs,
   container-archive,
   release,
@@ -41,14 +43,27 @@ let
       installPhase = ''touch "$out"'';
       postInstall = "";
     };
+  goTests = goCheck "test" "go test ./..." [ ];
+  nativeGoCheck = if pkgs.stdenv.hostPlatform.isx86_64 then goChecks else goTests;
+  goChecks = goCheck "go-check" ''
+    go test ./...
+    go vet ./...
+    golangci-lint run --build-tags=${lib.concatStringsSep "," coopr.tags}
+  '' [ pkgs.golangci-lint ];
 in
 {
   build = coopr;
-  test = goCheck "test" "go test ./..." [ ];
-  vet = goCheck "vet" "go vet ./..." [ ];
-  lint = goCheck "lint" "golangci-lint run --build-tags=${lib.concatStringsSep "," coopr.tags}" [
-    pkgs.golangci-lint
-  ];
+  rootless = pkgs.callPackage ./tests/rootless.nix { inherit coopr coopr-static container; };
+  go-check = nativeGoCheck;
+  test = nativeGoCheck;
+  vet = if pkgs.stdenv.hostPlatform.isx86_64 then goChecks else goCheck "vet" "go vet ./..." [ ];
+  lint =
+    if pkgs.stdenv.hostPlatform.isx86_64 then
+      goChecks
+    else
+      goCheck "lint" "golangci-lint run --build-tags=${lib.concatStringsSep "," coopr.tags}" [
+        pkgs.golangci-lint
+      ];
   inherit docs;
   installer = pkgs.callPackage ./installer-check.nix { };
   container = container-archive;
@@ -112,7 +127,7 @@ in
           echo "$unformatted" >&2
           exit 1
         fi
-        nixfmt --check ${../flake.nix} ${./.}/*.nix
+        nixfmt --check ${../flake.nix} ${./.}/*.nix ${./tests}/*.nix
         touch "$out"
       '';
 }

@@ -338,17 +338,43 @@ func foreignLinuxPlatform(t *testing.T) v1.Platform {
 func requireBinfmtFixBinary(t *testing.T, architecture string) {
 	t.Helper()
 	name := map[string]string{"amd64": "qemu-x86_64", "arm64": "qemu-aarch64"}[architecture]
+	override, supplied := os.LookupEnv("COOPR_TEST_BINFMT_HANDLER")
+	if supplied {
+		if override == "" || override == "." || override == ".." || strings.Contains(override, "/") {
+			t.Fatalf("COOPR_TEST_BINFMT_HANDLER must name a binfmt registration: %q", override)
+		}
+		name = override
+	}
 	if name == "" {
 		t.Skipf("no binfmt fixture name for %s", architecture)
 	}
 	data, err := os.ReadFile(filepath.Join("/proc/sys/fs/binfmt_misc", name))
 	if err != nil {
+		if supplied {
+			t.Fatalf("foreign RUN requires registered %s binfmt handler: %v", name, err)
+		}
 		t.Skipf("foreign RUN requires registered %s binfmt handler: %v", architecture, err)
 	}
 	registration := string(data)
-	if !strings.Contains(registration, "enabled") || !strings.Contains(registration, "flags: F") {
+	if !binfmtFixBinaryEnabled(registration) {
+		if supplied {
+			t.Fatalf("foreign RUN requires an enabled %s binfmt handler with fix-binary flag; registration: %s", name, strings.TrimSpace(registration))
+		}
 		t.Skipf("foreign RUN requires an enabled %s binfmt handler with fix-binary flag; registration: %s", architecture, strings.TrimSpace(registration))
 	}
+}
+
+func binfmtFixBinaryEnabled(registration string) bool {
+	lines := strings.Split(registration, "\n")
+	if lines[0] != "enabled" {
+		return false
+	}
+	for _, line := range lines[1:] {
+		if flags, found := strings.CutPrefix(line, "flags:"); found {
+			return strings.Contains(strings.TrimSpace(flags), "F")
+		}
+	}
+	return false
 }
 
 func buildForeignProofBinary(t *testing.T, contextDir, architecture string) string {

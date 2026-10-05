@@ -29,7 +29,7 @@
     "systemd"
     "seccomp"
   ];
-  # Tests, vet, and lint are separate flake checks.
+  # Compatible tests, vet, and lint share a flake check; native ARM tests remain separate.
   doCheck = false;
   env.CGO_ENABLED = "1";
   nativeBuildInputs = [ pkg-config ];

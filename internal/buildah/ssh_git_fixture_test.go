@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -102,11 +101,11 @@ func gitSSHFixture(t *testing.T) (source, privateKey string, knownHosts []byte) 
 
 func packageDirectory(t *testing.T) string {
 	t.Helper()
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("locate buildah test package")
+	directory, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("locate buildah test package: %v", err)
 	}
-	return filepath.Dir(file)
+	return directory
 }
 
 func TestBuildPlanAddsSSHGitSourceWithPinnedHostKey(t *testing.T) {

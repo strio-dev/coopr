@@ -15,6 +15,20 @@ fi
 run_id="$(id -u)-$$"
 readonly run_id
 readonly cli_test_image="localhost/coopr-release-cli:${run_id}"
+readonly artifact_image="localhost/coopr-release-artifact:${run_id}"
+readonly artifact_container="coopr-release-artifact-${run_id}"
+cli_run_image="$cli_test_image"
+cli_runtime_args=()
+cli_mode='packaged dynamic CLI'
+if [[ ${COOPR_ACCEPTANCE_CLI+x} ]]; then
+  [[ $COOPR_ACCEPTANCE_CLI == /* && -f $COOPR_ACCEPTANCE_CLI && -x $COOPR_ACCEPTANCE_CLI ]] || {
+    printf 'release acceptance: COOPR_ACCEPTANCE_CLI must be an absolute path to an executable file\n' >&2
+    exit 1
+  }
+  cli_runtime_args+=(--entrypoint=/coopr-acceptance-cli)
+  cli_mode="artifact CLI: $COOPR_ACCEPTANCE_CLI"
+fi
+readonly cli_mode
 
 acceptance_root=''
 runtime_image=''
@@ -26,6 +40,8 @@ named_runtime_image=''
 containerfile_conformance_image=''
 coopr_conformance_image=''
 cli_image_loaded=false
+artifact_container_created=false
+artifact_image_created=false
 
 cleanup() {
   local status=$?
@@ -55,6 +71,12 @@ cleanup() {
   if [[ -n "$coopr_conformance_image" ]]; then
     podman rmi "$coopr_conformance_image" >/dev/null 2>&1 || true
   fi
+  if [[ $artifact_container_created == true ]]; then
+    podman rm "$artifact_container" >/dev/null 2>&1 || true
+  fi
+  if [[ $artifact_image_created == true ]]; then
+    podman rmi "$artifact_image" >/dev/null 2>&1 || true
+  fi
   if [[ $cli_image_loaded == true ]]; then
     podman rmi "$cli_test_image" >/dev/null 2>&1 || true
   fi
@@ -77,9 +99,16 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "required command is unavailable in the Nix development shell: $1"
 }
 
-for command_name in busybox diff go jq nix podman tar; do
+for command_name in busybox diff go jq podman tar; do
   require_command "$command_name"
 done
+
+if [[ ${COOPR_ACCEPTANCE_IMAGE_COPY+x} ]]; then
+  [[ $COOPR_ACCEPTANCE_IMAGE_COPY == /* && -f $COOPR_ACCEPTANCE_IMAGE_COPY && -x $COOPR_ACCEPTANCE_IMAGE_COPY ]] || \
+    fail 'COOPR_ACCEPTANCE_IMAGE_COPY must be an absolute path to an executable file'
+else
+  require_command nix
+fi
 
 [[ $(uname -s) == Linux ]] || fail 'this harness requires Linux'
 case $(uname -m) in
@@ -87,34 +116,58 @@ case $(uname -m) in
   aarch64) native_arch=arm64; foreign_binfmt=qemu-x86_64 ;;
   *) fail "this release profile requires an amd64 or arm64 host, got $(uname -m)" ;;
 esac
+if [[ ${COOPR_TEST_BINFMT_HANDLER+x} ]]; then
+  foreign_binfmt=$COOPR_TEST_BINFMT_HANDLER
+  [[ -n $foreign_binfmt && $foreign_binfmt != . && $foreign_binfmt != .. && $foreign_binfmt != */* ]] || \
+    fail 'COOPR_TEST_BINFMT_HANDLER must name a binfmt registration'
+fi
 readonly native_arch foreign_binfmt
 native_platform="linux/$native_arch"
 readonly native_platform
 binfmt_registration="/proc/sys/fs/binfmt_misc/$foreign_binfmt"
 [[ -r $binfmt_registration ]] || fail "foreign RUN requires registered $foreign_binfmt binfmt handler"
 binfmt_data=$(<"$binfmt_registration")
-[[ $binfmt_data == *enabled* && $binfmt_data == *'flags: F'* ]] || \
+if [[ ${binfmt_data%%$'\n'*} != enabled ]] || ! grep -Eq '^flags:.*F' <<<"$binfmt_data"; then
   fail "foreign RUN requires enabled $foreign_binfmt binfmt handler with F flag"
+fi
 [[ $(id -u) != 0 ]] || fail 'run this harness as a non-root user'
 [[ $(podman info --format '{{.Host.Security.Rootless}}') == true ]] || fail 'rootless Podman is required'
 
 acceptance_root=$(mktemp -d /tmp/coopr-release-acceptance.XXXXXX)
 readonly acceptance_root
 
+printf 'Acceptance executable: %s\n' "$cli_mode"
 printf 'Building and loading the self-contained Coopr image\n'
-cli_copy=$(nix build path:.#container.copyTo --no-link --print-out-paths)
+if [[ ${COOPR_ACCEPTANCE_IMAGE_COPY+x} ]]; then
+  cli_copy=$COOPR_ACCEPTANCE_IMAGE_COPY
+else
+  cli_copy_root=$(nix build path:.#container.copyTo --no-link --print-out-paths)
+  cli_copy="$cli_copy_root/bin/copy-to"
+fi
 podman_store=$(podman info --format '{{.Store.GraphDriverName}}@{{.Store.GraphRoot}}+{{.Store.RunRoot}}')
-podman unshare "$cli_copy/bin/copy-to" "containers-storage:[$podman_store]$cli_test_image"
+podman unshare "$cli_copy" "containers-storage:[$podman_store]$cli_test_image"
 podman image exists "$cli_test_image" || fail "container copy did not create $cli_test_image"
 cli_image_loaded=true
 
+if [[ ${COOPR_ACCEPTANCE_CLI+x} ]]; then
+  # Standard stopped-container staging gives the artifact normal image labels.
+  podman create --name "$artifact_container" --image-volume=ignore "$cli_test_image" >/dev/null
+  artifact_container_created=true
+  podman cp "$COOPR_ACCEPTANCE_CLI" "$artifact_container:/coopr-acceptance-cli"
+  podman commit "$artifact_container" "$artifact_image" >/dev/null
+  artifact_image_created=true
+  podman rm "$artifact_container" >/dev/null
+  artifact_container_created=false
+  cli_run_image="$artifact_image"
+fi
+
 printf 'Checking unprivileged CLI startup\n'
 podman run --rm --network=none --cap-drop=all --security-opt=no-new-privileges \
-  "$cli_test_image" --help >/dev/null
+  "${cli_runtime_args[@]}" "$cli_run_image" --help >/dev/null
 podman run --rm --network=none --cap-drop=all --security-opt=no-new-privileges \
-  "$cli_test_image" build --help >/dev/null
+  "${cli_runtime_args[@]}" "$cli_run_image" build --help >/dev/null
 podman run --rm --network=none --cap-drop=all --security-opt=no-new-privileges \
-  "$cli_test_image" component build --help >/dev/null
+  "${cli_runtime_args[@]}" "$cli_run_image" component build --help >/dev/null
 
 workspace="$acceptance_root/workspace"
 state="$acceptance_root/state"
@@ -240,7 +293,7 @@ coopr_container() {
     --security-opt=unmask=ALL \
     --mount "type=bind,src=${workspace},dst=/work,rw" \
     --mount "type=bind,src=${state},dst=/home/user/.local/share,rw" \
-    "$cli_test_image" "$@"
+    "${cli_runtime_args[@]}" "$cli_run_image" "$@"
 }
 
 printf 'Comparing equivalent Containerfile and Coopr builds\n'

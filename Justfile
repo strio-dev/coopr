@@ -15,7 +15,7 @@ lint:
 # Format Go, Nix, and Justfile sources with pinned tools.
 fmt:
     nix develop path:. -c gofmt -w cmd internal
-    nix develop path:. -c nixfmt flake.nix nix/*.nix
+    nix develop path:. -c nixfmt flake.nix nix/*.nix nix/tests/*.nix
     nix develop path:. -c just --fmt
 
 # Run the complete local flake check, including untracked sources.
@@ -34,16 +34,16 @@ container:
 release-check:
     nix flake check . --no-update-lock-file
 
-# Run the live rootless Buildah, registry, and native-storage integration tests.
+# Run rootless integration and dynamic/static packaged acceptance in NixOS.
 integration:
-    nix develop path:. -c env COOPR_TEST_BUILDAH=1 COOPR_TEST_BUILDAH_REGISTRY=1 COOPR_TEST_CONTAINER_STORAGE=1 go test -count=1 ./cmd/coopr ./internal/build ./internal/buildah ./internal/transfer
+    nix build --no-link --no-update-lock-file --print-build-logs path:.#checks.{{ arch() }}-linux.rootless
 
-# Run host integration and packaged-image acceptance on amd64 or arm64.
-release-acceptance: integration packaged-acceptance
+# Verify the complete native rootless release check.
+release-acceptance: integration
 
-# Verify the self-contained image, local store reuse, and Podman conformance.
+# Run the raw packaged-image harness in an already configured rootless host.
 packaged-acceptance:
-    nix develop path:. -c ./scripts/acceptance/release.sh
+    nix develop path:.#runtime -c ./scripts/acceptance/release.sh
 
 # Compare current Coopr and Podman cold, warm, changed-step, and concurrent builds.
 benchmark:

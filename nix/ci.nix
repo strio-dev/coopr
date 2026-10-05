@@ -7,8 +7,7 @@
 let
   categories = {
     quality.x86_64-linux = lib.getAttrs [
-      "vet"
-      "lint"
+      "go-check"
       "formatting"
       "scripts"
       "justfile"
@@ -21,7 +20,16 @@ let
       "installer"
     ] self.checks.x86_64-linux;
     native = lib.genAttrs [ "x86_64-linux" "aarch64-linux" ] (
-      system: lib.getAttrs [ "build" "test" "container" "release-binary" ] self.checks.${system}
+      system:
+      lib.getAttrs (
+        [
+          "build"
+          "container"
+          "release-binary"
+          "rootless"
+        ]
+        ++ lib.optional (system == "aarch64-linux") "test"
+      ) self.checks.${system}
     );
   };
   matrices = lib.mapAttrs (
