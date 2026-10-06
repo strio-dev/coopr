@@ -26,8 +26,8 @@ let
           "build"
           "container"
           "release-binary"
-          "rootless"
         ]
+        ++ lib.optional (system == "x86_64-linux") "rootless"
         ++ lib.optional (system == "aarch64-linux") "test"
       ) self.checks.${system}
     );

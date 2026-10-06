@@ -53,7 +53,6 @@ let
 in
 {
   build = coopr;
-  rootless = pkgs.callPackage ./tests/rootless.nix { inherit coopr coopr-static container; };
   go-check = nativeGoCheck;
   test = nativeGoCheck;
   vet = if pkgs.stdenv.hostPlatform.isx86_64 then goChecks else goCheck "vet" "go vet ./..." [ ];
@@ -130,4 +129,7 @@ in
         nixfmt --check ${../flake.nix} ${./.}/*.nix ${./tests}/*.nix
         touch "$out"
       '';
+}
+// lib.optionalAttrs pkgs.stdenv.hostPlatform.isx86_64 {
+  rootless = pkgs.callPackage ./tests/rootless.nix { inherit coopr coopr-static container; };
 }

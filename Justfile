@@ -34,11 +34,11 @@ container:
 release-check:
     nix flake check . --no-update-lock-file
 
-# Run rootless integration and dynamic/static packaged acceptance in NixOS.
+# Run rootless integration and packaged acceptance in an AMD64 NixOS VM with KVM.
 integration:
-    nix build --no-link --no-update-lock-file --print-build-logs path:.#checks.{{ arch() }}-linux.rootless
+    nix build --no-link --no-update-lock-file --print-build-logs path:.#checks.x86_64-linux.rootless
 
-# Verify the complete native rootless release check.
+# Verify the complete AMD64 rootless release check.
 release-acceptance: integration
 
 # Run the raw packaged-image harness in an already configured rootless host.

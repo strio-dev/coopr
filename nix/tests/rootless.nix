@@ -6,21 +6,7 @@
   container,
 }:
 let
-  hardwareAcceleration = pkgs.stdenv.hostPlatform.isx86_64;
-  foreignSystem = if hardwareAcceleration then "aarch64-linux" else "x86_64-linux";
-  foreignPlatform = lib.systems.elaborate foreignSystem;
-  foreignQemu =
-    (pkgs.pkgsStatic.qemu-user.override {
-      hostCpuTargets = [ "${foreignPlatform.qemuArch}-linux-user" ];
-    }).overrideAttrs
-      (old: {
-        # The AArch64 static PIE emulator faults before executing foreign binaries.
-        configureFlags = old.configureFlags ++ [ "--disable-pie" ];
-        # QEMU pipes Ninja output through cat; propagate build failures.
-        preBuild = (old.preBuild or "") + ''
-          makeFlagsArray+=("SHELL=${pkgs.buildPackages.bash}/bin/bash -o pipefail")
-        '';
-      });
+  foreignSystem = "aarch64-linux";
   runtime = pkgs.callPackage ../devshell.nix {
     inherit coopr;
     withDevelopmentTools = false;
@@ -84,13 +70,12 @@ let
 in
 pkgs.testers.runNixOSTest {
   name = "coopr-rootless";
-  requiredFeatures.kvm = hardwareAcceleration;
-  qemu.forceAccel = hardwareAcceleration;
+  requiredFeatures.kvm = true;
+  qemu.forceAccel = true;
   globalTimeout = 90 * 60;
 
   nodes.machine = {
     virtualisation = {
-      qemu.options = lib.optional (!hardwareAcceleration) "-machine accel=tcg";
       memorySize = 4096;
       diskSize = 16384;
       cores = 4;
@@ -104,9 +89,6 @@ pkgs.testers.runNixOSTest {
     boot.binfmt = {
       emulatedSystems = [ foreignSystem ];
       preferStaticEmulators = true;
-      registrations = lib.optionalAttrs (!hardwareAcceleration) {
-        ${foreignSystem}.interpreter = "${foreignQemu}/bin/qemu-${foreignPlatform.qemuArch}";
-      };
     };
     systemd.services."user@".serviceConfig.Delegate = "pids memory cpu cpuset";
     users.users.coopr = {

@@ -42,15 +42,15 @@ Add pages to `zensical.toml`. Keep tutorials runnable from a fresh checkout and 
 
 ## Run integration checks
 
-`just integration` and `just release-acceptance` build the native NixOS VM check. One VM runs live integration tests and both dynamic and static packaged CLI acceptance as a normal user. The amd64 check requires KVM; arm64 explicitly uses QEMU software emulation (TCG).
+`just integration` and `just release-acceptance` require an AMD64 host with KVM. One NixOS VM runs live integration tests and both dynamic and static packaged CLI acceptance as a normal user, including foreign-architecture execution.
 
 The raw `packaged-acceptance`, `docker-acceptance`, and `benchmark` commands need a configured Linux host with working rootless containers:
 
 | Command | Scope |
 | --- | --- |
-| `just integration` | NixOS VM: live Buildah, registry, native-storage tests, and dynamic/static packaged acceptance. |
+| `just integration` | AMD64 NixOS VM: live Buildah, registry, native-storage tests, and dynamic/static packaged acceptance. |
 | `just packaged-acceptance` | Packaged image, store reuse, multi-platform components, and Podman comparison. |
-| `just release-acceptance` | The same complete native NixOS VM check as `just integration`. |
+| `just release-acceptance` | The same complete AMD64 NixOS VM check as `just integration`. |
 | `just docker-acceptance` | Docker transfers using a disposable daemon. |
 | `just benchmark` | Coopr/Podman timing measurements. |
 
