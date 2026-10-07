@@ -2,7 +2,6 @@ package buildah
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -35,11 +34,6 @@ func TestPullNewerCopyFailureBindsCachedConfigBeforeBuildAndPublication(t *testi
 	var blocked atomic.Value
 	blocked.Store("")
 	var failures atomic.Int32
-	var damageCatalog atomic.Bool
-	var newLayer atomic.Value
-	newLayer.Store("")
-	mutation := make(chan error, 1)
-	catalogPath := filepath.Join(root, "consumer-images", "catalog.json")
 	registry := registryserver.New()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && blocked.Load().(string) != "" && strings.HasSuffix(r.URL.Path, "/blobs/"+blocked.Load().(string)) {
@@ -47,19 +41,12 @@ func TestPullNewerCopyFailureBindsCachedConfigBeforeBuildAndPublication(t *testi
 			http.Error(w, "layer temporarily unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/blobs/"+newLayer.Load().(string)) && damageCatalog.CompareAndSwap(true, false) {
-			err := os.Rename(catalogPath, catalogPath+".backup")
-			if err == nil {
-				err = os.Mkdir(catalogPath, 0700)
-			}
-			mutation <- err
-		}
 		registry.ServeHTTP(w, r)
 	}))
 	defer server.Close()
 	authority := strings.TrimPrefix(server.URL, "http://")
 	reference := authority + "/coopr/newer:latest"
-	registryOptions := oci.Options{ImageStoreDir: filepath.Join(root, "consumer-images"), PlainHTTPRegistries: []string{authority}, SignaturePolicyPath: policy, RetrySet: true}
+	registryOptions := oci.Options{TLSVerify: new(false), SignaturePolicyPath: policy, RetrySet: true}
 	resolver, err := oci.NewResolver(registryOptions)
 	if err != nil {
 		t.Fatal(err)
@@ -71,7 +58,7 @@ func TestPullNewerCopyFailureBindsCachedConfigBeforeBuildAndPublication(t *testi
 		}
 		layout := filepath.Join(root, "parent-"+revision)
 		_, err := BuildDefinitionSupervised(ctx, parseWorkerDefinition(t, fmt.Sprintf("from %q\ncopy %q \"/base-value\"\nenv revision=%q\nonbuild { run %q network=\"none\" }\n", base.reference, revision, revision, "printf "+revision+" > /onbuild-proof")), planner.Options{Mode: planner.Build}, SupervisedPlanOptions{
-			Store: producerStore, ContextDir: root, ImageStoreDir: base.imageStoreDir, Isolation: "rootless", SignaturePolicyPath: policy,
+			Store: producerStore, ContextDir: root, Isolation: "rootless", SignaturePolicyPath: policy,
 			Output: Output{Path: layout, Format: outputFormatDocker},
 		})
 		if err != nil {
@@ -100,10 +87,9 @@ func TestPullNewerCopyFailureBindsCachedConfigBeforeBuildAndPublication(t *testi
 	if err := lease.Close(); err != nil {
 		t.Fatal(err)
 	}
-	makeParent("new")
+	newManifest := makeParent("new")
 	newLayers, _ := readPlanImage(t, filepath.Join(root, "parent-new"))
 	blocked.Store(newLayers.Layers[len(newLayers.Layers)-1].Digest.String())
-	newLayer.Store(blocked.Load())
 	registryOptions.PullPolicy = string(oci.PullNewer)
 	resolver, err = oci.NewResolver(registryOptions)
 	if err != nil {
@@ -121,7 +107,7 @@ func TestPullNewerCopyFailureBindsCachedConfigBeforeBuildAndPublication(t *testi
 	if fallback.ImageID != old.ImageID || fallback.Selected.Digest != oldManifest.Digest || string(fallback.ConfigData) != string(old.ConfigData) {
 		t.Fatalf("copy failure selected newer metadata: %+v", fallback)
 	}
-	options := SupervisedPlanOptions{Store: consumerStore, ContextDir: root, ImageStoreDir: registryOptions.ImageStoreDir, Isolation: "rootless", SignaturePolicyPath: policy, PlainHTTPRegistries: []string{authority}, PullPolicy: string(oci.PullNewer), RetrySet: true}
+	options := SupervisedPlanOptions{Store: consumerStore, ContextDir: root, Isolation: "rootless", SignaturePolicyPath: policy, TLSVerify: new(false), PullPolicy: string(oci.PullNewer), RetrySet: true}
 	options.Output = Output{Path: filepath.Join(root, "child"), Format: outputFormatDocker}
 	if _, err := BuildDefinitionSupervised(ctx, parseWorkerDefinition(t, fmt.Sprintf("from %q\nlabel selected=\"$revision\"\n", reference)), planner.Options{Mode: planner.Build}, options); err != nil {
 		t.Fatal(err)
@@ -151,30 +137,34 @@ func TestPullNewerCopyFailureBindsCachedConfigBeforeBuildAndPublication(t *testi
 	if failures.Load() < 3 {
 		t.Fatalf("expected failing layer copies in resolution, build and publication, got %d", failures.Load())
 	}
-	// An actual pull failure may reuse the local image; a successful pull's
-	// verification or catalog failure must remain visible to the caller.
+	// Once the missing layer is available, newer must replace the native name
+	// and bind the new configuration rather than continuing the fallback.
 	blocked.Store("")
-	damageCatalog.Store(true)
 	lease, err = acquireStore(consumerStore)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, admissionErr := ResolveImageSource(ctx, resolver, reference, platform, lease.store, system)
-	if err := lease.Close(); err != nil {
+	refreshed, refreshErr := ResolveImageSource(ctx, resolver, reference, platform, lease.store, system)
+	if refreshErr != nil {
+		_ = lease.Close()
+		t.Fatal(refreshErr)
+	}
+	if refreshed.Selected.Digest != newManifest.Digest || refreshed.ImageID == old.ImageID || string(refreshed.ConfigData) == string(old.ConfigData) {
+		t.Fatalf("successful refresh retained cached selection: %+v", refreshed)
+	}
+	registryOptions.PullPolicy = string(oci.PullNever)
+	offline, err := oci.NewResolver(registryOptions)
+	if err != nil {
+		_ = lease.Close()
 		t.Fatal(err)
 	}
-	select {
-	case err := <-mutation:
-		if err != nil {
-			t.Fatal(err)
-		}
-	default:
-		t.Fatalf("catalog failure fixture did not reach layer download: %v", admissionErr)
+	cached, cachedErr := ResolveImageSource(ctx, offline, reference, platform, lease.store, system)
+	pinned, pinnedErr := ResolveImageSource(ctx, offline, oldManifest.Digest.String(), platform, lease.store, system)
+	closeErr = lease.Close()
+	if cachedErr != nil || pinnedErr != nil || closeErr != nil {
+		t.Fatalf("offline cached=%v pinned=%v close=%v", cachedErr, pinnedErr, closeErr)
 	}
-	if err := errors.Join(os.Remove(catalogPath), os.Rename(catalogPath+".backup", catalogPath)); err != nil {
-		t.Fatal(err)
-	}
-	if admissionErr == nil || !strings.Contains(admissionErr.Error(), "catalog imported base image") {
-		t.Fatalf("catalog failure silently reused old image: %v", admissionErr)
+	if cached.Selected.Digest != newManifest.Digest || pinned.Selected.Digest != oldManifest.Digest || string(pinned.ConfigData) != string(old.ConfigData) {
+		t.Fatalf("offline native selections: cached=%+v pinned=%+v", cached, pinned)
 	}
 }

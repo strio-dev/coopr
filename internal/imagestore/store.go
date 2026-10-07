@@ -33,10 +33,16 @@ import (
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
 
-// Store owns a containers-storage handle. Close it after the build.
+// Store provides image operations against containers/storage.
 type Store struct {
 	backend storage.Store
 	system  *types.SystemContext
+}
+
+// FromStore borrows a native handle for image operations. Its caller owns the
+// handle and must keep it open for the entire operation; do not call Close.
+func FromStore(backend storage.Store) *Store {
+	return &Store{backend: backend, system: &types.SystemContext{BigFilesTemporaryDir: os.TempDir()}}
 }
 
 func New() (*Store, error) {
@@ -75,6 +81,138 @@ func (s *Store) Tag(imageID, tag string) (string, error) {
 		return "", fmt.Errorf("tag stored image: %w", err)
 	}
 	return name, nil
+}
+
+// TagSelected names a verified manifest already present on a native image.
+// It preserves existing native aliases when selecting a different manifest.
+func (s *Store) TagSelected(ctx context.Context, imageID string, selected v1.Descriptor, tag string) (string, error) {
+	name, err := NormalizeTag(tag)
+	if err != nil || name == "" {
+		if err == nil {
+			err = errors.New("container storage destination requires a tag")
+		}
+		return "", err
+	}
+	lock, err := manifests.LockerForImage(s.backend, imageID)
+	if err != nil {
+		return "", err
+	}
+	lock.Lock()
+	defer lock.Unlock()
+	ref, err := imagestorage.Transport.NewStoreReference(s.backend, nil, imageID)
+	if err != nil {
+		return "", err
+	}
+	source, err := ref.NewImageSource(ctx, s.system)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = source.Close() }()
+	data, mediaType, err := source.GetManifest(ctx, &selected.Digest)
+	if err != nil {
+		return "", err
+	}
+	if actual := oci.Descriptor(mediaType, data); actual.Digest != selected.Digest || actual.Size != selected.Size || actual.MediaType != selected.MediaType {
+		return "", errors.New("stored manifest differs from selected descriptor")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	previous, err := oci.CaptureStoredSignatures(s.backend, imageID)
+	if err != nil {
+		return "", err
+	}
+	defaultData, _, err := source.GetManifest(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	previousDigest := digest.FromBytes(defaultData)
+	selectedSignatures, err := oci.StoredSignatureBlobs(previous, selected.Digest, previousDigest == selected.Digest)
+	if err != nil {
+		return "", err
+	}
+	if previousDigest != selected.Digest {
+		image, err := s.backend.Image(imageID)
+		if err != nil {
+			return "", err
+		}
+		for _, existing := range image.Names {
+			if parsed, err := reference.ParseNormalizedNamed(existing); err == nil {
+				if _, immutable := parsed.(reference.Canonical); immutable {
+					continue
+				}
+			}
+			if existing == name {
+				continue
+			}
+			// Native names bind the entire record, not one stored manifest.
+			// Select the exact variant in its own record; native storage shares
+			// the existing layers and leaves other aliases and origins intact.
+			aliasID, err := oci.SelectedStoredImage(ctx, s.backend, imageID, selected.Digest)
+			if err != nil {
+				return "", err
+			}
+			aliasLock, err := manifests.LockerForImage(s.backend, aliasID)
+			if err != nil {
+				return "", err
+			}
+			aliasLock.Lock()
+			defer aliasLock.Unlock()
+			aliasSignatures, err := oci.CaptureStoredSignatures(s.backend, aliasID)
+			if err != nil {
+				return "", err
+			}
+			retainedSignatures, err := oci.StoredSignatureBlobs(aliasSignatures, selected.Digest, true)
+			if err != nil {
+				return "", err
+			}
+			for _, value := range selectedSignatures {
+				if !slices.ContainsFunc(retainedSignatures, func(existing []byte) bool { return bytes.Equal(existing, value) }) {
+					retainedSignatures = append(retainedSignatures, value)
+				}
+			}
+			if err := oci.WriteStoredManifestSignatures(s.backend, aliasID, selected.Digest, true, retainedSignatures, aliasSignatures); err != nil {
+				return "", errors.Join(err, oci.RestoreStoredSignatures(s.backend, aliasID, aliasSignatures))
+			}
+			if _, err := s.Tag(aliasID, name); err != nil {
+				return "", errors.Join(err, oci.RestoreStoredSignatures(s.backend, aliasID, aliasSignatures))
+			}
+			if err := oci.RecordStoredOrigin(ctx, s.backend, name, oci.StoredSelection{Root: selected, Manifest: selected, ImageID: aliasID}); err != nil {
+				return "", err
+			}
+			return name, nil
+		}
+	}
+	if previousDigest != selected.Digest {
+		previousSignatures, err := oci.StoredSignatureBlobs(previous, previousDigest, true)
+		if err != nil {
+			return "", err
+		}
+		if err := oci.WriteStoredManifestSignatures(s.backend, imageID, previousDigest, false, previousSignatures, previous); err != nil {
+			return "", errors.Join(err, oci.RestoreStoredSignatures(s.backend, imageID, previous))
+		}
+		preserved, err := oci.CaptureStoredSignatures(s.backend, imageID)
+		if err != nil {
+			return "", errors.Join(err, oci.RestoreStoredSignatures(s.backend, imageID, previous))
+		}
+		if err := oci.WriteStoredManifestSignatures(s.backend, imageID, selected.Digest, true, selectedSignatures, preserved); err != nil {
+			return "", errors.Join(err, oci.RestoreStoredSignatures(s.backend, imageID, previous))
+		}
+	}
+	if err := s.backend.SetImageBigData(imageID, storage.ImageDigestBigDataKey, data, func(data []byte) (digest.Digest, error) { return digest.FromBytes(data), nil }); err != nil {
+		return "", errors.Join(err, oci.RestoreStoredSignatures(s.backend, imageID, previous))
+	}
+	result, err := s.Tag(imageID, name)
+	if err != nil {
+		restoreErr := s.backend.SetImageBigData(imageID, storage.ImageDigestBigDataKey, defaultData, func(data []byte) (digest.Digest, error) { return digest.FromBytes(data), nil })
+		return "", errors.Join(err, restoreErr, oci.RestoreStoredSignatures(s.backend, imageID, previous))
+	}
+	// An explicit single-platform tag names this manifest, including when the
+	// destination previously referred to a pulled index on the same record.
+	if err := oci.RecordStoredOrigin(ctx, s.backend, name, oci.StoredSelection{Root: selected, Manifest: selected, ImageID: imageID}); err != nil {
+		return "", fmt.Errorf("clear tagged image origin: %w", err)
+	}
+	return result, nil
 }
 
 // TagExisting adds a name to the exact native image or manifest-list record
@@ -318,9 +456,6 @@ func (s *Store) WriteIndexLayout(ctx context.Context, layoutPath string, root v1
 	if err != nil {
 		return "", err
 	}
-	if name == "" {
-		return "", errors.New("multi-platform container storage destination requires a tag")
-	}
 	source, err := orasoci.NewWithContext(ctx, layoutPath)
 	if err != nil {
 		return "", fmt.Errorf("open OCI image layout: %w", err)
@@ -370,9 +505,100 @@ func (s *Store) WriteIndexLayout(ctx context.Context, layoutPath string, root v1
 	return s.WriteStoredIndex(ctx, root, indexData, imageIDs, name)
 }
 
+var errStoredIndexRetry = errors.New("stored image index appeared during creation")
+
 // WriteStoredIndex saves an exact index referencing child images already in the
 // native store. An existing exact list is retagged without rewriting its data.
-func (s *Store) WriteStoredIndex(ctx context.Context, root v1.Descriptor, indexData []byte, imageIDs map[digest.Digest]string, tag string) (_ string, retErr error) {
+func (s *Store) WriteStoredIndex(ctx context.Context, root v1.Descriptor, indexData []byte, imageIDs map[digest.Digest]string, tag string) (string, error) {
+	for {
+		result, err := s.writeStoredIndex(ctx, "", root, indexData, imageIDs, tag)
+		if !errors.Is(err, errStoredIndexRetry) {
+			return result, err
+		}
+	}
+}
+
+// UpdateStoredIndex updates a native manifest list without replacing its ID.
+// The caller must hold the native manifest-list locker for imageID.
+func (s *Store) UpdateStoredIndex(ctx context.Context, imageID string, root v1.Descriptor, indexData []byte, imageIDs map[digest.Digest]string, tag string) (string, error) {
+	if imageID == "" {
+		return "", errors.New("native image index ID is required")
+	}
+	return s.writeStoredIndex(ctx, imageID, root, indexData, imageIDs, tag)
+}
+
+// reuseStoredIndex takes the candidate image lock before the root lock, so
+// tentative creation has completed before reuse. Creation never waits for an
+// image lock while holding repository or root locks.
+func (s *Store) reuseStoredIndex(ctx context.Context, root v1.Descriptor, indexData []byte, name string) (string, bool, error) {
+	images, err := s.backend.ImagesByDigest(root.Digest)
+	if err != nil && !errors.Is(err, storage.ErrImageUnknown) {
+		return "", false, err
+	}
+	for _, image := range images {
+		// Pulled children may retain this index as metadata. Their default is a
+		// runnable manifest, so they are not reusable native list records.
+		candidate, err := s.backend.ImageBigData(image.ID, storage.ImageDigestBigDataKey)
+		if errors.Is(err, storage.ErrImageUnknown) {
+			continue
+		}
+		if err != nil {
+			return "", false, err
+		}
+		if !bytes.Equal(candidate, indexData) {
+			continue
+		}
+		lock, err := manifests.LockerForImage(s.backend, image.ID)
+		if err != nil {
+			return "", false, err
+		}
+		lock.Lock()
+		rootLock, err := s.backend.GetDigestLock(root.Digest)
+		if err != nil {
+			lock.Unlock()
+			return "", false, err
+		}
+		rootLock.Lock()
+		result, found, readErr := func() (string, bool, error) {
+			if _, err := s.backend.Image(image.ID); errors.Is(err, storage.ErrImageUnknown) {
+				return "", false, nil
+			} else if err != nil {
+				return "", false, err
+			}
+			if err := ctx.Err(); err != nil {
+				return "", false, err
+			}
+			data, err := s.backend.ImageBigData(image.ID, storage.ImageDigestManifestBigDataNamePrefix)
+			if errors.Is(err, storage.ErrImageUnknown) {
+				return "", false, nil
+			}
+			if err != nil {
+				return "", false, err
+			}
+			if !bytes.Equal(data, indexData) {
+				return "", false, nil
+			}
+			if _, _, err := manifests.LoadFromImage(s.backend, image.ID); err != nil {
+				return "", false, err
+			}
+			if name == "" {
+				return image.ID, true, nil
+			}
+			if err := s.backend.AddNames(image.ID, []string{name}); err != nil {
+				return "", false, err
+			}
+			return name, true, nil
+		}()
+		rootLock.Unlock()
+		lock.Unlock()
+		if readErr != nil || found {
+			return result, found, readErr
+		}
+	}
+	return "", false, nil
+}
+
+func (s *Store) writeStoredIndex(ctx context.Context, existingID string, root v1.Descriptor, indexData []byte, imageIDs map[digest.Digest]string, tag string) (_ string, retErr error) {
 	if s == nil || s.backend == nil {
 		return "", errors.New("image store is not initialized")
 	}
@@ -396,10 +622,18 @@ func (s *Store) WriteStoredIndex(ctx context.Context, root v1.Descriptor, indexD
 	if err != nil {
 		return "", err
 	}
-	if name == "" {
-		return "", errors.New("multi-platform container storage destination requires a tag")
+	if existingID == "" {
+		if result, found, err := s.reuseStoredIndex(ctx, root, indexData, name); err != nil || found {
+			return result, err
+		}
 	}
-	destination, err := imagereference.ParseNormalizedNamed(name)
+	repository := name
+	if repository == "" {
+		// Native instance references need a repository to pin an alternate
+		// manifest sharing a config ID. This internal name is not a list tag.
+		repository = "coopr.internal/index/" + root.Digest.Encoded()
+	}
+	destination, err := imagereference.ParseNormalizedNamed(repository)
 	if err != nil {
 		return "", err
 	}
@@ -418,24 +652,20 @@ func (s *Store) WriteStoredIndex(ctx context.Context, root v1.Descriptor, indexD
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	images, err := s.backend.ImagesByDigest(root.Digest)
-	if err != nil && !errors.Is(err, storage.ErrImageUnknown) {
-		return "", fmt.Errorf("find stored image index: %w", err)
-	}
-	for _, image := range images {
-		data, err := s.backend.ImageBigData(image.ID, storage.ImageDigestManifestBigDataNamePrefix)
-		if err != nil {
-			return "", fmt.Errorf("read stored image index: %w", err)
+	if existingID == "" {
+		images, err := s.backend.ImagesByDigest(root.Digest)
+		if err != nil && !errors.Is(err, storage.ErrImageUnknown) {
+			return "", fmt.Errorf("find stored image index: %w", err)
 		}
-		// Child records can retain index metadata too; only reuse the actual
-		// native list record whose default manifest and instance map match.
-		if !bytes.Equal(data, indexData) {
-			continue
+		for _, image := range images {
+			data, err := s.backend.ImageBigData(image.ID, storage.ImageDigestManifestBigDataNamePrefix)
+			if err != nil {
+				return "", fmt.Errorf("read stored image index: %w", err)
+			}
+			if bytes.Equal(data, indexData) {
+				return "", errStoredIndexRetry
+			}
 		}
-		if _, _, err := manifests.LoadFromImage(s.backend, image.ID); err != nil {
-			return "", fmt.Errorf("load stored image index: %w", err)
-		}
-		return s.Tag(image.ID, name)
 	}
 	var addedNames []struct{ imageID, name string }
 	keepNames := false
@@ -486,13 +716,26 @@ func (s *Store) WriteStoredIndex(ctx context.Context, root v1.Descriptor, indexD
 			return "", fmt.Errorf("stored image child digest %s differs from source %s", added, child.Digest)
 		}
 	}
-	indexID, err := list.SaveToImage(s.backend, "", nil, root.MediaType)
+	if existingID != "" {
+		previous, err := s.backend.ImageBigData(existingID, storage.ImageDigestManifestBigDataNamePrefix)
+		if err != nil {
+			return "", fmt.Errorf("read prior native image index: %w", err)
+		}
+		previousDigest := digest.FromBytes(previous)
+		if err := s.backend.SetImageBigData(existingID, storage.ImageDigestManifestBigDataNamePrefix+"-"+previousDigest.String(), previous, func(data []byte) (digest.Digest, error) { return digest.FromBytes(data), nil }); err != nil {
+			return "", fmt.Errorf("preserve prior native image index: %w", err)
+		}
+		// SaveToImage can persist part of its instance map before returning an
+		// error; those native references must remain usable after an update.
+		keepNames = true
+	}
+	indexID, err := list.SaveToImage(s.backend, existingID, nil, root.MediaType)
 	if err != nil {
 		return "", fmt.Errorf("save OCI image index to containers-storage: %w", err)
 	}
 	keepIndex := false
 	defer func() {
-		if !keepIndex {
+		if !keepIndex && existingID == "" {
 			_, cleanupErr := s.backend.DeleteImage(indexID, true)
 			retErr = errors.Join(retErr, cleanupErr)
 		}
@@ -504,6 +747,11 @@ func (s *Store) WriteStoredIndex(ctx context.Context, root v1.Descriptor, indexD
 		return root.Digest.Algorithm().FromBytes(data), nil
 	}); err != nil {
 		return "", fmt.Errorf("preserve OCI image index digest in containers-storage: %w", err)
+	}
+	if err := s.backend.SetImageBigData(indexID, storage.ImageDigestManifestBigDataNamePrefix+"-"+root.Digest.String(), indexData, func(data []byte) (digest.Digest, error) {
+		return digest.FromBytes(data), nil
+	}); err != nil {
+		return "", fmt.Errorf("store digest-specific image index: %w", err)
 	}
 	storedIndex, err := s.backend.ImageBigData(indexID, storage.ImageDigestManifestBigDataNamePrefix)
 	if err != nil {
@@ -517,11 +765,16 @@ func (s *Store) WriteStoredIndex(ctx context.Context, root v1.Descriptor, indexD
 	}
 	// AddNames moves an existing tag from the previous image under the storage
 	// image lock. Keep the old name intact until every new instance is present.
-	if err := s.backend.AddNames(indexID, []string{name}); err != nil {
-		return "", fmt.Errorf("tag OCI image index in containers-storage: %w", err)
+	if name != "" {
+		if err := s.backend.AddNames(indexID, []string{name}); err != nil {
+			return "", fmt.Errorf("tag OCI image index in containers-storage: %w", err)
+		}
 	}
 	keepIndex = true
 	keepNames = true
+	if name == "" {
+		return indexID, nil
+	}
 	return name, nil
 }
 

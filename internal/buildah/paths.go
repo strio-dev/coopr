@@ -2,44 +2,17 @@ package buildah
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"coopr/internal/imagestore"
-	"coopr/internal/localstore"
 )
 
-// DefaultStoreOptions uses the persistent Coopr image graph for both build
-// outputs and image inputs. Only the run root belongs in the runtime/cache
-// directory; image bytes must survive cache cleanup.
+// DefaultStoreOptions loads the effective containers/storage configuration at
+// use time, including after a user-namespace transition. Images share the same
+// store as other native clients, so maintenance must preserve unowned records.
 func DefaultStoreOptions() (StoreOptions, error) {
-	imageDir, err := localstore.DefaultImageDir()
-	if err != nil {
-		return StoreOptions{}, err
-	}
-	cacheDir, err := os.UserCacheDir()
-	if err != nil {
-		return StoreOptions{}, fmt.Errorf("find user cache directory: %w", err)
-	}
-	if !filepath.IsAbs(cacheDir) {
-		return StoreOptions{}, fmt.Errorf("user cache directory must be absolute: %q", cacheDir)
-	}
-	root := filepath.Join(cacheDir, "coopr", "buildah")
-	runRoot := filepath.Join(root, "run")
-	if runtimeDir := os.Getenv("XDG_RUNTIME_DIR"); runtimeDir != "" {
-		if !filepath.IsAbs(runtimeDir) {
-			return StoreOptions{}, fmt.Errorf("XDG_RUNTIME_DIR must be absolute: %q", runtimeDir)
-		}
-		runRoot = filepath.Join(runtimeDir, "coopr", "buildah")
-	}
-	return StoreOptions{GraphRoot: filepath.Join(imageDir, "graph"), RunRoot: runRoot}, nil
-}
-
-// PodmanStoreOptions loads the effective host containers/storage
-// configuration without caching it across a later user-namespace transition.
-func PodmanStoreOptions() (StoreOptions, error) {
 	native, err := imagestore.DefaultStoreOptions()
 	if err != nil {
 		return StoreOptions{}, err
@@ -47,7 +20,7 @@ func PodmanStoreOptions() (StoreOptions, error) {
 	return StoreOptions{
 		RunRoot: native.RunRoot, GraphRoot: native.GraphRoot, ImageStore: native.ImageStore,
 		GraphDriverName: native.GraphDriverName, GraphDriverOptions: append([]string(nil), native.GraphDriverOptions...),
-		TransientStore: native.TransientStore, Native: native, Shared: true,
+		TransientStore: native.TransientStore, Native: native,
 	}, nil
 }
 

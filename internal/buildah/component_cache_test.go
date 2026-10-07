@@ -66,7 +66,7 @@ func TestComponentCacheRelaysDeferredCandidate(t *testing.T) {
 func TestComponentCacheLayoutCannotOverlapBuildState(t *testing.T) {
 	root := t.TempDir()
 	resolver, err := oci.NewResolver(oci.Options{
-		ImageStoreDir: filepath.Join(root, "images"), ComponentStoreDir: filepath.Join(root, "components"),
+		ComponentStoreDir: filepath.Join(root, "components"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -88,7 +88,6 @@ func TestComponentCacheLayoutCannotOverlapBuildState(t *testing.T) {
 		{"graph parent", root, "overlaps execution graph"},
 		{"run child", filepath.Join(root, "run", "cache"), "overlaps execution run root"},
 		{"output child", filepath.Join(root, "output", "cache"), "overlaps output"},
-		{"image store child", filepath.Join(root, "images", "cache"), "overlaps image store"},
 		{"component store child", filepath.Join(root, "components", "cache"), "overlaps component store"},
 		{"context parent", filepath.Join(root, "context"), "contains the build context"},
 	} {
@@ -346,7 +345,7 @@ func TestComponentCacheSeedFailureReachesBuildCaller(t *testing.T) {
 	}))
 	defer server.Close()
 	host := strings.TrimPrefix(server.URL, "http://")
-	resolver, err := oci.NewResolver(oci.Options{ComponentStoreDir: componentResolver.ComponentStoreDir(), ImageStoreDir: componentResolver.ImageStoreDir(), PlainHTTPRegistries: []string{host}})
+	resolver, err := oci.NewResolver(oci.Options{ComponentStoreDir: componentResolver.ComponentStoreDir(), TLSVerify: new(false)})
 	if err != nil {
 		t.Fatal(err)
 	}

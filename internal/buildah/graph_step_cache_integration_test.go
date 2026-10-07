@@ -71,7 +71,7 @@ run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof"
 		layout := filepath.Join(root, fmt.Sprintf("layout-%d", attempt))
 		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-			Output: Output{Path: layout}, ImageStoreDir: base.imageStoreDir, Pull: false,
+			Output: Output{Path: layout}, Pull: false,
 			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {
@@ -113,7 +113,7 @@ run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" network="none"
 		layout := filepath.Join(root, fmt.Sprintf("metadata-%d", attempt))
 		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-			Output: Output{Path: layout}, ImageStoreDir: base.imageStoreDir, Pull: false,
+			Output: Output{Path: layout}, Pull: false,
 			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {
@@ -164,7 +164,7 @@ label "org.example.consumer" "yes"
 		layout := filepath.Join(root, fmt.Sprintf("source-metadata-%d", attempt))
 		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-			Output: Output{Path: layout}, ImageStoreDir: base.imageStoreDir, Pull: false,
+			Output: Output{Path: layout}, Pull: false,
 			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {
@@ -213,7 +213,7 @@ run "printf '%%s:' \"$CACHE_VALUE\" >/proof; od -An -N16 -tx1 /dev/urandom | tr 
 		layout := filepath.Join(root, fmt.Sprintf("environment-%d", attempt))
 		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-			Output: Output{Path: layout}, ImageStoreDir: base.imageStoreDir, Pull: false,
+			Output: Output{Path: layout}, Pull: false,
 			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {
@@ -333,7 +333,7 @@ run "cat /input/value >/proof" network="none" {
 		layout := filepath.Join(root, name)
 		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, ContextDir: contextDir, Isolation: "rootless", Runtime: "crun",
-			Output: Output{Path: layout}, ImageStoreDir: base.imageStoreDir, Pull: false,
+			Output: Output{Path: layout}, Pull: false,
 			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {
@@ -398,7 +398,7 @@ run "cat /input/value >/proof" network="none" {
 		layout := filepath.Join(root, name)
 		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, ContextDir: contextDir, Isolation: "rootless", Runtime: "crun",
-			Output: Output{Path: layout}, ImageStoreDir: base.imageStoreDir, Pull: false,
+			Output: Output{Path: layout}, Pull: false,
 			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {
@@ -488,7 +488,7 @@ run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" network="none"
 		layout := filepath.Join(root, fmt.Sprintf("layout-%d", attempt))
 		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun", NoCache: noCache,
-			Output: Output{Path: layout}, ImageStoreDir: base.imageStoreDir, Pull: false,
+			Output: Output{Path: layout}, Pull: false,
 			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {

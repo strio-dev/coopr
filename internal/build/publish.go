@@ -14,7 +14,6 @@ import (
 	"coopr/internal/buildah"
 	"coopr/internal/buildcontext"
 	"coopr/internal/componentstore"
-	"coopr/internal/localstore"
 	"coopr/internal/oci"
 	"coopr/internal/planner"
 	"coopr/internal/storeactivity"
@@ -33,7 +32,7 @@ type ComponentOptions struct {
 	Platform, Target               string
 	Platforms                      []string
 	Args                           map[string]string
-	Push, Pull, NoCache, PlainHTTP bool
+	Push, Pull, NoCache            bool
 	PullPolicy                     string
 	Network                        string
 	AddHosts                       []string
@@ -42,9 +41,8 @@ type ComponentOptions struct {
 	RewriteTimestamp               bool
 	Timestamp, SourceDateEpoch     *int64
 	CacheTTL                       *time.Duration
-	PlainHTTPRegistries            []string
 	AuthFile, CertDir              string
-	SkipTLSVerify                  bool
+	TLSVerify                      *bool
 	Credentials                    string
 	Retry                          uint
 	RetrySet                       bool
@@ -52,7 +50,6 @@ type ComponentOptions struct {
 	DecryptionKeys                 []string
 	SignaturePolicyPath            string
 	StoreDir                       string
-	ImageStoreDir                  string
 	Stdout, Stderr                 io.Writer
 	Stdin                          io.Reader
 	RunStdin                       io.Reader
@@ -170,13 +167,6 @@ func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retEr
 		return "", err
 	}
 	defer cleanup()
-	imageStoreDir := opts.ImageStoreDir
-	if imageStoreDir == "" {
-		imageStoreDir, err = localstore.DefaultImageDir()
-		if err != nil {
-			return "", err
-		}
-	}
 	artifacts := append([]string{filepath.Dir(layout)}, outputArtifacts...)
 	if opts.StoreDir != "" {
 		artifacts = append(artifacts, opts.StoreDir)
@@ -192,15 +182,16 @@ func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retEr
 	if err != nil {
 		return "", err
 	}
-	if err := preflightOutputArtifacts(outputArtifacts, imageStoreDir, opts.StoreDir); err != nil {
+	storeRoots := buildah.ActivityRoots(buildStore, opts.StoreDir)
+	if err := preflightOutputArtifacts(outputArtifacts, storeRoots...); err != nil {
 		return "", err
 	}
-	activity, err := storeactivity.AcquireShared(ctx, imageStoreDir, opts.StoreDir)
+	activity, err := storeactivity.AcquireShared(ctx, storeRoots...)
 	if err != nil {
 		return "", fmt.Errorf("acquire component build store activity lease: %w", err)
 	}
 	defer func() { retErr = errors.Join(retErr, activity.Close()) }()
-	artifacts = append(artifacts, imageStoreDir)
+	artifacts = append(artifacts, storeRoots...)
 	stdout, stderr := opts.Stdout, opts.Stderr
 	var sharedLog *os.File
 	if opts.LogFile != "" && !opts.LogSplit {
@@ -239,8 +230,8 @@ func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retEr
 		}
 		result, buildErr := buildah.PublishDefinitionSupervised(buildCtx, def, platformPlanning, buildah.SupervisedPlanOptions{
 			Store: buildStore, ContextDir: opts.Context, IgnoreFile: opts.IgnoreFile, ContextArtifacts: artifacts,
-			Output: buildah.Output{Path: output}, ImageStoreDir: imageStoreDir, ComponentStoreDir: opts.StoreDir,
-			PlainHTTP: opts.PlainHTTP, PlainHTTPRegistries: opts.PlainHTTPRegistries, Pull: opts.Pull, PullPolicy: opts.PullPolicy,
+			Output: buildah.Output{Path: output}, ComponentStoreDir: opts.StoreDir,
+			Pull: opts.Pull, PullPolicy: opts.PullPolicy,
 			NoCache:     opts.NoCache,
 			Network:     opts.Network,
 			AddHosts:    opts.AddHosts,
@@ -253,7 +244,7 @@ func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retEr
 			Allow:         opts.Allow,
 			BuildContexts: opts.BuildContexts,
 			Secrets:       opts.Secrets, SSH: opts.SSH,
-			AuthFile: opts.AuthFile, CertDir: opts.CertDir, SkipTLSVerify: opts.SkipTLSVerify,
+			AuthFile: opts.AuthFile, CertDir: opts.CertDir, TLSVerify: opts.TLSVerify,
 			Credentials: opts.Credentials, Retry: opts.Retry, RetrySet: opts.RetrySet, RetryDelay: opts.RetryDelay, DecryptionKeys: opts.DecryptionKeys, SignaturePolicyPath: opts.SignaturePolicyPath,
 			CacheLocalDir: opts.CacheLocalDir, CacheRepository: opts.CacheRepository,
 			CacheFrom: opts.CacheFrom, CacheTo: opts.CacheTo,
@@ -292,8 +283,7 @@ func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retEr
 		return "", fmt.Errorf("store local component: %w", err)
 	}
 	report, publicationErr := applyOutputDestinations(ctx, oci.Component, opts.StoreDir, root, destinations, transfer.Options{
-		ComponentStoreDir: opts.StoreDir, PlainHTTP: opts.PlainHTTP, PlainHTTPRegistries: opts.PlainHTTPRegistries,
-		AuthFile: opts.AuthFile, CertDir: opts.CertDir, SkipTLSVerify: opts.SkipTLSVerify,
+		ComponentStoreDir: opts.StoreDir, AuthFile: opts.AuthFile, CertDir: opts.CertDir, TLSVerify: opts.TLSVerify,
 		Credentials: opts.Credentials, Retry: opts.Retry, RetrySet: opts.RetrySet, RetryDelay: opts.RetryDelay, DecryptionKeys: opts.DecryptionKeys, SignaturePolicyPath: opts.SignaturePolicyPath,
 	})
 	variants := make([]oci.IndexVariant, len(builds))
@@ -307,10 +297,9 @@ type PublishOptions struct {
 	File, Context, Reference string
 	Platform, Target         string
 	Args                     map[string]string
-	PlainHTTP                bool
+	TLSVerify                *bool
 	Pull                     bool
 	NoCache                  bool
-	PlainHTTPRegistries      []string
 	BuildContexts            []buildcontext.Spec
 }
 
@@ -320,6 +309,6 @@ func PublishComponent(ctx context.Context, opts PublishOptions) (string, error) 
 	return BuildComponent(ctx, ComponentOptions{
 		File: opts.File, Context: opts.Context, Tag: opts.Reference, Push: true, Pull: opts.Pull, NoCache: opts.NoCache,
 		Platform: opts.Platform, Target: opts.Target,
-		Args: opts.Args, PlainHTTP: opts.PlainHTTP, PlainHTTPRegistries: opts.PlainHTTPRegistries, BuildContexts: opts.BuildContexts,
+		Args: opts.Args, TLSVerify: opts.TLSVerify, BuildContexts: opts.BuildContexts,
 	})
 }

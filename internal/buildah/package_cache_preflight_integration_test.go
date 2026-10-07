@@ -4,26 +4,55 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"coopr/internal/oci"
 	"coopr/internal/planner"
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-func TestPublishDefinitionPackageCacheHitDoesNotOpenFreshBuildStore(t *testing.T) {
+func TestPublishDefinitionPackageCacheHitSkipsProducersAndBaseLayers(t *testing.T) {
 	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
 		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah package cache")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	root := t.TempDir()
-	_, authority := newLiveBusyBoxRegistry(t, ctx)
+	_, upstreamAuthority := newLiveBusyBoxRegistry(t, ctx)
+	resolver, err := oci.NewResolver(oci.Options{TLSVerify: new(false)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := resolver.ResolveRemoteImage(ctx, upstreamAuthority+"/coopr/busybox:latest", v1.Platform{OS: runtime.GOOS, Architecture: runtime.GOARCH})
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstream, err := url.Parse("http://" + upstreamAuthority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := httputil.NewSingleHostReverseProxy(upstream)
+	var layerFetches atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodGet && strings.Contains(request.URL.Path, "/blobs/") && !strings.HasSuffix(request.URL.Path, "/"+base.Config.Digest.String()) {
+			layerFetches.Add(1)
+		}
+		proxy.ServeHTTP(w, request)
+	}))
+	t.Cleanup(server.Close)
+	authority := strings.TrimPrefix(server.URL, "http://")
 	reference := authority + "/coopr/busybox:latest"
 	cacheDir := filepath.Join(root, "cache")
-	imageStoreDir := filepath.Join(root, "images")
 	componentStoreDir := filepath.Join(root, "components")
 	policy := writeComponentTestPolicy(t, root)
 	component := parseWorkerDefinition(t, `
@@ -45,9 +74,9 @@ copy "/copy-busybox" "/copy-busybox" from="copy-bundle"
 			Mode: planner.Publish, Platform: runtime.GOOS + "/" + runtime.GOARCH,
 		}, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-			Output:        Output{Path: filepath.Join(storeRoot, "component")},
-			ImageStoreDir: imageStoreDir, ComponentStoreDir: componentStoreDir, CacheLocalDir: cacheDir,
-			PlainHTTPRegistries: []string{authority}, SignaturePolicyPath: policy,
+			Output:            Output{Path: filepath.Join(storeRoot, "component")},
+			ComponentStoreDir: componentStoreDir, CacheLocalDir: cacheDir,
+			TLSVerify: new(false), SignaturePolicyPath: policy,
 			Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {
@@ -56,13 +85,30 @@ copy "/copy-busybox" "/copy-busybox" from="copy-bundle"
 		return result.Root.Digest.String(), store
 	}
 	first, _ := build("first")
+	if layerFetches.Load() == 0 {
+		t.Fatal("cold package production did not fetch the base layer")
+	}
+	layerFetches.Store(0)
 	second, fresh := build("second")
 	if first != second {
 		t.Fatalf("cached component digest changed: first=%s second=%s", first, second)
 	}
-	for _, path := range []string{fresh.RunRoot, fresh.GraphRoot} {
-		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("portable package-cache hit opened build store %s: %v", path, err)
-		}
+	if fetches := layerFetches.Load(); fetches != 0 {
+		t.Fatalf("portable package-cache hit fetched %d base layers", fetches)
+	}
+	// Planning may open native storage to resolve input metadata. A complete
+	// package-cache hit must avoid materializing bases or executing producers.
+	lease, err := acquireStore(fresh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	images, imageErr := lease.store.Images()
+	containers, containerErr := lease.store.Containers()
+	closeErr := lease.Close()
+	if err := errors.Join(imageErr, containerErr, closeErr); err != nil {
+		t.Fatal(err)
+	}
+	if len(images) != 0 || len(containers) != 0 {
+		t.Fatalf("portable package-cache hit executed into fresh store: images=%d containers=%d", len(images), len(containers))
 	}
 }

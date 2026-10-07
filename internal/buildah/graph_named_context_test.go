@@ -119,7 +119,7 @@ run "cat /input/payload >/mounted" network="none" {
 	copyRunLayout := filepath.Join(root, "copy-run-layout")
 	if _, err := BuildPlanSupervised(ctx, copyRunPlan, SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun", Output: Output{Path: copyRunLayout},
-		ImageStoreDir: base.imageStoreDir, BuildContexts: []buildcontext.Spec{contextSpec}, SignaturePolicyPath: policy,
+		BuildContexts: []buildcontext.Spec{contextSpec}, SignaturePolicyPath: policy,
 		Stdout: io.Discard, Stderr: io.Discard,
 	}); err != nil {
 		t.Fatal(err)
@@ -144,7 +144,7 @@ run "cat /input/payload >/mounted" network="none" {
 	changedLayout := filepath.Join(root, "changed-layout")
 	if _, err := BuildPlanSupervised(ctx, copyRunPlan, SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun", Output: Output{Path: changedLayout},
-		ImageStoreDir: base.imageStoreDir, BuildContexts: []buildcontext.Spec{contextSpec}, SignaturePolicyPath: policy,
+		BuildContexts: []buildcontext.Spec{contextSpec}, SignaturePolicyPath: policy,
 		Stdout: io.Discard, Stderr: io.Discard,
 	}); err != nil {
 		t.Fatal(err)

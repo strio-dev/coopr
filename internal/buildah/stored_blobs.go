@@ -19,7 +19,7 @@ import (
 	"oras.land/oras-go/v2/errdef"
 )
 
-const retainedLayerMapBigData = "coopr-exact-layer-blobs"
+const retainedLayerMapBigData = oci.StoredLayerBlobsKey
 
 // retainStoredLayoutLayers keeps exact compressed layer representations in
 // containers/storage. The graph keeps the unpacked layer for execution; layer

@@ -38,7 +38,7 @@ func TestNativeImageRetryCoversMetadataResolution(t *testing.T) {
 	_ = stream.Close()
 	armed.Store(true)
 	host := strings.TrimPrefix(server.URL, "http://")
-	resolver, err := NewResolver(Options{PlainHTTPRegistries: []string{host}, Retry: 3, RetrySet: true})
+	resolver, err := NewResolver(Options{TLSVerify: boolOption(false), Retry: 3, RetrySet: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestNativeImageRetryCoversConfigBlob(t *testing.T) {
 	}
 	armed.Store(true)
 	host := strings.TrimPrefix(server.URL, "http://")
-	resolver, err := NewResolver(Options{PlainHTTPRegistries: []string{host}, Retry: 3, RetrySet: true})
+	resolver, err := NewResolver(Options{TLSVerify: boolOption(false), Retry: 3, RetrySet: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestNativeImageRetryCoversPolicyManifest(t *testing.T) {
 	}
 	armed.Store(true)
 	host := strings.TrimPrefix(server.URL, "http://")
-	resolver, err := NewResolver(Options{PlainHTTPRegistries: []string{host}, Retry: 3, RetrySet: true})
+	resolver, err := NewResolver(Options{TLSVerify: boolOption(false), Retry: 3, RetrySet: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestNativeImageExplicitZeroDisablesRetry(t *testing.T) {
 	}
 	armed.Store(true)
 	host := strings.TrimPrefix(server.URL, "http://")
-	resolver, err := NewResolver(Options{PlainHTTPRegistries: []string{host}, Retry: 0, RetrySet: true})
+	resolver, err := NewResolver(Options{TLSVerify: boolOption(false), Retry: 0, RetrySet: true})
 	if err != nil {
 		t.Fatal(err)
 	}

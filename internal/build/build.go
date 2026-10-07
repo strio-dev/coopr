@@ -19,15 +19,17 @@ import (
 	"coopr/internal/buildah"
 	"coopr/internal/buildcontext"
 	"coopr/internal/componentstore"
-	"coopr/internal/imagecatalog"
+	"coopr/internal/imagestore"
 	"coopr/internal/localstore"
 	"coopr/internal/oci"
 	"coopr/internal/planner"
 	"coopr/internal/storeactivity"
 	"coopr/internal/transfer"
 	"github.com/containerd/platforms"
+	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/buildah/define"
+	"go.podman.io/storage"
 )
 
 type Options struct {
@@ -65,18 +67,15 @@ type Options struct {
 	Jobs                 int
 	RewriteTimestamp     bool
 	Args                 map[string]string
-	PlainHTTP            bool
-	PlainHTTPRegistries  []string
 	AuthFile             string
 	CertDir              string
-	SkipTLSVerify        bool
+	TLSVerify            *bool
 	Credentials          string
 	Retry                uint
 	RetrySet             bool
 	RetryDelay           time.Duration
 	DecryptionKeys       []string
 	SignaturePolicyPath  string
-	StoreDir             string
 	Stdout, Stderr       io.Writer
 	Stdin                io.Reader
 	RunStdin             io.Reader
@@ -97,7 +96,7 @@ type Options struct {
 }
 
 type platformBuild struct {
-	selection imagecatalog.Selection
+	selection oci.StoredSelection
 	variant   oci.ImageVariant
 }
 
@@ -231,34 +230,25 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 		Mode: planner.Build, Target: opts.Target, Arguments: opts.Args, Platform: opts.Platform,
 		BuildContexts: opts.BuildContexts, BuildUnusedStages: opts.Lifecycle.BuildUnusedStages, ContextSourceDateEpoch: primary.SourceDateEpoch,
 	}
-	storeDir := opts.StoreDir
-	if storeDir == "" {
-		storeDir, err = localstore.DefaultImageDir()
-		if err != nil {
-			return "", err
-		}
-	}
 	buildStore := opts.BuildStore
 	if buildStore.RunRoot == "" && buildStore.GraphRoot == "" {
 		buildStore, err = buildah.DefaultStoreOptions()
 		if err != nil {
 			return "", err
 		}
-		buildStore.GraphRoot = filepath.Join(storeDir, "graph")
-	} else if opts.StoreDir == "" {
-		storeDir = filepath.Dir(buildStore.GraphRoot)
 	}
 	buildStore, err = buildah.NormalizeStoreOptions(buildStore)
 	if err != nil {
 		return "", err
 	}
 	opts.BuildStore = buildStore
+	storeRoots := buildah.ActivityRoots(buildStore, "")
 	componentStoreDir, err := componentstore.DefaultDir()
 	if err != nil {
 		return "", err
 	}
 	if opts.AllPlatforms {
-		targets, err = discoverBuildPlatforms(ctx, def, planning, opts, storeDir, componentStoreDir)
+		targets, err = discoverBuildPlatforms(ctx, def, planning, opts, componentStoreDir)
 		if err != nil {
 			return "", err
 		}
@@ -272,21 +262,21 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 		if filesystem.Type == "local" {
 			fileArtifacts = slices.DeleteFunc(slices.Clone(fileArtifacts), func(path string) bool { return path == filesystem.Path })
 		}
-		if err := preflightFilesystemOutput(filesystem, opts.File, storeDir, componentStoreDir); err != nil {
+		if err := preflightFilesystemOutput(filesystem, opts.File, append(storeRoots, componentStoreDir)...); err != nil {
 			return "", err
 		}
 		if len(targets) > 1 {
 			for _, target := range targets {
-				if err := preflightFilesystemOutput(platformFilesystemOutput(filesystem, target, len(targets)), opts.File, storeDir, componentStoreDir); err != nil {
+				if err := preflightFilesystemOutput(platformFilesystemOutput(filesystem, target, len(targets)), opts.File, append(storeRoots, componentStoreDir)...); err != nil {
 					return "", err
 				}
 			}
 		}
 	}
-	if err := preflightOutputArtifacts(fileArtifacts, storeDir, componentStoreDir); err != nil {
+	if err := preflightOutputArtifacts(fileArtifacts, append(storeRoots, componentStoreDir)...); err != nil {
 		return "", err
 	}
-	activity, err := storeactivity.AcquireShared(ctx, storeDir, componentStoreDir)
+	activity, err := storeactivity.AcquireShared(ctx, append(storeRoots, componentStoreDir)...)
 	if err != nil {
 		return "", fmt.Errorf("acquire build store activity lease: %w", err)
 	}
@@ -296,7 +286,7 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 	if err != nil {
 		return "", err
 	}
-	contextArtifacts := append([]string{storeDir}, signingArtifacts...)
+	contextArtifacts := append(slices.Clone(storeRoots), signingArtifacts...)
 	contextArtifacts = append(contextArtifacts, outputArtifacts...)
 	stagingAnchor := opts.File
 	if isHTTPDefinition(stagingAnchor) {
@@ -380,8 +370,8 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 			ProgressPrefix:    progressPrefix,
 			ProgressReference: progressReference,
 			Store:             buildStore, ContextDir: opts.Context, IgnoreFile: opts.IgnoreFile, ContextArtifacts: contextArtifacts,
-			Output: buildah.Output{Path: output, Format: opts.Format, Squash: opts.Squash, SquashAll: opts.SquashAll, DisableCompression: opts.DisableCompression, ConfidentialWorkload: opts.ConfidentialWorkload, SBOM: opts.SBOM, Filesystems: platformFilesystemOutputs(outputs, targetPlatform, len(targets))}, ImageStoreDir: storeDir, ComponentStoreDir: componentStoreDir,
-			PlainHTTP: opts.PlainHTTP, PlainHTTPRegistries: opts.PlainHTTPRegistries, Pull: opts.Pull, PullPolicy: opts.PullPolicy,
+			Output: buildah.Output{Path: output, Format: opts.Format, Squash: opts.Squash, SquashAll: opts.SquashAll, DisableCompression: opts.DisableCompression, ConfidentialWorkload: opts.ConfidentialWorkload, SBOM: opts.SBOM, Filesystems: platformFilesystemOutputs(outputs, targetPlatform, len(targets))}, ComponentStoreDir: componentStoreDir,
+			Pull: opts.Pull, PullPolicy: opts.PullPolicy,
 			NoCache:     opts.NoCache,
 			Network:     opts.Network,
 			AddHosts:    opts.AddHosts,
@@ -401,7 +391,7 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 			CacheFrom:        opts.CacheFrom,
 			CacheTo:          opts.CacheTo,
 			Secrets:          opts.Secrets, SSH: opts.SSH,
-			AuthFile: opts.AuthFile, CertDir: opts.CertDir, SkipTLSVerify: opts.SkipTLSVerify,
+			AuthFile: opts.AuthFile, CertDir: opts.CertDir, TLSVerify: opts.TLSVerify,
 			Credentials: opts.Credentials, Retry: opts.Retry, RetrySet: opts.RetrySet, RetryDelay: opts.RetryDelay, DecryptionKeys: opts.DecryptionKeys, SignaturePolicyPath: opts.SignaturePolicyPath,
 			Stdin: opts.RunStdin, Stdout: platformStdout, Stderr: platformStderr,
 		})
@@ -431,14 +421,14 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 		platform.OSVersion = configured.OSVersion
 		platform.OSFeatures = slices.Clone(configured.OSFeatures)
 		return platformBuild{
-			selection: imagecatalog.Selection{Root: manifest, Manifest: manifest, ImageID: result.ImageID, ConfigData: rawConfig},
+			selection: oci.StoredSelection{Root: manifest, Manifest: manifest, ImageID: result.ImageID, ConfigData: rawConfig},
 			variant:   oci.ImageVariant{Layout: result.Layout, Manifest: manifest, Platform: platform},
 		}, nil
 	})
 	if err != nil {
 		return "", err
 	}
-	selections := make(map[string]imagecatalog.Selection, len(targets))
+	selections := make(map[string]oci.StoredSelection, len(targets))
 	variants := make([]oci.ImageVariant, 0, len(targets))
 	for _, built := range builds {
 		key := platforms.Format(built.variant.Platform)
@@ -450,15 +440,10 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 	}
 	root := variants[0].Manifest
 	outputLayout := variants[0].Layout
-	tag := ""
-	if len(variants) == 1 {
-		if err := imagecatalog.Commit(ctx, storeDir, tag, variants[0].Platform, selections[platforms.Format(variants[0].Platform)]); err != nil {
-			return "", fmt.Errorf("catalog built image: %w", err)
-		}
-	} else {
+	if len(variants) > 1 {
 		outputLayout = filepath.Join(filepath.Dir(layout), "index")
 		indexData := []byte(nil)
-		root, indexData, err = oci.AssembleImageIndex(ctx, outputLayout, variants, opts.Format)
+		root, indexData, err = oci.ImageIndexDescriptor(variants, opts.Format)
 		if err != nil {
 			return "", fmt.Errorf("assemble multi-platform image: %w", err)
 		}
@@ -466,13 +451,20 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 			selection.Root = root
 			selections[key] = selection
 		}
-		if err := imagecatalog.CommitIndex(ctx, storeDir, tag, root, indexData, selections); err != nil {
-			return "", fmt.Errorf("catalog multi-platform image: %w", err)
+		imageIDs := make(map[digest.Digest]string, len(selections))
+		for _, selection := range selections {
+			imageIDs[selection.Manifest.Digest] = selection.ImageID
+		}
+		if err := buildah.WithStore(buildStore, func(backend storage.Store) error {
+			_, err := imagestore.FromStore(backend).WriteStoredIndex(ctx, root, indexData, imageIDs, "")
+			return err
+		}); err != nil {
+			return "", fmt.Errorf("store multi-platform image: %w", err)
 		}
 	}
 	if opts.Manifest != "" {
 		outputLayout = filepath.Join(filepath.Dir(layout), "manifest")
-		root, _, selections, err = appendManifest(ctx, storeDir, opts.Manifest, outputLayout, opts.Format, buildStore, variants, selections)
+		root, _, selections, err = appendManifest(ctx, opts.Manifest, opts.Format, buildStore, selections)
 		if err != nil {
 			return "", fmt.Errorf("append image to manifest %s: %w", opts.Manifest, err)
 		}
@@ -496,15 +488,14 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 		if err := activity.Close(); err != nil {
 			return "", err
 		}
-		activity, err = storeactivity.AcquireExclusive(ctx, storeDir, componentStoreDir)
+		activity, err = storeactivity.AcquireExclusive(ctx, append(storeRoots, componentStoreDir)...)
 		if err != nil {
 			return "", fmt.Errorf("acquire signing store activity lease: %w", err)
 		}
 		ctx = storeactivity.ContextWithLease(ctx, activity)
 	}
 	report, publicationErr := applyOutputDestinations(ctx, oci.Image, outputLayout, root, destinations, transfer.Options{
-		ImageStoreDir: storeDir, BuildStore: buildStore, PlainHTTP: opts.PlainHTTP, PlainHTTPRegistries: opts.PlainHTTPRegistries,
-		AuthFile: opts.AuthFile, CertDir: opts.CertDir, SkipTLSVerify: opts.SkipTLSVerify,
+		BuildStore: buildStore, AuthFile: opts.AuthFile, CertDir: opts.CertDir, TLSVerify: opts.TLSVerify,
 		Credentials: opts.Credentials, Retry: opts.Retry, RetrySet: opts.RetrySet, RetryDelay: opts.RetryDelay, DecryptionKeys: opts.DecryptionKeys, SignaturePolicyPath: opts.SignaturePolicyPath, Signing: opts.Signing,
 	})
 	if opts.LogSplit {

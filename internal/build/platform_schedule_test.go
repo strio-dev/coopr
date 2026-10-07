@@ -3,13 +3,12 @@ package build
 import (
 	"bytes"
 	"context"
+	"coopr/internal/oci"
 	"errors"
 	"fmt"
 	"sync"
 	"testing"
 	"time"
-
-	"coopr/internal/imagecatalog"
 )
 
 func TestBuildJobLimitsBoundPlatformsAndStages(t *testing.T) {
@@ -139,8 +138,8 @@ func TestLockedWriterSerializesConcurrentWrites(t *testing.T) {
 	}
 }
 
-func imageSelection(i int) imagecatalog.Selection {
-	return imagecatalog.Selection{ImageID: fmt.Sprintf("image-%d", i)}
+func imageSelection(i int) oci.StoredSelection {
+	return oci.StoredSelection{ImageID: fmt.Sprintf("image-%d", i)}
 }
 
 func receiveWithin[T any](t *testing.T, ch <-chan T) T {

@@ -79,9 +79,9 @@ func TestStageWorkerMessagePreservesExecutionInputs(t *testing.T) {
 		AddHosts:    []string{"example.test:127.0.0.1"},
 		ProxyArgs:   map[string]string{"http_proxy": "http://proxy.example"},
 		RunControls: RunControls{HTTPProxy: true, ShmSize: 16 << 20, DNSOptions: []string{"ndots:2"}},
-		AuthFile:    "/tmp/auth.json", CertDir: "/tmp/certs", SkipTLSVerify: true,
-		ResolverEnabled: true, ComponentStore: filepath.Join(root, "components"), ImageStore: filepath.Join(root, "images"),
-		PlainHTTP: true, PlainHTTPHosts: []string{"registry.example"}, Pull: true, PullPolicy: "always",
+		AuthFile:    "/tmp/auth.json", CertDir: "/tmp/certs", TLSVerify: new(false),
+		ResolverEnabled: true, ComponentStore: filepath.Join(root, "components"),
+		Pull: true, PullPolicy: "always",
 		ImageOutput: Output{Path: filepath.Join(root, "layout"), Reference: "example", Format: "docker"},
 		Output:      true, CaptureRoot: true, JobID: strings.Repeat("b", 32),
 		SignaturePolicy: filepath.Join(root, "policy.json"), BigFilesTempDir: root,
@@ -163,5 +163,21 @@ func TestResolvedBaseSnapshotSeparatesSchedulerAndWorker(t *testing.T) {
 	<-done
 	if got := snapshot[key].ImageID; got != "first" {
 		t.Fatalf("worker snapshot image ID = %q, want first", got)
+	}
+}
+
+func TestStageWorkerProtocolPreservesOpaqueSelectedConfig(t *testing.T) {
+	config := []byte("{\n  \"architecture\" : \"amd64\",\n  \"os\" : \"linux\",\n  \"x-extension\" : { \"value\" : 7 }\n}\n")
+	request := stageWorkerRequest{ResolvedBases: []stageWorkerBase{{Key: ResolvedBaseKey{Reference: "example:base", Platform: "linux/amd64"}, Source: ResolvedImageSource{ImageID: "selected", ConfigData: config}}}}
+	path := filepath.Join(t.TempDir(), "request.json")
+	if err := writeWorkerJSON(path, request); err != nil {
+		t.Fatal(err)
+	}
+	var decoded stageWorkerRequest
+	if err := readWorkerJSON(path, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.ResolvedBases) != 1 || string(decoded.ResolvedBases[0].Source.ConfigData) != string(config) {
+		t.Fatalf("worker transport changed verified config bytes: %+v", decoded.ResolvedBases)
 	}
 }

@@ -1,6 +1,13 @@
 package buildah
 
-import "testing"
+import (
+	"errors"
+	"path/filepath"
+	"testing"
+
+	"go.podman.io/storage/pkg/mount"
+	"golang.org/x/sys/unix"
+)
 
 func TestAmbientSELinuxClassification(t *testing.T) {
 	mountLabel := "system_u:object_r:container_file_t:s0:c74,c788"
@@ -65,5 +72,71 @@ func TestStorageAmbientSELinuxFallback(t *testing.T) {
 	}
 	if matchesAmbientSELinux(inherited, storageAmbientSELinux("", nil)) {
 		t.Fatal("labeled state was accepted without an independent baseline")
+	}
+}
+
+func TestNonRelabelableFUSEMount(t *testing.T) {
+	const root = "/var/lib/coopr/storage/overlay/layer/merged"
+	const graphRoot = "/var/lib/coopr/storage"
+	for _, test := range []struct {
+		name   string
+		change func([]*mount.Info) []*mount.Info
+		want   bool
+	}{
+		{"container FUSE policy", nil, true},
+		{"relabelable FUSE superblock", func(m []*mount.Info) []*mount.Info { m[2].VFSOptions = "rw,seclabel"; return m }, false},
+		{"mount options are not superblock policy", func(m []*mount.Info) []*mount.Info { m[2].Options = "rw,seclabel"; return m }, true},
+		{"different filesystem", func(m []*mount.Info) []*mount.Info { m[2].FSType = "overlay"; return m }, false},
+		{"different FUSE filesystem", func(m []*mount.Info) []*mount.Info { m[2].FSType = "fuse.other"; return m }, false},
+		{"bound FUSE subtree", func(m []*mount.Info) []*mount.Info { m[2].Root = "/subtree"; return m }, false},
+		{"unproven FUSE root", func(m []*mount.Info) []*mount.Info { m[2].Root = ""; return m }, false},
+		{"no active SELinux proof", func(m []*mount.Info) []*mount.Info { m[1].VFSOptions = "rw"; return m }, false},
+		{"graph mount options alone", func(m []*mount.Info) []*mount.Info { m[1].VFSOptions = "rw"; m[1].Options = "rw,seclabel"; return m }, false},
+		{"missing mounted root", func(m []*mount.Info) []*mount.Info { return m[:2] }, false},
+		{"containing FUSE mount is insufficient", func(m []*mount.Info) []*mount.Info { m[2].Mountpoint = filepath.Dir(root); return m }, false},
+		{"deepest graph mount wins", func(m []*mount.Info) []*mount.Info { m[0].VFSOptions = "rw,seclabel"; m[1].VFSOptions = "rw"; return m }, false},
+		{"neighbor is not a containing mount", func(m []*mount.Info) []*mount.Info {
+			return append(m, &mount.Info{Mountpoint: graphRoot + "-neighbor", VFSOptions: "rw"})
+		}, true},
+		{"graphroot exact mount", func(m []*mount.Info) []*mount.Info { m[1].Mountpoint = graphRoot; return m }, true},
+		{"root seclabel requires exact token", func(m []*mount.Info) []*mount.Info {
+			m[2].VFSOptions = "rw,noseclabel,seclabelled,seclabel=1"
+			return m
+		}, true},
+		{"graph seclabel requires exact token", func(m []*mount.Info) []*mount.Info {
+			m[1].VFSOptions = "rw,noseclabel,seclabelled,seclabel=1"
+			return m
+		}, false},
+		{"no mounts", func(m []*mount.Info) []*mount.Info { return nil }, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			mounts := []*mount.Info{
+				{Mountpoint: "/", Root: "/", FSType: "overlay", VFSOptions: "rw"},
+				{Mountpoint: "/var/lib/coopr", Root: "/", FSType: "tmpfs", VFSOptions: "rw,seclabel,size=1048576k"},
+				{Mountpoint: root, Root: "/", FSType: "fuse.fuse-overlayfs", Options: "rw,nosuid,nodev,relatime", VFSOptions: "rw,user_id=0,group_id=0,default_permissions,allow_other"},
+			}
+			if test.change != nil {
+				mounts = test.change(mounts)
+			}
+			if got := nonRelabelableFUSEMount(root, graphRoot, mounts); got != test.want {
+				t.Fatalf("nonRelabelableFUSEMount() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestMountedAmbientSELinuxOrdinaryPath(t *testing.T) {
+	root := t.TempDir()
+	const fallback = "system_u:object_r:container_file_t:s0"
+	got, err := mountedAmbientSELinux(root, root, fallback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != fallback {
+		t.Fatalf("ordinary path changed baseline to %q", got)
+	}
+	_, err = mountedAmbientSELinux(root+"\x00", root, fallback)
+	if !errors.Is(err, unix.EINVAL) {
+		t.Fatalf("invalid path error = %v, want EINVAL", err)
 	}
 }

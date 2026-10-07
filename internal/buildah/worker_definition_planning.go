@@ -24,20 +24,19 @@ func planDefinitionInWorker(ctx context.Context, request planWorkerRequest) (*pl
 	planning := *request.PlannerOptions
 	planning.SourceDateEpochResolver = sourceDateEpochResolver(ctx, buildCredentialSource{secretSpecs: request.Secrets, sshSpecs: request.SSH})
 	system := &types.SystemContext{
-		SignaturePolicyPath:         request.SignaturePolicyPath,
-		BigFilesTemporaryDir:        filepath.Dir(request.ResultPath),
-		AuthFilePath:                request.AuthFile,
-		DockerCertPath:              request.CertDir,
-		DockerInsecureSkipTLSVerify: optionalBool(request.SkipTLSVerify),
+		SignaturePolicyPath:  request.SignaturePolicyPath,
+		BigFilesTemporaryDir: filepath.Dir(request.ResultPath),
+		AuthFilePath:         request.AuthFile,
+		DockerCertPath:       request.CertDir,
 	}
+	oci.ApplyTLSVerify(system, request.TLSVerify)
 	ensureResolver := func() error {
 		if resolver == nil {
 			var err error
 			resolver, err = oci.NewResolver(oci.Options{
-				PlainHTTP: request.PlainHTTP, PlainHTTPRegistries: request.PlainHTTPRegistries,
-				AuthFile: request.AuthFile, CertDir: request.CertDir, SkipTLSVerify: request.SkipTLSVerify,
+				AuthFile: request.AuthFile, CertDir: request.CertDir, TLSVerify: request.TLSVerify,
 				Credentials: request.Credentials, Retry: request.Retry, RetrySet: request.RetrySet, RetryDelay: request.RetryDelay, DecryptionKeys: request.DecryptionKeys, SignaturePolicyPath: request.SignaturePolicyPath,
-				Pull: request.Pull, PullPolicy: request.PullPolicy, ImageStoreDir: request.ImageStoreDir, ComponentStoreDir: request.ComponentStoreDir, NativeStore: NativeStoreOptions(request.Store), NativeStoreShared: request.Store.Shared,
+				Pull: request.Pull, PullPolicy: request.PullPolicy, ComponentStoreDir: request.ComponentStoreDir, NativeStore: NativeStoreOptions(request.Store),
 			})
 			if err != nil {
 				return fmt.Errorf("create build worker resolver: %w", err)
@@ -57,10 +56,12 @@ func planDefinitionInWorker(ctx context.Context, request planWorkerRequest) (*pl
 		if err := ensureResolver(); err != nil {
 			return ResolvedImageSource{}, err
 		}
-		if request.Mode == "publish" && resolver.PullPolicy() != oci.PullNewer && !resolver.NativeStoreShared() {
-			return SelectImageSource(ctx, resolver, reference, platform)
-		}
 		return withStore(func(store storage.Store) (ResolvedImageSource, error) {
+			// Publication checks package results before materializing bases. Keep
+			// newer eager so a failed pull binds the cached config before planning.
+			if request.Mode == "publish" && resolver.PullPolicy() != oci.PullNewer {
+				return selectImageSource(ctx, resolver, reference, platform, store)
+			}
 			return ResolveImageSource(ctx, resolver, reference, platform, store, platformSystemContext(system, platform))
 		})
 	}, func(ctx context.Context, spec buildcontext.Spec, platform v1.Platform) (ResolvedImageSource, error) {

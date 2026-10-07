@@ -5,11 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 
-	"coopr/internal/imagecatalog"
-	"coopr/internal/localstore"
 	"coopr/internal/oci"
 	digest "github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -21,6 +18,7 @@ import (
 	imagestorage "go.podman.io/image/v5/storage"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/storage"
+	"oras.land/oras-go/v2/content"
 )
 
 // ResolvedImageSource carries the verified OCI selection and config. Remote
@@ -31,7 +29,7 @@ type ResolvedImageSource struct {
 	Root           v1.Descriptor
 	Selected       v1.Descriptor
 	SourceManifest *v1.Descriptor
-	ConfigData     json.RawMessage
+	ConfigData     []byte
 	Reference      string
 	Remote         bool
 	cached         *ResolvedImageSource
@@ -44,47 +42,46 @@ func (e *nativeImagePullError) Unwrap() error { return e.err }
 
 // SelectImageSource resolves immutable image metadata without opening
 // containers/storage. Remote selections are imported only if execution is
-// actually required; local catalog selections are verified at that same point.
+// actually required; local native selections are verified at that same point.
 func SelectImageSource(ctx context.Context, resolver *oci.Resolver, reference string, platform v1.Platform) (ResolvedImageSource, error) {
 	if resolver == nil {
 		return ResolvedImageSource{}, errors.New("nil OCI resolver")
 	}
+	storeOptions := resolver.NativeStoreOptions()
+	if storeOptions.GraphRoot == "" {
+		defaults, err := DefaultStoreOptions()
+		if err != nil {
+			return ResolvedImageSource{}, err
+		}
+		storeOptions = NativeStoreOptions(defaults)
+	}
+	lease, err := acquireStore(StoreOptions{GraphRoot: storeOptions.GraphRoot, RunRoot: storeOptions.RunRoot, ImageStore: storeOptions.ImageStore, GraphDriverName: storeOptions.GraphDriverName, GraphDriverOptions: storeOptions.GraphDriverOptions, TransientStore: storeOptions.TransientStore, Native: storeOptions})
+	if err != nil {
+		return ResolvedImageSource{}, err
+	}
+	defer func() { _ = lease.Close() }()
+	return selectImageSource(ctx, resolver, reference, platform, lease.store)
+}
+
+func selectImageSource(ctx context.Context, resolver *oci.Resolver, reference string, platform v1.Platform, store storage.Store) (ResolvedImageSource, error) {
 	canonical, err := oci.ParseReference(reference)
 	if err != nil {
 		return ResolvedImageSource{}, err
 	}
-	storeDir := resolver.ImageStoreDir()
-	var selectors []string
-	if at := strings.LastIndex(reference, "@"); at >= 0 {
-		pinned := digest.Digest(reference[at+1:])
-		if pinned.Algorithm() == digest.SHA256 && pinned.Validate() == nil {
-			selectors = append(selectors, pinned.String())
-		}
-	}
-	if local, err := localstore.NormalizeImageTag(reference); err == nil {
-		selectors = append(selectors, local)
-	}
-	selectors = append(selectors, canonical.String())
 	var cached *ResolvedImageSource
-	pinned := len(selectors) > 0 && strings.HasPrefix(selectors[0], "sha256:")
-	if !resolver.PullImages() || pinned {
-		for _, selector := range selectors {
-			selection, found, err := imagecatalog.Lookup(ctx, storeDir, selector, platform)
-			if err != nil {
-				return ResolvedImageSource{}, fmt.Errorf("lookup cached base image %q: %w", reference, err)
+	pinned := strings.Contains(reference, "@")
+	if resolver.PullPolicy() != oci.PullAlways || pinned {
+		stored, err := oci.ResolveStoredImage(ctx, store, reference, platform)
+		if err == nil {
+			selected := ResolvedImageSource{ImageID: stored.StorageImageID, Root: stored.Root, Selected: stored.Selected, SourceManifest: stored.SourceManifest, ConfigData: append(json.RawMessage(nil), stored.ConfigData...), Reference: canonical.String()}
+			if resolver.PullPolicy() != oci.PullNewer || pinned {
+				return selected, nil
 			}
-			if found {
-				selected := ResolvedImageSource{
-					ImageID: selection.ImageID, Root: selection.Root, Selected: selection.Manifest,
-					ConfigData: append(json.RawMessage(nil), selection.ConfigData...), Reference: canonical.String(),
-					SourceManifest: selection.SourceManifest,
-				}
-				if resolver.PullPolicy() != oci.PullNewer || pinned {
-					return selected, nil
-				}
-				cached = &selected
-				break
-			}
+			cached = &selected
+		} else if resolver.PullPolicy() == oci.PullNever && errors.Is(err, oci.ErrStoredPlatformUnavailable) {
+			return ResolvedImageSource{}, err
+		} else if !errors.Is(err, storage.ErrImageUnknown) && !errors.Is(err, oci.ErrStoredPlatformUnavailable) {
+			return ResolvedImageSource{}, err
 		}
 	}
 	if resolver.PullPolicy() == oci.PullNever {
@@ -117,7 +114,7 @@ func SelectImageSource(ctx context.Context, resolver *oci.Resolver, reference st
 
 // ResolveImageSource reuses a committed image in the canonical Buildah graph.
 // A cache miss pulls the selected platform directly into that graph, then
-// commits its immutable storage ID and metadata to the catalog.
+// returns its immutable storage ID and verified metadata.
 func ResolveImageSource(ctx context.Context, resolver *oci.Resolver, reference string, platform v1.Platform, store storage.Store, system *types.SystemContext) (ResolvedImageSource, error) {
 	if resolver == nil {
 		return ResolvedImageSource{}, errors.New("nil OCI resolver")
@@ -125,34 +122,7 @@ func ResolveImageSource(ctx context.Context, resolver *oci.Resolver, reference s
 	if store == nil {
 		return ResolvedImageSource{}, errors.New("nil containers/storage store")
 	}
-	if resolver.NativeStoreShared() && resolver.PullPolicy() != oci.PullAlways && !strings.Contains(reference, "@") {
-		stored, storedErr := oci.ResolveStoredImage(ctx, store, reference, platform)
-		if storedErr == nil {
-			selection := imagecatalog.Selection{
-				Root: stored.Root, Manifest: stored.Selected, ImageID: stored.StorageImageID,
-				ConfigData: append(json.RawMessage(nil), stored.ConfigData...),
-			}
-			for _, selector := range localImageSelectors(reference) {
-				if err := imagecatalog.Commit(ctx, resolver.ImageStoreDir(), selector, platform, selection); err != nil {
-					return ResolvedImageSource{}, fmt.Errorf("refresh shared-store image %q: %w", reference, err)
-				}
-			}
-		} else if errors.Is(storedErr, storage.ErrImageUnknown) ||
-			(errors.Is(storedErr, oci.ErrStoredPlatformUnavailable) && resolver.PullPolicy() != oci.PullNever) {
-			// Native names are authoritative in a shared store. Remove stale
-			// Coopr aliases after Podman retags/removes an image or the requested
-			// platform is unavailable and policy permits pulling; immutable digest
-			// records remain available for exact references.
-			for _, selector := range localImageSelectors(reference) {
-				if _, err := imagecatalog.RemoveReference(ctx, resolver.ImageStoreDir(), selector); err != nil {
-					return ResolvedImageSource{}, fmt.Errorf("remove stale shared-store image %q: %w", reference, err)
-				}
-			}
-		} else {
-			return ResolvedImageSource{}, storedErr
-		}
-	}
-	selected, err := SelectImageSource(ctx, resolver, reference, platform)
+	selected, err := selectImageSource(ctx, resolver, reference, platform, store)
 	if err != nil {
 		return ResolvedImageSource{}, err
 	}
@@ -170,23 +140,12 @@ func ResolveImageSource(ctx context.Context, resolver *oci.Resolver, reference s
 	return materialized, err
 }
 
-func localImageSelectors(reference string) []string {
-	selectors := []string{reference}
-	if local, err := localstore.NormalizeImageTag(reference); err == nil && local != reference {
-		selectors = append(selectors, local)
-	}
-	if canonical, err := oci.ParseReference(reference); err == nil && canonical.String() != reference {
-		selectors = append(selectors, canonical.String())
-	}
-	return slices.Compact(selectors)
-}
-
 func materializeImageSource(ctx context.Context, resolver *oci.Resolver, reference string, platform v1.Platform, store storage.Store, system *types.SystemContext, selected ResolvedImageSource) (ResolvedImageSource, error) {
 	var missingLocal error
 	if !selected.Remote {
 		stored, err := store.Image(selected.ImageID)
 		if err == nil && stored != nil && stored.ID == selected.ImageID {
-			selection := imagecatalog.Selection{Root: selected.Root, Manifest: selected.Selected, ImageID: selected.ImageID, ConfigData: selected.ConfigData}
+			selection := oci.StoredSelection{Root: selected.Root, Manifest: selected.Selected, ImageID: selected.ImageID, ConfigData: selected.ConfigData}
 			if err := verifyStoredManifest(ctx, store, system, selection); err != nil {
 				return ResolvedImageSource{}, fmt.Errorf("cached base image %q: %w", reference, err)
 			}
@@ -197,7 +156,7 @@ func materializeImageSource(ctx context.Context, resolver *oci.Resolver, referen
 		}
 		missingLocal = err
 		if missingLocal == nil {
-			missingLocal = errors.New("catalog image ID was not found")
+			missingLocal = errors.New("selected native image ID was not found")
 		}
 	}
 	if resolver == nil {
@@ -210,7 +169,7 @@ func materializeImageSource(ctx context.Context, resolver *oci.Resolver, referen
 	if registryReference == "" {
 		registryReference = reference
 	}
-	pullSystem := resolver.NativeSystemContext(registryReference)
+	pullSystem := resolver.SystemContext()
 	destinationName, err := dockerreference.ParseDockerRef(registryReference)
 	if err != nil {
 		return ResolvedImageSource{}, err
@@ -277,7 +236,7 @@ func materializeImageSource(ctx context.Context, resolver *oci.Resolver, referen
 		return ResolvedImageSource{}, fmt.Errorf("pull base image %q returned %d images; expected one", reference, len(images))
 	}
 	imageID := images[0].ID()
-	selection := imagecatalog.Selection{
+	selection := oci.StoredSelection{
 		Root: selected.Root, Manifest: selected.Selected, ImageID: imageID, ConfigData: selected.ConfigData,
 		SourceManifest: selected.SourceManifest,
 	}
@@ -290,18 +249,30 @@ func materializeImageSource(ctx context.Context, resolver *oci.Resolver, referen
 			return ResolvedImageSource{}, fmt.Errorf("select decrypted base image %q: %w", reference, err)
 		}
 	}
-	if err := imagecatalog.Commit(ctx, resolver.ImageStoreDir(), selected.Reference, platform, selection); err != nil {
-		return ResolvedImageSource{}, fmt.Errorf("catalog imported base image %q: %w", reference, err)
-	}
-	if selection.SourceManifest != nil {
-		canonical, err := oci.ParseReference(selected.Reference)
+
+	if manifest.MIMETypeIsMultiImage(selection.Root.MediaType) {
+		rootReference, err := oci.ParseReference(selected.Reference)
 		if err != nil {
 			return ResolvedImageSource{}, err
 		}
-		canonical.Reference = selection.SourceManifest.Digest.String()
-		if err := imagecatalog.CommitSelected(ctx, resolver.ImageStoreDir(), canonical.String(), platform, selection); err != nil {
-			return ResolvedImageSource{}, fmt.Errorf("catalog encrypted source reference %q: %w", reference, err)
+		rootReference.Reference = selection.Root.Digest.String()
+		resolvedRoot, err := resolver.ResolveRemoteImage(ctx, rootReference.String(), platform)
+		if err != nil {
+			return ResolvedImageSource{}, fmt.Errorf("retain pulled index metadata: %w", err)
 		}
+		data, err := content.FetchAll(ctx, resolvedRoot.Source(), selection.Root)
+		if err != nil {
+			return ResolvedImageSource{}, err
+		}
+		if digest.FromBytes(data) != selection.Root.Digest || int64(len(data)) != selection.Root.Size {
+			return ResolvedImageSource{}, errors.New("pulled root metadata differs from selection")
+		}
+		if err := store.SetImageBigData(imageID, storage.ImageDigestManifestBigDataNamePrefix+"-"+selection.Root.Digest.String(), data, manifest.Digest); err != nil {
+			return ResolvedImageSource{}, err
+		}
+	}
+	if err := oci.RecordStoredOrigin(ctx, store, destinationName.String(), selection); err != nil {
+		return ResolvedImageSource{}, fmt.Errorf("record pulled native origin: %w", err)
 	}
 	selected.ImageID = imageID
 	selected.Root, selected.Selected, selected.SourceManifest = selection.Root, selection.Manifest, selection.SourceManifest
@@ -312,14 +283,14 @@ func materializeImageSource(ctx context.Context, resolver *oci.Resolver, referen
 // Native pulls retain the original encrypted manifest for provenance as well
 // as the decrypted default. Builders and exports consume the latter, just as
 // they do when Podman pulls an encrypted image into containers/storage.
-func decryptedImageSelection(ctx context.Context, store storage.Store, system *types.SystemContext, selection imagecatalog.Selection) (imagecatalog.Selection, error) {
+func decryptedImageSelection(ctx context.Context, store storage.Store, system *types.SystemContext, selection oci.StoredSelection) (oci.StoredSelection, error) {
 	reference, err := imagestorage.Transport.NewStoreReference(store, nil, selection.ImageID)
 	if err != nil {
-		return imagecatalog.Selection{}, err
+		return oci.StoredSelection{}, err
 	}
 	source, err := reference.NewImageSource(ctx, system)
 	if err != nil {
-		return imagecatalog.Selection{}, err
+		return oci.StoredSelection{}, err
 	}
 	defer func() { _ = source.Close() }()
 	originalManifest := selection.Manifest
@@ -328,11 +299,11 @@ func decryptedImageSelection(ctx context.Context, store storage.Store, system *t
 	}
 	original, _, err := source.GetManifest(ctx, &originalManifest.Digest)
 	if err != nil {
-		return imagecatalog.Selection{}, err
+		return oci.StoredSelection{}, err
 	}
 	var encrypted v1.Manifest
 	if err := json.Unmarshal(original, &encrypted); err != nil {
-		return imagecatalog.Selection{}, err
+		return oci.StoredSelection{}, err
 	}
 	encryptedInput := false
 	for _, layer := range encrypted.Layers {
@@ -343,18 +314,18 @@ func decryptedImageSelection(ctx context.Context, store storage.Store, system *t
 	}
 	raw, mediaType, err := source.GetManifest(ctx, nil)
 	if err != nil {
-		return imagecatalog.Selection{}, err
+		return oci.StoredSelection{}, err
 	}
 	var decrypted v1.Manifest
 	if err := json.Unmarshal(raw, &decrypted); err != nil {
-		return imagecatalog.Selection{}, err
+		return oci.StoredSelection{}, err
 	}
 	if decrypted.Config.Digest != encrypted.Config.Digest || len(decrypted.Layers) != len(encrypted.Layers) {
-		return imagecatalog.Selection{}, errors.New("decrypted image differs from the verified source configuration or layer count")
+		return oci.StoredSelection{}, errors.New("decrypted image differs from the verified source configuration or layer count")
 	}
 	for _, layer := range decrypted.Layers {
 		if strings.HasSuffix(layer.MediaType, "+encrypted") {
-			return imagecatalog.Selection{}, errors.New("native image pull retained an encrypted default manifest")
+			return oci.StoredSelection{}, errors.New("native image pull retained an encrypted default manifest")
 		}
 	}
 	origin := originalManifest
@@ -366,7 +337,7 @@ func decryptedImageSelection(ctx context.Context, store storage.Store, system *t
 	return selection, nil
 }
 
-func verifyStoredManifest(ctx context.Context, store storage.Store, system *types.SystemContext, selection imagecatalog.Selection) error {
+func verifyStoredManifest(ctx context.Context, store storage.Store, system *types.SystemContext, selection oci.StoredSelection) error {
 	reference, err := imagestorage.Transport.NewStoreReference(store, nil, selection.ImageID)
 	if err != nil {
 		return err
@@ -377,14 +348,14 @@ func verifyStoredManifest(ctx context.Context, store storage.Store, system *type
 	}
 	defer func() { _ = source.Close() }()
 	// containers/storage can retain multiple manifests for one image-config ID
-	// (for example OCI and Docker schema 2). Verify the immutable catalog
+	// (for example OCI and Docker schema 2). Verify the immutable native
 	// selection itself instead of whichever alternate is currently the default.
 	manifest, mediaType, err := source.GetManifest(ctx, &selection.Manifest.Digest)
 	if err != nil {
 		return err
 	}
 	if mediaType != selection.Manifest.MediaType || int64(len(manifest)) != selection.Manifest.Size || digest.FromBytes(manifest) != selection.Manifest.Digest {
-		return fmt.Errorf("stored image manifest differs from catalog selection %s", selection.Manifest.Digest)
+		return fmt.Errorf("stored image manifest differs from selected manifest %s", selection.Manifest.Digest)
 	}
 	return nil
 }

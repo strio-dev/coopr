@@ -34,9 +34,9 @@ func TestCompletedStdoutTarSurvivesLaterPublicationFailure(t *testing.T) {
 	authority := strings.TrimPrefix(server.URL, "http://")
 	metadata := filepath.Join(root, "metadata.json")
 	var stdout bytes.Buffer
-	_, err := Run(context.Background(), Options{File: file, Context: root, StoreDir: filepath.Join(root, "images"), Quiet: true, Stdout: &stdout,
+	_, err := Run(context.Background(), Options{File: file, Context: root, BuildStore: nativeBuildTestStore(filepath.Join(root, "images")), Quiet: true, Stdout: &stdout,
 		Output: buildah.FilesystemOutput{Type: "tar", Path: "-"}, Tags: []string{"completed:latest", "registry:" + authority + "/coopr/refused:latest"},
-		PlainHTTPRegistries: []string{authority}, MetadataFile: metadata, RetrySet: true,
+		TLSVerify: new(false), MetadataFile: metadata, RetrySet: true,
 	})
 	if err == nil {
 		t.Fatal("failed publication reported success")

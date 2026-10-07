@@ -14,6 +14,7 @@ import (
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"go.podman.io/buildah/define"
+	buildahparse "go.podman.io/buildah/pkg/parse"
 )
 
 const defaultBuildNetwork = "default"
@@ -161,6 +162,11 @@ func normalizePlanOptions(options PlanOptions) (PlanOptions, error) {
 	}
 	options.Network = network
 	options.AddHosts = addHosts
+	// Selecting host networking for the whole build explicitly grants its
+	// entitlement, including authored RUN requests and component operations.
+	if network == "host" && !slices.Contains(options.Allow, networkHostEntitlement) {
+		options.Allow = append(slices.Clone(options.Allow), networkHostEntitlement)
+	}
 	cacheArtifacts, err := cacheArtifactPaths(options)
 	if err != nil {
 		return PlanOptions{}, err
@@ -173,7 +179,14 @@ func normalizePlanOptions(options PlanOptions) (PlanOptions, error) {
 	return options, nil
 }
 
-func resolveAndValidateBuildNetwork(stages []planner.Stage, network string, controls RunControls) ([]planner.Stage, error) {
+func resolveAndValidateBuildNetwork(stages []planner.Stage, network string, controls RunControls, isolation string) ([]planner.Stage, error) {
+	if controls.Isolation != "" {
+		isolation = controls.Isolation
+	}
+	selectedIsolation, err := buildahparse.IsolationOption(isolation)
+	if err != nil {
+		return nil, fmt.Errorf("select Buildah isolation: %w", err)
+	}
 	resolved := resolveBuildNetwork(stages, network)
 	for _, stage := range resolved {
 		for operationIndex, operation := range stage.Operations {
@@ -183,9 +196,21 @@ func resolveAndValidateBuildNetwork(stages []planner.Stage, network string, cont
 			if err := validateRunControlsForNetwork(controls, operation.Properties["network"]); err != nil {
 				return nil, fmt.Errorf("stage %s operation %d: %w", stage.ID, operationIndex+1, err)
 			}
+			if err := validateRunNetworkIsolation(operation.Properties["network"], selectedIsolation); err != nil {
+				return nil, fmt.Errorf("stage %s operation %d: %w", stage.ID, operationIndex+1, err)
+			}
 		}
 	}
 	return resolved, nil
+}
+
+func validateRunNetworkIsolation(network string, isolation define.Isolation) error {
+	// Buildah's CLI rejects explicit non-host networking with chroot. Its
+	// library API otherwise ignores the requested namespace and runs on host.
+	if isolation == define.IsolationChroot && network != "" && network != defaultBuildNetwork && network != "host" {
+		return fmt.Errorf("RUN network=%s cannot be used with chroot isolation; use --isolation=oci or --isolation=rootless", network)
+	}
+	return nil
 }
 
 func resolveBuildNetwork(stages []planner.Stage, network string) []planner.Stage {

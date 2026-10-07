@@ -28,6 +28,7 @@ import (
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	upstream "go.podman.io/buildah"
 	"go.podman.io/buildah/define"
+	"go.podman.io/image/v5/types"
 	"go.podman.io/storage"
 	"oras.land/oras-go/v2/content"
 	orasoci "oras.land/oras-go/v2/content/oci"
@@ -45,12 +46,55 @@ func TestWorkerJobIDValidation(t *testing.T) {
 	}
 }
 
+func TestWorkerRequestsPreserveTLSVerifyPolicy(t *testing.T) {
+	for _, verify := range []*bool{nil, new(true), new(false)} {
+		for _, request := range []any{planWorkerRequest{TLSVerify: verify}, stageWorkerRequest{TLSVerify: verify}} {
+			data, err := json.Marshal(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded struct {
+				TLSVerify *bool `json:"tls_verify,omitempty"`
+			}
+			if err := json.Unmarshal(data, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			if verify == nil {
+				if decoded.TLSVerify != nil {
+					t.Fatalf("%T changed omitted TLS policy", request)
+				}
+			} else if decoded.TLSVerify == nil || *decoded.TLSVerify != *verify {
+				t.Fatalf("%T lost explicit TLS policy %v", request, *verify)
+			}
+		}
+	}
+}
+
+func TestStoredTransferTLSVerifyPolicy(t *testing.T) {
+	for _, test := range []struct {
+		verify *bool
+		want   types.OptionalBool
+	}{
+		{nil, types.OptionalBoolUndefined},
+		{new(true), types.OptionalBoolFalse},
+		{new(false), types.OptionalBoolTrue},
+	} {
+		system, err := storedTransferSystemContext(StoredTransferOptions{TLSVerify: test.verify}, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if system.DockerInsecureSkipTLSVerify != test.want {
+			t.Fatalf("native TLS policy = %v, want %v", system.DockerInsecureSkipTLSVerify, test.want)
+		}
+	}
+}
+
 func TestPlanWorkerMessagePreservesRequestExecutionOptions(t *testing.T) {
 	root := t.TempDir()
 	request := planWorkerRequest{
 		Mode: "build", NoCache: true, Network: "none", AddHosts: []string{"example.test:127.0.0.1"}, RewriteTimestamp: true, Allow: []string{"network.host"},
 		RunControls: RunControls{HTTPProxy: true, Memory: 64 << 20, DNSServers: []string{"1.1.1.1"}}, Jobs: 3,
-		AuthFile: "/tmp/auth.json", CertDir: "/tmp/certs", SkipTLSVerify: true,
+		AuthFile: "/tmp/auth.json", CertDir: "/tmp/certs", TLSVerify: new(false),
 		PullPolicy:    string(oci.PullNever),
 		CacheFrom:     []CacheSpec{{Transport: "registry", Reference: "registry.example/read"}},
 		CacheTo:       []CacheSpec{{Transport: "registry", Reference: "registry.example/write"}},
@@ -74,8 +118,8 @@ func TestPlanWorkerMessagePreservesRequestExecutionOptions(t *testing.T) {
 	if !decoded.RunControls.HTTPProxy || decoded.RunControls.Memory != 64<<20 || decoded.Jobs != 3 {
 		t.Fatalf("plan worker request controls = %+v, jobs=%d", decoded.RunControls, decoded.Jobs)
 	}
-	if decoded.AuthFile != request.AuthFile || decoded.CertDir != request.CertDir || !decoded.SkipTLSVerify {
-		t.Fatalf("plan worker request registry options = %q, %q, %v", decoded.AuthFile, decoded.CertDir, decoded.SkipTLSVerify)
+	if decoded.AuthFile != request.AuthFile || decoded.CertDir != request.CertDir || decoded.TLSVerify == nil || *decoded.TLSVerify {
+		t.Fatalf("plan worker request registry options = %q, %q, %v", decoded.AuthFile, decoded.CertDir, decoded.TLSVerify)
 	}
 	if decoded.PullPolicy != request.PullPolicy || !slices.Equal(decoded.CacheFrom, request.CacheFrom) || !slices.Equal(decoded.CacheTo, request.CacheTo) {
 		t.Fatalf("plan worker request pull/cache options = %q, %#v, %#v", decoded.PullPolicy, decoded.CacheFrom, decoded.CacheTo)
@@ -376,8 +420,8 @@ func TestBuildPlanSupervisedCopyDotExcludesCooprArtifacts(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
-		Store:      StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"},
-		ContextDir: root, Isolation: "rootless", Output: Output{Path: layout}, ImageStoreDir: images,
+		Store:      StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: images, GraphDriverName: "vfs"},
+		ContextDir: root, Isolation: "rootless", Output: Output{Path: layout},
 		Stdout: io.Discard, Stderr: io.Discard,
 	})
 	if err != nil {
@@ -459,7 +503,7 @@ run "trap '' TERM; sleep 60" network="none"
 	started := time.Now()
 	_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 		Store: storeOptions, ContextDir: root, Isolation: "rootless", Runtime: "crun", Output: Output{Path: layout},
-		ImageStoreDir: base.imageStoreDir, Pull: false, SignaturePolicyPath: policy,
+		Pull: false, SignaturePolicyPath: policy,
 		Stdout: io.Discard, Stderr: io.Discard,
 	})
 	if !errors.Is(err, context.DeadlineExceeded) {

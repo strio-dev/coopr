@@ -35,7 +35,7 @@ func TestLifecycleNoLayersBuildsSingleNewLayerWithoutInstructionCache(t *testing
 	for attempt := range 2 {
 		layout := filepath.Join(root, fmt.Sprintf("output-%d", attempt))
 		var logs strings.Builder
-		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun", ImageStoreDir: base.imageStoreDir, SignaturePolicyPath: policy, Output: Output{Path: layout}, Lifecycle: LifecycleControls{NoLayers: true}, Stdout: io.Discard, Stderr: &logs})
+		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun", SignaturePolicyPath: policy, Output: Output{Path: layout}, Lifecycle: LifecycleControls{NoLayers: true}, Stdout: io.Discard, Stderr: &logs})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -119,7 +119,7 @@ func TestLifecycleNoLayersAddsOneLayerAcrossComponentBoundaries(t *testing.T) {
 	base := newLiveBusyBoxStorage(t, ctx, root, store)
 	componentResolver, _, _ := localComponentResolver(t, ctx, v1.Platform{OS: "linux", Architecture: runtime.GOARCH})
 	resolver, err := oci.NewResolver(oci.Options{
-		ImageStoreDir: base.imageStoreDir, ComponentStoreDir: componentResolver.ComponentStoreDir(), Pull: false,
+		ComponentStoreDir: componentResolver.ComponentStoreDir(), Pull: false,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -182,7 +182,7 @@ func TestLifecycleRetainsSelectedIntermediateContainers(t *testing.T) {
 				command = "exit 9"
 			}
 			plan := testPlan(t, fmt.Sprintf("from %q\nrun \"printf one >/one\" network=\"none\"\nrun %q network=\"none\"\n", base.reference, command))
-			_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun", ImageStoreDir: base.imageStoreDir, SignaturePolicyPath: policy, Output: Output{Path: filepath.Join(root, "output")}, Lifecycle: tc.controls, Stdout: io.Discard, Stderr: io.Discard})
+			_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun", SignaturePolicyPath: policy, Output: Output{Path: filepath.Join(root, "output")}, Lifecycle: tc.controls, Stdout: io.Discard, Stderr: io.Discard})
 			if (err != nil) != tc.fail {
 				t.Fatalf("build error=%v fail=%v", err, tc.fail)
 			}

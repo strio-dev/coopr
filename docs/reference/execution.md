@@ -88,9 +88,11 @@ Configuration-only instructions change stage state without changing the filesyst
 
 The build-wide `--network` supplies RUN's default. An authored value, including `network="default"`, overrides it for authored, inherited, and component RUNs. Modes include default, private, none, host, named networks, `ns:PATH`, and Pasta/slirp4netns options. Effective modes determine validation and cache identity; `network="none"` rejects DNS controls.
 
+Chroot shares its caller's network namespace. It accepts default or host networking; requests for other modes fail before execution or cache reuse. Use `--isolation=oci` or `--isolation=rootless` for network namespace isolation.
+
 | Elevated operation | Authorization and limit |
 | --- | --- |
-| `network="host"` | Requires `--allow network.host`, including cache hits. In containerized Coopr, host means the outer container's network namespace. |
+| `network="host"` | Requires `--allow network.host` or build-wide `--network=host`, including cache hits. In containerized Coopr, host means the outer container's network namespace. |
 | `security="insecure"` | Requires `--allow security.insecure`, including cache hits. Requires OCI/rootless isolation; chroot fails. Applies the insecure OCI spec policy, bounded by outer container, user namespace, and kernel permissions. Writable sysfs/cgroup remounts may fail in nested rootless containers; failures are reported. |
 | RUN `device` children | Require `--allow device`, `--allow device=SELECTOR`, or CDI auto-allow annotation. Selection/authorization precede cache lookup. Only devices/CDI files available to the outer container can pass through. |
 
@@ -160,7 +162,7 @@ Registry resolution, caches, and publication share the request's [authentication
 
 ### Image selection
 
-Registry component tags resolve on each build. Image tags default to local cached selection. `--pull-policy` accepts `missing` (default), `always`, `newer`, and `never`; bare `--pull` means always. `newer` compares selected digests and can reuse a local image on registry failure. `never` fails missing inputs before registry access. Digest references select exact objects and can reuse local copies offline. Reproducibility requires pinning every selected OCI reference, including nested ones.
+Registry component tags resolve on each build. Image tags default to local cached selection. `--pull` accepts `missing` (default), `always`, `newer`, and `never`; bare `--pull` means always. `newer` compares selected digests and can reuse a local image on registry failure. `never` fails missing inputs before registry access. Digest references select exact objects and can reuse local copies offline. Reproducibility requires pinning every selected OCI reference, including nested ones.
 
 ### Cache scopes
 
@@ -182,7 +184,7 @@ Package-result caching supports networked RUN, bind/cache/tmpfs/secret/SSH mount
 
 Network responses, credentials/SSH-agent state, cache-mount contents, clock, randomness, and undeclared host inputs do not invalidate conventional cache results. A cache hit is not a reproducibility guarantee. Required reusable files belong in packages. Cache repositories are trusted inputs and may contain intermediate files absent from final images; protect them accordingly.
 
-`--no-cache` bypasses instruction, component-state, and package-result reads, writes fresh results, and leaves cache mounts intact. Repeatable `--cache` enables reads/writes; `--cache-from` reads only; `--cache-to` writes only. Transports are `oci-layout:PATH` and `registry:HOST/REPOSITORY`. Validated hits can seed another writable destination; read-only sources are never updated and write-only destinations are never queried.
+`--no-cache` bypasses instruction, component-state, and package-result reads, writes fresh results, and leaves cache mounts intact. Repeatable `--cache-from` reads results; `--cache-to` writes them. Supply both for a cache used in both directions. Transports are `oci-layout:PATH` and `registry:HOST/REPOSITORY`. Validated hits can seed another writable destination; read-only sources are never updated and write-only destinations are never queried.
 
 ### State identity and metadata limits
 

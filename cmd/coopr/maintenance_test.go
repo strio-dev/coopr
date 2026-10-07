@@ -4,17 +4,23 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"coopr/internal/buildah"
-	"coopr/internal/imagecatalog"
+	"coopr/internal/componentstore"
 	"coopr/internal/imagestore"
+	"coopr/internal/localstore"
 	"coopr/internal/oci"
+	"coopr/internal/storeactivity"
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"go.podman.io/common/libimage"
 	"go.podman.io/storage"
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
@@ -22,21 +28,296 @@ import (
 func TestMaintenanceCommandShape(t *testing.T) {
 	root := newRootCommand()
 	for _, path := range [][]string{
-		{"images"}, {"image", "ls"}, {"image", "inspect"}, {"image", "rm"},
-		{"components"}, {"component", "ls"}, {"component", "inspect"}, {"component", "rm"},
-		{"system", "df"}, {"system", "prune"}, {"cache", "df"}, {"cache", "prune"},
+		{"images"}, {"image", "ls"}, {"image", "inspect"}, {"image", "rm"}, {"image", "prune"},
+		{"component", "build"}, {"component", "copy"}, {"component", "ls"}, {"components"}, {"component", "inspect"}, {"component", "rm"},
+		{"system", "df"}, {"system", "prune"},
 	} {
 		command, _, err := root.Find(path)
-		if err != nil || command == root {
+		if err != nil || command.Name() != path[len(path)-1] {
 			t.Fatalf("command %v = %v, %v", path, command, err)
 		}
 	}
-	for _, path := range [][]string{{"system", "prune"}, {"cache", "prune"}} {
+	for _, path := range [][]string{{"system", "prune"}, {"image", "prune"}} {
 		command, _, _ := root.Find(path)
-		if command.Flags().Lookup("dry-run") == nil {
-			t.Fatalf("command %v has no --dry-run", path)
+		for _, flag := range []string{"dry-run", "all"} {
+			if command.Flags().Lookup(flag) == nil {
+				t.Fatalf("command %v has no --%s", path, flag)
+			}
 		}
 	}
+	imagePrune, _, _ := root.Find([]string{"image", "prune"})
+	systemPrune, _, _ := root.Find([]string{"system", "prune"})
+	if imagePrune.Flags().Lookup("build-cache") == nil || systemPrune.Flags().Lookup("build-cache") != nil {
+		t.Fatal("--build-cache must belong to image prune, as in Podman")
+	}
+}
+
+func TestCacheCommandRemoved(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if status := run([]string{"cache", "df"}, &stdout, &stderr); status == 0 || !strings.Contains(stderr.String(), `unknown command "cache"`) {
+		t.Fatalf("removed cache command: status=%d stdout=%q stderr=%q", status, stdout.String(), stderr.String())
+	}
+}
+
+func TestComponentListingSupportsBothCommands(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"component", "ls"}, &stdout, &stderr); code != 0 || strings.Join(strings.Fields(stdout.String()), " ") != "NAME DIGEST" || strings.Contains(stdout.String(), "\t") {
+		t.Fatalf("component ls status=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"components"}, &stdout, &stderr); code != 0 || strings.Join(strings.Fields(stdout.String()), " ") != "NAME DIGEST" {
+		t.Fatalf("plural shortcut status=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--help"}, &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), "\n  components ") {
+		t.Fatalf("root help status=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestImageInspectUsesNativeImageData(t *testing.T) {
+	options := maintenanceStoreOptions(t.TempDir())
+	store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(options))
+	if err != nil {
+		t.Fatal(err)
+	}
+	layout, descriptor, imageID := maintenanceImageLayout(t, v1.Platform{OS: "linux", Architecture: "amd64"}, "inspect")
+	if _, err := store.WriteLayout(context.Background(), layout, descriptor, "inspect"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	status := run([]string{"--root", options.GraphRoot, "--runroot", options.RunRoot, "--storage-driver", "vfs", "image", "inspect", "inspect"}, &stdout, &stderr)
+	if status != 0 {
+		t.Fatalf("inspect status=%d stderr=%s", status, &stderr)
+	}
+	var inspected libimage.ImageData
+	if err := json.Unmarshal(stdout.Bytes(), &inspected); err != nil {
+		t.Fatal(err)
+	}
+	if inspected.ID != imageID.Encoded() || inspected.Digest != descriptor.Digest || inspected.Architecture != "amd64" || inspected.Os != "linux" || inspected.Config == nil || inspected.Config.Labels["test"] != "inspect" {
+		t.Fatalf("inspection lost native identity or configuration: %s", &stdout)
+	}
+	for _, internal := range []string{"ConfigData", "SourceManifest", "platforms"} {
+		if strings.Contains(stdout.String(), `"`+internal+`"`) {
+			t.Fatalf("inspection exposes internal %s: %s", internal, &stdout)
+		}
+	}
+}
+
+func TestComponentListingAlignsNamesAndDigests(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	directory, err := componentstore.DefaultDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	layout, descriptor, _ := maintenanceImageLayout(t, v1.Platform{OS: "linux", Architecture: "amd64"}, "component-list")
+	source, err := orasoci.New(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := localstore.Put(context.Background(), directory, source, descriptor, "short:latest", "long-component-name:latest"); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if status := run([]string{"component", "ls"}, &stdout, &stderr); status != 0 {
+		t.Fatalf("component ls status=%d stderr=%s", status, &stderr)
+	}
+	rows := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	if len(rows) != 3 {
+		t.Fatalf("component listing lost tags: %s", &stdout)
+	}
+	for _, row := range rows[1:] {
+		if strings.Index(row, descriptor.Digest.String()) != strings.Index(rows[0], "DIGEST") {
+			t.Fatalf("component columns do not align with header: %s", &stdout)
+		}
+	}
+	want := stdout.String()
+	stdout.Reset()
+	stderr.Reset()
+	if status := run([]string{"components"}, &stdout, &stderr); status != 0 || stdout.String() != want {
+		t.Fatalf("components differs from component ls: status=%d stdout=%q stderr=%q", status, stdout.String(), stderr.String())
+	}
+}
+
+func TestComponentInspectAcceptsLocalReferences(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	directory, err := componentstore.DefaultDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	layout, descriptor, _ := maintenanceImageLayout(t, v1.Platform{OS: "linux", Architecture: "amd64"}, "component-inspect")
+	source, err := orasoci.New(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := localstore.Put(context.Background(), directory, source, descriptor, "inspect"); err != nil {
+		t.Fatal(err)
+	}
+	for _, reference := range []string{"inspect", "local:inspect", descriptor.Digest.String(), "local:" + descriptor.Digest.String()} {
+		t.Run(reference, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if status := run([]string{"component", "inspect", reference}, &stdout, &stderr); status != 0 {
+				t.Fatalf("inspect status=%d stderr=%s", status, &stderr)
+			}
+			var actual v1.Descriptor
+			if err := json.Unmarshal(stdout.Bytes(), &actual); err != nil {
+				t.Fatal(err)
+			}
+			if actual.Digest != descriptor.Digest || actual.MediaType != descriptor.MediaType || actual.Size != descriptor.Size {
+				t.Fatalf("inspect changed descriptor: %+v", actual)
+			}
+		})
+	}
+}
+
+func TestImageInspectPreservesSelectedManifestFormat(t *testing.T) {
+	ctx := context.Background()
+	options := maintenanceStoreOptions(t.TempDir())
+	store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(options))
+	if err != nil {
+		t.Fatal(err)
+	}
+	layoutPath, original, imageID := maintenanceImageLayout(t, v1.Platform{OS: "linux", Architecture: "amd64"}, "formats")
+	layout, err := orasoci.New(layoutPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(layoutPath, "blobs", "sha256", original.Digest.Encoded()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest v1.Manifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	configData, err := os.ReadFile(filepath.Join(layoutPath, "blobs", "sha256", imageID.Encoded()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(configData, &config); err != nil {
+		t.Fatal(err)
+	}
+	config["comment"] = "docker-comment"
+	config["history"] = []v1.History{{Comment: "oci-comment"}}
+	config["config"].(map[string]any)["Healthcheck"] = map[string]any{"Test": []string{"CMD", "true"}}
+	configData, err = json.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageID = digest.FromBytes(configData)
+	manifest.Config.Digest = imageID
+	manifest.Config.Size = int64(len(configData))
+	if err := layout.Push(ctx, manifest.Config, bytes.NewReader(configData)); err != nil {
+		t.Fatal(err)
+	}
+	manifest.Annotations = map[string]string{"inspect-format": "oci"}
+	data, err = json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original = v1.Descriptor{MediaType: manifest.MediaType, Digest: digest.FromBytes(data), Size: int64(len(data))}
+	if err := layout.Push(ctx, original, bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+	if err := layout.Tag(ctx, original, original.Digest.String()); err != nil {
+		t.Fatal(err)
+	}
+	manifest.MediaType = "application/vnd.docker.distribution.manifest.v2+json"
+	manifest.Config.MediaType = "application/vnd.docker.container.image.v1+json"
+	manifest.Annotations = nil
+	data, err = json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	docker := v1.Descriptor{MediaType: manifest.MediaType, Digest: digest.FromBytes(data), Size: int64(len(data))}
+	if err := layout.Push(ctx, docker, bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+	if err := layout.Tag(ctx, docker, docker.Digest.String()); err != nil {
+		t.Fatal(err)
+	}
+	for _, variant := range []struct {
+		name       string
+		descriptor v1.Descriptor
+	}{{"formats-oci", original}, {"formats-docker", docker}} {
+		if _, err := store.WriteLayout(ctx, layoutPath, variant.descriptor, variant.name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, variant := range []struct {
+		name       string
+		descriptor v1.Descriptor
+	}{{"formats-oci", docker}, {original.Digest.String(), original}, {"localhost/formats-oci@" + original.Digest.String(), original}, {"formats-docker", docker}, {docker.Digest.String(), docker}} {
+		t.Run(variant.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if status := run([]string{"--root", options.GraphRoot, "--runroot", options.RunRoot, "--storage-driver", "vfs", "image", "inspect", variant.name}, &stdout, &stderr); status != 0 {
+				t.Fatalf("inspect status=%d stderr=%s", status, &stderr)
+			}
+			var inspected libimage.ImageData
+			if err := json.Unmarshal(stdout.Bytes(), &inspected); err != nil {
+				t.Fatal(err)
+			}
+			if inspected.ID != imageID.Encoded() || inspected.Digest != variant.descriptor.Digest || inspected.ManifestType != variant.descriptor.MediaType {
+				t.Fatalf("inspect selected wrong variant: id=%s digest=%s mediaType=%s want=%+v", inspected.ID, inspected.Digest, inspected.ManifestType, variant.descriptor)
+			}
+			if variant.descriptor.MediaType == v1.MediaTypeImageManifest {
+				if inspected.Annotations["inspect-format"] != "oci" || inspected.Comment != "oci-comment" || inspected.HealthCheck != nil {
+					t.Fatalf("OCI inspection used other format metadata: %+v", inspected)
+				}
+			} else if len(inspected.Annotations) != 0 || inspected.Comment != "docker-comment" || inspected.HealthCheck == nil || strings.Join(inspected.HealthCheck.Test, " ") != "CMD true" {
+				t.Fatalf("Docker inspection used other format metadata: %+v", inspected)
+			}
+		})
+	}
+	if err := buildah.WithStore(options, func(backend storage.Store) error {
+		return backend.SetNames(imageID.Encoded(), nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if status := run([]string{"--root", options.GraphRoot, "--runroot", options.RunRoot, "--storage-driver", "vfs", "image", "inspect", original.Digest.String()}, &stdout, &stderr); status != 0 {
+		t.Fatalf("retained unnamed manifest inspect status=%d stderr=%s", status, &stderr)
+	}
+	var inspected libimage.ImageData
+	if err := json.Unmarshal(stdout.Bytes(), &inspected); err != nil {
+		t.Fatal(err)
+	}
+	if inspected.ID != imageID.Encoded() || inspected.Digest != original.Digest || inspected.ManifestType != original.MediaType || len(inspected.RepoTags) != 0 {
+		t.Fatalf("unnamed manifest inspection lost pinned identity or added names: %s", &stdout)
+	}
+	t.Run("never-named", func(t *testing.T) {
+		options := maintenanceStoreOptions(t.TempDir())
+		store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(options))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.WriteLayout(ctx, layoutPath, original, ""); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr bytes.Buffer
+		if status := run([]string{"--root", options.GraphRoot, "--runroot", options.RunRoot, "--storage-driver", "vfs", "image", "inspect", original.Digest.String()}, &stdout, &stderr); status != 0 {
+			t.Fatalf("never-named inspect status=%d stderr=%s", status, &stderr)
+		}
+		var inspected libimage.ImageData
+		if err := json.Unmarshal(stdout.Bytes(), &inspected); err != nil {
+			t.Fatal(err)
+		}
+		if inspected.ID != imageID.Encoded() || inspected.Digest != original.Digest || inspected.ManifestType != original.MediaType || inspected.Annotations["inspect-format"] != "oci" || len(inspected.RepoTags) != 0 {
+			t.Fatalf("never-named inspection lost identity or added names: %s", &stdout)
+		}
+	})
 }
 
 func TestImageRemoveAcceptsNativeOnlyName(t *testing.T) {
@@ -51,13 +332,6 @@ func TestImageRemoveAcceptsNativeOnlyName(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	catalog, err := selectedStoreCatalog(options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := refreshSharedNativeCatalog(context.Background(), options, catalog, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -80,15 +354,7 @@ func TestImageRemoveAcceptsNativeOnlyName(t *testing.T) {
 	if _, err := store.Tag(imageID.Encoded(), "retained"); err != nil {
 		t.Fatalf("native-only rm deleted the underlying image: %v", err)
 	}
-	entries, err := imagecatalog.List(context.Background(), catalog)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, entry := range entries {
-		if entry.Reference == "native-only:latest" || entry.Reference == "localhost/native-only:latest" {
-			t.Fatalf("removed native alias remains cataloged: %s", entry.Reference)
-		}
-	}
+
 }
 
 func TestImageRemoveShortNameRemovesMatchedDockerQualifiedTag(t *testing.T) {
@@ -104,17 +370,6 @@ func TestImageRemoveShortNameRemovesMatchedDockerQualifiedTag(t *testing.T) {
 	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
-	}
-	catalog, err := selectedStoreCatalog(options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := refreshSharedNativeCatalog(context.Background(), options, catalog, "qualified"); err != nil {
-		t.Fatal(err)
-	}
-	if _, found, err := imagecatalog.Lookup(context.Background(), catalog, "qualified:latest", v1.Platform{OS: "linux", Architecture: "amd64"}); err != nil || !found {
-		entries, _ := imagecatalog.List(context.Background(), catalog)
-		t.Fatalf("short lookup alias for Docker-qualified native name: found=%t err=%v entries=%+v", found, err, entries)
 	}
 	var stdout, stderr bytes.Buffer
 	status := run([]string{
@@ -134,7 +389,7 @@ func TestImageRemoveShortNameRemovesMatchedDockerQualifiedTag(t *testing.T) {
 	}
 }
 
-func TestRefreshSharedNativeCatalogDiscoversAllAndForeignPlatforms(t *testing.T) {
+func TestNativeImageListingDiscoversAllAndForeignPlatforms(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	options := maintenanceStoreOptions(root)
@@ -165,11 +420,7 @@ func TestRefreshSharedNativeCatalogDiscoversAllAndForeignPlatforms(t *testing.T)
 		t.Fatal(err)
 	}
 
-	catalog := filepath.Join(root, "catalog")
-	if err := refreshSharedNativeCatalog(ctx, options, catalog, ""); err != nil {
-		t.Fatal(err)
-	}
-	entries, err := imagecatalog.List(ctx, catalog)
+	entries, err := nativeImageEntries(ctx, options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,18 +428,23 @@ func TestRefreshSharedNativeCatalogDiscoversAllAndForeignPlatforms(t *testing.T)
 	for _, entry := range entries {
 		platformCounts[entry.Reference] = len(entry.Platforms)
 	}
-	if got := platformCounts["multi:latest"]; got != 2 {
-		t.Fatalf("multi-platform catalog selections = %d, want 2; entries=%+v", got, entries)
+	if got := platformCounts["localhost/multi:latest"]; got != 2 {
+		t.Fatalf("multi-platform native selections = %d, want 2; entries=%+v", got, entries)
 	}
-	if got := platformCounts["foreign-only:latest"]; got != 1 {
-		t.Fatalf("foreign-only catalog selections = %d, want 1; entries=%+v", got, entries)
+	if got := platformCounts["localhost/foreign-only:latest"]; got != 1 {
+		t.Fatalf("foreign-only native selections = %d, want 1; entries=%+v", got, entries)
 	}
-	indexedRoot, indexData, indexedSelections, complete, err := imagecatalog.LookupIndex(ctx, catalog, "multi:latest")
-	if err != nil {
+	if err := buildah.WithStore(options, func(backend storage.Store) error {
+		indexedRoot, indexData, indexedSelections, err := oci.StoredImageSelections(ctx, backend, "multi")
+		if err != nil {
+			return err
+		}
+		if indexedRoot.Digest != index.Digest || len(indexData) == 0 || len(indexedSelections) != 2 {
+			t.Fatalf("native index root=%s data=%d selections=%d", indexedRoot.Digest, len(indexData), len(indexedSelections))
+		}
+		return nil
+	}); err != nil {
 		t.Fatal(err)
-	}
-	if !complete || indexedRoot.Digest != index.Digest || len(indexData) == 0 || len(indexedSelections) != 2 {
-		t.Fatalf("refreshed native index complete=%t root=%s data=%d selections=%d", complete, indexedRoot.Digest, len(indexData), len(indexedSelections))
 	}
 	var stdout, stderr bytes.Buffer
 	status := run([]string{"--root", options.GraphRoot, "--runroot", options.RunRoot, "--storage-driver", "vfs", "images"}, &stdout, &stderr)
@@ -203,6 +459,60 @@ func TestRefreshSharedNativeCatalogDiscoversAllAndForeignPlatforms(t *testing.T)
 		if !strings.HasPrefix(row, "localhost/") {
 			t.Fatalf("images showed synthetic lookup alias instead of native name: %q", row)
 		}
+		if strings.Index(row, "sha256:") != strings.Index(rows[0], "DIGEST") || strings.Index(row, "linux/") != strings.Index(rows[0], "PLATFORMS") {
+			t.Fatalf("image columns do not align with headers: %q", stdout.String())
+		}
+	}
+	if strings.Contains(stdout.String(), "\t") {
+		t.Fatalf("images uses unaligned literal tabs: %s", &stdout)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	status = run([]string{"--root", options.GraphRoot, "--runroot", options.RunRoot, "--storage-driver", "vfs", "image", "inspect", "multi"}, &stdout, &stderr)
+	if status != 0 {
+		t.Fatalf("index inspect status=%d stderr=%s", status, &stderr)
+	}
+	var inspected v1.Index
+	if err := json.Unmarshal(stdout.Bytes(), &inspected); err != nil {
+		t.Fatal(err)
+	}
+	if len(inspected.Manifests) != 2 {
+		t.Fatalf("index inspection lost platforms: %s", &stdout)
+	}
+	for i, expected := range []v1.Descriptor{amdManifest, armManifest} {
+		if inspected.Manifests[i].Digest != expected.Digest || inspected.Manifests[i].Platform == nil {
+			t.Fatalf("index inspection lost child identity: %s", &stdout)
+		}
+	}
+	updatedLayout := filepath.Join(t.TempDir(), "updated-index")
+	updated, _, err := oci.AssembleImageIndex(ctx, updatedLayout, []oci.ImageVariant{
+		{Layout: armLayout, Manifest: armManifest, Platform: arm},
+		{Layout: amdLayout, Manifest: amdManifest, Platform: amd},
+	}, "oci")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err = imagestore.NewWithOptions(buildah.NativeStoreOptions(options))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.WriteIndexLayout(ctx, updatedLayout, updated, "multi"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	status = run([]string{"--root", options.GraphRoot, "--runroot", options.RunRoot, "--storage-driver", "vfs", "image", "inspect", index.Digest.String()}, &stdout, &stderr)
+	if status != 0 {
+		t.Fatalf("retained index inspect status=%d stderr=%s", status, &stderr)
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &inspected); err != nil {
+		t.Fatal(err)
+	}
+	if len(inspected.Manifests) != 2 || inspected.Manifests[0].Digest != amdManifest.Digest || inspected.Manifests[1].Digest != armManifest.Digest {
+		t.Fatalf("retained index inspection used current mutable list: %s", &stdout)
 	}
 }
 
@@ -210,7 +520,7 @@ func maintenanceStoreOptions(root string) buildah.StoreOptions {
 	graphRoot := filepath.Join(root, "graph")
 	runRoot := filepath.Join(root, "run")
 	return buildah.StoreOptions{
-		GraphRoot: graphRoot, RunRoot: runRoot, GraphDriverName: "vfs", Shared: true,
+		GraphRoot: graphRoot, RunRoot: runRoot, GraphDriverName: "vfs",
 		Native: storage.StoreOptions{GraphRoot: graphRoot, RunRoot: runRoot, GraphDriverName: "vfs"},
 	}
 }
@@ -246,4 +556,24 @@ func maintenanceImageLayout(t *testing.T, platform v1.Platform, label string) (s
 		t.Fatal(err)
 	}
 	return dir, descriptor, imageID
+}
+
+func TestNativeImageEntriesWaitsForNativeMaintenance(t *testing.T) {
+	options := buildah.StoreOptions{GraphRoot: t.TempDir(), RunRoot: t.TempDir(), ImageStore: t.TempDir(), GraphDriverName: "vfs"}
+	for _, root := range buildah.ActivityRoots(options, "") {
+		exclusive, err := storeactivity.AcquireExclusive(context.Background(), root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		_, readErr := nativeImageEntries(ctx, options)
+		cancel()
+		closeErr := exclusive.Close()
+		if closeErr != nil {
+			t.Fatal(closeErr)
+		}
+		if !errors.Is(readErr, context.DeadlineExceeded) {
+			t.Fatalf("native image read bypassed exclusive root %q: %v", root, readErr)
+		}
+	}
 }

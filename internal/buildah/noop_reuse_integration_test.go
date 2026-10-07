@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"coopr/internal/definition"
-	"coopr/internal/imagecatalog"
 	"coopr/internal/oci"
 	"coopr/internal/planner"
 	"github.com/opencontainers/go-digest"
@@ -36,7 +35,7 @@ func TestFromOnlyBuildReusesExactBaseUnlessOutputPolicyChanges(t *testing.T) {
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	base := newLiveBusyBoxStorage(t, ctx, root, store)
 	platform := runtime.GOOS + "/" + runtime.GOARCH
-	selected, found, err := imagecatalog.Lookup(ctx, base.imageStoreDir, base.reference, v1.Platform{OS: runtime.GOOS, Architecture: runtime.GOARCH})
+	selected, found, err := nativeFixtureSelection(ctx, store, base.reference, v1.Platform{OS: runtime.GOOS, Architecture: runtime.GOARCH})
 	if err != nil || !found {
 		t.Fatalf("lookup base selection: found=%v err=%v", found, err)
 	}
@@ -56,7 +55,7 @@ func TestFromOnlyBuildReusesExactBaseUnlessOutputPolicyChanges(t *testing.T) {
 		}
 		result, err := BuildDefinitionSupervised(ctx, def, plannerOptions, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-			Output: Output{Path: filepath.Join(root, name), Format: format}, ImageStoreDir: base.imageStoreDir,
+			Output:              Output{Path: filepath.Join(root, name), Format: format},
 			SignaturePolicyPath: policy, RewriteTimestamp: rewrite,
 			Stdout: io.Discard, Stderr: io.Discard,
 		})
@@ -84,6 +83,12 @@ func TestFromOnlyBuildReusesExactBaseUnlessOutputPolicyChanges(t *testing.T) {
 	}
 	if got := importDockerAlternateForLayout(t, ctx, store, exact.Layout); got != selected.ImageID {
 		t.Fatalf("base Docker alternate image ID = %s, want selected base %s", got, selected.ImageID)
+	}
+	// A mutable native name now uses the native default manifest. Pin the OCI
+	// manifest to prove alternate formats sharing its config ID stay selectable.
+	def, err = definition.Parse(strings.NewReader(fmt.Sprintf("from %q\n", base.reference+"@"+selected.Manifest.Digest.String())))
+	if err != nil {
+		t.Fatal(err)
 	}
 	exactAfterDocker := build("exact-after-docker", "", nil, false)
 	if exactAfterDocker.ManifestDigest != selected.Manifest.Digest.String() {
@@ -126,7 +131,7 @@ func TestInstructionCacheExportsSelectedManifestAfterFormatCollision(t *testing.
 		t.Helper()
 		result, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-			Output: Output{Path: filepath.Join(root, name), Format: format}, ImageStoreDir: base.imageStoreDir,
+			Output:              Output{Path: filepath.Join(root, name), Format: format},
 			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {

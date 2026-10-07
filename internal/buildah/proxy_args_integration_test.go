@@ -52,7 +52,7 @@ run "printf '%%s' \"$HTTP_PROXY\" >/proof" network="none"
 			Arguments: map[string]string{"HTTP_PROXY": test.value},
 		}, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-			Output: Output{Path: layout}, ImageStoreDir: base.imageStoreDir,
+			Output:              Output{Path: layout},
 			NoCache:             test.noCache,
 			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		})
@@ -107,7 +107,7 @@ copy "/proof" "/proof" from="bundle"
 		Arguments: map[string]string{"HTTP_PROXY": "http://package-proxy"},
 	}, SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-		Output: Output{Path: layout}, ImageStoreDir: base.imageStoreDir,
+		Output:              Output{Path: layout},
 		SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 	})
 	if err != nil {

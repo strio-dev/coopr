@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"go.podman.io/storage"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -13,7 +15,6 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/imagecatalog"
 	"coopr/internal/oci"
 	registryserver "github.com/google/go-containerregistry/pkg/registry"
 	"github.com/opencontainers/go-digest"
@@ -28,8 +29,8 @@ import (
 const liveBusyBoxReference = "fixture.local/coopr/busybox:latest"
 
 type liveBaseFixture struct {
-	reference     string
-	imageStoreDir string
+	reference string
+	graphRoot string
 }
 
 type liveBusyBoxGraph struct {
@@ -43,26 +44,22 @@ type liveBusyBoxGraph struct {
 func newLiveBusyBoxStorage(t *testing.T, ctx context.Context, root string, options StoreOptions) liveBaseFixture {
 	t.Helper()
 	fixture := liveBusyBoxImage(t, ctx)
-	imageStoreDir := filepath.Join(root, "images")
 	policy := filepath.Join(root, "fixture-policy.json")
 	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	importTestImageToCatalog(t, ctx, options, imageStoreDir, fixture.layout, liveBusyBoxReference,
-		fixture.manifest, fixture.manifest, fixture.configData, fixture.platform, &types.SystemContext{
-			SignaturePolicyPath: policy, BigFilesTemporaryDir: root,
-		})
-	return liveBaseFixture{reference: liveBusyBoxReference, imageStoreDir: imageStoreDir}
+	importTestImageToNative(t, ctx, options, fixture.layout, liveBusyBoxReference, fixture.manifest, &types.SystemContext{
+		SignaturePolicyPath: policy, BigFilesTemporaryDir: root,
+	})
+	return liveBaseFixture{reference: liveBusyBoxReference, graphRoot: options.GraphRoot}
 }
 
-func importTestImageToCatalog(
+func importTestImageToNative(
 	t *testing.T,
 	ctx context.Context,
 	options StoreOptions,
-	imageStoreDir, layout, reference string,
-	root, manifest v1.Descriptor,
-	configData json.RawMessage,
-	platform v1.Platform,
+	layout, reference string,
+	manifest v1.Descriptor,
 	system *types.SystemContext,
 ) string {
 	t.Helper()
@@ -71,16 +68,15 @@ func importTestImageToCatalog(
 		t.Fatal(err)
 	}
 	imageID, importErr := ImportSelectedImage(ctx, lease.store, system, layout, manifest)
-	closeErr := lease.Close()
 	if importErr != nil {
+		_ = lease.Close()
 		t.Fatal(importErr)
 	}
-	if closeErr != nil {
-		t.Fatal(closeErr)
+	if err := lease.store.AddNames(imageID, []string{reference}); err != nil {
+		_ = lease.Close()
+		t.Fatal(err)
 	}
-	if err := imagecatalog.Commit(ctx, imageStoreDir, reference, platform, imagecatalog.Selection{
-		Root: root, Manifest: manifest, ImageID: imageID, ConfigData: configData,
-	}); err != nil {
+	if err := lease.Close(); err != nil {
 		t.Fatal(err)
 	}
 	return imageID
@@ -209,7 +205,7 @@ func TestLiveBusyBoxRegistryFixtureResolvesWithoutExternalRegistry(t *testing.T)
 	}
 	ctx := context.Background()
 	reference, authority := newLiveBusyBoxRegistry(t, ctx)
-	resolver, err := oci.NewResolver(oci.Options{PlainHTTPRegistries: []string{authority}})
+	resolver, err := oci.NewResolver(oci.Options{TLSVerify: new(false)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,4 +223,32 @@ func TestLiveBusyBoxRegistryFixtureResolvesWithoutExternalRegistry(t *testing.T)
 		t.Fatal("fixture resolution lost image config")
 	}
 	t.Logf("resolved hermetic fixture from loopback registry %s/coopr/busybox", authority)
+}
+
+func nativeFixtureSelection(ctx context.Context, options StoreOptions, reference string, platform v1.Platform) (oci.StoredSelection, bool, error) {
+	lease, err := acquireStore(options)
+	if err != nil {
+		return oci.StoredSelection{}, false, err
+	}
+	defer func() { _ = lease.Close() }()
+	resolved, err := oci.ResolveStoredImage(ctx, lease.store, reference, platform)
+	if errors.Is(err, storage.ErrImageUnknown) {
+		return oci.StoredSelection{}, false, nil
+	}
+	if err != nil {
+		return oci.StoredSelection{}, false, err
+	}
+	return oci.StoredSelection{Root: resolved.Root, Manifest: resolved.Selected, SourceManifest: resolved.SourceManifest, ImageID: resolved.StorageImageID, ConfigData: resolved.ConfigData}, true, nil
+}
+
+func nameNativeFixture(ctx context.Context, options StoreOptions, name string, selected oci.StoredSelection) error {
+	lease, err := acquireStore(options)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lease.Close() }()
+	if err := verifyStoredManifest(ctx, lease.store, nil, selected); err != nil {
+		return err
+	}
+	return lease.store.AddNames(selected.ImageID, []string{name})
 }

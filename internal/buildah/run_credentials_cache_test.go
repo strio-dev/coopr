@@ -95,7 +95,7 @@ func TestSecretValueChangeReusesInstructionCache(t *testing.T) {
 		layout := filepath.Join(root, name)
 		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-			Output: Output{Path: layout}, ImageStoreDir: base.imageStoreDir,
+			Output:  Output{Path: layout},
 			Secrets: []string{"id=token,src=" + secretPath}, SignaturePolicyPath: policy,
 			Stdout: io.Discard, Stderr: io.Discard,
 		})
@@ -120,7 +120,7 @@ func TestSecretValueChangeReusesInstructionCache(t *testing.T) {
 	warmWithoutSource := filepath.Join(root, "without-source")
 	if _, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-		Output: Output{Path: warmWithoutSource}, ImageStoreDir: base.imageStoreDir,
+		Output:              Output{Path: warmWithoutSource},
 		SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 	}); err != nil {
 		t.Fatalf("warm required-secret cache hit without runtime source: %v", err)
@@ -154,8 +154,8 @@ func TestSSHAgentChangeReusesInstructionCache(t *testing.T) {
 		layout := filepath.Join(root, name)
 		if _, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-			Output: Output{Path: layout}, ImageStoreDir: base.imageStoreDir,
-			SSH: []string{"default=" + listener.Addr().String()}, SignaturePolicyPath: policy,
+			Output: Output{Path: layout},
+			SSH:    []string{"default=" + listener.Addr().String()}, SignaturePolicyPath: policy,
 			Stdout: io.Discard, Stderr: io.Discard,
 		}); err != nil {
 			t.Fatal(err)

@@ -178,7 +178,8 @@ copy "/payload" "/payload" from="bundle"
 	digests := make([]digest.Digest, 0, 2)
 	for _, identity := range []string{"one", "two"} {
 		options.ResolvedBases = map[ResolvedBaseKey]ResolvedImageSource{key: {
-			Selected: v1.Descriptor{MediaType: v1.MediaTypeImageManifest, Digest: digest.FromString(identity), Size: 1},
+			Selected:   v1.Descriptor{MediaType: v1.MediaTypeImageManifest, Digest: digest.FromString(identity), Size: 1},
+			ConfigData: []byte(`{"config":{}}`),
 		}}
 		keys, eligible, err := packageCacheKeys(context.Background(), options, plan, stages, outputs, nil)
 		if err != nil || !eligible {
@@ -192,6 +193,41 @@ copy "/payload" "/payload" from="bundle"
 	}
 	if digests[0] == digests[1] {
 		t.Fatal("immutable external-base change did not invalidate package cache key")
+	}
+}
+
+func TestPackageCacheDoesNotSkipUnplannedOnBuildChecks(t *testing.T) {
+	const reference = "fixture.local/coopr/base:latest"
+	for _, test := range []struct {
+		name     string
+		config   string
+		planned  bool
+		eligible bool
+	}{
+		{name: "no inherited triggers", config: `{"config":{}}`, eligible: true},
+		{name: "unplanned network request", config: `{"config":{"OnBuild":["RUN --network=none true"]}}`},
+		{name: "unavailable base metadata"},
+		{name: "planned inherited request", config: `{"config":{"OnBuild":["RUN --network=none true"]}}`, planned: true, eligible: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			plan := testPublicationPlan(t, "from \""+reference+"\" as=\"producer\"\npackage as=\"bundle\"\ncopy \"/payload\" \"/payload\" from=\"producer\"\nextend\ncopy \"/payload\" \"/payload\" from=\"bundle\"\n")
+			root := t.TempDir()
+			stages, outputs, err := validatePublicationGraph(plan, map[string]string{"bundle": filepath.Join(root, "bundle.tar")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			stages[0].InheritedOnBuildPlanned = test.planned
+			options := PlanOptions{
+				Store: StoreOptions{GraphDriverName: "vfs"}, Isolation: "rootless", Runtime: "crun",
+				ResolvedBases: map[ResolvedBaseKey]ResolvedImageSource{{Reference: reference, Platform: plan.Platform}: {
+					Selected: v1.Descriptor{MediaType: v1.MediaTypeImageManifest, Digest: digest.FromString("base"), Size: 1}, ConfigData: []byte(test.config),
+				}},
+			}
+			keys, eligible, err := packageCacheKeys(context.Background(), options, plan, stages, outputs, nil)
+			if err != nil || eligible != test.eligible || (len(keys) != 0) != test.eligible {
+				t.Fatalf("package cache eligible=%v keys=%v error=%v", eligible, keys, err)
+			}
+		})
 	}
 }
 

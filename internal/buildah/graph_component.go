@@ -223,7 +223,7 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 	}
 	defer release()
 	effectivePlan := *resolved.Plan
-	effectivePlan.Stages, err = resolveAndValidateBuildNetwork(resolved.Plan.Stages, executor.options.Network, executor.options.RunControls)
+	effectivePlan.Stages, err = resolveAndValidateBuildNetwork(resolved.Plan.Stages, executor.options.Network, executor.options.RunControls, executor.options.Isolation)
 	if err != nil {
 		return nil, fmt.Errorf("component %s: %w", resolved.Identity, err)
 	}
@@ -444,7 +444,7 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 	}
 
 	compactOptions := *builderOptions
-	compactBase, err := selectedBuilderBase(ctx, executor.store, callerImageID, callerManifest)
+	compactBase, err := oci.SelectedStoredImage(ctx, executor.store, callerImageID, callerManifest)
 	if err != nil {
 		return nil, fmt.Errorf("select component caller manifest %s: %w", callerManifest, err)
 	}

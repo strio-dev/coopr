@@ -1,4 +1,4 @@
-from "coopr-demo:base"
+from "docker.io/redhat/ubi9:latest"
 component "local:coopr-demo-settings" channel="preview"
 component "local:coopr-demo-policy"
 cmd {

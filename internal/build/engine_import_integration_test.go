@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/imagecatalog"
 	"coopr/internal/oci"
 	"coopr/internal/transfer"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -96,7 +95,7 @@ func TestExplicitDockerImportThenOfflineFrom(t *testing.T) {
 			name := fmt.Sprintf("localhost/coopr-import-%d-%d:latest", os.Getpid(), time.Now().UnixNano())
 			var owned []string
 			t.Cleanup(func() { removeDockerEngineImages(t, owned) })
-			producer := Options{File: file, Platform: "linux/" + runtime.GOARCH, Tag: "docker:" + name, StoreDir: filepath.Join(work, "producer"), Jobs: 1}
+			producer := Options{File: file, Platform: "linux/" + runtime.GOARCH, Tag: "docker:" + name, BuildStore: nativeBuildTestStore(filepath.Join(work, "producer")), Jobs: 1}
 			if multi {
 				producer.Platforms = []string{"linux/amd64", "linux/arm64"}
 			}
@@ -109,16 +108,16 @@ func TestExplicitDockerImportThenOfflineFrom(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := transfer.Copy(ctx, oci.Image, "docker:"+name, destination, transfer.Options{ImageStoreDir: storeDir}); err != nil {
+			if _, err := transfer.Copy(ctx, oci.Image, "docker:"+name, destination, transfer.Options{BuildStore: nativeBuildTestStore(storeDir)}); err != nil {
 				t.Fatal(err)
 			}
 			if multi {
-				_, _, selections, complete, err := imagecatalog.LookupIndex(ctx, storeDir, "imported:latest")
+				_, _, selections, complete, err := testStoredImageIndex(ctx, nativeBuildTestStore(storeDir), "imported:latest")
 				if err != nil || !complete || len(selections) != 2 {
 					t.Fatalf("imported Docker index incomplete: complete=%t selections=%d err=%v", complete, len(selections), err)
 				}
 			}
-			_, found, err := imagecatalog.Lookup(ctx, storeDir, "imported:latest", v1.Platform{OS: "linux", Architecture: runtime.GOARCH})
+			_, found, err := testStoredImageSelection(ctx, nativeBuildTestStore(storeDir), "imported:latest", v1.Platform{OS: "linux", Architecture: runtime.GOARCH})
 			if err != nil || !found {
 				t.Fatalf("imported engine image missing: %t %v", found, err)
 			}
@@ -127,7 +126,7 @@ func TestExplicitDockerImportThenOfflineFrom(t *testing.T) {
 				t.Fatal(err)
 			}
 			archive := filepath.Join(work, fmt.Sprintf("imported-%t.oci.tar", multi))
-			if _, err := Run(ctx, Options{File: consumer, StoreDir: storeDir, Tag: "oci-archive:" + archive, Platform: "linux/" + runtime.GOARCH, PullPolicy: "never", Jobs: 1}); err != nil {
+			if _, err := Run(ctx, Options{File: consumer, BuildStore: nativeBuildTestStore(storeDir), Tag: "oci-archive:" + archive, Platform: "linux/" + runtime.GOARCH, PullPolicy: "never", Jobs: 1}); err != nil {
 				t.Fatal(err)
 			}
 			config := archiveImageConfig(t, archive)

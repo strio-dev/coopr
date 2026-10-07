@@ -67,10 +67,9 @@ func TestBuildPlanKeepsImportedConfigThroughCheckpointsAndStageFork(t *testing.T
 	if err := source.Push(ctx, selected, bytes.NewReader(manifestData)); err != nil {
 		t.Fatal(err)
 	}
-	imageStoreDir := filepath.Join(root, "images")
 	const reference = "registry.example/team/extended-base:latest"
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
-	resolver, err := oci.NewResolver(oci.Options{ImageStoreDir: imageStoreDir})
+	resolver, err := oci.NewResolver(oci.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +78,7 @@ func TestBuildPlanKeepsImportedConfigThroughCheckpointsAndStageFork(t *testing.T
 		t.Fatal(err)
 	}
 	system := &types.SystemContext{SignaturePolicyPath: policy, BigFilesTemporaryDir: root}
-	importTestImageToCatalog(t, ctx, store, imageStoreDir, sourceDir, reference, selected, selected, baseConfig, platform, system)
+	importTestImageToNative(t, ctx, store, sourceDir, reference, selected, system)
 	plan := testPlan(t, `
 from "registry.example/team/extended-base:latest" as="source"
 copy "first" "/first"

@@ -21,7 +21,6 @@ import (
 
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/image/v5/types"
-	"oras.land/oras-go/v2/content"
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
 
@@ -344,7 +343,7 @@ run "cat /cache/seed >/cached" network="none" {
 	layout := filepath.Join(root, "layout")
 	_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 		Store: store, ContextDir: contextDir, Isolation: "rootless", Runtime: "crun", Output: Output{Path: layout},
-		ImageStoreDir: base.imageStoreDir, Pull: false, SignaturePolicyPath: policy,
+		Pull: false, SignaturePolicyPath: policy,
 		Stdout: io.Discard, Stderr: io.Discard,
 	})
 	if err != nil {
@@ -380,7 +379,7 @@ run "cat /input >/original" network="none" {
 	writableLayout := filepath.Join(root, "writable-layout")
 	_, err = BuildPlanSupervised(ctx, writable, SupervisedPlanOptions{
 		Store: store, ContextDir: contextDir, Isolation: "rootless", Runtime: "crun", Output: Output{Path: writableLayout},
-		ImageStoreDir: base.imageStoreDir, Pull: false, SignaturePolicyPath: policy,
+		Pull: false, SignaturePolicyPath: policy,
 		Stdout: io.Discard, Stderr: io.Discard,
 	})
 	if err != nil {
@@ -453,15 +452,10 @@ func TestBuildPlanUsesSelectedLocalImageAsBase(t *testing.T) {
 		t.Fatal(err)
 	}
 	platform := v1.Platform{OS: "linux", Architecture: runtime.GOARCH}
-	selected, config := sourceTestImage(t, ctx, source, platform, "selected")
-	configData, err := content.FetchAll(ctx, source, config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	imageStoreDir := filepath.Join(root, "images")
+	selected, _ := sourceTestImage(t, ctx, source, platform, "selected")
 	const reference = "registry.example/team/base:latest"
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
-	resolver, err := oci.NewResolver(oci.Options{ImageStoreDir: imageStoreDir})
+	resolver, err := oci.NewResolver(oci.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,7 +464,7 @@ func TestBuildPlanUsesSelectedLocalImageAsBase(t *testing.T) {
 		t.Fatal(err)
 	}
 	system := &types.SystemContext{SignaturePolicyPath: policy, BigFilesTemporaryDir: root}
-	importTestImageToCatalog(t, ctx, store, imageStoreDir, sourceDir, reference, selected, selected, configData, platform, system)
+	importTestImageToNative(t, ctx, store, sourceDir, reference, selected, system)
 	plan := testPlan(t, "from \""+reference+"\"\nenv COOPR_GRAPH=\"yes\"\n")
 	layout := filepath.Join(root, "layout")
 	_, err = BuildPlan(ctx, plan, PlanOptions{

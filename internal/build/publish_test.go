@@ -90,7 +90,7 @@ func TestBuildComponentRejectsAllFileOutputAliasesBeforeExecution(t *testing.T) 
 			if err := os.WriteFile(log, []byte("preserve"), 0600); err != nil {
 				t.Fatal(err)
 			}
-			opts := ComponentOptions{File: file, Context: dir, StoreDir: filepath.Join(dir, "components"), ImageStoreDir: filepath.Join(dir, "images"), BuildStore: buildah.StoreOptions{GraphRoot: filepath.Join(dir, "graph"), RunRoot: filepath.Join(dir, "run"), GraphDriverName: "vfs"}}
+			opts := ComponentOptions{File: file, Context: dir, StoreDir: filepath.Join(dir, "components"), BuildStore: buildah.StoreOptions{GraphRoot: filepath.Join(dir, "graph"), RunRoot: filepath.Join(dir, "run"), GraphDriverName: "vfs"}}
 			switch kind {
 			case "log-definition":
 				opts.LogFile = file

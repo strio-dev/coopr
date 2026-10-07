@@ -32,6 +32,19 @@ type ImageVariant = IndexVariant
 // multi-platform OCI layout. The child manifests and their graphs are copied
 // without rewriting them.
 func AssembleImageIndex(ctx context.Context, outputPath string, variants []ImageVariant, format string) (v1.Descriptor, []byte, error) {
+	root, indexData, err := ImageIndexDescriptor(variants, format)
+	if err != nil {
+		return v1.Descriptor{}, nil, err
+	}
+	if err := RestoreImageIndex(ctx, outputPath, root, indexData, variants); err != nil {
+		return v1.Descriptor{}, nil, err
+	}
+	return root, indexData, nil
+}
+
+// ImageIndexDescriptor assembles validated platform metadata without copying
+// image layers or creating a filesystem layout.
+func ImageIndexDescriptor(variants []ImageVariant, format string) (v1.Descriptor, []byte, error) {
 	mediaType, err := imageIndexMediaType(format)
 	if err != nil {
 		return v1.Descriptor{}, nil, err
@@ -40,14 +53,7 @@ func AssembleImageIndex(ctx context.Context, outputPath string, variants []Image
 	if err != nil {
 		return v1.Descriptor{}, nil, err
 	}
-	root, indexData, err := assembleIndexDescriptor(normalized, mediaType)
-	if err != nil {
-		return v1.Descriptor{}, nil, err
-	}
-	if err := RestoreImageIndex(ctx, outputPath, root, indexData, normalized); err != nil {
-		return v1.Descriptor{}, nil, err
-	}
-	return root, indexData, nil
+	return assembleIndexDescriptor(normalized, mediaType)
 }
 
 func assembleIndexDescriptor(variants []ImageVariant, mediaType string) (v1.Descriptor, []byte, error) {

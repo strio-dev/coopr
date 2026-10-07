@@ -25,9 +25,9 @@ func TestBuildPlanRunsWithAndWithoutNetworkFromRegistryBase(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	root := t.TempDir()
-	base, authority := newLiveBusyBoxRegistry(t, ctx)
+	base, _ := newLiveBusyBoxRegistry(t, ctx)
 	resolver, err := oci.NewResolver(oci.Options{
-		ImageStoreDir: filepath.Join(root, "images"), Pull: true, PlainHTTPRegistries: []string{authority},
+		Pull: true, TLSVerify: new(false),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -75,7 +75,7 @@ func TestBuildPlanAddsCustomHostToRun(t *testing.T) {
 	layout := filepath.Join(root, "layout")
 	_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-		Output: Output{Path: layout}, ImageStoreDir: base.imageStoreDir, Pull: false,
+		Output: Output{Path: layout}, Pull: false,
 		Network: "host", AddHosts: []string{"Coopr.Test:127.0.0.42"}, Allow: []string{"network.host"},
 		SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 	})
@@ -114,7 +114,7 @@ run "if test -e /cache/proof; then printf hit >/result; else printf miss >/resul
 		// the command, while the cache mount itself must still retain its data.
 		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, Isolation: "rootless", Runtime: "crun", Output: Output{Path: layout},
-			ImageStoreDir: base.imageStoreDir, Pull: false, NoCache: attempt > 0, SignaturePolicyPath: policy,
+			Pull: false, NoCache: attempt > 0, SignaturePolicyPath: policy,
 			Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {
@@ -144,7 +144,7 @@ func TestBuildPlanSupervisedRunsIndependentJobsConcurrently(t *testing.T) {
 	warm := testPlan(t, "from \""+base.reference+"\"\n")
 	_, err := BuildPlanSupervised(ctx, warm, SupervisedPlanOptions{
 		Store: store, Isolation: "rootless", Runtime: "crun", Output: Output{Path: filepath.Join(root, "warm")},
-		ImageStoreDir: base.imageStoreDir, Pull: false, SignaturePolicyPath: policy,
+		Pull: false, SignaturePolicyPath: policy,
 		Stdout: io.Discard, Stderr: io.Discard,
 	})
 	if err != nil {
@@ -169,7 +169,7 @@ func TestBuildPlanSupervisedRunsIndependentJobsConcurrently(t *testing.T) {
 			<-start
 			_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 				Store: store, Isolation: "rootless", Runtime: "crun", Output: Output{Path: filepath.Join(root, "layout-"+name)},
-				ImageStoreDir: base.imageStoreDir, Pull: false, SignaturePolicyPath: policy,
+				Pull: false, SignaturePolicyPath: policy,
 				Stdout: io.Discard, Stderr: io.Discard,
 			})
 			results <- jobResult{name: name, err: err}

@@ -20,18 +20,9 @@ import (
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
 
-func TestImageStoreRoundTrip(t *testing.T) {
+func TestOCILayoutRoundTrip(t *testing.T) {
 	ctx := context.Background()
-	dataHome := filepath.Join(t.TempDir(), "data")
-	t.Setenv("XDG_DATA_HOME", dataHome)
-	dir, err := DefaultImageDir()
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantDir := filepath.Join(dataHome, "coopr", "images")
-	if dir != wantDir {
-		t.Fatalf("DefaultImageDir() = %q, want %q", dir, wantDir)
-	}
+	dir := filepath.Join(t.TempDir(), "layout")
 
 	source, root, blobs := testImageGraph(t, ctx)
 	if err := Put(ctx, dir, source, root, "example:latest"); err != nil {

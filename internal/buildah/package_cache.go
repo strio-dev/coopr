@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"coopr/internal/cache"
+	"coopr/internal/imageconfig"
 	"coopr/internal/oci"
 	"coopr/internal/planner"
 	"github.com/containerd/platforms"
@@ -338,6 +339,32 @@ func packageCacheExecutor(options PlanOptions, runtimeIdentity string) (string, 
 func packageCacheKeys(ctx context.Context, options PlanOptions, plan *planner.Plan, stages []planner.Stage, outputs map[string]packageOutput, artifacts []string) (map[string]cache.PackageKey, bool, error) {
 	if !buildResultCacheEligible(options.AddHosts) {
 		return nil, false, nil
+	}
+	for _, stage := range stages {
+		if stage.Kind != "from" || stage.InheritedOnBuildPlanned || strings.EqualFold(stage.Source, "scratch") {
+			continue
+		}
+		key := ResolvedBaseKey{Reference: stage.Source, Platform: stage.Platform}
+		if stage.SourceContext != "" {
+			key = graphNamedContextKey(stage.SourceContext, stage.Platform)
+		}
+		selected, found := options.ResolvedBases[key]
+		if !found || len(selected.ConfigData) == 0 {
+			return nil, false, nil
+		}
+		logical, err := imageconfig.Parse(selected.ConfigData)
+		if err != nil {
+			return nil, false, err
+		}
+		triggers, err := logical.OnBuild()
+		if err != nil {
+			return nil, false, err
+		}
+		if len(triggers) != 0 {
+			// Unplanned triggers need guarded stage preparation before any cache
+			// can skip their network, entitlement, and input checks.
+			return nil, false, nil
+		}
 	}
 	needsContext, eligible := packageCacheEligibility(stages, options.RunControls)
 	runtimeIdentity, runtimeErr := instructionRuntimeIdentity(effectiveRuntime(options.Runtime, options.RunControls))

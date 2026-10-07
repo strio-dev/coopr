@@ -10,10 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/imagecatalog"
 	"coopr/internal/oci"
 	"coopr/internal/planner"
-	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/image/v5/types"
 )
 
@@ -56,8 +54,7 @@ onbuild { copy "/artifact" "/inherited" from="producer" }
 		t.Fatal(err)
 	}
 	const reference = "registry.example/coopr/onbuild-arg:latest"
-	imageStoreDir := filepath.Join(root, "images")
-	if err := imagecatalog.Commit(ctx, imageStoreDir, reference, v1.Platform{OS: "linux", Architecture: runtime.GOARCH}, imagecatalog.Selection{
+	if err := nameNativeFixture(ctx, store, reference, oci.StoredSelection{
 		Root: selected, Manifest: selected, ImageID: parent.ImageID, ConfigData: config,
 	}); err != nil {
 		t.Fatal(err)
@@ -72,7 +69,7 @@ copy "artifact" "/artifact"
 	childLayout := filepath.Join(root, "child")
 	_, err = BuildDefinitionSupervised(ctx, child, planner.Options{Mode: planner.Build, Platform: "linux/" + runtime.GOARCH, Target: "final"}, SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Output: Output{Path: childLayout, Format: outputFormatDocker},
-		ImageStoreDir: imageStoreDir, SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
+		SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 	})
 	if err != nil {
 		t.Fatal(err)

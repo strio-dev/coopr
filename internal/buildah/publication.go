@@ -47,7 +47,7 @@ func PublishPlan(ctx context.Context, plan *planner.Plan, options PublicationOpt
 	if err != nil {
 		return nil, err
 	}
-	stages, err = resolveAndValidateBuildNetwork(stages, options.Network, options.RunControls)
+	stages, err = resolveAndValidateBuildNetwork(stages, options.Network, options.RunControls, options.Isolation)
 	if err != nil {
 		return nil, err
 	}
@@ -95,11 +95,6 @@ func PublishPlan(ctx context.Context, plan *planner.Plan, options PublicationOpt
 	}); err != nil {
 		return nil, err
 	}
-	activity, err := acquirePlanActivity(ctx, options.PlanOptions)
-	if err != nil {
-		return nil, fmt.Errorf("acquire component publication store activity lease: %w", err)
-	}
-	defer func() { retErr = errors.Join(retErr, activity.Close()) }()
 
 	planOptions := options.PlanOptions
 	// Package snapshots retain Docker image configuration (including pending
@@ -113,6 +108,12 @@ func PublishPlan(ctx context.Context, plan *planner.Plan, options PublicationOpt
 			return nil, fmt.Errorf("package %q cache location: %w", output.key, err)
 		}
 	}
+	activity, err := acquirePlanActivity(ctx, options.PlanOptions)
+	if err != nil {
+		return nil, fmt.Errorf("acquire component publication store activity lease: %w", err)
+	}
+	defer func() { retErr = errors.Join(retErr, activity.Close()) }()
+
 	planOptions.ResolvedBases, err = selectPublicationBases(ctx, planOptions, stages)
 	if err != nil {
 		return nil, err
@@ -256,7 +257,24 @@ func selectPublicationBases(ctx context.Context, options PlanOptions, stages []p
 		if err != nil {
 			return err
 		}
-		source, err := SelectImageSource(ctx, options.Resolver, reference, platform)
+		storeOptions := options.Store
+		if storeOptions.GraphRoot == "" {
+			native := options.Resolver.NativeStoreOptions()
+			if native.GraphRoot != "" {
+				storeOptions = StoreOptions{GraphRoot: native.GraphRoot, RunRoot: native.RunRoot, ImageStore: native.ImageStore, GraphDriverName: native.GraphDriverName, GraphDriverOptions: native.GraphDriverOptions, TransientStore: native.TransientStore, Native: native}
+			} else {
+				storeOptions, err = DefaultStoreOptions()
+			}
+			if err != nil {
+				return err
+			}
+		}
+		lease, err := acquireStore(storeOptions)
+		if err != nil {
+			return err
+		}
+		source, selectErr := selectImageSource(ctx, options.Resolver, reference, platform, lease.store)
+		err = errors.Join(selectErr, lease.Close())
 		if err != nil {
 			return err
 		}

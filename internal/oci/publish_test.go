@@ -274,7 +274,7 @@ func TestPublishComponentUsesDockerCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("DOCKER_CONFIG", dir)
-	resolver, err := NewResolver(Options{PlainHTTP: true})
+	resolver, err := NewResolver(Options{TLSVerify: boolOption(false)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +289,7 @@ func TestPublishComponentUsesDockerCredentials(t *testing.T) {
 		t.Fatalf("private component roundtrip failed: %+v, %v", resolved, err)
 	}
 	t.Setenv("DOCKER_CONFIG", t.TempDir())
-	unauthorized, err := NewResolver(Options{PlainHTTP: true})
+	unauthorized, err := NewResolver(Options{TLSVerify: boolOption(false)})
 	if err != nil {
 		t.Fatal(err)
 	}

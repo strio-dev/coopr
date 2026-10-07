@@ -2,69 +2,34 @@ package buildah
 
 import (
 	"fmt"
-	"strings"
 
 	"coopr/internal/planner"
+	"github.com/moby/buildkit/util/entitlements"
 	"tags.cncf.io/container-device-interface/pkg/cdi"
 )
 
 const networkHostEntitlement = "network.host"
-const deviceEntitlement = "device"
 const securityInsecureEntitlement = "security.insecure"
 
-func allowedEntitlements(values []string) (map[string]bool, error) {
-	allowed := make(map[string]bool, len(values))
+func allowedEntitlements(values []string) (entitlements.Set, error) {
+	parsed := make([]entitlements.Entitlement, 0, len(values))
 	for _, value := range values {
-		switch {
-		case value == networkHostEntitlement, value == deviceEntitlement, value == securityInsecureEntitlement:
-			allowed[value] = true
-		case strings.HasPrefix(value, deviceEntitlement+"="):
-			_, alias, ok := parseDeviceEntitlement(value)
-			if !ok {
-				return nil, fmt.Errorf("unsupported build entitlement %q", value)
-			}
-			if alias != "" {
-				for existing := range allowed {
-					_, existingAlias, existingOK := parseDeviceEntitlement(existing)
-					if existingOK && existingAlias == alias {
-						delete(allowed, existing)
-					}
-				}
-			}
-			allowed[value] = true
-		default:
-			return nil, fmt.Errorf("unsupported build entitlement %q", value)
+		if value != "" {
+			parsed = append(parsed, entitlements.Entitlement(value))
 		}
+	}
+	allowed, err := entitlements.WhiteList(parsed, nil)
+	if err != nil {
+		return nil, fmt.Errorf("unsupported build entitlement: %w", err)
 	}
 	return allowed, nil
 }
 
-func parseDeviceEntitlement(value string) (selector, alias string, ok bool) {
-	if !strings.HasPrefix(value, deviceEntitlement+"=") {
-		return "", "", false
-	}
-	selector, options, hasOptions := strings.Cut(strings.TrimPrefix(value, deviceEntitlement+"="), ",")
-	if strings.TrimSpace(selector) == "" {
-		return "", "", false
-	}
-	if !hasOptions {
-		return selector, "", true
-	}
-	if strings.Contains(options, ",") {
-		return "", "", false
-	}
-	name, alias, found := strings.Cut(options, "=")
-	if !found || name != "alias" || strings.TrimSpace(alias) == "" {
-		return "", "", false
-	}
-	return selector, alias, true
-}
-
-func authorizePlannedOperation(operation planner.Operation, allowed map[string]bool, deviceCache *cdi.Cache) error {
-	if operation.Name == "run" && operation.Properties["network"] == "host" && !allowed[networkHostEntitlement] {
+func authorizePlannedOperation(operation planner.Operation, allowed entitlements.Set, deviceCache *cdi.Cache) error {
+	if operation.Name == "run" && operation.Properties["network"] == "host" && !allowed.Allowed(networkHostEntitlement) {
 		return fmt.Errorf("RUN network=host requires --allow %s", networkHostEntitlement)
 	}
-	if operation.Name == "run" && operation.Properties["security"] == "insecure" && !allowed[securityInsecureEntitlement] {
+	if operation.Name == "run" && operation.Properties["security"] == "insecure" && !allowed.Allowed(securityInsecureEntitlement) {
 		return fmt.Errorf("RUN security=insecure requires --allow %s", securityInsecureEntitlement)
 	}
 	if operation.Name != "run" {
@@ -106,10 +71,10 @@ func authorizeOperations(operations []Operation, allow []string) error {
 		if !ok {
 			continue
 		}
-		if run.Network == "host" && !allowed[networkHostEntitlement] {
+		if run.Network == "host" && !allowed.Allowed(networkHostEntitlement) {
 			return fmt.Errorf("operation %d: RUN network=host requires --allow %s", index+1, networkHostEntitlement)
 		}
-		if run.Security == "insecure" && !allowed[securityInsecureEntitlement] {
+		if run.Security == "insecure" && !allowed.Allowed(securityInsecureEntitlement) {
 			return fmt.Errorf("operation %d: RUN security=insecure requires --allow %s", index+1, securityInsecureEntitlement)
 		}
 		if len(run.Devices) == 0 {
@@ -128,7 +93,7 @@ func authorizeOperations(operations []Operation, allow []string) error {
 	return nil
 }
 
-func authorizeRunDevices(requests []runDeviceRequest, allowed map[string]bool, cache *cdi.Cache) error {
+func authorizeRunDevices(requests []runDeviceRequest, allowed entitlements.Set, cache *cdi.Cache) error {
 	if len(requests) == 0 {
 		return nil
 	}
@@ -153,21 +118,23 @@ func authorizeRunDevices(requests []runDeviceRequest, allowed map[string]bool, c
 	if err != nil {
 		return err
 	}
-	if allowed[deviceEntitlement] {
+	config, _ := allowed[entitlements.EntitlementDevice].(*entitlements.DevicesConfig)
+	if config != nil && config.All {
 		return nil
 	}
 	granted := make(map[string]bool)
-	for entitlement := range allowed {
-		selector, alias, ok := parseDeviceEntitlement(entitlement)
-		if !ok || alias != "" {
-			continue
-		}
-		resolved, err := resolveRunDeviceSpecs(cache, []runDeviceRequest{{Name: selector}})
-		if err != nil {
-			return err
-		}
-		for _, name := range resolved {
-			granted[name] = true
+	if config != nil {
+		for selector, aliasTarget := range config.Devices {
+			if aliasTarget != "" {
+				continue
+			}
+			resolved, err := resolveRunDeviceSpecs(cache, []runDeviceRequest{{Name: selector}})
+			if err != nil {
+				return err
+			}
+			for _, name := range resolved {
+				granted[name] = true
+			}
 		}
 	}
 	for _, name := range requested {
@@ -179,17 +146,16 @@ func authorizeRunDevices(requests []runDeviceRequest, allowed map[string]bool, c
 	return nil
 }
 
-func applyRunDeviceEntitlementAliases(requests []runDeviceRequest, allowed map[string]bool) ([]runDeviceRequest, []bool) {
+func applyRunDeviceEntitlementAliases(requests []runDeviceRequest, allowed entitlements.Set) ([]runDeviceRequest, []bool) {
 	result := make([]runDeviceRequest, len(requests))
 	copy(result, requests)
 	aliased := make([]bool, len(requests))
-	for index := range result {
-		for entitlement := range allowed {
-			selector, alias, ok := parseDeviceEntitlement(entitlement)
-			if ok && alias == result[index].Name {
+	config, _ := allowed[entitlements.EntitlementDevice].(*entitlements.DevicesConfig)
+	if config != nil {
+		for index := range result {
+			if selector := config.Devices[result[index].Name]; selector != "" {
 				result[index].Name = selector
 				aliased[index] = true
-				break
 			}
 		}
 	}

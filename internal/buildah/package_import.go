@@ -21,7 +21,7 @@ import (
 )
 
 // ImportPackageSnapshot verifies a downloaded component package and imports it
-// as a one-layer image in the private containers/storage store used by Buildah.
+// as a one-layer image in native containers/storage.
 // The returned config is an exact copy of the component's authoritative raw
 // OCI config and must be retained by callers which later mutate the image.
 func ImportPackageSnapshot(ctx context.Context, store storage.Store, system *types.SystemContext, pkg oci.Package, tarPath string, platform v1.Platform) (string, json.RawMessage, error) {

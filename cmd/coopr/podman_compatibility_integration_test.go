@@ -29,7 +29,6 @@ func TestConfiguredPodmanStoreInvokesCompatibilityListsColdAndWarm(t *testing.T)
 	storageConfig := filepath.Join(root, "storage.conf")
 	writePodmanCompatibilityFile(t, storageConfig, fmt.Sprintf("[storage]\ndriver = \"vfs\"\ngraphroot = %q\nrunroot = %q\n", graphRoot, runRoot), 0o600)
 	t.Setenv("CONTAINERS_STORAGE_CONF", storageConfig)
-	writePodmanCompatibilityFile(t, filepath.Join(configHome, "coopr", "config.toml"), "image-store = \"podman\"\n", 0o600)
 	t.Cleanup(func() { makePodmanCompatibilityStoreRemovable(t, graphRoot) })
 
 	goodBase := writePodmanCompatibilityBase(t, root, "good-base", "ID=fedora\nVERSION_ID=42\n")
@@ -62,7 +61,7 @@ copy "/component-payload" "/installed" from="payload"
 	cacheDir := filepath.Join(root, "component-cache")
 	for _, name := range []string{"cold", "warm"} {
 		output := filepath.Join(root, name+"-output")
-		runPodmanCompatibilityCLI(t, "build", application, "--pull=never", "--cache", "oci-layout:"+cacheDir, "--output", output, "--platform", "linux/"+runtime.GOARCH, "--quiet")
+		runPodmanCompatibilityCLI(t, "build", application, "--pull=never", "--cache-from", "oci-layout:"+cacheDir, "--cache-to", "oci-layout:"+cacheDir, "--output", output, "--platform", "linux/"+runtime.GOARCH, "--quiet")
 		data, err := os.ReadFile(filepath.Join(output, "installed"))
 		if err != nil || string(data) != "installed through compatible component\n" {
 			t.Fatalf("%s compatibility output = %q, %v", name, data, err)
@@ -79,7 +78,7 @@ copy "/component-payload" "/installed" from="payload"
 	incompatible := filepath.Join(root, "incompatible.coopr")
 	writePodmanCompatibilityFile(t, incompatible, "from \"incompatible-base\"\ncomponent \""+componentRef+"\"\n", 0o600)
 	var stdout, stderr bytes.Buffer
-	status := run([]string{"build", incompatible, "--pull=never", "--cache", "oci-layout:" + cacheDir, "--output", filepath.Join(root, "incompatible-output"), "--platform", "linux/" + runtime.GOARCH, "--quiet"}, &stdout, &stderr)
+	status := run([]string{"build", incompatible, "--pull=never", "--cache-from", "oci-layout:" + cacheDir, "--cache-to", "oci-layout:" + cacheDir, "--output", filepath.Join(root, "incompatible-output"), "--platform", "linux/" + runtime.GOARCH, "--quiet"}, &stdout, &stderr)
 	if status == 0 || !strings.Contains(stderr.String(), "requires one of distros") {
 		t.Fatalf("incompatible caller status=%d stdout=%q stderr=%q", status, stdout.String(), stderr.String())
 	}

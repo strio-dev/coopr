@@ -7,7 +7,7 @@ Components apply shared changes to images. Their `extend` stage starts from the 
 Use a file path when the component lives in your build context:
 
 ```kdl
-from "docker.io/library/ubuntu:24.04"
+from "docker.io/redhat/ubi9:latest"
 component "./components/shared.coopr" channel="api"
 ```
 
@@ -45,11 +45,20 @@ Build once, then invoke the selected output by local tag or registry reference:
 
 ```sh
 coopr component build ./components/settings/component.coopr --tag settings
-coopr component copy settings oci-archive:settings.oci.tar
-coopr component copy settings registry:registry.example.com/team/settings:1
+coopr component save --output settings.oci.tar settings
+coopr component push settings registry.example.com/team/settings:1
 ```
 
 The registry command publishes the component. Invoke the local tag as `local:settings`; registry references never fall back to local tags.
+
+Pull a published component into a local name or load an archive:
+
+```sh
+coopr component pull registry.example.com/team/settings:1 --tag settings
+coopr component load --input settings.oci.tar
+```
+
+Both commands retain all packaged platforms. Loading restores the archived name; `--tag NAME` chooses another. A pull without `--tag` prints the stored digest, which can be used directly in a component instruction.
 
 ## Capture component-owned files
 

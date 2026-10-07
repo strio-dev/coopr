@@ -20,7 +20,6 @@ import (
 	buildahutil "go.podman.io/buildah/pkg/util"
 	"go.podman.io/common/pkg/capabilities"
 	commonconfig "go.podman.io/common/pkg/config"
-	"go.podman.io/image/v5/types"
 	storageTypes "go.podman.io/storage/types"
 	"tags.cncf.io/container-device-interface/pkg/parser"
 )
@@ -785,13 +784,6 @@ func (controls RunControls) applyBuilderOptions(options *upstream.BuilderOptions
 		options.CDIConfigDir = ""
 	}
 	return nil
-}
-
-func optionalBool(value bool) types.OptionalBool {
-	if value {
-		return types.OptionalBoolTrue
-	}
-	return types.OptionalBoolUndefined
 }
 
 func validateRunControls(controls RunControls) error {

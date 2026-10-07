@@ -275,7 +275,7 @@ run "test -f /src/included && test ! -e /src/ignored && test ! -e /src/run && te
 	_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 		Store:      store,
 		ContextDir: contextDir, Isolation: "rootless", Runtime: "crun", Output: Output{Path: layout},
-		ImageStoreDir: base.imageStoreDir, Pull: false, SignaturePolicyPath: policy,
+		Pull: false, SignaturePolicyPath: policy,
 		Stdout: io.Discard, Stderr: io.Discard,
 	})
 	if err != nil {

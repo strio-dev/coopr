@@ -30,7 +30,7 @@ func (value pullValue) Set(policy string) error {
 
 func addPullFlags(command *cobra.Command, policy *string, pull *bool) {
 	flags := command.Flags()
-	flags.StringVar(policy, "pull-policy", string(oci.PullMissing), "base image pull policy: always, missing, never, or newer")
-	flags.Var(pullValue{policy, pull}, "pull", "base image pull policy (without a value: always)")
+	*policy = string(oci.PullMissing)
+	flags.Var(pullValue{policy, pull}, "pull", "base image pull policy: always, missing, never, or newer (without a value: always)")
 	flags.Lookup("pull").NoOptDefVal = "always"
 }

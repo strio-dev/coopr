@@ -123,7 +123,7 @@ func TestResolveComponentPlanSelectsExternalCopyImage(t *testing.T) {
 extend
 copy "/artifact" "/artifact" from="pkg"
 copy "/bin/tool" "/tool" from="registry.example/toolbox:latest"
-`, "")
+`)
 	calls := 0
 	resolved, err := ResolveComponentPlan(ctx, ComponentPlanRequest{
 		Resolver: resolver, Reference: "local:tool", Platform: platform,
@@ -154,10 +154,10 @@ extend as="base"
 arg "channel"
 env CHANNEL="${channel}"
 copy "/artifact" "/artifact" from="pkg"
-`, "")
+`)
 }
 
-func localComponentResolverWithDefinition(t *testing.T, ctx context.Context, platform v1.Platform, definitionSource, imageStoreDir string) (*oci.Resolver, v1.Descriptor, []byte) {
+func localComponentResolverWithDefinition(t *testing.T, ctx context.Context, platform v1.Platform, definitionSource string) (*oci.Resolver, v1.Descriptor, []byte) {
 	t.Helper()
 	def, err := definition.Parse(strings.NewReader(definitionSource))
 	if err != nil {
@@ -197,10 +197,7 @@ func localComponentResolverWithDefinition(t *testing.T, ctx context.Context, pla
 	if err := componentstore.Put(ctx, componentDir, source, root, "tool"); err != nil {
 		t.Fatal(err)
 	}
-	if imageStoreDir == "" {
-		imageStoreDir = filepath.Join(rootDir, "images")
-	}
-	resolver, err := oci.NewResolver(oci.Options{ComponentStoreDir: componentDir, ImageStoreDir: imageStoreDir})
+	resolver, err := oci.NewResolver(oci.Options{ComponentStoreDir: componentDir})
 	if err != nil {
 		t.Fatal(err)
 	}

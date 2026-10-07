@@ -71,11 +71,11 @@ func TestBuildMultiPlatformComponentAndConsumeBothPlatforms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	immutable, err := transfer.Copy(ctx, oci.Component, "local:"+tag, destination, transfer.Options{ComponentStoreDir: storeDir, PlainHTTP: true})
+	immutable, err := transfer.Copy(ctx, oci.Component, "local:"+tag, destination, transfer.Options{ComponentStoreDir: storeDir, TLSVerify: new(false)})
 	if err != nil || !strings.Contains(immutable, "@"+root.Digest.String()) {
 		t.Fatalf("copy component index to registry = %q, %v", immutable, err)
 	}
-	resolver, err := oci.NewResolver(oci.Options{PlainHTTP: true, ComponentStoreDir: storeDir})
+	resolver, err := oci.NewResolver(oci.Options{TLSVerify: new(false), ComponentStoreDir: storeDir})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestBuildMultiPlatformComponentAndConsumeBothPlatforms(t *testing.T) {
 					t.Fatal(err)
 				}
 				archive := filepath.Join(consumer, "app.oci.tar")
-				if _, err := Run(ctx, Options{File: app, Tag: "oci-archive:" + archive, Platform: "linux/" + arch, PlainHTTP: true}); err != nil {
+				if _, err := Run(ctx, Options{File: app, Tag: "oci-archive:" + archive, Platform: "linux/" + arch, TLSVerify: new(false)}); err != nil {
 					t.Fatal(err)
 				}
 				if !containsName(archiveLayerNames(t, archive), "installed") {

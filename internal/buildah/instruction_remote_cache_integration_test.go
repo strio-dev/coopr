@@ -52,8 +52,8 @@ func testExactInstructionImageFromRegistryAcrossStores(t *testing.T, format stri
 		result, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store:      StoreOptions{RunRoot: filepath.Join(baseDir, "run"), GraphRoot: filepath.Join(baseDir, "graph"), GraphDriverName: "vfs"},
 			ContextDir: root, Isolation: "rootless", Runtime: "crun", Output: Output{Path: filepath.Join(baseDir, "layout"), Format: format},
-			ImageStoreDir: filepath.Join(baseDir, "images"), CacheLocalDir: cacheLocalDir, CacheRepository: cacheRepository,
-			PlainHTTPRegistries: []string{host}, SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
+			CacheLocalDir: cacheLocalDir, CacheRepository: cacheRepository,
+			TLSVerify: new(false), SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -108,8 +108,8 @@ func TestBuildPlanReusesDeclaredInputInstructionsFromRegistryAcrossStores(t *tes
 				RunRoot: filepath.Join(baseDir, "run"), GraphRoot: filepath.Join(baseDir, "graph"), GraphDriverName: "vfs",
 			},
 			ContextDir: contextDir, Isolation: "rootless", Runtime: "crun", Output: Output{Path: filepath.Join(baseDir, "layout")},
-			ImageStoreDir: filepath.Join(baseDir, "images"), CacheRepository: host + "/coopr/" + repository,
-			PlainHTTPRegistries: []string{host}, SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
+			CacheRepository: host + "/coopr/" + repository,
+			TLSVerify:       new(false), SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		}
 		for _, apply := range configure {
 			apply(&options)
@@ -291,8 +291,8 @@ func TestBuildPlanNoCacheReplacesPortableInstructionImage(t *testing.T) {
 		result, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store:      StoreOptions{RunRoot: filepath.Join(baseDir, "run"), GraphRoot: filepath.Join(baseDir, "graph"), GraphDriverName: "vfs"},
 			ContextDir: root, Isolation: "rootless", Runtime: "crun", NoCache: noCache,
-			Output: Output{Path: filepath.Join(baseDir, "layout")}, ImageStoreDir: filepath.Join(baseDir, "images"),
-			CacheRepository: repository, PlainHTTPRegistries: []string{host}, SignaturePolicyPath: policy,
+			Output:          Output{Path: filepath.Join(baseDir, "layout")},
+			CacheRepository: repository, TLSVerify: new(false), SignaturePolicyPath: policy,
 			Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {
@@ -328,7 +328,7 @@ func TestBuildPlanReusesScratchCopyFromRegistryAcrossStores(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := testPlan(t, "from \"scratch\"\ncopy \"payload\" \"/proof\"\n")
-	resolver, err := oci.NewResolver(oci.Options{PlainHTTPRegistries: []string{host}, ImageStoreDir: filepath.Join(root, "images")})
+	resolver, err := oci.NewResolver(oci.Options{TLSVerify: new(false)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,8 +386,8 @@ func testOrdinaryInstructionHitPromotion(t *testing.T, format string) {
 		result, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store:      StoreOptions{RunRoot: filepath.Join(baseDir, "run"), GraphRoot: filepath.Join(baseDir, "graph"), GraphDriverName: "vfs"},
 			ContextDir: root, Isolation: "rootless", Runtime: "crun", Output: Output{Path: filepath.Join(root, name+"-layout"), Format: format},
-			ImageStoreDir: filepath.Join(baseDir, "images"), CacheRepository: cacheRepository,
-			PlainHTTPRegistries: []string{host}, SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
+			CacheRepository: cacheRepository,
+			TLSVerify:       new(false), SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -422,15 +422,14 @@ func TestFailedBuildDoesNotPublishInstructionImages(t *testing.T) {
 	options := SupervisedPlanOptions{
 		Store:      StoreOptions{RunRoot: filepath.Join(root, "failed", "run"), GraphRoot: filepath.Join(root, "failed", "graph"), GraphDriverName: "vfs"},
 		ContextDir: root, Isolation: "rootless", Runtime: "crun", Output: Output{Path: filepath.Join(root, "failed", "layout")},
-		ImageStoreDir: filepath.Join(root, "failed", "images"), CacheRepository: host + "/coopr/cache",
-		PlainHTTPRegistries: []string{host}, SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
+		CacheRepository: host + "/coopr/cache",
+		TLSVerify:       new(false), SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 	}
 	if _, err := BuildPlanSupervised(ctx, failed, options); err == nil || !strings.Contains(err.Error(), "exit status") {
 		t.Fatalf("failed build error = %v", err)
 	}
 	success := testPlan(t, "from \""+base+"\"\nrun \"printf checkpoint >/proof\" network=\"none\"\n")
 	options.Store = StoreOptions{RunRoot: filepath.Join(root, "success", "run"), GraphRoot: filepath.Join(root, "success", "graph"), GraphDriverName: "vfs"}
-	options.ImageStoreDir = filepath.Join(root, "success", "images")
 	options.Output.Path = filepath.Join(root, "success", "layout")
 	result, err := BuildPlanSupervised(ctx, success, options)
 	if err != nil {

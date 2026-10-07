@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"coopr/internal/oci"
 	"github.com/opencontainers/go-digest"
 	upstream "go.podman.io/buildah"
 	"go.podman.io/buildah/define"
@@ -72,7 +73,7 @@ func checkpointSelected(ctx context.Context, store storage.Store, builder *upstr
 		}
 	}
 
-	selectedBase, err := selectedBuilderBase(ctx, store, imageID, manifestDigest)
+	selectedBase, err := oci.SelectedStoredImage(ctx, store, imageID, manifestDigest)
 	if err != nil {
 		return nil, imageID, manifestDigest, fmt.Errorf("select Buildah checkpoint manifest: %w", err)
 	}

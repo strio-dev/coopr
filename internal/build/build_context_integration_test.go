@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"coopr/internal/buildah"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,7 +16,6 @@ import (
 	"time"
 
 	"coopr/internal/buildcontext"
-	"coopr/internal/localstore"
 	"coopr/internal/oci"
 	"coopr/internal/transfer"
 )
@@ -190,12 +190,12 @@ func TestBuiltBaseAndFromShareCanonicalStore(t *testing.T) {
 	if _, err := Run(context.Background(), Options{File: baseDefinition, Tag: baseTag, Platform: "linux/amd64"}); err != nil {
 		t.Fatal(err)
 	}
-	imageDir, err := localstore.DefaultImageDir()
+	nativeStore, err := buildah.DefaultStoreOptions()
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"oci-layout", "index.json", "blobs"} {
-		if _, err := os.Stat(filepath.Join(imageDir, name)); !os.IsNotExist(err) {
+		if _, err := os.Stat(filepath.Join(nativeStore.GraphRoot, name)); !os.IsNotExist(err) {
 			t.Fatalf("built image left a second persistent OCI store entry %q: %v", name, err)
 		}
 	}

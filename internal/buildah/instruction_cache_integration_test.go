@@ -39,7 +39,7 @@ run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" network="none"
 		var stderr strings.Builder
 		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-			Output: Output{Path: layout}, ImageStoreDir: base.imageStoreDir, Pull: false,
+			Output: Output{Path: layout}, Pull: false,
 			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: &stderr,
 		})
 		if err != nil {
@@ -83,7 +83,7 @@ label cached="yes"
 		layout := filepath.Join(root, "tail-layout-"+string(rune('1'+attempt)))
 		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-			Output: Output{Path: layout}, ImageStoreDir: base.imageStoreDir, Pull: false,
+			Output: Output{Path: layout}, Pull: false,
 			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {
@@ -121,11 +121,11 @@ func TestWarmHostNetworkRunCacheStillRequiresEntitlement(t *testing.T) {
 	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	plan := testPlan(t, fmt.Sprintf("from %q\nrun \"printf cached-host-run >/proof\"\n", base.reference))
+	plan := testPlan(t, fmt.Sprintf("from %q\nrun \"printf cached-host-run >/proof\" network=\"host\"\n", base.reference))
 	common := SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-		ImageStoreDir: base.imageStoreDir, Pull: false, SignaturePolicyPath: policy,
-		Network: "host", Stdout: io.Discard, Stderr: io.Discard,
+		Pull: false, SignaturePolicyPath: policy,
+		Stdout: io.Discard, Stderr: io.Discard,
 	}
 	allowed := common
 	allowed.Allow = []string{"network.host"}
@@ -137,6 +137,12 @@ func TestWarmHostNetworkRunCacheStillRequiresEntitlement(t *testing.T) {
 	denied.Output = Output{Path: filepath.Join(root, "denied-layout")}
 	if _, err := BuildPlanSupervised(ctx, plan, denied); err == nil || !strings.Contains(err.Error(), "--allow network.host") {
 		t.Fatalf("warm cache without entitlement error = %v", err)
+	}
+	buildWide := common
+	buildWide.Network = "host"
+	buildWide.Output = Output{Path: filepath.Join(root, "build-wide-layout")}
+	if _, err := BuildPlanSupervised(ctx, plan, buildWide); err != nil {
+		t.Fatalf("warm cache with build-wide host network: %v", err)
 	}
 }
 
@@ -156,7 +162,7 @@ func TestWarmInsecureRunCacheStillRequiresEntitlement(t *testing.T) {
 	plan := testPlan(t, fmt.Sprintf("from %q\nrun \"test -r /proc/self/status && printf cached-insecure-run >/proof\" network=\"none\" security=\"insecure\"\nlabel after=\"insecure-run\"\n", base.reference))
 	common := SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-		ImageStoreDir: base.imageStoreDir, Pull: false, SignaturePolicyPath: policy,
+		Pull: false, SignaturePolicyPath: policy,
 		Stdout: io.Discard, Stderr: io.Discard,
 	}
 	allowed := common
@@ -216,7 +222,7 @@ run "test \"$COOPR_CDI_PROOF\" = available && printf cached-device-run >/proof" 
 `, base.reference))
 	common := SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-		ImageStoreDir: base.imageStoreDir, Pull: false, SignaturePolicyPath: policy,
+		Pull: false, SignaturePolicyPath: policy,
 		Stdout: io.Discard, Stderr: io.Discard,
 	}
 	allowed := common
@@ -257,7 +263,7 @@ run "cp /cached /proof" network="none"
 		started := time.Now()
 		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-			Output: Output{Path: layout}, ImageStoreDir: base.imageStoreDir, Pull: false,
+			Output: Output{Path: layout}, Pull: false,
 			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {

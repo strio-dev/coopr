@@ -12,6 +12,8 @@ import (
 	"syscall"
 
 	"coopr/internal/storeactivity"
+	"go.podman.io/buildah/pkg/volumes"
+	"go.podman.io/common/libimage"
 	"go.podman.io/storage"
 	"go.podman.io/storage/pkg/reexec"
 	"go.podman.io/storage/pkg/unshare"
@@ -22,32 +24,30 @@ const maintenanceWorkerName = "coopr-buildah-maintenance-worker-v1"
 type StoreMaintenanceMode string
 
 const (
-	StoreMaintenanceDF         StoreMaintenanceMode = "df"
-	StoreMaintenancePrune      StoreMaintenanceMode = "prune"
-	StoreMaintenanceCachePrune StoreMaintenanceMode = "cache-prune"
+	StoreMaintenanceDF    StoreMaintenanceMode = "df"
+	StoreMaintenancePrune StoreMaintenanceMode = "prune"
 )
 
 type StoreMaintenanceRequest struct {
 	Store             StoreOptions         `json:"store"`
 	Mode              StoreMaintenanceMode `json:"mode"`
-	ProtectedImageIDs []string             `json:"protected_image_ids,omitempty"`
+	All               bool                 `json:"all,omitempty"`
+	BuildCache        bool                 `json:"build_cache,omitempty"`
 	DryRun            bool                 `json:"dry_run,omitempty"`
 	ActivityLeaseHeld bool                 `json:"activity_lease_held,omitempty"`
 	ResultPath        string               `json:"result_path"`
 }
 
 type StoreMaintenanceResult struct {
-	Images              int      `json:"images"`
-	Containers          int      `json:"containers"`
-	Layers              int      `json:"layers"`
-	Bytes               int64    `json:"bytes"`
-	CacheImages         int      `json:"cache_images"`
-	CacheBytes          int64    `json:"cache_bytes"`
-	RemovedImages       int      `json:"removed_images"`
-	RemovedCacheAliases int      `json:"removed_cache_aliases"`
-	SkippedInUse        int      `json:"skipped_in_use"`
-	RetainedImageIDs    []string `json:"retained_image_ids,omitempty"`
-	Error               string   `json:"error,omitempty"`
+	Images         int    `json:"images"`
+	Containers     int    `json:"containers"`
+	Layers         int    `json:"layers"`
+	Bytes          int64  `json:"bytes"`
+	CacheImages    int    `json:"cache_images"`
+	CacheBytes     int64  `json:"cache_bytes"`
+	RemovedImages  int    `json:"removed_images"`
+	PrunableImages int    `json:"prunable_images"`
+	Error          string `json:"error,omitempty"`
 }
 
 func init() {
@@ -63,17 +63,17 @@ func MaintainStoreSupervised(ctx context.Context, request StoreMaintenanceReques
 	if err := validateStoreOptions(request.Store); err != nil {
 		return StoreMaintenanceResult{}, err
 	}
-	if request.Mode != StoreMaintenanceDF && request.Mode != StoreMaintenancePrune && request.Mode != StoreMaintenanceCachePrune {
+	if request.Mode != StoreMaintenanceDF && request.Mode != StoreMaintenancePrune {
 		return StoreMaintenanceResult{}, fmt.Errorf("unsupported store maintenance mode %q", request.Mode)
 	}
 	if !request.ActivityLeaseHeld {
-		root := filepath.Dir(filepath.Clean(request.Store.GraphRoot))
+		roots := ActivityRoots(request.Store, "")
 		var activity *storeactivity.Lease
 		var err error
 		if request.Mode == StoreMaintenanceDF {
-			activity, err = storeactivity.AcquireShared(ctx, root)
+			activity, err = storeactivity.AcquireShared(ctx, roots...)
 		} else {
-			activity, err = storeactivity.AcquireExclusive(ctx, root)
+			activity, err = storeactivity.AcquireExclusive(ctx, roots...)
 		}
 		if err != nil {
 			return StoreMaintenanceResult{}, fmt.Errorf("acquire maintenance store activity lease: %w", err)
@@ -92,6 +92,15 @@ func MaintainStoreSupervised(ctx context.Context, request StoreMaintenanceReques
 	}
 	command := reexec.Command(maintenanceWorkerName, requestPath)
 	command.Stdout, command.Stderr = os.Stdout, os.Stderr
+	if !request.DryRun && (request.All || request.BuildCache) {
+		// Use the same TMPDIR as supervised builds so the upstream helper
+		// cleans Coopr's RUN caches, rather than an unrelated host cache.
+		workerTemp, err := prepareWorkerTemp(request.Store.GraphRoot)
+		if err != nil {
+			return StoreMaintenanceResult{}, err
+		}
+		command.Env = append(os.Environ(), "TMPDIR="+workerTemp)
+	}
 	if err := runWorkerProcess(ctx, command, workerGrace); err != nil {
 		return StoreMaintenanceResult{}, err
 	}
@@ -158,77 +167,67 @@ func maintainStore(ctx context.Context, request StoreMaintenanceRequest) (_ Stor
 	if request.Mode == StoreMaintenanceDF {
 		return result, ctx.Err()
 	}
-	protected := make(map[string]bool, len(request.ProtectedImageIDs))
-	for _, id := range request.ProtectedImageIDs {
-		protected[id] = true
+	runtime, err := libimage.RuntimeFromStore(instructionCachePruneStore{backend}, nil)
+	if err != nil {
+		return result, err
 	}
-	inUse := make(map[string]bool, len(containers))
-	retained := make(map[string]bool)
-	for _, container := range containers {
-		inUse[container.ImageID] = true
+	// Match Podman's image-prune filters, including native manifest-list and
+	// parent/child checks. Never force deletion of containers using an image.
+	filters := []string{"readonly=false", "containers=false"}
+	if !request.All {
+		filters = append(filters, "dangling=true")
 	}
-	for _, image := range images {
-		cacheNames := instructionCacheNames(image.Names)
-		if request.Mode == StoreMaintenanceCachePrune && len(cacheNames) == 0 {
-			continue
+	if request.DryRun {
+		candidates, err := runtime.ListImages(ctx, &libimage.ListImagesOptions{Filters: filters})
+		result.PrunableImages = len(candidates)
+		return result, err
+	}
+	previousReports := 1
+	for {
+		if err := ctx.Err(); err != nil {
+			return result, err
 		}
-		if request.Mode == StoreMaintenancePrune && (protected[image.ID] || hasExternalStorageName(image.Names)) {
-			if hasExternalStorageName(image.Names) {
-				retained[image.ID] = true
-			}
-			continue
-		}
-		if request.Store.Shared && request.Mode == StoreMaintenancePrune {
-			// The host Podman/custom graph can contain unnamed images retained by
-			// another process or higher-level object. Coopr has no ownership proof
-			// for those records, so only its catalog metadata is prunable here.
-			retained[image.ID] = true
-			continue
-		}
-		if inUse[image.ID] {
-			result.SkippedInUse++
-			retained[image.ID] = true
-			continue
-		}
-		if request.Mode == StoreMaintenanceCachePrune {
-			result.RemovedCacheAliases += len(cacheNames)
-			remaining := make([]string, 0, len(image.Names)-len(cacheNames))
-			for _, name := range image.Names {
-				if !strings.HasPrefix(name, instructionCacheNamePrefix) {
-					remaining = append(remaining, name)
-				}
-			}
-			if !request.DryRun {
-				if err := backend.RemoveNames(image.ID, cacheNames); err != nil {
-					return result, err
-				}
-			}
-			if request.Store.Shared || protected[image.ID] || len(remaining) != 0 {
-				if request.Store.Shared {
-					retained[image.ID] = true
-				}
-				continue
+		reports, removalErrors := runtime.RemoveImages(ctx, nil, &libimage.RemoveImagesOptions{Filters: filters})
+		removed := 0
+		for _, report := range reports {
+			if report.Removed {
+				removed++
 			}
 		}
-		result.RemovedImages++
-		if request.DryRun {
-			continue
+		result.RemovedImages += removed
+		if err := errors.Join(removalErrors...); err != nil {
+			return result, err
 		}
-		if _, err := backend.DeleteImage(image.ID, true); err != nil {
-			if errors.Is(err, storage.ErrImageUsedByContainer) {
-				result.SkippedInUse++
-				result.RemovedImages--
-				retained[image.ID] = true
-				continue
-			}
+		if len(reports)+previousReports == 0 {
+			break
+		}
+		previousReports = len(reports)
+	}
+	if request.All || request.BuildCache {
+		if err := volumes.CleanCacheMount(); err != nil {
 			return result, err
 		}
 	}
-	for id := range retained {
-		result.RetainedImageIDs = append(result.RetainedImageIDs, id)
-	}
-	slices.Sort(result.RetainedImageIDs)
 	return result, ctx.Err()
+}
+
+// Private instruction-cache names are lookup indexes, not user tags. Present
+// them as unnamed to libimage without untagging retained images on disk.
+// libimage uses MultiList for both prune selection and recursive parent checks.
+type instructionCachePruneStore struct{ storage.Store }
+
+func (store instructionCachePruneStore) MultiList(options storage.MultiListOptions) (storage.MultiListResult, error) {
+	snapshot, err := store.Store.MultiList(options)
+	if err != nil {
+		return snapshot, err
+	}
+	snapshot.Images = slices.Clone(snapshot.Images)
+	for index := range snapshot.Images {
+		snapshot.Images[index].Names = slices.DeleteFunc(slices.Clone(snapshot.Images[index].Names), func(name string) bool {
+			return strings.HasPrefix(name, instructionCacheNamePrefix)
+		})
+	}
+	return snapshot, nil
 }
 
 func storeUsage(images []storage.Image, layers []storage.Layer, containers []storage.Container) StoreMaintenanceResult {
@@ -279,13 +278,4 @@ func instructionCacheNames(names []string) []string {
 		}
 	}
 	return result
-}
-
-func hasExternalStorageName(names []string) bool {
-	for _, name := range names {
-		if !strings.HasPrefix(name, "coopr.internal/") {
-			return true
-		}
-	}
-	return false
 }

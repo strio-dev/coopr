@@ -47,7 +47,7 @@ func TestPublishedExamplesSurvivePublisherRemovalAndRun(t *testing.T) {
 	copyExampleFile(t, filepath.Join("..", "..", "examples", "published-components", "components", "company-config", "defaults.json"), filepath.Join(companyDir, "defaults.json"))
 	company, err := PublishComponent(ctx, PublishOptions{
 		File: filepath.Join(companyDir, "component.coopr"), Reference: registryHost + "/coopr/company:debug",
-		Target: "debug", Platform: "linux/amd64", PlainHTTP: true,
+		Target: "debug", Platform: "linux/amd64", TLSVerify: new(false),
 	})
 	if err != nil {
 		t.Fatalf("publish company-config example: %v", err)
@@ -60,7 +60,7 @@ func TestPublishedExamplesSurvivePublisherRemovalAndRun(t *testing.T) {
 	copyExampleFile(t, filepath.Join("..", "..", "examples", "published-components", "components", "gofmt", "component.coopr"), filepath.Join(gofmtDir, "component.coopr"))
 	gofmt, err := PublishComponent(ctx, PublishOptions{
 		File: filepath.Join(gofmtDir, "component.coopr"), Reference: registryHost + "/coopr/gofmt:stable",
-		Platform: "linux/amd64", PlainHTTP: true,
+		Platform: "linux/amd64", TLSVerify: new(false),
 	})
 	if err != nil {
 		t.Fatalf("publish gofmt example: %v", err)
@@ -100,7 +100,7 @@ cmd { exec "/bin/sh" "-c" "cat /etc/company/defaults.json; cat /work/unformatted
 		t.Fatal(err)
 	}
 	archive := filepath.Join(consumerDir, "consumer.oci.tar")
-	if _, err := Run(ctx, Options{File: consumerFile, Tag: "oci-archive:" + archive, Platform: "linux/amd64", PlainHTTP: true}); err != nil {
+	if _, err := Run(ctx, Options{File: consumerFile, Tag: "oci-archive:" + archive, Platform: "linux/amd64", TLSVerify: new(false)}); err != nil {
 		t.Fatalf("build consumer after removing publisher trees: %v", err)
 	}
 	manifest, image := readExampleImage(t, ctx, archive)
@@ -127,7 +127,7 @@ cmd { exec "/bin/sh" "-c" "cat /etc/company/defaults.json; cat /work/unformatted
 	if nonempty != len(manifest.Layers) {
 		t.Fatalf("history has %d filesystem entries for %d layers: %+v", nonempty, len(manifest.Layers), image.History)
 	}
-	resolver, err := oci.NewResolver(oci.Options{PlainHTTP: true})
+	resolver, err := oci.NewResolver(oci.Options{TLSVerify: new(false)})
 	if err != nil {
 		t.Fatal(err)
 	}

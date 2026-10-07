@@ -30,9 +30,8 @@ import (
 	"go.podman.io/storage"
 )
 
-// StoreOptions identifies a private containers/storage store used for a build.
-// Both roots are required so a caller does not silently use the host's default
-// Podman or Buildah store.
+// StoreOptions identifies the effective native containers/storage settings.
+// Explicit selections supply both roots; defaults come from storage.conf.
 type StoreOptions struct {
 	RunRoot            string
 	GraphRoot          string
@@ -41,10 +40,8 @@ type StoreOptions struct {
 	GraphDriverOptions []string
 	TransientStore     bool
 	// Native preserves effective containers/storage settings which do not have
-	// dedicated Coopr CLI overrides. Shared marks the host Podman store so
-	// maintenance never treats unrelated unnamed records as Coopr-owned.
+	// dedicated Coopr CLI overrides.
 	Native storage.StoreOptions
-	Shared bool
 }
 
 // Request is one ordered, single-stage build.
@@ -144,9 +141,27 @@ func Build(ctx context.Context, request Request) (result Result, retErr error) {
 	if err := authorizeOperations(request.Operations, request.Allow); err != nil {
 		return Result{}, err
 	}
-	isolation, err := parse.IsolationOption(request.Isolation)
+	requestedIsolation := request.Isolation
+	if request.RunControls.Isolation != "" {
+		requestedIsolation = request.RunControls.Isolation
+	}
+	isolation, err := parse.IsolationOption(requestedIsolation)
 	if err != nil {
 		return Result{}, fmt.Errorf("select Buildah isolation: %w", err)
+	}
+	for index, operation := range request.Operations {
+		var network string
+		switch run := operation.(type) {
+		case Run:
+			network = run.Network
+		case *Run:
+			network = run.Network
+		default:
+			continue
+		}
+		if err := validateRunNetworkIsolation(network, isolation); err != nil {
+			return Result{}, fmt.Errorf("operation %d: %w", index+1, err)
+		}
 	}
 	capabilities := rootCapabilities()
 	storeLease, err := acquireStore(request.Store)
@@ -264,7 +279,7 @@ func newBuilderOptionsWithHosts(base string, isolation define.Isolation, capabil
 	options := upstream.BuilderOptions{
 		FromImage: base,
 		// Base resolution is deliberately local-only. The caller imports a
-		// verified digest into this private store before executing the graph.
+		// verified digest into native storage before executing the graph.
 		PullPolicy:       define.PullNever,
 		Isolation:        isolation,
 		Capabilities:     capabilities,

@@ -2,14 +2,10 @@ package oci
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net"
-	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -19,24 +15,18 @@ import (
 	"coopr/internal/componentstore"
 	"coopr/internal/definition"
 	"coopr/internal/imageconfig"
-	"coopr/internal/localstore"
 	"coopr/internal/planner"
+
 	dockerreference "github.com/distribution/reference"
 	digest "github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/common/pkg/retry"
-	dockerconfig "go.podman.io/image/v5/pkg/docker/config"
-	"go.podman.io/image/v5/pkg/tlsclientconfig"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/storage"
 	"oras.land/oras-go/v2/content"
 	orasoci "oras.land/oras-go/v2/content/oci"
 	"oras.land/oras-go/v2/registry"
-	"oras.land/oras-go/v2/registry/remote"
-	"oras.land/oras-go/v2/registry/remote/auth"
-	"oras.land/oras-go/v2/registry/remote/credentials"
-	orasretry "oras.land/oras-go/v2/registry/remote/retry"
 )
 
 const (
@@ -82,14 +72,11 @@ type Package struct {
 }
 
 type Options struct {
-	PlainHTTP           bool     // Permit HTTP for loopback registries only.
-	PlainHTTPRegistries []string // Exact additional registry hosts allowed over HTTP.
-	Pull                bool     // Resolve mutable image tags from their registry instead of the local image store.
-	PullPolicy          string   // always, missing, never, or newer; Pull=true is an alias for always.
-	Client              *http.Client
+	TLSVerify           *bool  // nil inherits native registry configuration.
+	Pull                bool   // Resolve mutable image tags from their registry instead of the local image store.
+	PullPolicy          string // always, missing, never, or newer; Pull=true is an alias for always.
 	AuthFile            string // Explicit containers-auth.json or Docker config.json credentials file.
 	CertDir             string // Direct certificate directory containing ca.crt and optional client certificates.
-	SkipTLSVerify       bool   // Disable TLS verification for exact referenced registry hosts.
 	Credentials         string // Explicit username[:password], overriding credential files for image pulls.
 	Retry               uint
 	RetrySet            bool
@@ -97,30 +84,20 @@ type Options struct {
 	DecryptionKeys      []string
 	SignaturePolicyPath string
 	ComponentStoreDir   string               // Override the local component OCI layout.
-	ImageStoreDir       string               // Override Coopr's local image catalog directory.
-	NativeStore         storage.StoreOptions // Exact containers/storage selection associated with the catalog.
-	NativeStoreShared   bool                 // Native names are authoritative in a shared Podman/custom store.
+	NativeStore         storage.StoreOptions // Exact containers/storage selection for image inputs and outputs.
 }
 
 type Resolver struct {
-	httpClient          *http.Client
-	credential          auth.CredentialFunc
-	certDir             string
-	skipTLSVerify       bool
-	plainHTTP           bool
-	plainHTTPRegistries map[string]struct{}
-	pullPolicy          PullPolicy
-	componentStoreDir   string
-	imageStoreDir       string
-	system              *types.SystemContext
-	credentials         string
-	retry               uint
-	retrySet            bool
-	retryDelay          time.Duration
-	decryptionKeys      []string
-	nativeStore         storage.StoreOptions
-	nativeStoreShared   bool
-	retryOptions        *retry.Options
+	pullPolicy        PullPolicy
+	componentStoreDir string
+	system            *types.SystemContext
+	credentials       string
+	retry             uint
+	retrySet          bool
+	retryDelay        time.Duration
+	decryptionKeys    []string
+	nativeStore       storage.StoreOptions
+	retryOptions      *retry.Options
 }
 
 type Resolved struct {
@@ -129,6 +106,7 @@ type Resolved struct {
 	Kind           Kind               `json:"kind"`
 	Platform       v1.Platform        `json:"platform"`
 	Root           v1.Descriptor      `json:"root"`
+	SourceManifest *v1.Descriptor     `json:"source_manifest,omitempty"`
 	Selected       v1.Descriptor      `json:"selected"`
 	Manifest       v1.Manifest        `json:"manifest"`
 	Config         v1.Descriptor      `json:"config"`
@@ -159,50 +137,15 @@ func NewResolver(opts Options) (*Resolver, error) {
 	if err != nil {
 		return nil, err
 	}
-	plainHTTPRegistries := make(map[string]struct{}, len(opts.PlainHTTPRegistries))
-	for _, authority := range opts.PlainHTTPRegistries {
-		if err := validateRegistryAuthority(authority); err != nil {
-			return nil, fmt.Errorf("plain HTTP registry %q: %w", authority, err)
-		}
-		plainHTTPRegistries[strings.ToLower(authority)] = struct{}{}
-	}
 	system := &types.SystemContext{AuthFilePath: opts.AuthFile, DockerCertPath: opts.CertDir, SignaturePolicyPath: opts.SignaturePolicyPath}
-	if opts.SkipTLSVerify {
-		system.DockerInsecureSkipTLSVerify = types.OptionalBoolTrue
-	}
+	ApplyTLSVerify(system, opts.TLSVerify)
 	if opts.Credentials != "" {
 		username, password, _ := strings.Cut(opts.Credentials, ":")
 		system.DockerAuthConfig = &types.DockerAuthConfig{Username: username, Password: password}
 	}
-	var dockerCredential auth.CredentialFunc
-	if opts.AuthFile == "" {
-		dockerStore, err := credentials.NewStoreFromDocker(credentials.StoreOptions{})
-		if err != nil {
-			return nil, fmt.Errorf("load Docker credentials: %w", err)
-		}
-		dockerCredential = credentials.Credential(dockerStore)
-	}
-	credential := func(ctx context.Context, hostport string) (auth.Credential, error) {
-		config, err := dockerconfig.GetCredentials(system, hostport)
-		if err != nil {
-			return auth.EmptyCredential, fmt.Errorf("load registry credentials for %s: %w", hostport, err)
-		}
-		credential := auth.Credential{Username: config.Username, Password: config.Password, RefreshToken: config.IdentityToken}
-		if credential != auth.EmptyCredential || dockerCredential == nil {
-			return credential, nil
-		}
-		return dockerCredential(ctx, hostport)
-	}
 	componentStoreDir := opts.ComponentStoreDir
 	if componentStoreDir == "" {
 		componentStoreDir, err = componentstore.DefaultDir()
-		if err != nil {
-			return nil, err
-		}
-	}
-	imageStoreDir := opts.ImageStoreDir
-	if imageStoreDir == "" {
-		imageStoreDir, err = localstore.DefaultImageDir()
 		if err != nil {
 			return nil, err
 		}
@@ -212,12 +155,11 @@ func NewResolver(opts Options) (*Resolver, error) {
 		return nil, err
 	}
 	return &Resolver{
-		httpClient: opts.Client, credential: credential, certDir: opts.CertDir, skipTLSVerify: opts.SkipTLSVerify,
-		plainHTTP: opts.PlainHTTP, plainHTTPRegistries: plainHTTPRegistries, pullPolicy: pullPolicy,
-		componentStoreDir: componentStoreDir, imageStoreDir: imageStoreDir,
-		system: system, credentials: opts.Credentials, retry: opts.Retry, retrySet: opts.RetrySet,
+		pullPolicy:        pullPolicy,
+		componentStoreDir: componentStoreDir,
+		system:            system, credentials: opts.Credentials, retry: opts.Retry, retrySet: opts.RetrySet,
 		retryDelay: opts.RetryDelay, decryptionKeys: slices.Clone(opts.DecryptionKeys),
-		nativeStore: cloneNativeStoreOptions(opts.NativeStore), nativeStoreShared: opts.NativeStoreShared,
+		nativeStore:  cloneNativeStoreOptions(opts.NativeStore),
 		retryOptions: retryOptions,
 	}, nil
 }
@@ -304,19 +246,14 @@ func validateCertificateDirectory(path string) error {
 	return nil
 }
 
-// ImageStoreDir returns Coopr's local image catalog directory.
-func (r *Resolver) ImageStoreDir() string { return r.imageStoreDir }
-
 // NativeStoreOptions returns the exact native store associated with the local
-// catalog, if the caller selected one explicitly.
+// image storage, if the caller selected one explicitly.
 func (r *Resolver) NativeStoreOptions() storage.StoreOptions {
 	if r == nil {
 		return storage.StoreOptions{}
 	}
 	return cloneNativeStoreOptions(r.nativeStore)
 }
-
-func (r *Resolver) NativeStoreShared() bool { return r != nil && r.nativeStoreShared }
 
 func cloneNativeStoreOptions(options storage.StoreOptions) storage.StoreOptions {
 	options.GraphDriverOptions = slices.Clone(options.GraphDriverOptions)
@@ -329,21 +266,8 @@ func (r *Resolver) ComponentStoreDir() string { return r.componentStoreDir }
 // PullImages reports whether mutable image references must be refreshed.
 func (r *Resolver) PullImages() bool { return r.pullPolicy == PullAlways }
 
-// PullPolicy reports how mutable remote image references use the local catalog.
+// PullPolicy reports how mutable remote image references use native local storage.
 func (r *Resolver) PullPolicy() PullPolicy { return r.pullPolicy }
-
-// PlainHTTP reports whether loopback registries may use plain HTTP.
-func (r *Resolver) PlainHTTP() bool { return r.plainHTTP }
-
-// PlainHTTPRegistries returns the exact registry authorities allowed over HTTP.
-func (r *Resolver) PlainHTTPRegistries() []string {
-	result := make([]string, 0, len(r.plainHTTPRegistries))
-	for authority := range r.plainHTTPRegistries {
-		result = append(result, authority)
-	}
-	slices.Sort(result)
-	return result
-}
 
 // SystemContext returns a private copy of the stock containers/image context
 // used for registry resolution and pulls.
@@ -355,37 +279,25 @@ func (r *Resolver) SystemContext() *types.SystemContext {
 	return &copy
 }
 
-// NativeSystemContext returns the containers/image context for a specific
-// registry reference, including Coopr's explicit plain-HTTP registry list.
-func (r *Resolver) NativeSystemContext(reference string) *types.SystemContext {
-	system := r.SystemContext()
-	if parsed, err := ParseReference(reference); err == nil && r.usePlainHTTP(parsed.Registry) {
-		system.DockerInsecureSkipTLSVerify = types.OptionalBoolTrue
-	}
-	return system
-}
-
 // RegistryOptions returns a serialization-safe copy of the resolver's input
-// policy for worker processes. The injected HTTP client is intentionally not
-// copied; it is only supported by the in-process component-artifact transport.
+// policy for worker processes.
 func (r *Resolver) RegistryOptions() Options {
 	if r == nil {
 		return Options{}
 	}
 	system := r.SystemContext()
 	return Options{
-		PlainHTTP: r.plainHTTP, PlainHTTPRegistries: r.PlainHTTPRegistries(),
+		TLSVerify:  tlsVerifyOption(system.DockerInsecureSkipTLSVerify),
 		PullPolicy: string(r.pullPolicy), AuthFile: system.AuthFilePath, CertDir: system.DockerCertPath,
-		SkipTLSVerify: system.DockerInsecureSkipTLSVerify == types.OptionalBoolTrue,
-		Credentials:   r.credentials, Retry: r.retry, RetrySet: r.retrySet, RetryDelay: r.retryDelay,
+		Credentials: r.credentials, Retry: r.retry, RetrySet: r.retrySet, RetryDelay: r.retryDelay,
 		DecryptionKeys: slices.Clone(r.decryptionKeys), SignaturePolicyPath: system.SignaturePolicyPath,
-		ComponentStoreDir: r.componentStoreDir, ImageStoreDir: r.imageStoreDir,
-		NativeStore: cloneNativeStoreOptions(r.nativeStore), NativeStoreShared: r.nativeStoreShared,
+		ComponentStoreDir: r.componentStoreDir,
+		NativeStore:       cloneNativeStoreOptions(r.nativeStore),
 	}
 }
 
 // ResolveRemoteImage fetches a registry image after the Buildah backend has
-// consulted its persistent image catalog.
+// consulted native image storage.
 func (r *Resolver) ResolveRemoteImage(ctx context.Context, reference string, platform v1.Platform) (*Resolved, error) {
 	return r.resolveNativeImage(ctx, reference, platform)
 }
@@ -447,46 +359,6 @@ func (r *Resolver) resolveRemote(ctx context.Context, reference string, platform
 	return r.resolveRoot(ctx, repo, ref.String(), ref.Registry+"/"+ref.Repository, root, platform, kind)
 }
 
-func validateRegistryAuthority(authority string) error {
-	if authority == "" || strings.TrimSpace(authority) != authority || strings.ContainsAny(authority, "/@?#*\\") {
-		return fmt.Errorf("expected a registry host with optional port, without a scheme or path")
-	}
-	u, err := url.Parse("https://" + authority)
-	if err != nil || u.Host != authority || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.Hostname() == "" {
-		return fmt.Errorf("expected a registry host with optional port, without a scheme or path")
-	}
-	if strings.Contains(u.Hostname(), ":") && (!strings.HasPrefix(authority, "[") || net.ParseIP(u.Hostname()) == nil) {
-		return fmt.Errorf("IPv6 registry hosts must be bracketed IP addresses")
-	}
-	if strings.Contains(authority, ":") && u.Port() == "" && net.ParseIP(u.Hostname()) == nil {
-		return fmt.Errorf("invalid registry port")
-	}
-	if port := u.Port(); port != "" {
-		var number int
-		if _, err := fmt.Sscanf(port, "%d", &number); err != nil || number < 1 || number > 65535 || fmt.Sprint(number) != port {
-			return fmt.Errorf("invalid registry port %q", port)
-		}
-	}
-	return nil
-}
-
-func (r *Resolver) usePlainHTTP(authority string) bool {
-	if _, ok := r.plainHTTPRegistries[strings.ToLower(authority)]; ok {
-		return true
-	}
-	if !r.plainHTTP {
-		return false
-	}
-	host := authority
-	if parsed, _, err := net.SplitHostPort(authority); err == nil {
-		host = parsed
-	} else if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
-		host = host[1 : len(host)-1]
-	}
-	ip := net.ParseIP(host)
-	return strings.EqualFold(host, "localhost") || strings.HasSuffix(strings.ToLower(host), ".localhost") || ip != nil && ip.IsLoopback()
-}
-
 // ParseReference canonicalizes familiar Docker-style references. Mutable tags
 // resolve at build time, while digest references select immutable content.
 func ParseReference(value string) (registry.Reference, error) {
@@ -543,63 +415,6 @@ func ValidateComponentReference(value string) error {
 	}
 	_, err = ParseReference(value)
 	return err
-}
-
-func (r *Resolver) repository(ref registry.Reference) (*remote.Repository, error) {
-	repo, err := remote.NewRepository(ref.Registry + "/" + ref.Repository)
-	if err != nil {
-		return nil, err
-	}
-	client := http.Client{}
-	if r.httpClient != nil {
-		client = *r.httpClient
-	}
-	transport := client.Transport
-	retryTransport, alreadyRetries := transport.(*orasretry.Transport)
-	if alreadyRetries {
-		clone := *retryTransport
-		retryTransport = &clone
-		transport = retryTransport.Base
-	} else {
-		retryTransport = orasretry.NewTransport(transport)
-	}
-	if r.certDir != "" || r.skipTLSVerify {
-		var configured *http.Transport
-		if transport == nil {
-			configured = tlsclientconfig.NewTransport()
-		} else if native, ok := transport.(*http.Transport); ok {
-			configured = native.Clone()
-		} else {
-			return nil, fmt.Errorf("registry TLS options require an HTTP transport, got %T", transport)
-		}
-		if configured.TLSClientConfig == nil {
-			configured.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
-		} else {
-			configured.TLSClientConfig = configured.TLSClientConfig.Clone()
-		}
-		configured.TLSClientConfig.InsecureSkipVerify = r.skipTLSVerify //nolint:gosec // Explicit --tls-verify=false policy.
-		if r.certDir != "" {
-			if err := tlsclientconfig.SetupCertificates(r.certDir, configured.TLSClientConfig); err != nil {
-				return nil, fmt.Errorf("load registry certificates for %s: %w", ref.Registry, err)
-			}
-		}
-		retryTransport.Base = configured
-	}
-	if !alreadyRetries || r.retrySet || r.retryDelay != 0 {
-		retryTransport.Policy = func() orasretry.Policy {
-			policy := *orasretry.DefaultPolicy.(*orasretry.GenericPolicy)
-			policy.MaxRetry = r.retryOptions.MaxRetry
-			if r.retryOptions.Delay != 0 {
-				policy.Backoff = func(int, *http.Response) time.Duration { return r.retryOptions.Delay }
-				policy.MinWait, policy.MaxWait = r.retryOptions.Delay, r.retryOptions.Delay
-			}
-			return &policy
-		}
-	}
-	client.Transport = retryTransport
-	repo.Client = &auth.Client{Client: &client, Credential: r.credential}
-	repo.PlainHTTP = r.usePlainHTTP(ref.Registry)
-	return repo, nil
 }
 
 func (r *Resolver) Resolve(ctx context.Context, reference string, platform v1.Platform, kind Kind) (*Resolved, error) {

@@ -67,7 +67,7 @@ func TestSelectedBaseAliasInitializesExactSameConfigManifest(t *testing.T) {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			aliasID, err := selectedBuilderBase(ctx, lease.store, imageID, ociManifest.Digest)
+			aliasID, err := oci.SelectedStoredImage(ctx, lease.store, imageID, ociManifest.Digest)
 			if err != nil {
 				errors <- err
 				return
@@ -102,7 +102,7 @@ func TestSelectedBaseAliasInitializesExactSameConfigManifest(t *testing.T) {
 		{name: "docker", selected: dockerManifest.Digest},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			aliasID, err := selectedBuilderBase(ctx, lease.store, imageID, test.selected)
+			aliasID, err := oci.SelectedStoredImage(ctx, lease.store, imageID, test.selected)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -188,7 +188,7 @@ func TestSelectedBaseAliasSupportsConfigOnlyImage(t *testing.T) {
 		t.Fatalf("config-only base has %d storage layers, want zero", len(layersBefore))
 	}
 	for _, selected := range []digest.Digest{ociManifest.Digest, dockerManifest} {
-		aliasID, err := selectedBuilderBase(ctx, lease.store, base.ImageID, selected)
+		aliasID, err := oci.SelectedStoredImage(ctx, lease.store, base.ImageID, selected)
 		if err != nil {
 			t.Fatal(err)
 		}

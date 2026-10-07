@@ -32,7 +32,6 @@ func TestMultiPlatformHostSBOMOutputsUseLastPlatform(t *testing.T) {
 	defer cancel()
 	root := dockerEngineWorkspace(t)
 	t.Setenv("XDG_RUNTIME_DIR", root)
-	storeDir := filepath.Join(root, "images")
 	store := buildah.StoreOptions{
 		GraphRoot:       filepath.Join(root, "graph"),
 		RunRoot:         filepath.Join(root, "run"),
@@ -46,7 +45,7 @@ func TestMultiPlatformHostSBOMOutputsUseLastPlatform(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := Run(ctx, Options{
-		File: scannerDefinition, StoreDir: storeDir, Tag: "scanner:latest",
+		File: scannerDefinition, Tag: "scanner:latest",
 		Platform: "linux/" + runtime.GOARCH, BuildStore: store,
 	}); err != nil {
 		t.Fatalf("build scanner image: %v", err)
@@ -73,7 +72,7 @@ func TestMultiPlatformHostSBOMOutputsUseLastPlatform(t *testing.T) {
 		PURLOutput:    purlOutput,
 	}
 	if _, err := Run(ctx, Options{
-		File: targetDefinition, StoreDir: storeDir, Tag: "scanned:latest",
+		File: targetDefinition, Tag: "scanned:latest",
 		Platforms: []string{"linux/amd64", "linux/arm64"}, Jobs: 0,
 		BuildStore: store, SBOM: []define.SBOMScanOptions{scan},
 	}); err != nil {

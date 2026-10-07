@@ -1,35 +1,62 @@
 package buildah
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
-func TestDefaultStoreOptionsUseCooprImageDataAndRuntimeNamespace(t *testing.T) {
-	cache := t.TempDir()
-	data := t.TempDir()
+func TestDefaultStoreOptionsUseEffectiveNativeConfiguration(t *testing.T) {
+	root := t.TempDir()
+	data := filepath.Join(root, "data")
 	runtimeDir := t.TempDir()
-	t.Setenv("XDG_CACHE_HOME", cache)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(root, "cache"))
 	t.Setenv("XDG_DATA_HOME", data)
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
-	got, err := DefaultStoreOptions()
-	if err != nil {
+	t.Setenv("STORAGE_DRIVER", "")
+	t.Setenv("STORAGE_OPTS", "")
+	// An explicitly empty STORAGE_OPTS disables configured driver options.
+	if err := os.Unsetenv("STORAGE_OPTS"); err != nil {
 		t.Fatal(err)
 	}
-	if got.GraphRoot != filepath.Join(data, "coopr", "images", "graph") || got.RunRoot != filepath.Join(runtimeDir, "coopr", "buildah") {
-		t.Fatalf("default Buildah store paths = %+v", got)
-	}
-	if _, err := os.Stat(got.GraphRoot); !os.IsNotExist(err) {
-		t.Fatalf("finding default paths created a store: %v", err)
-	}
-}
-
-func TestDefaultStoreOptionsRejectsRelativeRuntimeDir(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	t.Setenv("XDG_RUNTIME_DIR", "relative")
-	if _, err := DefaultStoreOptions(); err == nil {
-		t.Fatal("relative runtime directory accepted")
+	configPath := filepath.Join(root, "storage.conf")
+	t.Setenv("CONTAINERS_STORAGE_CONF", configPath)
+	for _, helper := range []string{"first-helper", "second-helper"} {
+		t.Run(helper, func(t *testing.T) {
+			mountProgram := filepath.Join(root, helper)
+			config := fmt.Sprintf(`[storage]
+driver = "overlay"
+driver_priority = ["overlay", "vfs"]
+graphroot = %q
+runroot = %q
+imagestore = %q
+transient_store = true
+[storage.options.overlay]
+mount_program = %q
+`, filepath.Join(root, "foreign-graph"), filepath.Join(root, "foreign-run"), filepath.Join(root, "foreign-images"), mountProgram)
+			if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got, err := DefaultStoreOptions()
+			if err != nil {
+				t.Fatal(err)
+			}
+			native := NativeStoreOptions(got)
+			if native.GraphRoot != filepath.Join(root, "foreign-graph") || native.RunRoot != filepath.Join(root, "foreign-run") {
+				t.Fatalf("native configured roots were replaced: %+v", native)
+			}
+			if native.ImageStore != filepath.Join(root, "foreign-images") || !native.TransientStore {
+				t.Fatalf("configured native settings were lost: %+v", got)
+			}
+			if native.GraphDriverName != "overlay" || !slices.Equal(native.GraphDriverOptions, []string{"overlay.mount_program=" + mountProgram}) {
+				t.Fatalf("configured storage driver/options = %q %v, want overlay with current mount helper %q", native.GraphDriverName, native.GraphDriverOptions, mountProgram)
+			}
+			if !slices.Equal(native.GraphDriverPriority, []string{"overlay", "vfs"}) {
+				t.Fatalf("configured driver priority = %v", native.GraphDriverPriority)
+			}
+		})
 	}
 }
 

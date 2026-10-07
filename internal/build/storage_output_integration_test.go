@@ -3,6 +3,7 @@ package build
 import (
 	"bytes"
 	"context"
+	"coopr/internal/buildah"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,8 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/imagecatalog"
-	"coopr/internal/localstore"
 	"coopr/internal/oci"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -53,10 +52,8 @@ func TestNativeStorageMatchesArchiveAndRuns(t *testing.T) {
 	if archiveID != manifest.Config.Digest {
 		t.Fatalf("archive image ID = %s, manifest config = %s", archiveID, manifest.Config.Digest)
 	}
-	if output, err := exec.CommandContext(ctx, "podman", "image", "exists", archiveID.String()).CombinedOutput(); err == nil {
-		t.Skipf("image %s already exists in Podman; preserving preexisting image", archiveID)
-	} else if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
-		t.Fatalf("inspect preexisting image: %v: %s", err, output)
+	if output, err := exec.CommandContext(ctx, "podman", "image", "exists", archiveID.String()).CombinedOutput(); err != nil {
+		t.Fatalf("archive build must retain its image in the shared native store: %v: %s", err, output)
 	}
 	tag := fmt.Sprintf("localhost/coopr-load-test-%d-%d:acceptance", os.Getpid(), time.Now().UnixNano())
 	if output, err := exec.CommandContext(ctx, "podman", "image", "exists", tag).CombinedOutput(); err == nil {
@@ -91,7 +88,7 @@ func TestNativeStorageMatchesArchiveAndRuns(t *testing.T) {
 	assertNoStageDirs(t, work)
 }
 
-func TestDefaultCooprStoreCanCopyToPodmanLater(t *testing.T) {
+func TestDefaultNativeStoreCanCopyToPodmanLater(t *testing.T) {
 	loadTestBackend(t)
 	if _, err := exec.LookPath("podman"); err != nil {
 		t.Fatalf("Podman is required for native storage acceptance: %v", err)
@@ -113,12 +110,12 @@ func TestDefaultCooprStoreCanCopyToPodmanLater(t *testing.T) {
 	if !strings.HasPrefix(localRef, "sha256:") {
 		t.Fatalf("default build returned %q, want local digest reference", localRef)
 	}
-	storeDir, err := localstore.DefaultImageDir()
+	storeOptions, err := buildah.DefaultStoreOptions()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, found, err := imagecatalog.Lookup(ctx, storeDir, localRef, v1.Platform{OS: "linux", Architecture: runtime.GOARCH}); err != nil || !found {
-		t.Fatalf("default image missing from Coopr store: found=%t err=%v", found, err)
+	if _, found, err := testStoredImageSelection(ctx, storeOptions, localRef, v1.Platform{OS: "linux", Architecture: runtime.GOARCH}); err != nil || !found {
+		t.Fatalf("default image missing from native storage: found=%t err=%v", found, err)
 	}
 	if err := os.Remove(filepath.Join(work, "runner")); err != nil {
 		t.Fatal(err)

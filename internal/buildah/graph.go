@@ -24,6 +24,7 @@ import (
 	"coopr/internal/oci"
 	"coopr/internal/planner"
 	"github.com/containerd/platforms"
+	"github.com/moby/buildkit/util/entitlements"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 
@@ -134,7 +135,7 @@ type graphExecutor struct {
 	nextBuilderID            uint64
 	sharedBuilderCounter     *uint64
 	activeLocalComponents    map[string]bool
-	allowedEntitlements      map[string]bool
+	allowedEntitlements      entitlements.Set
 	stageRelayMu             sync.Mutex
 }
 
@@ -312,7 +313,7 @@ type executedGraphStage struct {
 // executePlanGraph executes one graph while retaining executor-wide resources
 // and resolved external bases for recursive component invocation.
 func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *planner.Plan, stages []planner.Stage, imageOutputID string, observed map[string]bool, observe stageObserver, bindings *graphBindings) (Result, error) {
-	stages, err := resolveAndValidateBuildNetwork(stages, executor.options.Network, executor.options.RunControls)
+	stages, err := resolveAndValidateBuildNetwork(stages, executor.options.Network, executor.options.RunControls, executor.options.Isolation)
 	if err != nil {
 		return Result{}, err
 	}
@@ -419,7 +420,7 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 				if err != nil {
 					return Result{}, drain(stage.ID, fmt.Errorf("stage %s dynamic base replan: %w", stage.ID, err))
 				}
-				nextStages, err := resolveAndValidateBuildNetwork(nextPlan.Stages, executor.options.Network, executor.options.RunControls)
+				nextStages, err := resolveAndValidateBuildNetwork(nextPlan.Stages, executor.options.Network, executor.options.RunControls, executor.options.Isolation)
 				if err != nil {
 					return Result{}, drain(stage.ID, fmt.Errorf("stage %s dynamic base replan: %w", stage.ID, err))
 				}
@@ -712,8 +713,11 @@ func (executor *graphExecutor) prepareGraphStage(ctx context.Context, plan *plan
 			}
 		}
 	}
-	prepared.operations = resolveOperationNetwork(prepared.operations, executor.options.Network)
-	var err error
+	resolvedOperations, err := resolveAndValidateBuildNetwork([]planner.Stage{{ID: stage.ID, Operations: prepared.operations}}, executor.options.Network, executor.options.RunControls, executor.options.Isolation)
+	if err != nil {
+		return preparedGraphStage{}, err
+	}
+	prepared.operations = resolvedOperations[0].Operations
 	if bindings != nil {
 		scope := bindings.cacheScope
 		scope.Stage = stage.ID
@@ -791,7 +795,7 @@ func (executor *graphExecutor) executeGraphStage(ctx context.Context, plan *plan
 	builderOptions.Container = executor.builderContainerName(stage.ID)
 	builderBase := prepared.base
 	if prepared.baseManifest != "" {
-		builderBase, err = selectedBuilderBase(ctx, executor.store, prepared.base, prepared.baseManifest)
+		builderBase, err = oci.SelectedStoredImage(ctx, executor.store, prepared.base, prepared.baseManifest)
 		if err != nil {
 			return executedGraphStage{}, fmt.Errorf("stage %s select base manifest %s: %w", stage.ID, prepared.baseManifest, err)
 		}
@@ -1541,7 +1545,7 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 				if err := current.Delete(); err != nil {
 					return "", Result{}, nil, fmt.Errorf("operation %d delete cache-replaced builder: %w", index+1, err)
 				}
-				selectedCacheBase, selectErr := selectedBuilderBase(ctx, store, cachedImageID, cacheEntry.ManifestDigest)
+				selectedCacheBase, selectErr := oci.SelectedStoredImage(ctx, store, cachedImageID, cacheEntry.ManifestDigest)
 				if selectErr != nil {
 					return "", Result{}, nil, fmt.Errorf("operation %d select instruction cache manifest %s: %w", index+1, cacheEntry.ManifestDigest, selectErr)
 				}
@@ -2259,6 +2263,10 @@ func capturePackageRootMetadata(store storage.Store, builder *upstream.Builder) 
 		}
 	}
 	ambientSELinux := storageAmbientSELinux(builder.MountLabel, storageLabel)
+	ambientSELinux, err = mountedAmbientSELinux(mountPoint, store.GraphRoot(), ambientSELinux)
+	if err != nil {
+		return nil, err
+	}
 	metadata, err = packageRootMetadataFromMount(mountPoint, layer.UIDMap, layer.GIDMap, builder.MountLabel, ambientSELinux)
 	if err != nil {
 		return nil, fmt.Errorf("read package builder root metadata: %w", err)

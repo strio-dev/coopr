@@ -40,6 +40,53 @@ func TestNormalizeBuildNetworkOptions(t *testing.T) {
 	}
 }
 
+func TestBuildWideHostNetworkAuthorizesRuns(t *testing.T) {
+	for _, authored := range []string{"", ` network="host"`} {
+		plan := testPlan(t, "from \"scratch\"\nrun \"true\""+authored+"\n")
+		for _, network := range []string{"default", "host"} {
+			request, err := RequestFromPlan(plan, PlanOptions{Network: network})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = authorizeOperations(request.Operations, request.Allow)
+			if network == "default" && authored != "" {
+				if err == nil || !strings.Contains(err.Error(), "--allow network.host") {
+					t.Fatalf("authored host network without grant: %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("network %q, authored %q: %v", network, authored, err)
+			}
+		}
+	}
+}
+
+func TestNormalizePlanOptionsHostGrantIsIdempotentAndPreservesCaller(t *testing.T) {
+	allow := make([]string, 1, 2)
+	allow[0] = securityInsecureEntitlement
+	options, err := normalizePlanOptions(PlanOptions{Network: " host ", Allow: allow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(options.Allow, []string{securityInsecureEntitlement, networkHostEntitlement}) {
+		t.Fatalf("host network grants = %v", options.Allow)
+	}
+	if allow[:cap(allow)][1] != "" {
+		t.Fatal("normalization changed caller's entitlement backing array")
+	}
+	options, err = normalizePlanOptions(options)
+	if err != nil || len(options.Allow) != 2 {
+		t.Fatalf("repeated normalization = %v, %v", options.Allow, err)
+	}
+	allowed, err := allowedEntitlements(options.Allow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation := planner.Operation{Instruction: definition.Instruction{Name: "run", Properties: map[string]string{"network": "host"}}, NetworkExplicit: true}
+	if err := authorizePlannedOperation(operation, allowed, nil); err != nil {
+		t.Fatalf("planned host RUN with build-wide grant: %v", err)
+	}
+}
+
 func TestRunNetworkOptionsUseNativeBuildahNamespaceSemantics(t *testing.T) {
 	namespaceFile := filepath.Join(t.TempDir(), "netns")
 	if err := os.WriteFile(namespaceFile, nil, 0o600); err != nil {
@@ -67,6 +114,43 @@ func TestRunNetworkOptionsUseNativeBuildahNamespaceSemantics(t *testing.T) {
 		if policy != test.wantPolicy || network.Host != test.wantHost || network.Path != test.wantPath {
 			t.Fatalf("%s = policy %s namespace %+v", test.mode, policy, network)
 		}
+	}
+}
+
+func TestChrootRejectsRequestedNetworkIsolation(t *testing.T) {
+	t.Setenv("BUILDAH_ISOLATION", "chroot")
+	for _, test := range []struct {
+		name      string
+		network   string
+		authored  string
+		isolation string
+		controls  RunControls
+		wantError bool
+	}{
+		{name: "environment global none", network: "none", wantError: true},
+		{name: "authored none", authored: ` network="none"`, wantError: true},
+		{name: "explicit chroot", network: "none", isolation: "chroot", wantError: true},
+		{name: "controls select chroot", network: "none", isolation: "rootless", controls: RunControls{Isolation: "chroot"}, wantError: true},
+		{name: "private", network: "private", wantError: true},
+		{name: "named", network: "buildnet", wantError: true},
+		{name: "slirp", network: "slirp4netns", wantError: true},
+		{name: "default"},
+		{name: "host", network: "host"},
+		{name: "rootless override", network: "none", isolation: "rootless"},
+		{name: "oci override", authored: ` network="none"`, isolation: "oci"},
+		{name: "controls select rootless", network: "none", controls: RunControls{Isolation: "rootless"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			plan := testPlan(t, "from \"scratch\"\nrun \"true\""+test.authored+"\n")
+			_, err := RequestFromPlan(plan, PlanOptions{Network: test.network, Isolation: test.isolation, RunControls: test.controls})
+			if test.wantError {
+				if err == nil || !strings.Contains(err.Error(), "cannot be used with chroot isolation") {
+					t.Fatalf("unsupported chroot network request: %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("supported isolation/network: %v", err)
+			}
+		})
 	}
 }
 
@@ -109,7 +193,7 @@ func TestDNSControlsValidateEffectivePerRunNetwork(t *testing.T) {
 			stages := []planner.Stage{{ID: "component-or-replanned", Operations: []planner.Operation{{
 				Instruction: definition.Instruction{Name: "run", Properties: map[string]string{"network": test.authored}}, NetworkExplicit: test.explicit,
 			}}}}
-			resolved, err := resolveAndValidateBuildNetwork(stages, test.global, controls)
+			resolved, err := resolveAndValidateBuildNetwork(stages, test.global, controls, "rootless")
 			if test.wantError {
 				if err == nil || !strings.Contains(err.Error(), "stage component-or-replanned operation 1") {
 					t.Fatalf("effective network validation = %v", err)

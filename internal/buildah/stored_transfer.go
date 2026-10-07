@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/url"
 	"os"
 	"os/signal"
@@ -21,6 +20,7 @@ import (
 	"github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"go.podman.io/common/libimage/manifests"
 	"go.podman.io/common/pkg/retry"
 	imagecopy "go.podman.io/image/v5/copy"
 	"go.podman.io/image/v5/docker"
@@ -51,11 +51,9 @@ type StoredTransferOptions struct {
 	ExpectedManifest       digest.Digest
 	LocalName              string
 	RegistryDestination    string
-	PlainHTTP              bool
-	PlainHTTPRegistries    []string
 	AuthFile               string
 	CertDir                string
-	SkipTLSVerify          bool
+	TLSVerify              *bool
 	Credentials            string
 	Retry                  uint
 	RetrySet               bool
@@ -338,13 +336,13 @@ func storedManifestPlatform(ctx context.Context, source types.ImageSource, manif
 }
 
 func signStoredManifest(ctx context.Context, store storage.Store, sourceReference types.ImageReference, system *types.SystemContext, imageID string, selected digest.Digest, identity, keyIdentity, passphrase string) (retErr error) {
-	mutationLock, err := store.GetDigestLock(digest.FromString("coopr stored-image signatures\x00" + imageID))
+	mutationLock, err := manifests.LockerForImage(store, imageID)
 	if err != nil {
 		return fmt.Errorf("open stored-image signature lock: %w", err)
 	}
 	mutationLock.Lock()
 	defer mutationLock.Unlock()
-	previous, err := captureStoredSignatures(store, imageID)
+	previous, err := oci.CaptureStoredSignatures(store, imageID)
 	if err != nil {
 		return err
 	}
@@ -365,7 +363,7 @@ func signStoredManifest(ctx context.Context, store storage.Store, sourceReferenc
 		return fmt.Errorf("read default stored manifest: %w", err)
 	}
 	selectedIsDefault := digest.FromBytes(defaultManifest) == selected
-	existing, err := storedSignatureBlobs(previous, selected, selectedIsDefault)
+	existing, err := oci.StoredSignatureBlobs(previous, selected, selectedIsDefault)
 	if err != nil {
 		return err
 	}
@@ -378,162 +376,10 @@ func signStoredManifest(ctx context.Context, store storage.Store, sourceReferenc
 	if err != nil {
 		return fmt.Errorf("create GPG signature: %w", err)
 	}
-	if err := writeStoredManifestSignatures(store, imageID, selected, selectedIsDefault, append(existing, created), previous); err != nil {
-		return errors.Join(err, restoreStoredSignatures(store, imageID, previous))
+	if err := oci.WriteStoredManifestSignatures(store, imageID, selected, selectedIsDefault, append(existing, created), previous); err != nil {
+		return errors.Join(err, oci.RestoreStoredSignatures(store, imageID, previous))
 	}
 	return nil
-}
-
-type storedSignatureMetadata struct {
-	SignatureSizes  []int                   `json:"signature-sizes,omitempty"`
-	SignaturesSizes map[digest.Digest][]int `json:"signatures-sizes,omitempty"`
-}
-
-type storedSignatureState struct {
-	metadata    string
-	metadataRaw map[string]json.RawMessage
-	parsed      storedSignatureMetadata
-	defaultBlob []byte
-	blobs       map[digest.Digest][]byte
-}
-
-func captureStoredSignatures(store storage.Store, imageID string) (storedSignatureState, error) {
-	metadata, err := store.Metadata(imageID)
-	if err != nil {
-		return storedSignatureState{}, fmt.Errorf("read stored-image signature metadata: %w", err)
-	}
-	state := storedSignatureState{metadata: metadata, metadataRaw: map[string]json.RawMessage{}, blobs: map[digest.Digest][]byte{}}
-	if metadata != "" {
-		if err := json.Unmarshal([]byte(metadata), &state.parsed); err != nil {
-			return storedSignatureState{}, fmt.Errorf("decode stored-image signature metadata: %w", err)
-		}
-		if err := json.Unmarshal([]byte(metadata), &state.metadataRaw); err != nil {
-			return storedSignatureState{}, fmt.Errorf("preserve stored-image signature metadata: %w", err)
-		}
-	}
-	if len(state.parsed.SignatureSizes) > 0 {
-		state.defaultBlob, err = store.ImageBigData(imageID, "signatures")
-		if err != nil {
-			return storedSignatureState{}, fmt.Errorf("read default stored-image signatures: %w", err)
-		}
-	}
-	for manifestDigest, sizes := range state.parsed.SignaturesSizes {
-		if len(sizes) == 0 {
-			continue
-		}
-		key, err := storedSignatureBigDataKey(manifestDigest)
-		if err != nil {
-			return storedSignatureState{}, err
-		}
-		blob, err := store.ImageBigData(imageID, key)
-		if err != nil {
-			return storedSignatureState{}, fmt.Errorf("read stored-image signatures for %s: %w", manifestDigest, err)
-		}
-		state.blobs[manifestDigest] = blob
-	}
-	return state, nil
-}
-
-func storedSignatureBlobs(state storedSignatureState, selected digest.Digest, selectedIsDefault bool) ([][]byte, error) {
-	sizes, found := state.parsed.SignaturesSizes[selected]
-	blob := state.blobs[selected]
-	instance := selected.String()
-	if !found && selectedIsDefault {
-		sizes = state.parsed.SignatureSizes
-		blob = state.defaultBlob
-		instance = "default instance"
-	}
-	result := make([][]byte, 0, len(sizes))
-	offset := 0
-	for _, size := range sizes {
-		if size < 0 || size > len(blob)-offset {
-			return nil, fmt.Errorf("stored-image signatures for %s have invalid size vector", instance)
-		}
-		result = append(result, bytes.Clone(blob[offset:offset+size]))
-		offset += size
-	}
-	if offset != len(blob) {
-		return nil, fmt.Errorf("stored-image signatures for %s contain %d unaccounted bytes", instance, len(blob)-offset)
-	}
-	return result, nil
-}
-
-func writeStoredManifestSignatures(store storage.Store, imageID string, selected digest.Digest, selectedIsDefault bool, signatures [][]byte, previous storedSignatureState) error {
-	metadata := previous.parsed
-	if metadata.SignaturesSizes == nil {
-		metadata.SignaturesSizes = map[digest.Digest][]int{}
-	}
-	sizes := make([]int, 0, len(signatures))
-	combined := make([]byte, 0)
-	for _, value := range signatures {
-		sizes = append(sizes, len(value))
-		combined = append(combined, value...)
-	}
-	metadata.SignaturesSizes[selected] = append([]int(nil), sizes...)
-	key, err := storedSignatureBigDataKey(selected)
-	if err != nil {
-		return err
-	}
-	if err := store.SetImageBigData(imageID, key, combined, nil); err != nil {
-		return fmt.Errorf("write stored-image signatures for %s: %w", selected, err)
-	}
-	if selectedIsDefault {
-		metadata.SignatureSizes = append([]int(nil), sizes...)
-		if err := store.SetImageBigData(imageID, "signatures", combined, nil); err != nil {
-			return fmt.Errorf("write default stored-image signatures: %w", err)
-		}
-	}
-	metadataRaw := make(map[string]json.RawMessage, len(previous.metadataRaw)+2)
-	for key, value := range previous.metadataRaw {
-		metadataRaw[key] = bytes.Clone(value)
-	}
-	perDigestSizes, err := json.Marshal(metadata.SignaturesSizes)
-	if err != nil {
-		return fmt.Errorf("encode per-manifest stored-image signature metadata: %w", err)
-	}
-	metadataRaw["signatures-sizes"] = perDigestSizes
-	if selectedIsDefault {
-		defaultSizes, err := json.Marshal(metadata.SignatureSizes)
-		if err != nil {
-			return fmt.Errorf("encode default stored-image signature metadata: %w", err)
-		}
-		metadataRaw["signature-sizes"] = defaultSizes
-	}
-	encoded, err := json.Marshal(metadataRaw)
-	if err != nil {
-		return fmt.Errorf("encode stored-image signature metadata: %w", err)
-	}
-	if err := store.SetMetadata(imageID, string(encoded)); err != nil {
-		return fmt.Errorf("write stored-image signature metadata: %w", err)
-	}
-	return nil
-}
-
-func restoreStoredSignatures(store storage.Store, imageID string, previous storedSignatureState) error {
-	var restoreErr error
-	if len(previous.parsed.SignatureSizes) > 0 {
-		restoreErr = errors.Join(restoreErr, store.SetImageBigData(imageID, "signatures", previous.defaultBlob, nil))
-	}
-	for manifestDigest, sizes := range previous.parsed.SignaturesSizes {
-		if len(sizes) == 0 {
-			continue
-		}
-		key, err := storedSignatureBigDataKey(manifestDigest)
-		if err != nil {
-			restoreErr = errors.Join(restoreErr, err)
-			continue
-		}
-		restoreErr = errors.Join(restoreErr, store.SetImageBigData(imageID, key, previous.blobs[manifestDigest], nil))
-	}
-	restoreErr = errors.Join(restoreErr, store.SetMetadata(imageID, previous.metadata))
-	return restoreErr
-}
-
-func storedSignatureBigDataKey(manifestDigest digest.Digest) (string, error) {
-	if err := manifestDigest.Validate(); err != nil {
-		return "", err
-	}
-	return "signature-" + manifestDigest.Encoded(), nil
 }
 
 // selectedStorageReference binds build-time reads to a specific manifest.
@@ -582,19 +428,11 @@ func storedTransferSystemContext(options StoredTransferOptions, registriesDir st
 	if err != nil {
 		return nil, err
 	}
-	insecure := options.SkipTLSVerify
-	if options.RegistryDestination != "" {
-		parsed, err := oci.ParseReference(options.RegistryDestination)
-		if err != nil {
-			return nil, err
-		}
-		insecure = insecure || storedRegistryUsesPlainHTTP(parsed.Registry, options)
-	}
 	system := &types.SystemContext{
 		AuthFilePath: authFile, DockerCertPath: certDir, RegistriesDirPath: registriesDir,
 		BigFilesTemporaryDir: os.TempDir(), SignaturePolicyPath: options.SignaturePolicyPath,
-		DockerInsecureSkipTLSVerify: types.NewOptionalBool(insecure),
 	}
+	oci.ApplyTLSVerify(system, options.TLSVerify)
 	if options.Credentials != "" {
 		username, password, _ := strings.Cut(options.Credentials, ":")
 		if username == "" {
@@ -603,24 +441,6 @@ func storedTransferSystemContext(options StoredTransferOptions, registriesDir st
 		system.DockerAuthConfig = &types.DockerAuthConfig{Username: username, Password: password}
 	}
 	return system, nil
-}
-
-func storedRegistryUsesPlainHTTP(authority string, options StoredTransferOptions) bool {
-	for _, allowed := range options.PlainHTTPRegistries {
-		if strings.EqualFold(authority, allowed) {
-			return true
-		}
-	}
-	if !options.PlainHTTP {
-		return false
-	}
-	u, err := url.Parse("https://" + authority)
-	if err != nil {
-		return false
-	}
-	host := u.Hostname()
-	ip := net.ParseIP(host)
-	return strings.EqualFold(host, "localhost") || strings.HasSuffix(strings.ToLower(host), ".localhost") || ip != nil && ip.IsLoopback()
 }
 
 func readStoredTransferPassphrase(path string) ([]byte, error) {

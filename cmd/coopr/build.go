@@ -20,16 +20,14 @@ func newBuildCommand() *cobra.Command {
 
 func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 	var ignoreFile string
-	var contextDir, definitionFile, from, target, format, network, pullPolicy string
+	var definitionFile, from, target, format, network, pullPolicy string
 	var osName, arch, variant string
 	var tags []string
 	var metadataFile, iidFile string
 	platform := runtime.GOOS + "/" + runtime.GOARCH
 	var args []string
-	var push, pull, noCache, plainHTTP, rewriteTimestamp bool
-	var plainHTTPRegistries []string
+	var push, pull, noCache, rewriteTimestamp bool
 	var platforms []string
-	var caches []string
 	var cacheFrom, cacheTo []string
 	var secrets, ssh []string
 	var allow []string
@@ -53,19 +51,20 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 	var controls buildControlFlags
 	var registry registryFlags
 	cmd := &cobra.Command{
-		Use: "build [file|context]", Short: "Build an image into Coopr's local image graph",
-		Long: "Build into Coopr's local image graph with the embedded Buildah backend. Supply a definition file path or --file with a build context; no filename is selected automatically. Use --tag NAME for a local tag, or --tag podman:NAME, docker:NAME, registry:NAME, or oci-archive:PATH to copy the built image to that destination. --push publishes the name supplied by --tag to a registry. Coopr excludes its stores and temporary files from the local context and honors .cooprignore, .containerignore, and .dockerignore.",
+		Annotations: map[string]string{nativeStorageAnnotation: "true"},
+		Use:         "build [file|context]", Short: "Build an image into native container storage",
+		Long: "Build into native container storage with the embedded Buildah backend. Supply a definition file path or --file with a build context; no filename is selected automatically. Use --tag NAME for a local tag, or --tag podman:NAME, docker:NAME, registry:NAME, or oci-archive:PATH to copy the built image to that destination. --push publishes the name supplied by --tag to a registry. Coopr excludes its stores and temporary files from the local context and honors .cooprignore, .containerignore, and .dockerignore.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, paths []string) error {
 			argument := ""
 			if len(paths) != 0 {
 				argument = paths[0]
 			}
-			file, resolvedContext, definitionInContext, err := resolveBuildInput(argument, definitionFile, contextDir)
+			file, resolvedContext, definitionInContext, err := resolveBuildInput(argument, definitionFile)
 			if err != nil {
 				return err
 			}
-			store, catalogue, err := commandStorage(cmd)
+			store, err := commandStorage(cmd)
 			if err != nil {
 				return err
 			}
@@ -111,10 +110,6 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			cacheLocalDir, cacheRepository, err := parseBuildCaches(caches)
-			if err != nil {
-				return err
-			}
 			cacheSources, err := parseCacheSpecs(cacheFrom)
 			if err != nil {
 				return fmt.Errorf("cache-from: %w", err)
@@ -130,16 +125,12 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 				if tag == "" {
 					return fmt.Errorf("--tag requires a nonempty image name")
 				}
-				var destination transfer.Destination
 				if push {
-					destination, err = transfer.ParsePushDestination(tag, oci.Image)
+					_, err = transfer.ParsePushDestination(tag, oci.Image)
 				} else {
-					destination, err = transfer.ParseDestination(tag, oci.Image)
+					_, err = transfer.ParseDestination(tag, oci.Image)
 				}
 				if err != nil {
-					return err
-				}
-				if err := prepareDestination(destination); err != nil {
 					return err
 				}
 			}
@@ -162,8 +153,8 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 				Lifecycle:          controls.lifecycle(),
 				DisableCompression: disableCompression, ConfidentialWorkload: cw,
 				Quiet: quiet, LogFile: logFile, LogSplit: logSplit, LogRusage: logRusage && !quiet, RusageLogFile: rusageLogFile,
-				BuildStore: store, StoreDir: catalogue,
-				Outputs: filesystems, Squash: squash, SquashAll: squashAll, SBOM: scans, Signing: signing.options(),
+				BuildStore: store,
+				Outputs:    filesystems, Squash: squash, SquashAll: squashAll, SBOM: scans, Signing: signing.options(),
 				ImageControls: imageOptions, Timestamp: forceTimestamp, SourceDateEpoch: epoch, CacheTTL: ttl,
 				AllPlatforms: allPlatforms, Manifest: manifest,
 				Tags: tags, MetadataFile: metadataFile, IIDFile: iidFile,
@@ -177,10 +168,8 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 				Jobs:             controls.jobs,
 				RewriteTimestamp: rewriteTimestamp,
 				Platform:         requestedPlatform, Platforms: platforms, Target: target, Format: format, Args: resolvedArgs,
-				PlainHTTP: plainHTTP, PlainHTTPRegistries: plainHTTPRegistries,
-				AuthFile: registry.authFile, CertDir: registry.certDir, SkipTLSVerify: !registry.tlsVerify,
+				AuthFile: registry.authFile, CertDir: registry.certDir, TLSVerify: registry.tlsPolicy(cmd),
 				Credentials: registry.credentials, Retry: registry.retry, RetrySet: cmd.Flags().Changed("retry"), RetryDelay: registry.retryDelay, DecryptionKeys: registry.decryptionKeys, SignaturePolicyPath: commandSignaturePolicy(cmd),
-				CacheLocalDir: cacheLocalDir, CacheRepository: cacheRepository,
 				CacheFrom: cacheSources, CacheTo: cacheDestinations,
 				Secrets: secrets, SSH: ssh,
 				Allow:         allow,
@@ -225,7 +214,6 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 	f.StringVar(&metadataFile, "metadata-file", "", "write result, index, platform, and image configuration digests as JSON")
 	f.StringVar(&iidFile, "iidfile", "", "write the image ID (index digest for multiple platforms)")
 	f.StringVar(&ignoreFile, "ignorefile", "", "context ignore file (default: first of .cooprignore, .containerignore, .dockerignore at the context root)")
-	f.StringVar(&contextDir, "context", "", "build context: local directory, local tar, stdin (-), Git URL, or HTTP(S) tar archive (default: definition directory)")
 	f.StringArrayVarP(&tags, "tag", "t", nil, "name or copy the image; unprefixed names use Coopr's local store; prefixes: podman:, docker:, registry:, oci-archive:")
 	f.BoolVar(&push, "push", false, "publish the image to the registry named by --tag")
 	addPullFlags(cmd, &pullPolicy, &pull)
@@ -244,9 +232,6 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 	f.StringArrayVar(&buildArgFiles, "build-arg-file", nil, "read build arguments from a file (repeatable; --build-arg wins)")
 	f.BoolVar(&runStdin, "stdin", false, "pass stdin to RUN instructions")
 	f.StringArrayVar(&buildContexts, "build-context", nil, "additional build context: NAME=PATH|URL|docker-image://REFERENCE|oci-layout://PATH:TAG (repeatable)")
-	f.BoolVar(&plainHTTP, "plain-http", false, "allow Coopr HTTP transport for loopback OCI registries")
-	f.StringArrayVar(&plainHTTPRegistries, "plain-http-registry", nil, "allow Coopr HTTP transport for an exact registry host[:port] (repeatable)")
-	f.StringArrayVar(&caches, "cache", nil, "optional portable instruction and component cache: oci-layout:PATH or registry:HOST/REPOSITORY (repeatable)")
 	f.StringArrayVar(&cacheFrom, "cache-from", nil, "read cached results from oci-layout:PATH or registry:HOST/REPOSITORY (repeatable)")
 	f.StringArrayVar(&cacheTo, "cache-to", nil, "write cached results to oci-layout:PATH or registry:HOST/REPOSITORY (repeatable)")
 	f.StringArrayVar(&secrets, "secret", nil, "secret source for RUN mounts: id=ID[,src=PATH|env=NAME] (repeatable)")
@@ -255,31 +240,10 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 	times.addTo(cmd)
 	if standalone {
 		addGlobalRunFlags(cmd.Flags())
-		addSignaturePolicyFlag(cmd.Flags())
 	}
+	addSignaturePolicyFlag(cmd.Flags())
+	f.StringArrayVar(&registry.decryptionKeys, "decryption-key", nil, "key used to decrypt image inputs (repeatable)")
 	controls.addTo(cmd)
 	registry.addTo(cmd)
 	return cmd
-}
-
-func parseBuildCaches(values []string) (localDir, repository string, err error) {
-	specs, err := parseCacheSpecs(values)
-	if err != nil {
-		return "", "", err
-	}
-	for _, spec := range specs {
-		switch spec.Transport {
-		case "oci-layout":
-			if localDir != "" {
-				return "", "", fmt.Errorf("only one oci-layout cache is supported")
-			}
-			localDir = spec.Reference
-		case "registry":
-			if repository != "" {
-				return "", "", fmt.Errorf("only one registry cache is supported")
-			}
-			repository = spec.Reference
-		}
-	}
-	return localDir, repository, nil
 }

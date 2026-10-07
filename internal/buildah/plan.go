@@ -109,7 +109,7 @@ func RequestFromPlan(plan *planner.Plan, options PlanOptions) (Request, error) {
 	if err != nil {
 		return Request{}, err
 	}
-	resolved, err := resolveAndValidateBuildNetwork([]planner.Stage{stage}, options.Network, options.RunControls)
+	resolved, err := resolveAndValidateBuildNetwork([]planner.Stage{stage}, options.Network, options.RunControls, options.Isolation)
 	if err != nil {
 		return Request{}, err
 	}

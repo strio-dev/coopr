@@ -43,4 +43,4 @@ Coopr keeps the built image in its selected store. The copy command makes it ava
 
 Edit `examples/first-image/index.html`, repeat the build and copy commands, then start the container again. The changed file produces a new COPY result; unchanged inputs can reuse the instruction cache.
 
-Keep the local `coopr-demo:base` image for the [component tutorial](reusable-components.md).
+Next, [package and reuse two components](reusable-components.md) in a separate UBI9 image.

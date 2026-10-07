@@ -2,10 +2,13 @@ package main
 
 import (
 	"coopr/internal/buildah"
-	"github.com/spf13/cobra"
+	"coopr/internal/oci"
+	"coopr/internal/transfer"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/spf13/cobra"
 )
 
 type buildControlFlags struct {
@@ -96,7 +99,7 @@ func (flags *buildControlFlags) addTo(command *cobra.Command) {
 }
 
 func (flags buildControlFlags) controls() (buildah.RunControls, error) {
-	var cgroupManager, networkConfigDir, networkCmdPath string
+	var cgroupManager, networkConfigDir string
 	var configModules, cdiSpecDirs []string
 	if flags.command != nil {
 		set := flags.command.Flags()
@@ -104,7 +107,6 @@ func (flags buildControlFlags) controls() (buildah.RunControls, error) {
 		configModules, _ = set.GetStringArray("module")
 		cdiSpecDirs, _ = set.GetStringArray("cdi-spec-dir")
 		networkConfigDir, _ = set.GetString("network-config-dir")
-		networkCmdPath, _ = set.GetString("network-cmd-path")
 	}
 	return buildah.ParseRunControls(buildah.RunControlInput{
 		HTTPProxy: flags.httpProxy, DNSServers: flags.dns, DNSSearch: flags.dnsSearch, DNSOptions: flags.dnsOption,
@@ -119,7 +121,7 @@ func (flags buildControlFlags) controls() (buildah.RunControls, error) {
 		RuntimeFlags: flags.runtimeFlags,
 		Isolation:    flags.isolation, Runtime: flags.runtime,
 		NoHosts: flags.noHosts, NoHostname: flags.noHostname, CgroupManager: cgroupManager,
-		ConfigModules: configModules, CDISpecDirs: cdiSpecDirs, NetworkConfigDir: networkConfigDir, NetworkCmdPath: networkCmdPath,
+		ConfigModules: configModules, CDISpecDirs: cdiSpecDirs, NetworkConfigDir: networkConfigDir,
 	})
 }
 
@@ -140,8 +142,27 @@ func (flags *registryFlags) addTo(command *cobra.Command) {
 	set.StringVar(&flags.credentials, "creds", "", "registry username[:password] (overrides authfile)")
 	set.UintVar(&flags.retry, "retry", 3, "number of registry retries after the first attempt")
 	set.DurationVar(&flags.retryDelay, "retry-delay", 0, "delay between registry retries (default: native exponential backoff)")
-	set.StringArrayVar(&flags.decryptionKeys, "decryption-key", nil, "key used to decrypt image inputs (repeatable)")
 	set.BoolVar(&flags.tlsVerify, "tls-verify", true, "require valid HTTPS certificates for registry connections")
+}
+
+func (flags registryFlags) tlsPolicy(command *cobra.Command) *bool {
+	if !command.Flags().Changed("tls-verify") {
+		return nil
+	}
+	return &flags.tlsVerify
+}
+
+func (flags registryFlags) transferOptions(command *cobra.Command) transfer.Options {
+	return transfer.Options{
+		AuthFile: flags.authFile, CertDir: flags.certDir, TLSVerify: flags.tlsPolicy(command),
+		Credentials: flags.credentials, Retry: flags.retry, RetrySet: command.Flags().Changed("retry"),
+		RetryDelay: flags.retryDelay, DecryptionKeys: flags.decryptionKeys,
+		SignaturePolicyPath: commandSignaturePolicy(command),
+	}
+}
+
+func (flags registryFlags) resolverOptions(command *cobra.Command) oci.Options {
+	return flags.transferOptions(command).RegistryOptions()
 }
 
 func parseCacheSpecs(values []string) ([]buildah.CacheSpec, error) {

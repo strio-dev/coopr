@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -34,7 +35,7 @@ func TestBuildPlanRunsIndependentStagesInOneRootlessGraph(t *testing.T) {
 	root := t.TempDir()
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	base := newLiveBusyBoxStorage(t, ctx, root, store)
-	resolver, err := oci.NewResolver(oci.Options{ImageStoreDir: base.imageStoreDir, Pull: false})
+	resolver, err := oci.NewResolver(oci.Options{Pull: false})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +108,7 @@ func TestBuildPlanStartsReadyDescendantBeforeIndependentStageFinishes(t *testing
 	}
 	t.Setenv("TMPDIR", workerTemp)
 	base := newLiveBusyBoxStorage(t, ctx, root, store)
-	resolver, err := oci.NewResolver(oci.Options{ImageStoreDir: base.imageStoreDir})
+	resolver, err := oci.NewResolver(oci.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,30 +116,68 @@ func TestBuildPlanStartsReadyDescendantBeforeIndependentStageFinishes(t *testing
 	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	independentStarted := make(chan struct{})
+	releaseIndependent := make(chan struct{})
+	var startedOnce, releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseIndependent) }) }
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/independent":
+			startedOnce.Do(func() { close(independentStarted) })
+			select {
+			case <-releaseIndependent:
+				_, _ = writer.Write([]byte("independent"))
+			case <-request.Context().Done():
+			case <-ctx.Done():
+			}
+		case "/descendant":
+			select {
+			case <-independentStarted:
+				release()
+				_, _ = writer.Write([]byte("descendant"))
+			case <-request.Context().Done():
+			case <-ctx.Done():
+			}
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer func() {
+		release()
+		server.Close()
+	}()
 	plan := testPlan(t, fmt.Sprintf(`
 from %q as="a"
-run "sleep 1; touch /a" network="none"
+run "touch /a" network="none"
 from "a" as="a-next"
-run "sleep 10; touch /a-next; touch /cache/mounted" network="none" {
+run "touch /cache/mounted" network="none" {
   mount "cache" target="/cache" id="dependency-ready" sharing="shared"
 }
+add %q "/a-next"
 from %q as="b"
-run "sleep 12; touch /b" network="none"
+add %q "/b"
 from "scratch"
 copy "/a-next" "/a-next" from="a-next"
 copy "/b" "/b" from="b"
-`, base.reference, base.reference))
-	started := time.Now()
+`, base.reference, server.URL+"/descendant", base.reference, server.URL+"/independent"))
+	layout := filepath.Join(root, "layout")
 	_, err = BuildPlan(ctx, plan, PlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun", Resolver: resolver, Jobs: 2,
-		Output:        Output{Path: filepath.Join(root, "layout")},
+		Output:        Output{Path: layout},
 		SystemContext: &types.SystemContext{SignaturePolicyPath: policy, BigFilesTemporaryDir: root},
 	})
 	if err != nil {
 		t.Fatalf("dependency-ready build: %v", err)
 	}
-	if elapsed := time.Since(started); elapsed >= 20*time.Second {
-		t.Fatalf("dependency-ready descendant waited for an independent stage: %s", elapsed)
+	manifest, _ := readPlanImage(t, layout)
+	if len(manifest.Layers) != 2 {
+		t.Fatalf("final image has %d layers, want two COPY layers", len(manifest.Layers))
+	}
+	for index, proof := range []struct{ path, want string }{{"a-next", "descendant"}, {"b", "independent"}} {
+		blob := filepath.Join(layout, "blobs", "sha256", manifest.Layers[index].Digest.Encoded())
+		if got := readLayerFile(t, blob, proof.path); got != proof.want {
+			t.Fatalf("layer %d %s = %q, want %q", index, proof.path, got, proof.want)
+		}
 	}
 }
 
@@ -212,8 +251,8 @@ copy "/right" "/right" from="right"
 	started := time.Now()
 	_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 		Store: storeOptions, ContextDir: root, Isolation: "rootless", Runtime: "crun", Output: Output{Path: layout},
-		Jobs:          2,
-		ImageStoreDir: base.imageStoreDir, Pull: false, SignaturePolicyPath: policy,
+		Jobs: 2,
+		Pull: false, SignaturePolicyPath: policy,
 		Stdout: io.Discard, Stderr: io.Discard,
 	})
 	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "build worker exited after cleanup") {
@@ -272,8 +311,8 @@ copy "/never" "/never" from="sleeps"
 	var logs bytes.Buffer
 	_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 		Store: storeOptions, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-		Jobs:   2,
-		Output: Output{Path: filepath.Join(root, "layout")}, ImageStoreDir: base.imageStoreDir,
+		Jobs:                2,
+		Output:              Output{Path: filepath.Join(root, "layout")},
 		SignaturePolicyPath: policy, Stdout: &logs, Stderr: io.Discard,
 	})
 	if err == nil || errors.Is(err, context.DeadlineExceeded) {

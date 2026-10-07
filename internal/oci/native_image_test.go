@@ -45,7 +45,7 @@ insecure = true
 	if err := os.WriteFile(conf, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	resolver, err := NewResolver(Options{ImageStoreDir: filepath.Join(t.TempDir(), "images")})
+	resolver, err := NewResolver(Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestNativeImageResolutionAcceptsTagWithDigest(t *testing.T) {
 	platform := v1.Platform{OS: "linux", Architecture: "amd64"}
 	manifest, _ := imageManifest(t, repo, platform, "pinned")
 	host := strings.TrimPrefix(server.URL, "http://")
-	resolver, err := NewResolver(Options{PlainHTTPRegistries: []string{host}})
+	resolver, err := NewResolver(Options{TLSVerify: boolOption(false)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ blocked = true
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	resolver, err := NewResolver(Options{ImageStoreDir: filepath.Join(t.TempDir(), "images")})
+	resolver, err := NewResolver(Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

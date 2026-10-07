@@ -3,11 +3,13 @@
 Use a local OCI layout to share cached results across builds:
 
 ```sh
-coopr build image.coopr --cache oci-layout:.coopr-cache
-coopr component build ./components/settings/component.coopr --cache oci-layout:.coopr-cache
+coopr build image.coopr \
+  --cache-from oci-layout:.coopr-cache --cache-to oci-layout:.coopr-cache
+coopr component build ./components/settings/component.coopr \
+  --cache-from oci-layout:.coopr-cache --cache-to oci-layout:.coopr-cache
 ```
 
-`--cache` reads and writes. To use different sources and destinations, supply `--cache-from` and `--cache-to`; both are repeatable:
+`--cache-from` reads cached results and `--cache-to` writes them. Both are repeatable; use the same location for both or choose separate sources and destinations:
 
 ```sh
 coopr build image.coopr --cache-from registry:registry.example.com/team/cache --cache-to oci-layout:.coopr-cache
@@ -25,7 +27,7 @@ Rebuild when changed external data or credentials must affect the result:
 
 ```sh
 coopr build image.coopr --no-cache
-coopr build image.coopr --cache oci-layout:.coopr-cache --cache-ttl 24h
+coopr build image.coopr --cache-from oci-layout:.coopr-cache --cache-ttl 24h
 ```
 
 `--no-cache` bypasses result reads and saves fresh results. It does not clear cache mounts. `--cache-ttl` limits reads by publication age; `--cache-ttl 0` disables reads while saving fresh results. Image timestamps do not determine cache age.

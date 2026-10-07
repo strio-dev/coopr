@@ -16,17 +16,11 @@ import (
 	"go.podman.io/storage/pkg/archive"
 )
 
-func resolveBuildInput(argument, explicitFile, explicitContext string) (file, context string, definitionInContext bool, err error) {
-	context = explicitContext
-	if context == "" {
-		context = "."
-	}
+func resolveBuildInput(argument, explicitFile string) (file, context string, definitionInContext bool, err error) {
+	context = "."
 	if explicitFile != "" {
 		file = explicitFile
 		if argument != "" {
-			if explicitContext != "" {
-				return "", "", false, fmt.Errorf("build context specified both positionally and with --context")
-			}
 			context = argument
 		}
 		remoteDefinition, err := isHTTPDefinitionURL(file)
@@ -58,9 +52,7 @@ func resolveBuildInput(argument, explicitFile, explicitContext string) (file, co
 		}
 		if isDefinition {
 			file = argument
-			if explicitContext == "" && argument != "-" {
-				context = filepath.Dir(argument)
-			}
+			context = filepath.Dir(argument)
 			return file, context, false, nil
 		}
 	}

@@ -118,7 +118,7 @@ func TestBuildHelpExplainsOutputModes(t *testing.T) {
 	if status := run([]string{"build", "--help"}, &out, &errOut); status != 0 {
 		t.Fatalf("help failed: %s", errOut.String())
 	}
-	for _, text := range []string{"--tag", "--build-arg", "--format", "--push", "--pull", "--no-cache", "--network", "--add-host", "--allow", "--output", "--squash", "--squash-all", "--sbom", "--sign-by", "--sign-by-sigstore-private-key", "--manifest", "--all-platforms", "--cache-ttl", "--timestamp", "--unsetenv", "network.host", "security.insecure", "save fresh results to the build cache", "base image pull policy", "Coopr's local image graph", "podman:", "docker:", "oci-archive:", "embedded Buildah"} {
+	for _, text := range []string{"--tag", "--build-arg", "--format", "--push", "--pull", "--no-cache", "--network", "--add-host", "--allow", "--output", "--squash", "--squash-all", "--sbom", "--sign-by", "--sign-by-sigstore-private-key", "--manifest", "--all-platforms", "--cache-ttl", "--timestamp", "--unsetenv", "network.host", "security.insecure", "save fresh results to the build cache", "base image pull policy", "native container storage", "podman:", "docker:", "oci-archive:", "embedded Buildah"} {
 		if !strings.Contains(out.String(), text) {
 			t.Errorf("help missing %q", text)
 		}
@@ -140,7 +140,7 @@ func TestBuildPushCommandLive(t *testing.T) {
 	target := strings.TrimPrefix(server.URL, "http://") + "/coopr/image:stable"
 	file := definitionFile(t, "from \"scratch\"\nlabel from_cli=\"yes\"\n")
 	var out, errOut bytes.Buffer
-	args := []string{"build", file, "--push", "--tag", target, "--plain-http", "--platform", "linux/amd64"}
+	args := []string{"build", file, "--push", "--tag", target, "--tls-verify=false", "--platform", "linux/amd64"}
 	if status := run(args, &out, &errOut); status != 0 {
 		t.Fatalf("CLI image push failed: %s", errOut.String())
 	}

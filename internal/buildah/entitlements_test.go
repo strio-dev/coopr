@@ -103,13 +103,68 @@ func TestRunDeviceRequiredResolutionPrecedesBroadAuthorization(t *testing.T) {
 
 func TestInvalidDeviceEntitlementIsRejected(t *testing.T) {
 	for _, value := range []string{
-		"device=",
-		"device=vendor.example/device=one,alias=",
 		"device=vendor.example/device=one,unknown=two",
-		"device=vendor.example/device=one,alias=two,alias=three",
 	} {
 		if _, err := allowedEntitlements([]string{value}); err == nil {
 			t.Fatalf("invalid entitlement %q accepted", value)
+		}
+	}
+}
+
+func TestDeviceEntitlementUsesUpstreamParsing(t *testing.T) {
+	cache := testCDICache(t)
+	for _, test := range []struct {
+		value string
+		name  string
+	}{
+		{value: "device=", name: "vendor.example/device=alpha"},
+		{value: "device=vendor.example/device=alpha,alias=", name: "vendor.example/device=alpha"},
+		{value: `device="vendor.example/device=alpha"`, name: "vendor.example/device=alpha"},
+		{value: "device=vendor.example/device=alpha,alias=old,alias=accelerator", name: "accelerator"},
+		{value: "device=vendor.example/device=alpha,alias=old,alias=", name: "vendor.example/device=alpha"},
+		{value: `device=vendor.example/device=alpha,"alias=accel,erator"`, name: "accel,erator"},
+	} {
+		t.Run(test.value, func(t *testing.T) {
+			allowed, err := allowedEntitlements([]string{"", test.value, ""})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := authorizeRunDevices([]runDeviceRequest{{Name: test.name, Required: true}}, allowed, cache); err != nil {
+				t.Fatal(err)
+			}
+			if err := authorizeRunDevices([]runDeviceRequest{{Name: "missing", Required: true}}, allowed, cache); err == nil {
+				t.Fatal("missing required device was accepted")
+			}
+			if err := authorizeRunDevices([]runDeviceRequest{{Name: "missing"}}, allowed, cache); err != nil {
+				t.Fatalf("missing optional device: %v", err)
+			}
+		})
+	}
+}
+
+func TestDeviceEntitlementLastGrantWinsAcrossAliasAndDirectSelector(t *testing.T) {
+	cache := testCDICache(t)
+	alpha := "vendor.example/device=alpha"
+	alias := "device=vendor.example/device=beta,alias=" + alpha
+	direct := "device=" + alpha
+	for _, test := range []struct {
+		values []string
+		want   string
+	}{
+		{values: []string{alias, direct}, want: alpha},
+		{values: []string{direct, alias}, want: "vendor.example/device=beta"},
+	} {
+		allowed, err := allowedEntitlements(test.values)
+		if err != nil {
+			t.Fatal(err)
+		}
+		requests := []runDeviceRequest{{Name: alpha, Required: true}}
+		mapped, _ := applyRunDeviceEntitlementAliases(requests, allowed)
+		if mapped[0].Name != test.want {
+			t.Fatalf("grants %v mapped device to %q, want %q", test.values, mapped[0].Name, test.want)
+		}
+		if err := authorizeRunDevices(requests, allowed, cache); err != nil {
+			t.Fatal(err)
 		}
 	}
 }

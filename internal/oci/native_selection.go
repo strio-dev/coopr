@@ -1,29 +1,35 @@
-package buildah
+package oci
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"go.podman.io/common/libimage/manifests"
 	"go.podman.io/storage"
 )
 
 const selectedBaseAliasDomain = "coopr.buildah.selected-base.v1"
 
-// selectedBuilderBase returns a deterministic containers/storage image record
+// StoredLayerBlobsKey associates exact OCI layer bytes with shared native layers.
+const StoredLayerBlobsKey = "coopr-exact-layer-blobs"
+
+// SelectedStoredImage returns a deterministic containers/storage image record
 // whose default manifest is selected. The record shares the original image's
 // top layer, so Buildah can initialize from an exact manifest without copying
 // the root filesystem or changing the original image's mutable default.
 //
-// Aliases are retained in Coopr's private graph store. There is at most one
+// Aliases are retained in native storage. There is at most one
 // small image record per source-image/manifest pair, but each record keeps its
 // shared TopLayer reachable until the graph store is pruned or removed. We do
 // not delete aliases after a build: another concurrent builder may have
 // resolved the deterministic alias but not created its container yet.
-func selectedBuilderBase(ctx context.Context, store storage.Store, imageID string, selected digest.Digest) (string, error) {
+func SelectedStoredImage(ctx context.Context, store storage.Store, imageID string, selected digest.Digest) (string, error) {
 	if ctx == nil {
 		return "", errors.New("selected base context is nil")
 	}
@@ -66,7 +72,6 @@ func selectedBuilderBase(ctx context.Context, store storage.Store, imageID strin
 	if got := digest.FromBytes(configData); got != manifest.Config.Digest {
 		return "", fmt.Errorf("selected base config content digest is %s, want %s", got, manifest.Config.Digest)
 	}
-
 	aliasID := digest.FromString(selectedBaseAliasDomain + "\x00" + source.ID + "\x00" + selected.String()).Encoded()
 	options := &storage.ImageOptions{
 		Digest:  selected,
@@ -77,6 +82,17 @@ func selectedBuilderBase(ctx context.Context, store storage.Store, imageID strin
 			{Key: manifest.Config.Digest.String(), Data: configData, Digest: manifest.Config.Digest},
 		},
 		Flags: map[string]any{"coopr.selected-base": selected.String(), "coopr.source-image": source.ID},
+	}
+	keys, err := store.ListImageBigData(source.ID)
+	if err != nil {
+		return "", err
+	}
+	if slices.Contains(keys, StoredLayerBlobsKey) {
+		data, err := store.ImageBigData(source.ID, StoredLayerBlobsKey)
+		if err != nil {
+			return "", err
+		}
+		options.BigData = append(options.BigData, storage.ImageBigDataOption{Key: StoredLayerBlobsKey, Data: data})
 	}
 	if _, err := store.CreateImage(aliasID, nil, source.TopLayer, "", options); err != nil && !errors.Is(err, storage.ErrDuplicateID) {
 		return "", fmt.Errorf("create selected base alias for %s: %w", selected, err)
@@ -94,6 +110,46 @@ func selectedBuilderBase(ctx context.Context, store storage.Store, imageID strin
 	}
 	if got := digest.FromBytes(stored); got != selected {
 		return "", fmt.Errorf("selected base alias %s default manifest is %s, want %s", alias.ID, got, selected)
+	}
+	if slices.Contains(keys, StoredLayerBlobsKey) {
+		lock, err := manifests.LockerForImage(store, alias.ID)
+		if err != nil {
+			return "", err
+		}
+		lock.Lock()
+		defer lock.Unlock()
+		retained := map[string]string{}
+		aliasKeys, err := store.ListImageBigData(alias.ID)
+		if err != nil {
+			return "", err
+		}
+		if slices.Contains(aliasKeys, StoredLayerBlobsKey) {
+			data, err := store.ImageBigData(alias.ID, StoredLayerBlobsKey)
+			if err != nil {
+				return "", err
+			}
+			var existing map[string]string
+			if err := json.Unmarshal(data, &existing); err != nil {
+				return "", err
+			}
+			maps.Copy(retained, existing)
+		}
+		data, err := store.ImageBigData(source.ID, StoredLayerBlobsKey)
+		if err != nil {
+			return "", err
+		}
+		var sourceRetained map[string]string
+		if err := json.Unmarshal(data, &sourceRetained); err != nil {
+			return "", err
+		}
+		maps.Copy(retained, sourceRetained)
+		data, err = json.Marshal(retained)
+		if err != nil {
+			return "", err
+		}
+		if err := store.SetImageBigData(alias.ID, StoredLayerBlobsKey, data, nil); err != nil {
+			return "", err
+		}
 	}
 	return alias.ID, nil
 }

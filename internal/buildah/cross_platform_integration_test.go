@@ -246,7 +246,7 @@ func TestBuildDefinitionUsesSelectedForeignExternalBase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	baseConfig, err := oci.ReadImageConfigLayout(ctx, baseLayout)
+	_, err = oci.ReadImageConfigLayout(ctx, baseLayout)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,16 +255,15 @@ func TestBuildDefinitionUsesSelectedForeignExternalBase(t *testing.T) {
 		t.Fatal(err)
 	}
 	system := &types.SystemContext{SignaturePolicyPath: policy, BigFilesTemporaryDir: root}
-	imageStoreDir := filepath.Join(root, "images")
 	const reference = "fixture.local/coopr/foreign-base:latest"
-	importTestImageToCatalog(t, ctx, store, imageStoreDir, baseLayout, reference, baseRoot, baseRoot, baseConfig, platform, system)
+	importTestImageToNative(t, ctx, store, baseLayout, reference, baseRoot, system)
 
 	output := filepath.Join(root, "derived")
 	result, err := BuildDefinitionSupervised(ctx, parseWorkerDefinition(t, "from \""+reference+"\"\nenv DERIVED=\"yes\"\n"), planner.Options{
 		Mode: planner.Build, Platform: platformName,
 	}, SupervisedPlanOptions{
 		Store: store, ContextDir: contextDir, Isolation: "rootless", Output: Output{Path: output},
-		ImageStoreDir: imageStoreDir, Pull: false, SignaturePolicyPath: policy,
+		Pull: false, SignaturePolicyPath: policy,
 		Stdout: io.Discard, Stderr: io.Discard,
 	})
 	if err != nil {

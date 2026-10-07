@@ -3,7 +3,7 @@ arg "message" "fixture-default"
 from "scratch" as="producer"
 arg "message"
 copy "busybox" "/bin/busybox"
-run network="none" {
+run {
     exec "/bin/busybox" "sh" "-c" """
         /bin/busybox mkdir -p /proof &&
         printf 'stage:%s\\n' "$message" > /proof/stage
@@ -21,7 +21,7 @@ shell "/bin/busybox" "sh" "-c"
 run """
     printf 'final:%s\\n' "$message" > /proof/final &&
     printf 'env:%s\\n' "$COOPR_PARITY" > /proof/env
-    """ network="none"
+    """
 label dev.strio.coopr.conformance="ordered"
 workdir "/proof"
 user "0:0"
