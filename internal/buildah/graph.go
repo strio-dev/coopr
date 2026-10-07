@@ -313,7 +313,7 @@ type executedGraphStage struct {
 // executePlanGraph executes one graph while retaining executor-wide resources
 // and resolved external bases for recursive component invocation.
 func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *planner.Plan, stages []planner.Stage, imageOutputID string, observed map[string]bool, observe stageObserver, bindings *graphBindings) (Result, error) {
-	stages, err := resolveAndValidateBuildNetwork(stages, executor.options.Network, executor.options.RunControls)
+	stages, err := resolveAndValidateBuildNetwork(stages, executor.options.Network, executor.options.RunControls, executor.options.Isolation)
 	if err != nil {
 		return Result{}, err
 	}
@@ -420,7 +420,7 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 				if err != nil {
 					return Result{}, drain(stage.ID, fmt.Errorf("stage %s dynamic base replan: %w", stage.ID, err))
 				}
-				nextStages, err := resolveAndValidateBuildNetwork(nextPlan.Stages, executor.options.Network, executor.options.RunControls)
+				nextStages, err := resolveAndValidateBuildNetwork(nextPlan.Stages, executor.options.Network, executor.options.RunControls, executor.options.Isolation)
 				if err != nil {
 					return Result{}, drain(stage.ID, fmt.Errorf("stage %s dynamic base replan: %w", stage.ID, err))
 				}
@@ -713,8 +713,11 @@ func (executor *graphExecutor) prepareGraphStage(ctx context.Context, plan *plan
 			}
 		}
 	}
-	prepared.operations = resolveOperationNetwork(prepared.operations, executor.options.Network)
-	var err error
+	resolvedOperations, err := resolveAndValidateBuildNetwork([]planner.Stage{{ID: stage.ID, Operations: prepared.operations}}, executor.options.Network, executor.options.RunControls, executor.options.Isolation)
+	if err != nil {
+		return preparedGraphStage{}, err
+	}
+	prepared.operations = resolvedOperations[0].Operations
 	if bindings != nil {
 		scope := bindings.cacheScope
 		scope.Stage = stage.ID

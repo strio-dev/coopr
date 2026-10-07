@@ -141,9 +141,27 @@ func Build(ctx context.Context, request Request) (result Result, retErr error) {
 	if err := authorizeOperations(request.Operations, request.Allow); err != nil {
 		return Result{}, err
 	}
-	isolation, err := parse.IsolationOption(request.Isolation)
+	requestedIsolation := request.Isolation
+	if request.RunControls.Isolation != "" {
+		requestedIsolation = request.RunControls.Isolation
+	}
+	isolation, err := parse.IsolationOption(requestedIsolation)
 	if err != nil {
 		return Result{}, fmt.Errorf("select Buildah isolation: %w", err)
+	}
+	for index, operation := range request.Operations {
+		var network string
+		switch run := operation.(type) {
+		case Run:
+			network = run.Network
+		case *Run:
+			network = run.Network
+		default:
+			continue
+		}
+		if err := validateRunNetworkIsolation(network, isolation); err != nil {
+			return Result{}, fmt.Errorf("operation %d: %w", index+1, err)
+		}
 	}
 	capabilities := rootCapabilities()
 	storeLease, err := acquireStore(request.Store)

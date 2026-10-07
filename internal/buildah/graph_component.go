@@ -223,7 +223,7 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 	}
 	defer release()
 	effectivePlan := *resolved.Plan
-	effectivePlan.Stages, err = resolveAndValidateBuildNetwork(resolved.Plan.Stages, executor.options.Network, executor.options.RunControls)
+	effectivePlan.Stages, err = resolveAndValidateBuildNetwork(resolved.Plan.Stages, executor.options.Network, executor.options.RunControls, executor.options.Isolation)
 	if err != nil {
 		return nil, fmt.Errorf("component %s: %w", resolved.Identity, err)
 	}

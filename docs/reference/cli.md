@@ -73,6 +73,8 @@ Bare digests select immutable local artifacts. Invoke a local component tag with
 
 Image and component `save` write archive bytes to stdout unless `--output FILE` is supplied. `load` reads stdin unless `--input FILE` is supplied. Image archives use the native image loader and retain configuration and layer history. An OCI archive holds one image or multi-platform index; Docker archives can hold multiple requested images. Component archives retain the complete component index and its packages. Loading a named component archive restores its name; `component load --tag NAME` overrides it. Pulling a component without `--tag` prints its locally usable digest.
 
+Image loading imports runnable platforms. Descriptors with missing or `unknown` platforms, such as BuildKit attestations, are omitted from the stored index; its digest changes when descriptors are removed. Runnable-only indexes retain their original manifest bytes.
+
 The `exists` commands are silent and return 0 when present, 1 when absent, and 125 for storage errors. `manifest remove LIST DIGEST` removes one member; `manifest rm LIST...` deletes lists. `manifest push` defaults to `--all=true`; false publishes the index alone. `manifest create` and `add` use `--all` to include every member of an input index. Registry flags use the same authentication, TLS configuration, and retry settings as builds and copy.
 
 ## Configuration and lifecycle

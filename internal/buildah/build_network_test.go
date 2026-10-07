@@ -117,6 +117,43 @@ func TestRunNetworkOptionsUseNativeBuildahNamespaceSemantics(t *testing.T) {
 	}
 }
 
+func TestChrootRejectsRequestedNetworkIsolation(t *testing.T) {
+	t.Setenv("BUILDAH_ISOLATION", "chroot")
+	for _, test := range []struct {
+		name      string
+		network   string
+		authored  string
+		isolation string
+		controls  RunControls
+		wantError bool
+	}{
+		{name: "environment global none", network: "none", wantError: true},
+		{name: "authored none", authored: ` network="none"`, wantError: true},
+		{name: "explicit chroot", network: "none", isolation: "chroot", wantError: true},
+		{name: "controls select chroot", network: "none", isolation: "rootless", controls: RunControls{Isolation: "chroot"}, wantError: true},
+		{name: "private", network: "private", wantError: true},
+		{name: "named", network: "buildnet", wantError: true},
+		{name: "slirp", network: "slirp4netns", wantError: true},
+		{name: "default"},
+		{name: "host", network: "host"},
+		{name: "rootless override", network: "none", isolation: "rootless"},
+		{name: "oci override", authored: ` network="none"`, isolation: "oci"},
+		{name: "controls select rootless", network: "none", controls: RunControls{Isolation: "rootless"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			plan := testPlan(t, "from \"scratch\"\nrun \"true\""+test.authored+"\n")
+			_, err := RequestFromPlan(plan, PlanOptions{Network: test.network, Isolation: test.isolation, RunControls: test.controls})
+			if test.wantError {
+				if err == nil || !strings.Contains(err.Error(), "cannot be used with chroot isolation") {
+					t.Fatalf("unsupported chroot network request: %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("supported isolation/network: %v", err)
+			}
+		})
+	}
+}
+
 func TestResolveBuildNetworkAppliesOnlyToImplicitRuns(t *testing.T) {
 	stages := []planner.Stage{{Operations: []planner.Operation{
 		{Instruction: definition.Instruction{Name: "run", Properties: map[string]string{"network": "default"}}},
@@ -156,7 +193,7 @@ func TestDNSControlsValidateEffectivePerRunNetwork(t *testing.T) {
 			stages := []planner.Stage{{ID: "component-or-replanned", Operations: []planner.Operation{{
 				Instruction: definition.Instruction{Name: "run", Properties: map[string]string{"network": test.authored}}, NetworkExplicit: test.explicit,
 			}}}}
-			resolved, err := resolveAndValidateBuildNetwork(stages, test.global, controls)
+			resolved, err := resolveAndValidateBuildNetwork(stages, test.global, controls, "rootless")
 			if test.wantError {
 				if err == nil || !strings.Contains(err.Error(), "stage component-or-replanned operation 1") {
 					t.Fatalf("effective network validation = %v", err)

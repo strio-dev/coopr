@@ -42,7 +42,7 @@ Use the [getting-started command](../getting-started/index.md#run-the-published-
 
 Volumes mounted at the previous UID/GID 1000 image's `/home/user/.local/share` path are no longer used; preserve or back up their state before replacing them.
 
-The packaged default is `BUILDAH_ISOLATION=chroot`. RUNs share the outer container's network, IPC, PID, and cgroup namespaces. Apply offline restrictions with outer Podman `--network=none`, and resource limits with outer Podman memory and CPU options. Per-RUN network isolation and cgroup memory or CPU controls require OCI isolation.
+The packaged default is `BUILDAH_ISOLATION=chroot`. RUNs share the outer container's network, IPC, PID, and cgroup namespaces. Apply offline restrictions with outer Podman `--network=none`, and resource limits with outer Podman memory and CPU options. Chroot rejects RUN requests for `none`, private, or named network namespaces, including build-wide `--network=none`, before execution or cache reuse. Select OCI/rootless isolation to use these modes; cgroup memory or CPU controls also require OCI isolation.
 
 Select OCI explicitly with `coopr build --isolation=rootless` or `--isolation=oci` (after the image name when using Podman). Nested OCI execution also needs user/mount namespaces, working UID-map helpers, and outer policies permitting clone/unshare/mount; network helpers may need `/dev/net/tun`. Insecure RUNs still require their entitlement and OCI/rootless isolation. OCI failures are reported without an automatic chroot fallback.
 

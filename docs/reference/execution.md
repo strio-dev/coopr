@@ -88,6 +88,8 @@ Configuration-only instructions change stage state without changing the filesyst
 
 The build-wide `--network` supplies RUN's default. An authored value, including `network="default"`, overrides it for authored, inherited, and component RUNs. Modes include default, private, none, host, named networks, `ns:PATH`, and Pasta/slirp4netns options. Effective modes determine validation and cache identity; `network="none"` rejects DNS controls.
 
+Chroot shares its caller's network namespace. It accepts default or host networking; requests for other modes fail before execution or cache reuse. Use `--isolation=oci` or `--isolation=rootless` for network namespace isolation.
+
 | Elevated operation | Authorization and limit |
 | --- | --- |
 | `network="host"` | Requires `--allow network.host` or build-wide `--network=host`, including cache hits. In containerized Coopr, host means the outer container's network namespace. |

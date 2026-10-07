@@ -188,18 +188,18 @@ EOF
 cat >"$workspace/child.coopr" <<EOF
 from "${base_tag}" as="source"
 from "${base_tag}"
-run "cat /input >/mounted-proof" network="none" {
+run "cat /input >/mounted-proof" {
   mount "bind" from="source" source="/proof" target="/input"
 }
-run "test -z \"\$(/bin/busybox ip route show default)\"" network="none"
-run "printf 'child\\n' >>/proof" network="none"
+run "test -z \"\$(/bin/busybox ip route show default)\""
+run "printf 'child\\n' >>/proof"
 cmd {
     exec "/bin/cat" "/proof" "/mounted-proof"
 }
 EOF
 cat >"$workspace/component.coopr" <<'EOF'
 extend
-run "printf 'component\n' >>/proof" network="none"
+run "printf 'component\n' >>/proof"
 EOF
 cat >"$workspace/component-child.coopr" <<EOF
 from "${base_tag}"
@@ -219,7 +219,7 @@ cat >"$workspace/multi-platform.coopr" <<'EOF'
 from "scratch"
 arg "TARGETARCH"
 copy "proof-$TARGETARCH" "/foreign-proof" chmod="0755"
-run network="none" {
+run {
     exec "/foreign-proof"
 }
 label "dev.strio.coopr.release-acceptance"="multi-platform"
@@ -237,7 +237,7 @@ EOF
 cat >"$workspace/multi-component-child.coopr" <<EOF
 from "scratch"
 component "local:${multi_component_tag}"
-run network="none" {
+run {
     exec "/component-proof"
 }
 cmd {
@@ -425,10 +425,48 @@ printf 'Building through embedded Buildah in the packaged image\n'
 coopr_container slirp4netns \
   build /work/base.coopr --tag "$base_tag" --platform "$native_platform"
 
-printf 'Checking that chroot does not start an unused nested network helper\n'
-coopr_container none \
-  build /work/base.coopr --network=slirp4netns --no-cache \
-  --tag "$base_tag" --platform "$native_platform"
+printf 'Checking chroot network policy with outer networking enabled\n'
+cat >"$workspace/network-global.coopr" <<EOF
+from "${base_tag}"
+run "printf COOPR_NETWORK_PROOF_EXECUTED"
+EOF
+cat >"$workspace/network-authored.coopr" <<EOF
+from "${base_tag}"
+run "printf COOPR_NETWORK_PROOF_EXECUTED" network="none"
+EOF
+cat >"$workspace/network-component.coopr" <<'EOF'
+extend
+run "printf COOPR_NETWORK_PROOF_EXECUTED" network="none"
+EOF
+cat >"$workspace/network-component-child.coopr" <<EOF
+from "${base_tag}"
+component "./network-component.coopr"
+EOF
+chmod 0666 "$workspace"/network-*.coopr
+for policy_case in global authored component; do
+  network_args=()
+  network_definition="/work/network-${policy_case}.coopr"
+  if [[ $policy_case == global ]]; then
+    network_args+=(--network=none)
+  elif [[ $policy_case == component ]]; then
+    network_definition=/work/network-component-child.coopr
+  fi
+  if coopr_container slirp4netns build "$network_definition" \
+    "${network_args[@]}" --isolation=chroot --no-cache --platform "$native_platform" \
+    --tag "oci-archive:/work/network-${policy_case}.oci.tar" \
+    >"$acceptance_root/network-${policy_case}.log" 2>&1; then
+    fail "chroot accepted ${policy_case} network=none with outer networking enabled"
+  fi
+  grep -F 'RUN network=none cannot be used with chroot isolation; use --isolation=oci or --isolation=rootless' \
+    "$acceptance_root/network-${policy_case}.log" >/dev/null || {
+      cat "$acceptance_root/network-${policy_case}.log" >&2
+      fail "chroot ${policy_case} network rejection lacked a useful isolation error"
+    }
+  if grep -Eq '^COOPR_NETWORK_PROOF_EXECUTED($|Error:)' "$acceptance_root/network-${policy_case}.log"; then
+    fail "rejected ${policy_case} RUN executed its proof command"
+  fi
+  [[ ! -e "$workspace/network-${policy_case}.oci.tar" ]] || fail "rejected ${policy_case} build produced an image"
+done
 
 printf 'Reusing the packaged image store without network access\n'
 coopr_container none \
@@ -470,13 +508,30 @@ if [[ $docker_runtime_output != "$runtime_output" ]]; then
   fail "unexpected Docker-format image output: $docker_runtime_output"
 fi
 
-printf 'Publishing and invoking a component in the packaged image without network access\n'
-coopr_container none \
-  component build /work/component.coopr --tag "$component_tag" --platform "$native_platform"
-coopr_container none \
-  build /work/component-child.coopr --tag oci-archive:/work/component-child.oci.tar \
+oci_state="$acceptance_root/oci-state"
+mkdir -m 0777 "$oci_state"
+coopr_oci_container() {
+  podman run --rm --network=none \
+    --userns=keep-id:uid=1000,gid=1000 --user=1000:1000 \
+    --cap-add=SYS_ADMIN --device=/dev/fuse:rw \
+    --security-opt=seccomp=unconfined --security-opt=label=disable \
+    --security-opt=unmask=ALL \
+    --env HOME=/home/user --env USER=user --env XDG_RUNTIME_DIR=/run/user/1000 \
+    --mount "type=bind,src=${workspace},dst=/work,rw" \
+    --mount "type=bind,src=${oci_state},dst=/var/lib,rw" \
+    "${cli_runtime_args[@]}" "$cli_run_image" "$@"
+}
+
+printf 'Publishing and invoking a component with OCI network isolation and cache\n'
+coopr_oci_container build /work/base.coopr --isolation=rootless --network=none \
+  --tag "$base_tag" --platform "$native_platform"
+coopr_oci_container \
+  component build /work/component.coopr --isolation=rootless --network=none \
+  --tag "$component_tag" --platform "$native_platform"
+coopr_oci_container \
+  build /work/component-child.coopr --isolation=rootless --network=none --tag oci-archive:/work/component-child.oci.tar \
   --cache-from oci-layout:/var/lib/coopr/component-cache --cache-to oci-layout:/var/lib/coopr/component-cache --platform "$native_platform"
-[[ -s "$state/coopr/component-cache/index.json" ]] || fail 'packaged component cache was not populated'
+[[ -s "$oci_state/coopr/component-cache/index.json" ]] || fail 'packaged component cache was not populated'
 
 component_load_output=$(podman load -i "$workspace/component-child.oci.tar")
 printf '%s\n' "$component_load_output"
@@ -490,17 +545,7 @@ fi
 [[ -f "$state/containers/storage/overlay/.has-mount-program" ]] || fail 'packaged builds did not use fuse-overlayfs'
 
 printf 'Checking the explicit OCI isolation override\n'
-oci_state="$acceptance_root/oci-state"
-mkdir -m 0777 "$oci_state"
-podman run --rm --network=none \
-  --userns=keep-id:uid=1000,gid=1000 --user=1000:1000 \
-  --cap-add=SYS_ADMIN --device=/dev/fuse:rw \
-  --security-opt=seccomp=unconfined --security-opt=label=disable \
-  --security-opt=unmask=ALL \
-  --env HOME=/home/user --env USER=user --env XDG_RUNTIME_DIR=/run/user/1000 \
-  --mount "type=bind,src=${workspace},dst=/work,rw" \
-  --mount "type=bind,src=${oci_state},dst=/var/lib,rw" \
-  "${cli_runtime_args[@]}" "$cli_run_image" \
+coopr_oci_container \
   build /work/multi-platform.coopr --isolation=rootless --network=none \
   --platform "$native_platform" --tag oci-archive:/work/oci-override.oci.tar
 [[ -s "$workspace/oci-override.oci.tar" ]] || fail 'explicit OCI override did not produce an image'

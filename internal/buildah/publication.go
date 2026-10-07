@@ -47,7 +47,7 @@ func PublishPlan(ctx context.Context, plan *planner.Plan, options PublicationOpt
 	if err != nil {
 		return nil, err
 	}
-	stages, err = resolveAndValidateBuildNetwork(stages, options.Network, options.RunControls)
+	stages, err = resolveAndValidateBuildNetwork(stages, options.Network, options.RunControls, options.Isolation)
 	if err != nil {
 		return nil, err
 	}

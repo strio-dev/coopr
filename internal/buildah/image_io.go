@@ -126,9 +126,8 @@ func LoadImages(ctx context.Context, store StoreOptions, path string, options oc
 		if err != nil || rootData == nil {
 			return err
 		}
-		// Import each runnable platform through the native loader, then publish the
-		// original index with the existing native index writer. No archive parsing or
-		// rootfs conversion is needed, and source index bytes remain authoritative.
+		// Import each runnable platform through the native loader, then publish an
+		// index of the imported children with the existing native index writer.
 		var index v1.Index
 		if err := json.Unmarshal(rootData, &index); err != nil {
 			return err
@@ -138,6 +137,7 @@ func LoadImages(ctx context.Context, store StoreOptions, path string, options oc
 		if len(names) == 1 && !strings.HasPrefix(names[0], "sha256:") {
 			tag = names[0]
 		}
+		imported := make([]v1.Descriptor, 0, len(index.Manifests))
 		for _, child := range index.Manifests {
 			if child.Platform == nil || child.Platform.OS == "unknown" || child.Platform.Architecture == "unknown" {
 				continue
@@ -165,6 +165,18 @@ func LoadImages(ctx context.Context, store StoreOptions, path string, options oc
 				return errors.New("loaded platform manifest differs from archived index")
 			}
 			imageIDs[child.Digest] = selected.StorageImageID
+			imported = append(imported, child)
+		}
+		if len(imported) != len(index.Manifests) {
+			// Native image storage cannot represent arbitrary attestation layers.
+			// Keep index metadata and imported descriptors, but omit children that
+			// were not loaded instead of publishing dangling references to them.
+			index.Manifests = imported
+			rootData, err = json.Marshal(index)
+			if err != nil {
+				return err
+			}
+			root = oci.Descriptor(root.MediaType, rootData)
 		}
 		id, err := imagestore.FromStore(backend).WriteStoredIndex(ctx, root, rootData, imageIDs, tag)
 		if err != nil {
