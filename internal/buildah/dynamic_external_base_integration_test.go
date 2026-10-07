@@ -36,7 +36,7 @@ func TestDynamicComponentOnbuildMaterializesLateExternalImageAndContext(t *testi
 			def := parseWorkerDefinition(t, fmt.Sprintf("from %q as=\"base\"\ncomponent \"local:config\"\nfrom \"base\"\n", base.reference))
 			layout := filepath.Join(root, "result")
 			_, err := BuildDefinitionSupervised(ctx, def, planner.Options{Mode: planner.Build, Platform: "linux/" + runtime.GOARCH}, SupervisedPlanOptions{
-				Store: store, ContextDir: root, Isolation: "rootless", ImageStoreDir: base.imageStoreDir, ComponentStoreDir: filepath.Join(root, "components"),
+				Store: store, ContextDir: root, Isolation: "rootless", ComponentStoreDir: filepath.Join(root, "components"),
 				PlainHTTPRegistries: []string{authority}, SignaturePolicyPath: writeComponentTestPolicy(t, root), BuildContexts: contexts,
 				Output: Output{Path: layout},
 			})

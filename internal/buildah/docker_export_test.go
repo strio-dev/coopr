@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/imagecatalog"
+	"coopr/internal/oci"
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -78,7 +78,7 @@ func TestExportRawDockerSourceRejectsChangedBlobAndCleansStaging(t *testing.T) {
 	}
 }
 
-func TestExportStoredImageRawHealthcheckSurvivesImportAndCatalog(t *testing.T) {
+func TestExportStoredImageRawHealthcheckSurvivesNativeImport(t *testing.T) {
 	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
 		t.Skip("set COOPR_TEST_BUILDAH=1 for live rootless Docker image export")
 	}
@@ -110,15 +110,14 @@ func TestExportStoredImageRawHealthcheckSurvivesImportAndCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	platform := v1.Platform{OS: "linux", Architecture: runtime.GOARCH}
-	catalogDir := filepath.Join(root, "catalog")
-	if err := imagecatalog.Commit(ctx, catalogDir, "fixture.local/health:latest", platform, imagecatalog.Selection{
+	if err := nameNativeFixture(ctx, options, "fixture.local/health:latest", oci.StoredSelection{
 		Root: fixture.manifest, Manifest: fixture.manifest, ImageID: imageID, ConfigData: fixture.configData,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	selection, found, err := imagecatalog.Lookup(ctx, catalogDir, "fixture.local/health:latest", platform)
+	selection, found, err := nativeFixtureSelection(ctx, options, "fixture.local/health:latest", platform)
 	if err != nil || !found || selection.ImageID != imageID {
-		t.Fatalf("catalog lookup = (%+v, %v, %v)", selection, found, err)
+		t.Fatalf("native lookup = (%+v, %v, %v)", selection, found, err)
 	}
 
 	secondLayout := filepath.Join(root, "exported")

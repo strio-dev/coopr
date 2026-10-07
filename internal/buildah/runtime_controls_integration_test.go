@@ -73,7 +73,7 @@ func (fixture liveRuntimeControlsFixture) buildWithNetwork(
 		Mode: planner.Build, Platform: "linux/" + runtime.GOARCH,
 	}, SupervisedPlanOptions{
 		Store: fixture.store, ContextDir: fixture.root, Isolation: isolation, Runtime: runtimePath, Network: network,
-		Output: Output{Path: layout}, ImageStoreDir: fixture.base.imageStoreDir, RunControls: controls,
+		Output: Output{Path: layout}, RunControls: controls,
 		Stdout: os.Stdout, Stderr: os.Stderr,
 	})
 	if err != nil {
@@ -131,8 +131,8 @@ func TestBuildDefinitionCancellationCleansSlirp4netns(t *testing.T) {
 	_, err = BuildDefinitionSupervised(ctx, def, planner.Options{Mode: planner.Build, Platform: "linux/" + runtime.GOARCH}, SupervisedPlanOptions{
 		Store: fixture.store, ContextDir: fixture.root, Isolation: "rootless", Runtime: runtimePath,
 		Network: "slirp4netns:enable_ipv6=false", Output: Output{Path: filepath.Join(fixture.root, "layout-cancel")},
-		ImageStoreDir: fixture.base.imageStoreDir, RunControls: controls,
-		Stdout: os.Stdout, Stderr: os.Stderr,
+		RunControls: controls,
+		Stdout:      os.Stdout, Stderr: os.Stderr,
 	})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("cancelled slirp build error = %v, want deadline exceeded", err)

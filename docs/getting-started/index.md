@@ -31,7 +31,20 @@ Run Coopr from GHCR:
 podman run --rm --network=none ghcr.io/strio-dev/coopr:latest --help
 ```
 
-Use a release tag in place of `latest` to select an exact version. To build images inside the container, use the [nested rootless profile](../guides/security.md#nested-container-profile) with writable project and state mounts.
+Use a release tag in place of `latest` to select an exact version. From the repository checkout described in the [first-image tutorial](../tutorials/first-image.md), build with rootless Podman:
+
+```sh
+podman run --rm \
+  --device=/dev/fuse:rw \
+  --security-opt=seccomp=unconfined \
+  --security-opt=label=disable \
+  -v "$PWD:/work:rw" \
+  -v coopr-state:/var/lib \
+  ghcr.io/strio-dev/coopr:latest \
+  build /work/examples/first-image/image.coopr --tag coopr-demo:base
+```
+
+The `coopr-state` volume keeps images, components, and caches between runs. The image defaults to chroot isolation; RUNs share the outer container's network and other namespaces. See the [nested container profile](../guides/security.md#nested-container-profile) for isolation controls and limitations.
 
 ## Other installation options
 

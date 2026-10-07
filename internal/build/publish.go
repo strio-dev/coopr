@@ -14,7 +14,6 @@ import (
 	"coopr/internal/buildah"
 	"coopr/internal/buildcontext"
 	"coopr/internal/componentstore"
-	"coopr/internal/localstore"
 	"coopr/internal/oci"
 	"coopr/internal/planner"
 	"coopr/internal/storeactivity"
@@ -52,7 +51,6 @@ type ComponentOptions struct {
 	DecryptionKeys                 []string
 	SignaturePolicyPath            string
 	StoreDir                       string
-	ImageStoreDir                  string
 	Stdout, Stderr                 io.Writer
 	Stdin                          io.Reader
 	RunStdin                       io.Reader
@@ -170,13 +168,6 @@ func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retEr
 		return "", err
 	}
 	defer cleanup()
-	imageStoreDir := opts.ImageStoreDir
-	if imageStoreDir == "" {
-		imageStoreDir, err = localstore.DefaultImageDir()
-		if err != nil {
-			return "", err
-		}
-	}
 	artifacts := append([]string{filepath.Dir(layout)}, outputArtifacts...)
 	if opts.StoreDir != "" {
 		artifacts = append(artifacts, opts.StoreDir)
@@ -192,15 +183,16 @@ func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retEr
 	if err != nil {
 		return "", err
 	}
-	if err := preflightOutputArtifacts(outputArtifacts, imageStoreDir, opts.StoreDir); err != nil {
+	storeRoots := buildah.ActivityRoots(buildStore, opts.StoreDir)
+	if err := preflightOutputArtifacts(outputArtifacts, storeRoots...); err != nil {
 		return "", err
 	}
-	activity, err := storeactivity.AcquireShared(ctx, imageStoreDir, opts.StoreDir)
+	activity, err := storeactivity.AcquireShared(ctx, storeRoots...)
 	if err != nil {
 		return "", fmt.Errorf("acquire component build store activity lease: %w", err)
 	}
 	defer func() { retErr = errors.Join(retErr, activity.Close()) }()
-	artifacts = append(artifacts, imageStoreDir)
+	artifacts = append(artifacts, storeRoots...)
 	stdout, stderr := opts.Stdout, opts.Stderr
 	var sharedLog *os.File
 	if opts.LogFile != "" && !opts.LogSplit {
@@ -239,7 +231,7 @@ func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retEr
 		}
 		result, buildErr := buildah.PublishDefinitionSupervised(buildCtx, def, platformPlanning, buildah.SupervisedPlanOptions{
 			Store: buildStore, ContextDir: opts.Context, IgnoreFile: opts.IgnoreFile, ContextArtifacts: artifacts,
-			Output: buildah.Output{Path: output}, ImageStoreDir: imageStoreDir, ComponentStoreDir: opts.StoreDir,
+			Output: buildah.Output{Path: output}, ComponentStoreDir: opts.StoreDir,
 			PlainHTTP: opts.PlainHTTP, PlainHTTPRegistries: opts.PlainHTTPRegistries, Pull: opts.Pull, PullPolicy: opts.PullPolicy,
 			NoCache:     opts.NoCache,
 			Network:     opts.Network,

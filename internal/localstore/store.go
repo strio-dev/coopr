@@ -39,8 +39,6 @@ type Usage struct {
 	Bytes int64 `json:"bytes"`
 }
 
-func DefaultImageDir() (string, error) { return defaultDir("images") }
-
 func DefaultComponentDir() (string, error) { return defaultDir("components") }
 
 // NormalizeImageTag applies the same local-name and latest defaults used when

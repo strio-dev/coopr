@@ -60,7 +60,7 @@ func testRunPullRefresh(t *testing.T, withLayers bool) {
 		}
 		if _, err := Run(ctx, Options{
 			File: baseFile, Tag: "oci-archive:" + baseArchive,
-			Platform: "linux/amd64", StoreDir: filepath.Join(storeBase, "producer-store"),
+			Platform: "linux/amd64", BuildStore: nativeBuildTestStore(filepath.Join(storeBase, "producer-store")),
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -91,7 +91,7 @@ func testRunPullRefresh(t *testing.T, withLayers bool) {
 	consumerArchive := filepath.Join(dir, "consumer.oci.tar")
 	opts := Options{
 		File: consumerFile, Tag: "oci-archive:" + consumerArchive,
-		Platform: "linux/amd64", PlainHTTP: true, StoreDir: filepath.Join(storeBase, "consumer-store"),
+		Platform: "linux/amd64", PlainHTTP: true, BuildStore: nativeBuildTestStore(filepath.Join(storeBase, "consumer-store")),
 	}
 	assertRevision := func(want string) {
 		t.Helper()
@@ -106,6 +106,14 @@ func testRunPullRefresh(t *testing.T, withLayers bool) {
 			t.Fatal("output omitted the base image layer")
 		}
 	}
+	writeConsumer(strings.TrimSuffix(ref, ":stable") + "@" + old.Digest.String())
+	pinned := opts
+	pinned.BuildStore = nativeBuildTestStore(filepath.Join(storeBase, "named-digest-store"))
+	pinned.Tag = "oci-archive:" + filepath.Join(dir, "pinned-consumer.oci.tar")
+	if _, err := Run(ctx, pinned); err != nil {
+		t.Fatalf("pull uncached named digest: %v", err)
+	}
+	writeConsumer(ref)
 	assertRevision("old")
 	if !withLayers {
 		crossFormat := opts
@@ -139,12 +147,12 @@ func testRunPullRefresh(t *testing.T, withLayers bool) {
 	opts.PullPolicy = string(oci.PullNever)
 	assertRevision("new") // never reuses an available mutable local tag without contacting the registry.
 	missing := opts
-	missing.StoreDir = filepath.Join(storeBase, "pull-never-empty-store")
+	missing.BuildStore = nativeBuildTestStore(filepath.Join(storeBase, "pull-never-empty-store"))
 	if _, err := Run(ctx, missing); err == nil || !strings.Contains(err.Error(), "pull policy is never") {
 		t.Fatalf("missing base under pull policy never = %v", err)
 	}
 
-	writeConsumer(strings.TrimSuffix(ref, ":stable") + "@" + old.Digest.String())
-	opts.PullPolicy = string(oci.PullAlways)
-	assertRevision("old") // An immutable pin remains available without the registry.
+	writeConsumer(old.Digest.String())
+	opts.PullPolicy = string(oci.PullNever)
+	assertRevision("old") // The retained native digest remains available after its registry tag moves.
 }

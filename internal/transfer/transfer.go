@@ -12,10 +12,11 @@ import (
 	"strings"
 	"time"
 
+	"go.podman.io/storage"
+
 	"coopr/internal/buildah"
 	"coopr/internal/componentstore"
 	"coopr/internal/enginecopy"
-	"coopr/internal/imagecatalog"
 	"coopr/internal/imagestore"
 	"coopr/internal/localstore"
 	"coopr/internal/oci"
@@ -32,25 +33,25 @@ type Destination struct {
 }
 
 type Options struct {
-	ImageStoreDir, ComponentStoreDir string
-	BuildStore                       buildah.StoreOptions
-	PlainHTTP                        bool
-	PlainHTTPRegistries              []string
-	AuthFile                         string
-	CertDir                          string
-	SkipTLSVerify                    bool
-	Credentials                      string
-	Retry                            uint
-	RetrySet                         bool
-	RetryDelay                       time.Duration
-	DecryptionKeys                   []string
-	SignaturePolicyPath              string
-	Platform                         v1.Platform
-	PlatformExplicit                 bool
-	Signing                          SigningOptions
+	ComponentStoreDir   string
+	BuildStore          buildah.StoreOptions
+	PlainHTTP           bool
+	PlainHTTPRegistries []string
+	AuthFile            string
+	CertDir             string
+	SkipTLSVerify       bool
+	Credentials         string
+	Retry               uint
+	RetrySet            bool
+	RetryDelay          time.Duration
+	DecryptionKeys      []string
+	SignaturePolicyPath string
+	Platform            v1.Platform
+	PlatformExplicit    bool
+	Signing             SigningOptions
 }
 
-func nativeStoreOptions(opts Options, storeDir string) (buildah.StoreOptions, error) {
+func nativeStoreOptions(opts Options) (buildah.StoreOptions, error) {
 	store := opts.BuildStore
 	if store.RunRoot == "" && store.GraphRoot == "" {
 		var err error
@@ -58,7 +59,6 @@ func nativeStoreOptions(opts Options, storeDir string) (buildah.StoreOptions, er
 		if err != nil {
 			return buildah.StoreOptions{}, err
 		}
-		store.GraphRoot = filepath.Join(storeDir, "graph")
 	}
 	return buildah.NormalizeStoreOptions(store)
 }
@@ -151,7 +151,7 @@ func LocalReference(tag string, root v1.Descriptor) string {
 // Copy resolves a Coopr-local source and applies the destination without
 // running any build step. A bare digest remains immutable if a mutable name
 // is retargeted later.
-func Copy(ctx context.Context, kind oci.Kind, source string, destination Destination, opts Options) (_ string, retErr error) {
+func Copy(ctx context.Context, kind oci.Kind, source string, destination Destination, opts Options) (result string, retErr error) {
 	if err := ValidateSigningDestination(kind, destination, opts.Signing); err != nil {
 		return "", err
 	}
@@ -159,14 +159,48 @@ func Copy(ctx context.Context, kind oci.Kind, source string, destination Destina
 	if err != nil {
 		return "", err
 	}
+	roots := []string{storeDir}
+	if kind == oci.Image {
+		options, err := nativeStoreOptions(opts)
+		if err != nil {
+			return "", err
+		}
+		roots = buildah.ActivityRoots(options, "")
+		if destination.Transport == "podman" || strings.HasPrefix(source, "podman:") {
+			defaults, err := buildah.DefaultStoreOptions()
+			if err != nil {
+				return "", err
+			}
+			roots = append(roots, buildah.ActivityRoots(defaults, "")...)
+			selectedID, err := buildah.StoreIdentity(options)
+			if err != nil {
+				return "", err
+			}
+			defaultID, err := buildah.StoreIdentity(defaults)
+			if err != nil {
+				return "", err
+			}
+			if selectedID == defaultID {
+				source = strings.TrimPrefix(source, "podman:")
+				if destination.Transport == "podman" {
+					destination.Transport = "local"
+					defer func() {
+						if retErr == nil {
+							result = "podman:" + result
+						}
+					}()
+				}
+			}
+		}
+	}
 	var activity *storeactivity.Lease
 	if kind == oci.Image && destination.Transport == "local" && opts.Signing.SignBy != "" {
 		// Native storage commits replace image-wide signature metadata when an
 		// existing config ID is reused. Hold the store exclusively while local
 		// signing updates the signature blobs and metadata as one Coopr operation.
-		activity, err = storeactivity.AcquireExclusive(ctx, storeDir)
+		activity, err = storeactivity.AcquireExclusive(ctx, roots...)
 	} else {
-		activity, err = storeactivity.AcquireShared(ctx, storeDir)
+		activity, err = storeactivity.AcquireShared(ctx, roots...)
 	}
 	if err != nil {
 		return "", fmt.Errorf("acquire copy store activity lease: %w", err)
@@ -207,10 +241,12 @@ func copyStoredImage(ctx context.Context, source string, destination Destination
 		return "", err
 	}
 	if !opts.PlatformExplicit {
-		root, indexData, selections, complete, err := imagecatalog.LookupIndex(ctx, storeDir, selector)
+		root, indexData, selections, err := storedSelections(ctx, opts, selector)
 		if err != nil {
 			return "", fmt.Errorf("resolve %s: %w", source, err)
 		}
+		var index v1.Index
+		complete := len(indexData) != 0 && json.Unmarshal(indexData, &index) == nil && len(index.Manifests) == len(selections)
 		if complete {
 			return copyStoredIndex(ctx, storeDir, root, indexData, selections, destination, opts)
 		}
@@ -219,14 +255,14 @@ func copyStoredImage(ctx context.Context, source string, destination Destination
 	if platform.OS == "" && platform.Architecture == "" {
 		platform = v1.Platform{OS: "linux", Architecture: runtime.GOARCH}
 	}
-	selection, selectionPlatform, found, err := lookupStoredImage(ctx, storeDir, selector, platform, opts.PlatformExplicit)
+	selection, _, found, err := lookupStoredImage(ctx, opts, selector, platform, opts.PlatformExplicit)
 	if err != nil {
 		return "", fmt.Errorf("resolve %s: %w", source, err)
 	}
 	if !found {
 		return "", fmt.Errorf("resolve %s: image or platform not found", source)
 	}
-	storeOptions, err := nativeStoreOptions(opts, storeDir)
+	storeOptions, err := nativeStoreOptions(opts)
 	if err != nil {
 		return "", err
 	}
@@ -239,17 +275,12 @@ func copyStoredImage(ctx context.Context, source string, destination Destination
 		// complete index and silently copy every platform later.
 		selection.Root = selection.Manifest
 		if opts.Signing.SignBy != "" {
-			if err := signStoredImage(ctx, storeDir, selection.ImageID, selection.Manifest.Digest, destination.Name, opts); err != nil {
+			if err := signStoredImage(ctx, selection.ImageID, selection.Manifest.Digest, destination.Name, opts); err != nil {
 				return "", err
 			}
 		}
-		if err := imagecatalog.CommitSelected(ctx, storeDir, destination.Name, selectionPlatform, selection); err != nil {
-			return "", fmt.Errorf("tag image %s: %w", source, err)
-		}
-		if opts.BuildStore.Shared {
-			if err := tagSharedStoredSelection(ctx, storeOptions, selection, destination.Name); err != nil {
-				return "", fmt.Errorf("tag shared-store image %s: %w", source, err)
-			}
+		if err := tagStoredSelection(ctx, storeOptions, selection, destination.Name); err != nil {
+			return "", fmt.Errorf("tag stored image %s: %w", source, err)
 		}
 		return destination.Name, nil
 	}
@@ -259,7 +290,7 @@ func copyStoredImage(ctx context.Context, source string, destination Destination
 		}
 	}
 	if destination.Transport == "registry" {
-		return publishStoredImage(ctx, storeDir, selection.ImageID, selection.Manifest, destination.Name, opts)
+		return publishStoredImage(ctx, selection.ImageID, selection.Manifest, destination.Name, opts)
 	}
 	stageDir, err := os.MkdirTemp("", "coopr-image-copy-*")
 	if err != nil {
@@ -283,65 +314,38 @@ func copyStoredImage(ctx context.Context, source string, destination Destination
 	return CopyRoot(ctx, oci.Image, exported.Layout, root, destination, opts)
 }
 
-func tagSharedStoredSelection(ctx context.Context, storeOptions buildah.StoreOptions, selection imagecatalog.Selection, name string) error {
-	dir, err := os.MkdirTemp("", "coopr-shared-tag-*")
-	if err != nil {
+func tagStoredSelection(ctx context.Context, storeOptions buildah.StoreOptions, selection oci.StoredSelection, name string) error {
+	return buildah.WithStore(storeOptions, func(backend storage.Store) error {
+		_, err := imagestore.FromStore(backend).TagSelected(ctx, selection.ImageID, selection.Manifest, name)
 		return err
-	}
-	defer func() { _ = os.RemoveAll(dir) }()
-	exported, err := buildah.ExportStoredImageSelectedSupervised(ctx, storeOptions, selection.ImageID, selection.Manifest.Digest, filepath.Join(dir, "layout"))
-	if err != nil {
-		return err
-	}
-	root, err := oci.LayoutRoot(exported.Layout)
-	if err != nil {
-		return err
-	}
-	if root.Digest != selection.Manifest.Digest || root.Size != selection.Manifest.Size || root.MediaType != selection.Manifest.MediaType {
-		return fmt.Errorf("stored manifest changed from %s to %s", selection.Manifest.Digest, root.Digest)
-	}
-	store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(storeOptions))
-	if err != nil {
-		return err
-	}
-	_, tagErr := store.WriteLayout(ctx, exported.Layout, root, name)
-	return errors.Join(tagErr, store.Close())
+	})
 }
 
-func copyStoredIndex(ctx context.Context, storeDir string, root v1.Descriptor, indexData []byte, selections map[string]imagecatalog.Selection, destination Destination, opts Options) (string, error) {
-	storeOptions, err := nativeStoreOptions(opts, storeDir)
+func copyStoredIndex(ctx context.Context, storeDir string, root v1.Descriptor, indexData []byte, selections map[string]oci.StoredSelection, destination Destination, opts Options) (string, error) {
+	storeOptions, err := nativeStoreOptions(opts)
 	if err != nil {
 		return "", err
 	}
-	sharedLocal := destination.Transport == "local" && opts.BuildStore.Shared
 	if destination.Transport == "local" {
 		for _, selection := range selections {
 			if err := buildah.VerifyStoredImageSelectedSupervised(ctx, storeOptions, selection.ImageID, selection.Manifest); err != nil {
 				return "", fmt.Errorf("verify stored image %s: %w", selection.Manifest.Digest, err)
 			}
 			if opts.Signing.SignBy != "" {
-				if err := signStoredImage(ctx, storeDir, selection.ImageID, selection.Manifest.Digest, destination.Name, opts); err != nil {
+				if err := signStoredImage(ctx, selection.ImageID, selection.Manifest.Digest, destination.Name, opts); err != nil {
 					return "", err
 				}
 			}
 		}
-		if sharedLocal {
-			store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(opts.BuildStore))
-			if err != nil {
-				return "", err
-			}
-			imageIDs := make(map[digest.Digest]string, len(selections))
-			for _, selection := range selections {
-				imageIDs[selection.Manifest.Digest] = selection.ImageID
-			}
-			_, tagErr := store.WriteStoredIndex(ctx, root, indexData, imageIDs, destination.Name)
-			closeErr := store.Close()
-			if err := errors.Join(tagErr, closeErr); err != nil {
-				return "", fmt.Errorf("tag shared-store multi-platform image: %w", err)
-			}
+		imageIDs := make(map[digest.Digest]string, len(selections))
+		for _, selection := range selections {
+			imageIDs[selection.Manifest.Digest] = selection.ImageID
 		}
-		if err := imagecatalog.CommitIndex(ctx, storeDir, destination.Name, root, indexData, selections); err != nil {
-			return "", fmt.Errorf("tag multi-platform image: %w", err)
+		if err := buildah.WithStore(storeOptions, func(backend storage.Store) error {
+			_, err := imagestore.FromStore(backend).WriteStoredIndex(ctx, root, indexData, imageIDs, destination.Name)
+			return err
+		}); err != nil {
+			return "", fmt.Errorf("tag stored multi-platform image: %w", err)
 		}
 		return destination.Name, nil
 	}
@@ -358,7 +362,7 @@ func copyStoredIndex(ctx context.Context, storeDir string, root v1.Descriptor, i
 			if err != nil {
 				return "", err
 			}
-			if _, err := publishStoredImage(ctx, storeDir, selection.ImageID, selection.Manifest, instanceDestination, unsigned); err != nil {
+			if _, err := publishStoredImage(ctx, selection.ImageID, selection.Manifest, instanceDestination, unsigned); err != nil {
 				return "", fmt.Errorf("publish stored platform %s: %w", selection.Manifest.Digest, err)
 			}
 		}
@@ -370,18 +374,18 @@ func copyStoredIndex(ctx context.Context, storeDir string, root v1.Descriptor, i
 	defer func() { _ = os.RemoveAll(stageDir) }()
 	var index v1.Index
 	if err := json.Unmarshal(indexData, &index); err != nil {
-		return "", fmt.Errorf("decode cataloged image index: %w", err)
+		return "", fmt.Errorf("decode stored image index: %w", err)
 	}
 	variants := make([]oci.ImageVariant, 0, len(index.Manifests))
 	for i, manifestInIndex := range index.Manifests {
 		if manifestInIndex.Platform == nil {
-			return "", fmt.Errorf("cataloged image index manifest %d has no platform", i)
+			return "", fmt.Errorf("stored image index manifest %d has no platform", i)
 		}
 		platform := platforms.Normalize(*manifestInIndex.Platform)
 		key := platforms.Format(platform)
 		selection, found := selections[key]
 		if !found {
-			return "", fmt.Errorf("cataloged image index lacks platform %s", key)
+			return "", fmt.Errorf("stored image index lacks platform %s", key)
 		}
 		output := filepath.Join(stageDir, fmt.Sprintf("image-%d", i))
 		exported, err := buildah.ExportStoredImageSelectedSupervised(ctx, storeOptions, selection.ImageID, selection.Manifest.Digest, output)
@@ -412,26 +416,41 @@ func registryDigestDestination(destination string, manifest digest.Digest) (stri
 	return reference.TrimNamed(named).String() + "@" + manifest.String(), nil
 }
 
-func lookupStoredImage(ctx context.Context, storeDir, selector string, platform v1.Platform, explicitPlatform bool) (imagecatalog.Selection, v1.Platform, bool, error) {
-	var selection imagecatalog.Selection
-	selectionPlatform := platform
-	var found bool
-	var err error
-	if pinned := digest.Digest(selector); !explicitPlatform && pinned.Validate() == nil {
-		selection, selectionPlatform, found, err = imagecatalog.LookupManifest(ctx, storeDir, pinned.String())
+func storedSelections(ctx context.Context, opts Options, selector string) (root v1.Descriptor, data []byte, selections map[string]oci.StoredSelection, err error) {
+	options, err := nativeStoreOptions(opts)
+	if err != nil {
+		return root, nil, nil, err
 	}
-	if err == nil && !found {
-		selectionPlatform = platform
-		selection, found, err = imagecatalog.Lookup(ctx, storeDir, selector, platform)
-	}
-	if err == nil && !found && !explicitPlatform && digest.Digest(selector).Validate() != nil {
-		selection, selectionPlatform, found, err = imagecatalog.LookupSole(ctx, storeDir, selector)
-	}
-	return selection, selectionPlatform, found, err
+	err = buildah.WithStore(options, func(backend storage.Store) error {
+		root, data, selections, err = oci.StoredImageSelections(ctx, backend, selector)
+		return err
+	})
+	return root, data, selections, err
 }
 
-// CopyRoot is the shared transfer path for a fresh build and a later copy.
-// The root must already be present in the Coopr store for its kind.
+func lookupStoredImage(ctx context.Context, opts Options, selector string, platform v1.Platform, explicitPlatform bool) (oci.StoredSelection, v1.Platform, bool, error) {
+	root, _, selections, err := storedSelections(ctx, opts, selector)
+	if errors.Is(err, storage.ErrImageUnknown) {
+		return oci.StoredSelection{}, platform, false, nil
+	}
+	if err != nil {
+		return oci.StoredSelection{}, platform, false, err
+	}
+	key := platforms.Format(platforms.Normalize(platform))
+	if selection, found := selections[key]; found {
+		return selection, platform, true, nil
+	}
+	if !explicitPlatform && len(selections) == 1 && (root.MediaType == v1.MediaTypeImageManifest || root.MediaType == "application/vnd.docker.distribution.manifest.v2+json" || digest.Digest(selector).Validate() != nil && !strings.Contains(selector, "@")) {
+		for key, selection := range selections {
+			actual, err := platforms.Parse(key)
+			return selection, actual, err == nil, err
+		}
+	}
+	return oci.StoredSelection{}, platform, false, nil
+}
+
+// CopyRoot transfers an OCI graph from a component store or temporary image
+// export layout. Native stored images use Copy.
 func CopyRoot(ctx context.Context, kind oci.Kind, storeDir string, root v1.Descriptor, destination Destination, opts Options) (_ string, retErr error) {
 	if err := ValidateSigningDestination(kind, destination, opts.Signing); err != nil {
 		return "", err
@@ -462,9 +481,18 @@ func CopyRoot(ctx context.Context, kind oci.Kind, storeDir string, root v1.Descr
 		if err := rejectStoreArchivePath(storeDir, destination.Name); err != nil {
 			return "", err
 		}
-		if kind == oci.Image && opts.ImageStoreDir != "" && filepath.Clean(opts.ImageStoreDir) != filepath.Clean(storeDir) {
-			if err := rejectStoreArchivePath(opts.ImageStoreDir, destination.Name); err != nil {
+		if kind == oci.Image {
+			options, err := nativeStoreOptions(opts)
+			if err != nil {
 				return "", err
+			}
+			for _, boundary := range []string{options.GraphRoot, options.RunRoot, options.ImageStore} {
+				if boundary == "" {
+					continue
+				}
+				if err := rejectStoreArchivePath(boundary, destination.Name); err != nil {
+					return "", err
+				}
 			}
 		}
 		if err := localstore.WriteArchive(ctx, store, root, destination.Name); err != nil {
@@ -501,18 +529,11 @@ func CopyRoot(ctx context.Context, kind oci.Kind, storeDir string, root v1.Descr
 }
 
 func rejectStoreArchivePath(storeDir, output string) error {
-	storePath, err := filepath.EvalSymlinks(storeDir)
+	storePath, err := canonicalArchiveBoundary(storeDir)
 	if err != nil {
 		return err
 	}
-	parent, err := filepath.Abs(filepath.Dir(output))
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(parent, 0755); err != nil {
-		return err
-	}
-	parent, err = filepath.EvalSymlinks(parent)
+	parent, err := canonicalArchiveBoundary(filepath.Dir(output))
 	if err != nil {
 		return err
 	}
@@ -526,13 +547,32 @@ func rejectStoreArchivePath(storeDir, output string) error {
 	return nil
 }
 
+// A configured native root or output parent need not exist yet. Resolve existing
+// ancestors without creating directories while checking the archive boundary.
+func canonicalArchiveBoundary(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	var suffix []string
+	for {
+		resolved, err := filepath.EvalSymlinks(abs)
+		if err == nil {
+			return filepath.Join(append([]string{resolved}, suffix...)...), nil
+		}
+		if !errors.Is(err, os.ErrNotExist) || abs == filepath.Dir(abs) {
+			return "", err
+		}
+		suffix = append([]string{filepath.Base(abs)}, suffix...)
+		abs = filepath.Dir(abs)
+	}
+}
+
 func storeDirectory(kind oci.Kind, opts Options) (string, error) {
 	switch kind {
 	case oci.Image:
-		if opts.ImageStoreDir != "" {
-			return opts.ImageStoreDir, nil
-		}
-		return localstore.DefaultImageDir()
+		options, err := nativeStoreOptions(opts)
+		return options.GraphRoot, err
 	case oci.Component:
 		if opts.ComponentStoreDir != "" {
 			return opts.ComponentStoreDir, nil
@@ -560,10 +600,8 @@ func localSelector(value string, kind oci.Kind) (string, error) {
 			return "", err
 		}
 	} else {
-		var err error
-		selector, err = localstore.NormalizeImageTag(selector)
-		if err != nil {
-			return "", err
+		if strings.TrimSpace(selector) != selector || strings.ContainsAny(selector, " \t\r\n") {
+			return "", fmt.Errorf("invalid image reference %q", selector)
 		}
 	}
 	return selector, nil

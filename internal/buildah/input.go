@@ -24,8 +24,8 @@ const (
 	maxImageMetadataSize    = 16 << 20
 )
 
-// ImportSelectedImage copies one verified image manifest from Coopr's OCI CAS
-// into the private containers/storage store used by Buildah. selected does not
+// ImportSelectedImage copies one verified image manifest from an OCI layout
+// into native containers/storage. selected does not
 // need to be listed in the layout's index; this is required for a platform
 // manifest selected from a multi-platform image.
 //

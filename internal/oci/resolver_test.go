@@ -96,7 +96,7 @@ func testRepository(t *testing.T, handler http.Handler) (*httptest.Server, *remo
 		t.Fatal(err)
 	}
 	repo.PlainHTTP = true
-	resolver, err := NewResolver(Options{PlainHTTP: true, ImageStoreDir: filepath.Join(t.TempDir(), "images")})
+	resolver, err := NewResolver(Options{PlainHTTP: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,8 +111,7 @@ func TestResolveRemoteImageFromRegistry(t *testing.T) {
 	if err := repo.Tag(ctx, root, "remote"); err != nil {
 		t.Fatal(err)
 	}
-	imageStoreDir := filepath.Join(t.TempDir(), "images")
-	resolver, err := NewResolver(Options{PlainHTTP: true, ImageStoreDir: imageStoreDir})
+	resolver, err := NewResolver(Options{PlainHTTP: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +133,7 @@ func TestResolveRegistryImageDoesNotCreateAbsentLocalStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	storeDir := filepath.Join(t.TempDir(), "missing", "images")
-	resolver, err := NewResolver(Options{PlainHTTP: true, ImageStoreDir: storeDir})
+	resolver, err := NewResolver(Options{PlainHTTP: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -677,8 +676,8 @@ func TestRegistryOptionsReturnsIndependentWorkerCopy(t *testing.T) {
 		PlainHTTPRegistries: []string{"registry.example:5000"}, PullPolicy: "always",
 		Credentials: "user:pass", Retry: 0, RetrySet: true, RetryDelay: 2 * time.Second,
 		DecryptionKeys: []string{"provider:key"}, SignaturePolicyPath: "/tmp/policy.json",
-		ImageStoreDir: t.TempDir(), ComponentStoreDir: t.TempDir(),
-		NativeStore: storage.StoreOptions{RunRoot: "/run/coopr", GraphRoot: "/var/lib/coopr", ImageStore: "/var/lib/coopr-images", GraphDriverName: "vfs", GraphDriverOptions: []string{"vfs.ignore_chown_errors=true"}, TransientStore: true},
+		ComponentStoreDir: t.TempDir(),
+		NativeStore:       storage.StoreOptions{RunRoot: "/run/coopr", GraphRoot: "/var/lib/coopr", ImageStore: "/var/lib/coopr-images", GraphDriverName: "vfs", GraphDriverOptions: []string{"vfs.ignore_chown_errors=true"}, TransientStore: true},
 	})
 	if err != nil {
 		t.Fatal(err)

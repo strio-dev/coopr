@@ -133,7 +133,6 @@ func TestStoreLeaseRejectsConflictingOptionsForOpenRoots(t *testing.T) {
 
 func TestStoreOptionsWorkerJSONPreservesEffectiveNativeOptions(t *testing.T) {
 	options := testStoreOptions(t)
-	options.Shared = true
 	options.Native = NativeStoreOptions(options)
 	options.Native.GraphDriverPriority = []string{"overlay", "vfs"}
 	options.Native.PullOptions = map[string]string{"enable_partial_images": "true"}
@@ -146,7 +145,7 @@ func TestStoreOptionsWorkerJSONPreservesEffectiveNativeOptions(t *testing.T) {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if !decoded.Shared || !reflect.DeepEqual(NativeStoreOptions(decoded), NativeStoreOptions(options)) {
+	if !reflect.DeepEqual(NativeStoreOptions(decoded), NativeStoreOptions(options)) {
 		t.Fatalf("worker JSON changed store options: got=%+v want=%+v", decoded, options)
 	}
 }

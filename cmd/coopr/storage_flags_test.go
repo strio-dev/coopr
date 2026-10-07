@@ -18,19 +18,12 @@ func TestGlobalStorageFlagsSelectOneCanonicalGraph(t *testing.T) {
 	root := newRootCommand()
 	var captured bool
 	probe := &cobra.Command{Use: "storage-probe", RunE: func(cmd *cobra.Command, _ []string) error {
-		store, catalog, err := commandStorage(cmd)
+		store, err := commandStorage(cmd)
 		if err != nil {
 			return err
 		}
 		if store.GraphRoot != filepath.Join(rootDir, "custom-native") || store.RunRoot != filepath.Join(rootDir, "runtime") || store.GraphDriverName != "vfs" || !store.TransientStore || store.ImageStore != filepath.Join(rootDir, "image-bytes") {
 			t.Fatalf("store=%+v", store)
-		}
-		wantCatalog, err := selectedStoreCatalog(store)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if catalog != wantCatalog {
-			t.Fatalf("catalog=%q", catalog)
 		}
 		captured = true
 		return nil
@@ -45,7 +38,14 @@ func TestGlobalStorageFlagsSelectOneCanonicalGraph(t *testing.T) {
 	}
 }
 
-func TestImageStoreConfigAndFlagSelectEffectivePodmanStorage(t *testing.T) {
+func TestRootHasNoImageStoreModeFlag(t *testing.T) {
+	root := newRootCommand()
+	if root.PersistentFlags().Lookup("image-store") != nil {
+		t.Fatal("obsolete image store selection flag remains")
+	}
+}
+
+func TestCommandsDefaultToEffectiveNativeStorage(t *testing.T) {
 	rootDir := t.TempDir()
 	configHome := filepath.Join(rootDir, "config")
 	t.Setenv("XDG_CONFIG_HOME", configHome)
@@ -59,23 +59,19 @@ func TestImageStoreConfigAndFlagSelectEffectivePodmanStorage(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(configHome, "coopr"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(configHome, "coopr", "config.toml"), []byte("image-store = \"podman\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(configHome, "coopr", "config.toml"), []byte("obsolete invalid config"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	root := newRootCommand()
-	var podmanCatalog string
+
 	probe := &cobra.Command{Use: "storage-config-probe", RunE: func(cmd *cobra.Command, _ []string) error {
-		store, catalog, err := commandStorage(cmd)
+		store, err := commandStorage(cmd)
 		if err != nil {
 			return err
 		}
-		if !store.Shared || store.GraphRoot != graph || store.RunRoot != run || store.GraphDriverName != "vfs" {
+		if store.GraphRoot != graph || store.RunRoot != run || store.GraphDriverName != "vfs" {
 			t.Fatalf("podman store = %+v", store)
 		}
-		if catalog == filepath.Join(graph, "coopr") {
-			t.Fatalf("catalog was placed inside Podman graph: %s", catalog)
-		}
-		podmanCatalog = catalog
 		return nil
 	}}
 	root.AddCommand(probe)
@@ -84,25 +80,6 @@ func TestImageStoreConfigAndFlagSelectEffectivePodmanStorage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	root = newRootCommand()
-	probe = &cobra.Command{Use: "storage-override-probe", RunE: func(cmd *cobra.Command, _ []string) error {
-		store, catalog, err := commandStorage(cmd)
-		if err != nil {
-			return err
-		}
-		if store.Shared {
-			t.Fatal("explicit coopr selection remained shared")
-		}
-		if catalog == podmanCatalog {
-			t.Fatalf("coopr and Podman stores share catalog %s", catalog)
-		}
-		return nil
-	}}
-	root.AddCommand(probe)
-	root.SetArgs([]string{"--image-store=coopr", "storage-override-probe"})
-	if err := root.Execute(); err != nil {
-		t.Fatal(err)
-	}
 }
 
 func TestBuildConsumesLocalImageWithGlobalStorageOverrides(t *testing.T) {

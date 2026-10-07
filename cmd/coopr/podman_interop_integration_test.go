@@ -35,7 +35,6 @@ func TestConfiguredStoreInteroperatesWithPodmanNativeNames(t *testing.T) {
 	storageConfig := filepath.Join(root, "storage.conf")
 	writePodmanCompatibilityFile(t, storageConfig, fmt.Sprintf("[storage]\ndriver = \"vfs\"\ngraphroot = %q\nrunroot = %q\n", graphRoot, runRoot), 0o600)
 	t.Setenv("CONTAINERS_STORAGE_CONF", storageConfig)
-	writePodmanCompatibilityFile(t, filepath.Join(configHome, "coopr", "config.toml"), "image-store = \"podman\"\n", 0o600)
 	t.Cleanup(func() { makePodmanCompatibilityStoreRemovable(t, graphRoot) })
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -154,7 +153,7 @@ func TestConfiguredStoreInteroperatesWithPodmanNativeNames(t *testing.T) {
 	podman("untag", "localhost/external-base:latest")
 	var stdout, stderr bytes.Buffer
 	if status := run([]string{"build", definition, "--pull=never", "--quiet"}, &stdout, &stderr); status == 0 {
-		t.Fatal("offline FROM reused a stale catalog alias after Podman removed the native name")
+		t.Fatal("offline FROM reused a stale alias after Podman removed the native name")
 	}
 	t.Log("Podman-built base, offline FROM, external retag/removal, native-only rm, native output inspect, exact native list rows, and complete native index copy passed")
 }

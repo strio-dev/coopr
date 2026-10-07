@@ -376,8 +376,8 @@ func TestBuildPlanSupervisedCopyDotExcludesCooprArtifacts(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
-		Store:      StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"},
-		ContextDir: root, Isolation: "rootless", Output: Output{Path: layout}, ImageStoreDir: images,
+		Store:      StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: images, GraphDriverName: "vfs"},
+		ContextDir: root, Isolation: "rootless", Output: Output{Path: layout},
 		Stdout: io.Discard, Stderr: io.Discard,
 	})
 	if err != nil {
@@ -459,7 +459,7 @@ run "trap '' TERM; sleep 60" network="none"
 	started := time.Now()
 	_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 		Store: storeOptions, ContextDir: root, Isolation: "rootless", Runtime: "crun", Output: Output{Path: layout},
-		ImageStoreDir: base.imageStoreDir, Pull: false, SignaturePolicyPath: policy,
+		Pull: false, SignaturePolicyPath: policy,
 		Stdout: io.Discard, Stderr: io.Discard,
 	})
 	if !errors.Is(err, context.DeadlineExceeded) {

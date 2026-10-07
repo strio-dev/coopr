@@ -1,25 +1,18 @@
 # Image and component storage
 
-Choose where images are built and retained: Coopr’s private graph or Podman’s graph. Components use a separate OCI store in either mode.
+Coopr builds and consumes images directly in the effective `containers/storage` store used by Podman and Buildah. Podman does not need to be installed. Components use a separate OCI layout.
 
-| Data | Default location |
+| Data | Typical rootless location |
 | --- | --- |
-| Image graph and local selections | `$XDG_DATA_HOME/coopr/images` |
+| Images, instruction snapshots and cache mounts | `$XDG_DATA_HOME/containers/storage` |
 | Component artifacts | `$XDG_DATA_HOME/coopr/components` |
-| Runtime state | `$XDG_RUNTIME_DIR/coopr/buildah` when available |
+| Native runtime state | `$XDG_RUNTIME_DIR/containers` |
 
-Data home defaults to `~/.local/share`. Instruction snapshots and cache mounts share the selected graph; deleting it also loses built and imported images.
+Data home defaults to `~/.local/share`. Native `storage.conf` can override these paths, the driver and driver options. Rootful storage normally uses `/var/lib/containers/storage` and `/run/containers/storage`.
 
-## Select Podman storage
+Ordinary output tags are visible to Podman and Buildah using compatible storage settings and the same user identity. Local FROM inputs use those native names; a permitted pull writes registry inputs into the same store. Coopr's activity lease does not exclude external Podman or Buildah processes.
 
-Set `image-store = "podman"` in `$XDG_CONFIG_HOME/coopr/config.toml`, or override per command:
-
-```sh
-coopr --image-store podman build image.coopr --tag app:dev
-coopr --image-store coopr build image.coopr --tag private-app:dev
-```
-
-In Podman mode, ordinary output tags are visible to Podman. Coopr uses the effective native storage configuration and user mappings; both tools must use compatible settings when sharing a graph. Coopr’s activity lease does not exclude external Podman processes.
+The packaged container persists images, components and caches under `/var/lib`; this internal store does not automatically share the host’s Podman store. Use the volume in the [getting-started command](../getting-started/index.md#run-the-published-container).
 
 ## Copy explicitly
 
@@ -37,9 +30,11 @@ Copies retain the local result. Import an engine image with the same command:
 coopr copy podman:app:dev local:app:imported
 ```
 
-`docker:SOURCE` also selects an engine source. Ordinary FROM inputs resolve from the selected graph or a registry.
+`docker:SOURCE` also selects an engine source. Ordinary FROM inputs resolve from native storage or a registry.
 
 Copy complete indexes to registries, OCI archives, Podman, or Docker’s containerd store. Docker’s classic store needs `--platform` to select one child. Docker imports may convert format and change the digest. Components support local names, OCI archives, and registries, but no engine destinations.
+
+Appending with `coopr build --manifest NAME` updates an existing native manifest list in place, as Podman does. Mutable aliases of that list follow the update; previously returned manifest digests keep selecting their original index. An ordinary pulled image is not a native manifest list.
 
 ## Inspect and maintain
 
@@ -52,4 +47,4 @@ coopr system prune --dry-run
 coopr cache prune --dry-run
 ```
 
-Review the dry run, then omit `--dry-run` to prune. Named and in-use roots are protected; unrelated objects in a shared Podman graph are retained. Pruning applies to the selected graph. See [configuration](../reference/configuration.md) for native storage overrides.
+Review the dry run, then omit `--dry-run` to prune. Component pruning protects named artifacts. Image pruning retains native image records because the shared store also belongs to other tools. Cache pruning removes Coopr instruction-cache aliases while retaining their image bytes. See [configuration](../reference/configuration.md) for native storage overrides.

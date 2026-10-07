@@ -37,7 +37,7 @@ run "cat /run/secrets/token >/proof" network="none" { mount "secret" id="token" 
 		Mode: planner.Publish, Platform: "linux/" + runtime.GOARCH,
 	}, SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-		Output: Output{Path: componentLayout}, ImageStoreDir: base.imageStoreDir,
+		Output:              Output{Path: componentLayout},
 		SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 	})
 	if err != nil {
@@ -63,7 +63,7 @@ run "cat /run/secrets/token >/proof" network="none" { mount "secret" id="token" 
 			Mode: planner.Build, Platform: "linux/" + runtime.GOARCH,
 		}, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-			Output: Output{Path: layout}, ImageStoreDir: base.imageStoreDir, ComponentStoreDir: componentDir,
+			Output: Output{Path: layout}, ComponentStoreDir: componentDir,
 			Secrets:             []string{"id=token,src=" + secretPath},
 			NoCache:             noCache,
 			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: &logs,

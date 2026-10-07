@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"coopr/internal/buildah"
 	"coopr/internal/oci"
 	"github.com/google/go-containerregistry/pkg/registry"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -38,7 +39,7 @@ func TestRunPushPublishesAndReturnsImmutableReference(t *testing.T) {
 	}
 
 	resolver, err := oci.NewResolver(oci.Options{
-		PlainHTTP: true, ImageStoreDir: filepath.Join(t.TempDir(), "empty-image-store"),
+		PlainHTTP: true, NativeStore: buildah.NativeStoreOptions(nativeBuildTestStore(filepath.Join(t.TempDir(), "empty-image-store"))),
 	})
 	if err != nil {
 		t.Fatal(err)

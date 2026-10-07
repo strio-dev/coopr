@@ -332,8 +332,8 @@ env RESULT="$COMPONENT_VALUE"
 				RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs",
 			},
 			ContextDir: root, Isolation: "rootless", Output: Output{Path: layout},
-			ImageStoreDir: filepath.Join(root, "images"), ComponentStoreDir: filepath.Join(root, "components"),
-			CacheLocalDir: cacheDir, Pull: false, SignaturePolicyPath: policy,
+			ComponentStoreDir: filepath.Join(root, "components"),
+			CacheLocalDir:     cacheDir, Pull: false, SignaturePolicyPath: policy,
 			Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {
@@ -516,7 +516,7 @@ extend
 run "cat /package/artifact >/proof" network="none" {
   mount "bind" from="pkg" source="/" target="/package"
 }
-`, base.imageStoreDir)
+`)
 	policy := writeComponentTestPolicy(t, root)
 	plan := testPlan(t, "from \""+base.reference+"\"\ncomponent \"local:tool\"\n")
 	layout := filepath.Join(root, "layout")
@@ -640,8 +640,8 @@ func TestSupervisedBuildReusesComponentCacheAcrossWorkers(t *testing.T) {
 				RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs",
 			},
 			ContextDir: root, Isolation: "rootless", Output: Output{Path: layout},
-			ImageStoreDir: filepath.Join(root, "images"), ComponentStoreDir: filepath.Join(root, "components"),
-			CacheLocalDir: filepath.Join(root, "cache"), SignaturePolicyPath: policy,
+			ComponentStoreDir: filepath.Join(root, "components"),
+			CacheLocalDir:     filepath.Join(root, "cache"), SignaturePolicyPath: policy,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -671,7 +671,7 @@ func TestBuildPlanReusesRegistryComponentCacheAcrossStores(t *testing.T) {
 	defer server.Close()
 	host := strings.TrimPrefix(server.URL, "http://")
 	resolver, err := oci.NewResolver(oci.Options{
-		ComponentStoreDir: componentResolver.ComponentStoreDir(), ImageStoreDir: componentResolver.ImageStoreDir(),
+		ComponentStoreDir:   componentResolver.ComponentStoreDir(),
 		PlainHTTPRegistries: []string{host},
 	})
 	if err != nil {
@@ -856,7 +856,7 @@ func localConfigComponentResolverWithDefinitions(t *testing.T, ctx context.Conte
 		}
 	}
 	resolver, err := oci.NewResolver(oci.Options{
-		ComponentStoreDir: componentDir, ImageStoreDir: filepath.Join(root, "images"), Pull: pull,
+		ComponentStoreDir: componentDir, Pull: pull,
 	})
 	if err != nil {
 		t.Fatal(err)

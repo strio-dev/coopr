@@ -45,7 +45,7 @@ insecure = true
 	if err := os.WriteFile(conf, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	resolver, err := NewResolver(Options{ImageStoreDir: filepath.Join(t.TempDir(), "images")})
+	resolver, err := NewResolver(Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ blocked = true
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	resolver, err := NewResolver(Options{ImageStoreDir: filepath.Join(t.TempDir(), "images")})
+	resolver, err := NewResolver(Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/imagecatalog"
+	"coopr/internal/buildah"
 	"coopr/internal/oci"
 	"coopr/internal/transfer"
 	"github.com/google/go-containerregistry/pkg/registry"
@@ -46,7 +46,7 @@ onbuild { env FROM_PARENT="yes" }
 	const tag = "localhost/coopr-docker-transfer:latest"
 	if got, err := Run(ctx, Options{
 		File: definition, Platform: "linux/" + runtime.GOARCH, Format: "docker", Tag: tag,
-		StoreDir: storeDir,
+		BuildStore: nativeBuildTestStore(storeDir),
 	}); err != nil {
 		t.Fatalf("build Docker-format image: %v", err)
 	} else if got != tag {
@@ -54,7 +54,7 @@ onbuild { env FROM_PARENT="yes" }
 	}
 
 	platform := v1.Platform{OS: "linux", Architecture: runtime.GOARCH}
-	selection, found, err := imagecatalog.Lookup(ctx, storeDir, tag, platform)
+	selection, found, err := testStoredImageSelection(ctx, nativeBuildTestStore(storeDir), tag, platform)
 	if err != nil || !found {
 		t.Fatalf("lookup built image: found=%t err=%v", found, err)
 	}
@@ -68,7 +68,7 @@ onbuild { env FROM_PARENT="yes" }
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := transfer.Copy(ctx, oci.Image, tag, archiveDestination, transfer.Options{ImageStoreDir: storeDir}); err != nil {
+	if _, err := transfer.Copy(ctx, oci.Image, tag, archiveDestination, transfer.Options{BuildStore: nativeBuildTestStore(storeDir)}); err != nil {
 		t.Fatalf("copy catalog image to OCI archive: %v", err)
 	}
 	archiveRoot, archiveManifest, archiveConfig := readDockerTransferArchive(t, archive)
@@ -83,7 +83,7 @@ onbuild { env FROM_PARENT="yes" }
 		t.Fatal(err)
 	}
 	immutable, err := transfer.Copy(ctx, oci.Image, tag, registryDestination, transfer.Options{
-		ImageStoreDir: storeDir, PlainHTTP: true,
+		BuildStore: nativeBuildTestStore(storeDir), PlainHTTP: true,
 	})
 	if err != nil {
 		t.Fatalf("copy catalog image to registry: %v", err)
@@ -93,7 +93,7 @@ onbuild { env FROM_PARENT="yes" }
 		t.Fatalf("registry result = %q, want %q", immutable, wantImmutable)
 	}
 	resolver, err := oci.NewResolver(oci.Options{
-		PlainHTTP: true, ImageStoreDir: filepath.Join(root, "empty-image-store"),
+		PlainHTTP: true, NativeStore: buildah.NativeStoreOptions(nativeBuildTestStore(filepath.Join(root, "empty-image-store"))),
 	})
 	if err != nil {
 		t.Fatal(err)

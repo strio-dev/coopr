@@ -30,7 +30,6 @@ const (
 type StoreMaintenanceRequest struct {
 	Store             StoreOptions         `json:"store"`
 	Mode              StoreMaintenanceMode `json:"mode"`
-	ProtectedImageIDs []string             `json:"protected_image_ids,omitempty"`
 	DryRun            bool                 `json:"dry_run,omitempty"`
 	ActivityLeaseHeld bool                 `json:"activity_lease_held,omitempty"`
 	ResultPath        string               `json:"result_path"`
@@ -67,13 +66,13 @@ func MaintainStoreSupervised(ctx context.Context, request StoreMaintenanceReques
 		return StoreMaintenanceResult{}, fmt.Errorf("unsupported store maintenance mode %q", request.Mode)
 	}
 	if !request.ActivityLeaseHeld {
-		root := filepath.Dir(filepath.Clean(request.Store.GraphRoot))
+		roots := ActivityRoots(request.Store, "")
 		var activity *storeactivity.Lease
 		var err error
 		if request.Mode == StoreMaintenanceDF {
-			activity, err = storeactivity.AcquireShared(ctx, root)
+			activity, err = storeactivity.AcquireShared(ctx, roots...)
 		} else {
-			activity, err = storeactivity.AcquireExclusive(ctx, root)
+			activity, err = storeactivity.AcquireExclusive(ctx, roots...)
 		}
 		if err != nil {
 			return StoreMaintenanceResult{}, fmt.Errorf("acquire maintenance store activity lease: %w", err)
@@ -158,10 +157,6 @@ func maintainStore(ctx context.Context, request StoreMaintenanceRequest) (_ Stor
 	if request.Mode == StoreMaintenanceDF {
 		return result, ctx.Err()
 	}
-	protected := make(map[string]bool, len(request.ProtectedImageIDs))
-	for _, id := range request.ProtectedImageIDs {
-		protected[id] = true
-	}
 	inUse := make(map[string]bool, len(containers))
 	retained := make(map[string]bool)
 	for _, container := range containers {
@@ -172,16 +167,9 @@ func maintainStore(ctx context.Context, request StoreMaintenanceRequest) (_ Stor
 		if request.Mode == StoreMaintenanceCachePrune && len(cacheNames) == 0 {
 			continue
 		}
-		if request.Mode == StoreMaintenancePrune && (protected[image.ID] || hasExternalStorageName(image.Names)) {
-			if hasExternalStorageName(image.Names) {
-				retained[image.ID] = true
-			}
-			continue
-		}
-		if request.Store.Shared && request.Mode == StoreMaintenancePrune {
-			// The host Podman/custom graph can contain unnamed images retained by
-			// another process or higher-level object. Coopr has no ownership proof
-			// for those records, so only its catalog metadata is prunable here.
+		if request.Mode == StoreMaintenancePrune {
+			// Native graphs can contain unnamed images retained by other tools or
+			// manifest lists. A storage path is not proof of Coopr ownership.
 			retained[image.ID] = true
 			continue
 		}
@@ -190,39 +178,13 @@ func maintainStore(ctx context.Context, request StoreMaintenanceRequest) (_ Stor
 			retained[image.ID] = true
 			continue
 		}
-		if request.Mode == StoreMaintenanceCachePrune {
-			result.RemovedCacheAliases += len(cacheNames)
-			remaining := make([]string, 0, len(image.Names)-len(cacheNames))
-			for _, name := range image.Names {
-				if !strings.HasPrefix(name, instructionCacheNamePrefix) {
-					remaining = append(remaining, name)
-				}
-			}
-			if !request.DryRun {
-				if err := backend.RemoveNames(image.ID, cacheNames); err != nil {
-					return result, err
-				}
-			}
-			if request.Store.Shared || protected[image.ID] || len(remaining) != 0 {
-				if request.Store.Shared {
-					retained[image.ID] = true
-				}
-				continue
+		result.RemovedCacheAliases += len(cacheNames)
+		if !request.DryRun {
+			if err := backend.RemoveNames(image.ID, cacheNames); err != nil {
+				return result, err
 			}
 		}
-		result.RemovedImages++
-		if request.DryRun {
-			continue
-		}
-		if _, err := backend.DeleteImage(image.ID, true); err != nil {
-			if errors.Is(err, storage.ErrImageUsedByContainer) {
-				result.SkippedInUse++
-				result.RemovedImages--
-				retained[image.ID] = true
-				continue
-			}
-			return result, err
-		}
+		retained[image.ID] = true
 	}
 	for id := range retained {
 		result.RetainedImageIDs = append(result.RetainedImageIDs, id)
@@ -279,13 +241,4 @@ func instructionCacheNames(names []string) []string {
 		}
 	}
 	return result
-}
-
-func hasExternalStorageName(names []string) bool {
-	for _, name := range names {
-		if !strings.HasPrefix(name, "coopr.internal/") {
-			return true
-		}
-	}
-	return false
 }

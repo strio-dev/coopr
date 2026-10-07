@@ -27,7 +27,7 @@ func TestLifecycleCancellationRetainsStoppedBuilderWhenSelected(t *testing.T) {
 	output := filepath.Join(root, "layout")
 	_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun", Output: Output{Path: output},
-		ImageStoreDir: base.imageStoreDir, SignaturePolicyPath: policy, Lifecycle: LifecycleControls{KeepFailed: true}, Stdout: io.Discard, Stderr: io.Discard,
+		SignaturePolicyPath: policy, Lifecycle: LifecycleControls{KeepFailed: true}, Stdout: io.Discard, Stderr: io.Discard,
 	})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("cancel error=%v", err)

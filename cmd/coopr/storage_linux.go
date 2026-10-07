@@ -9,7 +9,7 @@ import (
 	"go.podman.io/storage/pkg/unshare"
 )
 
-// Enter the storage library's user/mount namespace before opening a destination
+// Enter the storage library's user/mount namespace before opening a native
 // store. This is the capability check used by Skopeo's storage path.
 // The library reexecutes Coopr itself and configures subordinate UID/GID maps.
 func prepareStorageNamespace() error {

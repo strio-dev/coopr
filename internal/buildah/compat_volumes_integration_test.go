@@ -52,8 +52,8 @@ run "printf '%%s:%%s' \"$(/bin/busybox cat /vol/value)\" \"$(/bin/busybox cat /v
 			_, err := BuildDefinitionSupervised(ctx, def, planner.Options{Mode: planner.Build, Platform: runtime.GOOS + "/" + runtime.GOARCH}, SupervisedPlanOptions{
 				Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
 				Lifecycle: LifecycleControls{CompatVolumes: test.compat},
-				Output:    Output{Path: layout}, ImageStoreDir: base.imageStoreDir,
-				Stdout: io.Discard, Stderr: os.Stderr,
+				Output:    Output{Path: layout},
+				Stdout:    io.Discard, Stderr: os.Stderr,
 			})
 			if err != nil {
 				t.Fatal(err)

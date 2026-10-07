@@ -12,6 +12,10 @@ import (
 var version = "dev"
 
 func newRootCommand() *cobra.Command {
+	return newRootCommandWithStorageNamespace(nil)
+}
+
+func newRootCommandWithStorageNamespace(prepareNamespace func() error) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "coopr",
 		Version:       version,
@@ -24,10 +28,9 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newImageCommand())
 	root.AddCommand(newImagesCommand())
 	root.AddCommand(newComponentCommandWithGlobals(false))
-	root.AddCommand(newComponentsCommand())
 	root.AddCommand(newSystemCommand())
 	root.AddCommand(newCacheCommand())
-	addGlobalFlags(root)
+	addGlobalFlags(root, prepareNamespace)
 	return root
 }
 
@@ -36,7 +39,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 func runContext(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	root := newRootCommand()
+	return runContextWithStorageNamespace(ctx, args, stdout, stderr, nil)
+}
+
+func runContextWithStorageNamespace(ctx context.Context, args []string, stdout, stderr io.Writer, prepareNamespace func() error) int {
+	root := newRootCommandWithStorageNamespace(prepareNamespace)
 	root.SetArgs(args)
 	root.SetOut(stdout)
 	root.SetErr(stderr)

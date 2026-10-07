@@ -16,7 +16,6 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/imagecatalog"
 	"coopr/internal/imagestore"
 	"coopr/internal/oci"
 	"coopr/internal/planner"
@@ -75,7 +74,7 @@ func TestEncryptedRegistryInputDecryptsIntoCanonicalStore(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	options := oci.Options{ImageStoreDir: filepath.Join(root, "images"), PlainHTTPRegistries: []string{authority}, SignaturePolicyPath: policyPath}
+	options := oci.Options{PlainHTTPRegistries: []string{authority}, SignaturePolicyPath: policyPath}
 	store := StoreOptions{GraphRoot: filepath.Join(root, "graph"), RunRoot: filepath.Join(root, "run"), GraphDriverName: "vfs"}
 	lease, err := acquireStore(store)
 	if err != nil {
@@ -98,7 +97,7 @@ func TestEncryptedRegistryInputDecryptsIntoCanonicalStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := verifyStoredManifest(ctx, lease.store, system, imagecatalog.Selection{Root: resolved.Root, Manifest: resolved.Selected, ImageID: resolved.ImageID, ConfigData: resolved.ConfigData}); err != nil {
+	if err := verifyStoredManifest(ctx, lease.store, system, oci.StoredSelection{Root: resolved.Root, Manifest: resolved.Selected, ImageID: resolved.ImageID, ConfigData: resolved.ConfigData}); err != nil {
 		t.Fatal(err)
 	}
 	nativeReference, err := imagestorage.Transport.NewStoreReference(lease.store, nil, resolved.ImageID)
@@ -180,7 +179,7 @@ func TestEncryptedRegistryInputDecryptsIntoCanonicalStore(t *testing.T) {
 				Mode: planner.Build, Platform: fixture.platform.OS + "/" + fixture.platform.Architecture,
 			}, SupervisedPlanOptions{
 				Store: store, ContextDir: root, Isolation: "rootless", Output: Output{Path: layout},
-				ImageStoreDir: options.ImageStoreDir, PullPolicy: string(oci.PullNever), SignaturePolicyPath: policyPath,
+				PullPolicy: string(oci.PullNever), SignaturePolicyPath: policyPath,
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -298,7 +297,7 @@ func TestEncryptedRegistryIndexRetainsOfflinePlatformSelections(t *testing.T) {
 	if err := repository.PushReference(ctx, index, bytes.NewReader(indexData), "latest"); err != nil {
 		t.Fatal(err)
 	}
-	options := oci.Options{ImageStoreDir: filepath.Join(root, "images"), PlainHTTPRegistries: []string{authority}, SignaturePolicyPath: policyPath, DecryptionKeys: []string{privatePath}}
+	options := oci.Options{PlainHTTPRegistries: []string{authority}, SignaturePolicyPath: policyPath, DecryptionKeys: []string{privatePath}}
 	store := StoreOptions{GraphRoot: filepath.Join(root, "graph"), RunRoot: filepath.Join(root, "run"), GraphDriverName: "vfs"}
 	lease, err := acquireStore(store)
 	if err != nil {
@@ -339,7 +338,7 @@ func TestEncryptedRegistryIndexRetainsOfflinePlatformSelections(t *testing.T) {
 			t.Fatal("encrypted leaf digest resolved a different platform from its index")
 		}
 	}
-	cached, err := imagecatalog.AvailablePlatforms(ctx, options.ImageStoreDir, repositoryName+":latest")
+	cached, err := oci.StoredImagePlatforms(ctx, lease.store, repositoryName+":latest")
 	if err != nil || len(cached) != 2 {
 		t.Fatalf("offline platform discovery = %+v, %v", cached, err)
 	}

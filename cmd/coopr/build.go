@@ -53,7 +53,8 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 	var controls buildControlFlags
 	var registry registryFlags
 	cmd := &cobra.Command{
-		Use: "build [file|context]", Short: "Build an image into Coopr's local image graph",
+		Annotations: map[string]string{nativeStorageAnnotation: "true"},
+		Use:         "build [file|context]", Short: "Build an image into Coopr's local image graph",
 		Long: "Build into Coopr's local image graph with the embedded Buildah backend. Supply a definition file path or --file with a build context; no filename is selected automatically. Use --tag NAME for a local tag, or --tag podman:NAME, docker:NAME, registry:NAME, or oci-archive:PATH to copy the built image to that destination. --push publishes the name supplied by --tag to a registry. Coopr excludes its stores and temporary files from the local context and honors .cooprignore, .containerignore, and .dockerignore.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, paths []string) error {
@@ -65,7 +66,7 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			store, catalogue, err := commandStorage(cmd)
+			store, err := commandStorage(cmd)
 			if err != nil {
 				return err
 			}
@@ -130,16 +131,12 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 				if tag == "" {
 					return fmt.Errorf("--tag requires a nonempty image name")
 				}
-				var destination transfer.Destination
 				if push {
-					destination, err = transfer.ParsePushDestination(tag, oci.Image)
+					_, err = transfer.ParsePushDestination(tag, oci.Image)
 				} else {
-					destination, err = transfer.ParseDestination(tag, oci.Image)
+					_, err = transfer.ParseDestination(tag, oci.Image)
 				}
 				if err != nil {
-					return err
-				}
-				if err := prepareDestination(destination); err != nil {
 					return err
 				}
 			}
@@ -162,8 +159,8 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 				Lifecycle:          controls.lifecycle(),
 				DisableCompression: disableCompression, ConfidentialWorkload: cw,
 				Quiet: quiet, LogFile: logFile, LogSplit: logSplit, LogRusage: logRusage && !quiet, RusageLogFile: rusageLogFile,
-				BuildStore: store, StoreDir: catalogue,
-				Outputs: filesystems, Squash: squash, SquashAll: squashAll, SBOM: scans, Signing: signing.options(),
+				BuildStore: store,
+				Outputs:    filesystems, Squash: squash, SquashAll: squashAll, SBOM: scans, Signing: signing.options(),
 				ImageControls: imageOptions, Timestamp: forceTimestamp, SourceDateEpoch: epoch, CacheTTL: ttl,
 				AllPlatforms: allPlatforms, Manifest: manifest,
 				Tags: tags, MetadataFile: metadataFile, IIDFile: iidFile,

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"coopr/internal/oci"
@@ -14,7 +15,9 @@ import (
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/storage"
+	"go.podman.io/storage/pkg/mount"
 	"go.podman.io/storage/pkg/system"
+	"golang.org/x/sys/unix"
 )
 
 // snapshotPortableState observes an effective filesystem and its complete
@@ -76,6 +79,49 @@ func storageAmbientSELinux(mountLabel string, storageLabel []byte) string {
 		return strings.Join(parts[:4], ":")
 	}
 	return mountLabel
+}
+
+// A FUSE filesystem without seclabel cannot relabel image content. When its
+// backing graphroot proves SELinux is active, the mounted root's context is
+// host policy and supplies the baseline for this mount only.
+func mountedAmbientSELinux(root, graphRoot, fallback string) (string, error) {
+	label, err := system.Lgetxattr(root, "security.selinux")
+	if err != nil {
+		if errors.Is(err, unix.ENODATA) || errors.Is(err, system.ENOTSUP) || errors.Is(err, system.ErrNotSupportedPlatform) {
+			return fallback, nil
+		}
+		return "", fmt.Errorf("read mounted root SELinux context: %w", err)
+	}
+	if len(label) == 0 || matchesAmbientSELinux(string(label), fallback) {
+		return fallback, nil
+	}
+	mounts, err := mount.GetMounts()
+	if err != nil {
+		return "", fmt.Errorf("inspect mounted root SELinux policy: %w", err)
+	}
+	if nonRelabelableFUSEMount(root, graphRoot, mounts) {
+		return strings.TrimSuffix(string(label), "\x00"), nil
+	}
+	return fallback, nil
+}
+
+func nonRelabelableFUSEMount(root, graphRoot string, mounts []*mount.Info) bool {
+	root, graphRoot = filepath.Clean(root), filepath.Clean(graphRoot)
+	var rootMount, graphMount *mount.Info
+	for _, info := range mounts {
+		if info.Mountpoint == root {
+			rootMount = info
+		}
+		point := filepath.Clean(info.Mountpoint)
+		if graphRoot == point || strings.HasPrefix(graphRoot, strings.TrimSuffix(point, string(filepath.Separator))+string(filepath.Separator)) {
+			if graphMount == nil || len(point) > len(filepath.Clean(graphMount.Mountpoint)) {
+				graphMount = info
+			}
+		}
+	}
+	return rootMount != nil && rootMount.FSType == "fuse.fuse-overlayfs" && rootMount.Root == "/" &&
+		!slices.Contains(strings.Split(rootMount.VFSOptions, ","), "seclabel") &&
+		graphMount != nil && slices.Contains(strings.Split(graphMount.VFSOptions, ","), "seclabel")
 }
 
 func matchesAmbientSELinux(value, expected string) bool {
@@ -141,6 +187,10 @@ func imageHasPortableMetadata(ctx context.Context, store storage.Store, imageID,
 		_, err := store.UnmountImage(imageID, false)
 		retErr = errors.Join(retErr, err)
 	}()
+	ambientSELinux, err = mountedAmbientSELinux(root, store.GraphRoot(), ambientSELinux)
+	if err != nil {
+		return false, err
+	}
 	portable = true
 	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {

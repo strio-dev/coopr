@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"coopr/internal/definition"
-	"coopr/internal/imagecatalog"
 	"coopr/internal/oci"
 	"coopr/internal/planner"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -66,7 +65,7 @@ onbuild { env FROM_PARENT="yes" }
 	}
 }
 
-func TestDockerBaseHealthcheckAndOnBuildSurviveLocalCatalog(t *testing.T) {
+func TestDockerBaseHealthcheckAndOnBuildSurviveNativeStorage(t *testing.T) {
 	if testing.Short() || os.Getenv("COOPR_TEST_BUILDAH") == "" {
 		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah Docker-base test")
 	}
@@ -144,13 +143,12 @@ SCRIPT`,
 		t.Fatal(err)
 	}
 	const reference = "registry.example/coopr/onbuild:latest"
-	imageStoreDir := filepath.Join(root, "images")
-	if err := imagecatalog.Commit(ctx, imageStoreDir, reference, v1.Platform{OS: "linux", Architecture: runtime.GOARCH}, imagecatalog.Selection{
+	if err := nameNativeFixture(ctx, store, reference, oci.StoredSelection{
 		Root: selected, Manifest: selected, ImageID: parent.ImageID, ConfigData: parentConfig,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	resolver, err := oci.NewResolver(oci.Options{ImageStoreDir: imageStoreDir})
+	resolver, err := oci.NewResolver(oci.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

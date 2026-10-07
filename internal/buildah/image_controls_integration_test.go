@@ -29,7 +29,7 @@ label current="yes" remove="yes"
 		flat := layout + ".tar"
 		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-			ImageStoreDir: base.imageStoreDir, SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
+			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 			Output: Output{Path: layout, Squash: attempt == 1, Filesystem: FilesystemOutput{Type: "tar", Path: flat}}, Timestamp: &forced,
 			ImageControls: ImageControls{
 				Env: []string{"FLAG=from-cli"}, UnsetEnv: []string{"FLAG"},

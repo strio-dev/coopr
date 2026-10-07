@@ -62,7 +62,7 @@ run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof; cat /input >>/proof; 
 				var logs strings.Builder
 				_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 					Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-					Output: Output{Path: layout}, ImageStoreDir: base.imageStoreDir,
+					Output:            Output{Path: layout},
 					ComponentStoreDir: filepath.Join(root, "components"),
 					CacheLocalDir:     filepath.Join(root, "cache"), SignaturePolicyPath: policy,
 					Stdout: io.Discard, Stderr: &logs,

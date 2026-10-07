@@ -64,7 +64,6 @@ type SupervisedPlanOptions struct {
 	Isolation           string
 	Runtime             string
 	Output              Output
-	ImageStoreDir       string
 	ComponentStoreDir   string
 	CacheLocalDir       string
 	CacheRepository     string
@@ -124,7 +123,6 @@ type planWorkerRequest struct {
 	Isolation           string                 `json:"isolation,omitempty"`
 	Runtime             string                 `json:"runtime,omitempty"`
 	Output              Output                 `json:"output"`
-	ImageStoreDir       string                 `json:"image_store_dir,omitempty"`
 	ComponentStoreDir   string                 `json:"component_store_dir,omitempty"`
 	CacheLocalDir       string                 `json:"cache_local_dir,omitempty"`
 	CacheRepository     string                 `json:"cache_repository,omitempty"`
@@ -423,10 +421,10 @@ func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition
 	request := planWorkerRequest{
 		Mode: mode, ImageID: options.ImageID, ManifestDigest: options.ManifestDigest, ManifestDescriptor: options.ManifestDescriptor, JobID: jobID, Plan: plan, Definition: def, PlannerOptions: planning,
 		Store: options.Store, ContextDir: options.ContextDir, IgnoreFile: options.IgnoreFile,
-		ContextArtifacts: append(append([]string(nil), options.ContextArtifacts...), jobDir, options.Store.ImageStore, options.ImageStoreDir, options.ComponentStoreDir, options.CacheLocalDir, workerTemp, options.AuthFile, options.CertDir, options.RusageLogFile),
+		ContextArtifacts: append(append([]string(nil), options.ContextArtifacts...), jobDir, options.Store.ImageStore, options.ComponentStoreDir, options.CacheLocalDir, workerTemp, options.AuthFile, options.CertDir, options.RusageLogFile),
 		Isolation:        options.Isolation, Runtime: options.Runtime,
-		Output:        workerOutput,
-		ImageStoreDir: options.ImageStoreDir, ComponentStoreDir: options.ComponentStoreDir, PlainHTTP: options.PlainHTTP,
+		Output:            workerOutput,
+		ComponentStoreDir: options.ComponentStoreDir, PlainHTTP: options.PlainHTTP,
 		CacheLocalDir:   options.CacheLocalDir,
 		CacheRepository: options.CacheRepository,
 		CacheFrom:       slices.Clone(options.CacheFrom),
@@ -680,7 +678,7 @@ func executePlanWorker(requestPath string) error {
 				PlainHTTP: request.PlainHTTP, PlainHTTPRegistries: request.PlainHTTPRegistries,
 				AuthFile: request.AuthFile, CertDir: request.CertDir, SkipTLSVerify: request.SkipTLSVerify,
 				Credentials: request.Credentials, Retry: request.Retry, RetrySet: request.RetrySet, RetryDelay: request.RetryDelay, DecryptionKeys: request.DecryptionKeys, SignaturePolicyPath: request.SignaturePolicyPath,
-				Pull: request.Pull, PullPolicy: request.PullPolicy, ImageStoreDir: request.ImageStoreDir, ComponentStoreDir: request.ComponentStoreDir, NativeStore: NativeStoreOptions(request.Store), NativeStoreShared: request.Store.Shared,
+				Pull: request.Pull, PullPolicy: request.PullPolicy, ComponentStoreDir: request.ComponentStoreDir, NativeStore: NativeStoreOptions(request.Store),
 			})
 			if err != nil {
 				return fmt.Errorf("create build worker resolver: %w", err)
@@ -694,7 +692,7 @@ func executePlanWorker(requestPath string) error {
 			PlainHTTP: request.PlainHTTP, PlainHTTPRegistries: request.PlainHTTPRegistries,
 			AuthFile: request.AuthFile, CertDir: request.CertDir, SkipTLSVerify: request.SkipTLSVerify,
 			Credentials: request.Credentials, Retry: request.Retry, RetrySet: request.RetrySet, RetryDelay: request.RetryDelay, DecryptionKeys: request.DecryptionKeys, SignaturePolicyPath: request.SignaturePolicyPath,
-			Pull: request.Pull, PullPolicy: request.PullPolicy, ImageStoreDir: request.ImageStoreDir, ComponentStoreDir: request.ComponentStoreDir, NativeStore: NativeStoreOptions(request.Store), NativeStoreShared: request.Store.Shared,
+			Pull: request.Pull, PullPolicy: request.PullPolicy, ComponentStoreDir: request.ComponentStoreDir, NativeStore: NativeStoreOptions(request.Store),
 		})
 		if err != nil {
 			return fmt.Errorf("create SBOM image resolver: %w", err)
@@ -710,7 +708,7 @@ func executePlanWorker(requestPath string) error {
 				PlainHTTP: request.PlainHTTP, PlainHTTPRegistries: request.PlainHTTPRegistries,
 				AuthFile: request.AuthFile, CertDir: request.CertDir, SkipTLSVerify: request.SkipTLSVerify,
 				Credentials: request.Credentials, Retry: request.Retry, RetrySet: request.RetrySet, RetryDelay: request.RetryDelay, DecryptionKeys: request.DecryptionKeys, SignaturePolicyPath: request.SignaturePolicyPath,
-				Pull: request.Pull, PullPolicy: request.PullPolicy, ImageStoreDir: request.ImageStoreDir, ComponentStoreDir: request.ComponentStoreDir, NativeStore: NativeStoreOptions(request.Store), NativeStoreShared: request.Store.Shared,
+				Pull: request.Pull, PullPolicy: request.PullPolicy, ComponentStoreDir: request.ComponentStoreDir, NativeStore: NativeStoreOptions(request.Store),
 			})
 			if err != nil {
 				return fmt.Errorf("create build worker resolver: %w", err)

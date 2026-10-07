@@ -20,7 +20,6 @@ import (
 
 	"coopr/internal/buildah"
 	"coopr/internal/definition"
-	"coopr/internal/imagecatalog"
 	"coopr/internal/oci"
 	"coopr/internal/planner"
 	"github.com/containerd/platforms"
@@ -50,10 +49,13 @@ func TestMain(m *testing.M) {
 	if reexec.Init() {
 		return
 	}
+	if os.Getenv("COOPR_TEST_BUILDAH") != "" || os.Getenv("COOPR_TEST_BUILDAH_REGISTRY") != "" || os.Getenv("COOPR_TEST_CONTAINER_STORAGE") != "" {
+		unshare.MaybeReexecUsingUserNamespace(false)
+	}
 	os.Exit(m.Run())
 }
 
-func TestExactManifestLookupPreservesCatalogPlatform(t *testing.T) {
+func TestExactManifestLookupPreservesNativePlatform(t *testing.T) {
 	ctx := context.Background()
 	dir := filepath.Join(t.TempDir(), "images")
 	nativeArch, nonNativeArch := runtime.GOARCH, "arm64"
@@ -62,25 +64,24 @@ func TestExactManifestLookupPreservesCatalogPlatform(t *testing.T) {
 	}
 	native := v1.Platform{OS: "linux", Architecture: nativeArch}
 	nonNative := v1.Platform{OS: "linux", Architecture: nonNativeArch}
-	configData := []byte(`{"os":"linux","architecture":"` + nonNativeArch + `","rootfs":{"type":"layers","diff_ids":[]}}`)
-	manifest := v1.Descriptor{MediaType: v1.MediaTypeImageManifest, Digest: digest.FromString("isolated non-native manifest"), Size: 32}
-	selection := imagecatalog.Selection{Root: manifest, Manifest: manifest, ImageID: digest.FromBytes(configData).Encoded(), ConfigData: configData}
-	if err := imagecatalog.Commit(ctx, dir, "", nonNative, selection); err != nil {
-		t.Fatal(err)
-	}
-	got, selectedPlatform, found, err := lookupStoredImage(ctx, dir, manifest.Digest.String(), native, false)
+	store := nativeTestStore(dir)
+	selection := nativeEmptyImageFixture(t, store, nonNative, "foreign")
+	manifest := selection.Manifest
+
+	got, selectedPlatform, found, err := lookupStoredImage(ctx, Options{BuildStore: nativeTestStore(dir)}, manifest.Digest.String(), native, false)
 	if err != nil || !found || got.Manifest.Digest != manifest.Digest || selectedPlatform.Architecture != nonNativeArch {
 		t.Fatalf("exact lookup = %+v on %+v, found=%t, err=%v", got, selectedPlatform, found, err)
 	}
-	if err := imagecatalog.Commit(ctx, dir, "copied:latest", selectedPlatform, got); err != nil {
+	if err := nameNativeTestImage(ctx, store, "copied:latest", got); err != nil {
 		t.Fatal(err)
 	}
-	if _, found, err := imagecatalog.Lookup(ctx, dir, "copied:latest", nonNative); err != nil || !found {
-		t.Fatalf("copied tag missing original platform: found=%t err=%v", found, err)
+	if _, _, found, err := lookupStoredImage(ctx, Options{BuildStore: store}, "copied:latest", nonNative, true); err != nil || !found {
+		t.Fatalf("foreign tag found=%v err=%v", found, err)
 	}
-	if got, found, err := imagecatalog.Lookup(ctx, dir, "copied:latest", native); err != nil || found {
-		t.Fatalf("copied tag mislabeled as native: %+v found=%t err=%v", got, found, err)
+	if _, _, found, err := lookupStoredImage(ctx, Options{BuildStore: store}, "copied:latest", native, true); err != nil || found {
+		t.Fatalf("foreign tag mislabeled native found=%v err=%v", found, err)
 	}
+
 }
 
 func TestCopyPinnedManifestExportsExactVariantSharingImageID(t *testing.T) {
@@ -92,13 +93,10 @@ func TestCopyPinnedManifestExportsExactVariantSharingImageID(t *testing.T) {
 
 	root := t.TempDir()
 	storeDir := filepath.Join(root, "images")
-	store, err := buildah.DefaultStoreOptions()
-	if err != nil {
-		t.Fatal(err)
-	}
-	store.GraphRoot = filepath.Join(storeDir, "graph")
+	store := nativeTestStore(storeDir)
+	var err error
 	olderOCI, olderRef, newerDocker, newerRef := selectedCopySharedConfigFixture(t, ctx)
-	build := func(name, reference, format string, platform v1.Platform, selection imagecatalog.Selection) buildah.Result {
+	build := func(name, reference, format string, platform v1.Platform, selection oci.StoredSelection) buildah.Result {
 		t.Helper()
 		parsed, err := definition.Parse(strings.NewReader("from \"" + reference + "\"\n"))
 		if err != nil {
@@ -108,7 +106,7 @@ func TestCopyPinnedManifestExportsExactVariantSharingImageID(t *testing.T) {
 			Mode: planner.Build, Platform: platform.OS + "/" + platform.Architecture,
 		}, buildah.SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-			Output: buildah.Output{Path: filepath.Join(root, name), Format: format}, ImageStoreDir: storeDir, PlainHTTP: true, Pull: true,
+			Output: buildah.Output{Path: filepath.Join(root, name), Format: format}, PlainHTTP: true, Pull: true,
 		})
 		if err != nil {
 			t.Fatalf("import %s variant: %v", name, err)
@@ -139,7 +137,7 @@ func TestCopyPinnedManifestExportsExactVariantSharingImageID(t *testing.T) {
 	}
 
 	archive := filepath.Join(root, "pinned-oci.tar")
-	_, err = Copy(ctx, oci.Image, olderOCI.Manifest.Digest.String(), Destination{Transport: "oci-archive", Name: archive}, Options{ImageStoreDir: storeDir})
+	_, err = Copy(ctx, oci.Image, olderOCI.Manifest.Digest.String(), Destination{Transport: "oci-archive", Name: archive}, Options{BuildStore: store})
 	if err != nil {
 		t.Fatalf("copy pinned OCI manifest: %v", err)
 	}
@@ -154,7 +152,7 @@ func TestCopyPinnedManifestExportsExactVariantSharingImageID(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := Copy(ctx, oci.Image, olderOCI.Manifest.Digest.String(), Destination{Transport: "registry", Name: registryName}, Options{
-		ImageStoreDir: storeDir, BuildStore: store, PlainHTTP: true, SignaturePolicyPath: policyPath,
+		BuildStore: store, PlainHTTP: true, SignaturePolicyPath: policyPath,
 	})
 	if err != nil {
 		t.Fatalf("copy pinned OCI manifest to registry: %v", err)
@@ -163,20 +161,17 @@ func TestCopyPinnedManifestExportsExactVariantSharingImageID(t *testing.T) {
 		t.Fatalf("registry copy = %q, want %q", result, want)
 	}
 	assertRemoteManifestDigests(t, ctx, registryName, olderOCI.Manifest, nil)
-	if got, err := Copy(ctx, oci.Image, olderOCI.Manifest.Digest.String(), Destination{Transport: "local", Name: "pinned:latest"}, Options{ImageStoreDir: storeDir}); err != nil || got != "pinned:latest" {
+	if got, err := Copy(ctx, oci.Image, olderOCI.Manifest.Digest.String(), Destination{Transport: "local", Name: "pinned:latest"}, Options{BuildStore: store}); err != nil || got != "pinned:latest" {
 		t.Fatalf("tag pinned OCI manifest locally = %q, %v", got, err)
 	}
-	if tagged, found, err := imagecatalog.Lookup(ctx, storeDir, "pinned:latest", v1.Platform{OS: "linux", Architecture: runtime.GOARCH}); err != nil || !found || tagged.Manifest.Digest != olderOCI.Manifest.Digest {
+	if tagged, _, found, err := lookupStoredImage(ctx, Options{BuildStore: store}, "pinned:latest", v1.Platform{OS: "linux", Architecture: runtime.GOARCH}, true); err != nil || !found || tagged.Manifest.Digest != olderOCI.Manifest.Digest {
 		t.Fatalf("local pinned tag = %+v, found=%t, err=%v", tagged, found, err)
 	}
 
 	missing := olderOCI
 	missing.Root = v1.Descriptor{MediaType: v1.MediaTypeImageManifest, Digest: digest.FromString("missing selected manifest"), Size: 1}
 	missing.Manifest = missing.Root
-	if err := imagecatalog.Commit(ctx, storeDir, "", v1.Platform{OS: "linux", Architecture: runtime.GOARCH}, missing); err != nil {
-		t.Fatalf("catalog missing manifest fixture: %v", err)
-	}
-	_, err = Copy(ctx, oci.Image, missing.Manifest.Digest.String(), Destination{Transport: "local", Name: "missing:latest"}, Options{ImageStoreDir: storeDir})
+	_, err = Copy(ctx, oci.Image, missing.Manifest.Digest.String(), Destination{Transport: "local", Name: "missing:latest"}, Options{BuildStore: store})
 	if err == nil || !strings.Contains(err.Error(), "manifest") {
 		t.Fatalf("local tag of missing selected manifest = %v", err)
 	}
@@ -186,27 +181,26 @@ func TestCopyPinnedManifestExportsExactVariantSharingImageID(t *testing.T) {
 		otherArch = "amd64"
 	}
 	nonNativePlatform := v1.Platform{OS: "linux", Architecture: otherArch}
-	nonNative := olderOCI
-	nonNative.Root = v1.Descriptor{MediaType: v1.MediaTypeImageIndex, Digest: digest.FromString("non-native index"), Size: 1}
-	if err := imagecatalog.Commit(ctx, storeDir, "non-native:latest", nonNativePlatform, nonNative); err != nil {
-		t.Fatalf("tag non-native fixture: %v", err)
+	nonNative := nativeEmptyImageFixture(t, store, nonNativePlatform, "foreign-copy")
+	if err := nameNativeTestImage(ctx, store, "non-native:latest", nonNative); err != nil {
+		t.Fatal(err)
 	}
-	if got, err := Copy(ctx, oci.Image, "non-native:latest", Destination{Transport: "local", Name: "non-native-default:latest"}, Options{ImageStoreDir: storeDir}); err != nil || got != "non-native-default:latest" {
+	if got, err := Copy(ctx, oci.Image, "non-native:latest", Destination{Transport: "local", Name: "non-native-default:latest"}, Options{BuildStore: store}); err != nil || got != "non-native-default:latest" {
 		t.Fatalf("implicit sole-platform copy of non-native tag = %q, %v", got, err)
 	}
-	if copied, found, err := imagecatalog.Lookup(ctx, storeDir, "non-native-default:latest", nonNativePlatform); err != nil || !found || copied.Manifest.Digest != nonNative.Manifest.Digest {
+	if copied, _, found, err := lookupStoredImage(ctx, Options{BuildStore: store}, "non-native-default:latest", nonNativePlatform, true); err != nil || !found || copied.Manifest.Digest != nonNative.Manifest.Digest {
 		t.Fatalf("implicit sole-platform copy selection = %+v, found=%t, err=%v", copied, found, err)
 	}
-	if _, found, err := imagecatalog.Lookup(ctx, storeDir, "non-native-default:latest", v1.Platform{OS: "linux", Architecture: runtime.GOARCH}); err != nil || found {
+	if _, _, found, err := lookupStoredImage(ctx, Options{BuildStore: store}, "non-native-default:latest", v1.Platform{OS: "linux", Architecture: runtime.GOARCH}, true); err != nil || found {
 		t.Fatalf("implicit sole-platform copy gained native selection: found=%t, err=%v", found, err)
 	}
 	if got, err := Copy(ctx, oci.Image, "non-native:latest", Destination{Transport: "local", Name: "non-native-copy:latest"}, Options{
-		ImageStoreDir: storeDir, Platform: nonNativePlatform, PlatformExplicit: true,
+		BuildStore: store, Platform: nonNativePlatform, PlatformExplicit: true,
 	}); err != nil || got != "non-native-copy:latest" {
 		t.Fatalf("explicit-platform copy of non-native tag = %q, %v", got, err)
 	}
 	if got, err := Copy(ctx, oci.Image, nonNative.Root.Digest.String(), Destination{Transport: "local", Name: "non-native-index:latest"}, Options{
-		ImageStoreDir: storeDir, Platform: nonNativePlatform, PlatformExplicit: true,
+		BuildStore: store, Platform: nonNativePlatform, PlatformExplicit: true,
 	}); err != nil || got != "non-native-index:latest" {
 		t.Fatalf("explicit-platform copy of non-native digest = %q, %v", got, err)
 	}
@@ -221,15 +215,11 @@ func TestLocalSigningPreservesSiblingManifestSignaturesSharingImageID(t *testing
 
 	root := t.TempDir()
 	storeDir := filepath.Join(root, "images")
-	store, err := buildah.DefaultStoreOptions()
-	if err != nil {
-		t.Fatal(err)
-	}
-	store.GraphRoot = filepath.Join(storeDir, "graph")
-	store.GraphDriverName = "overlay"
+	store := nativeTestStore(storeDir)
+	var err error
 	store.GraphDriverOptions = nil
 	layoutPath, olderOCI, newerDocker := selectedSigningSharedConfigLayoutFixture(t, ctx)
-	importVariant := func(name string, selection imagecatalog.Selection) {
+	importVariant := func(name string, selection oci.StoredSelection) {
 		t.Helper()
 		imageID, err := buildah.ImportLayoutSupervised(ctx, store, layoutPath, selection.Manifest)
 		if err != nil {
@@ -238,8 +228,8 @@ func TestLocalSigningPreservesSiblingManifestSignaturesSharingImageID(t *testing
 		if imageID != selection.ImageID {
 			t.Fatalf("imported %s image = %s, want %s", name, imageID, selection.ImageID)
 		}
-		if err := imagecatalog.Commit(ctx, storeDir, name, v1.Platform{OS: "linux", Architecture: runtime.GOARCH}, selection); err != nil {
-			t.Fatalf("catalog %s variant: %v", name, err)
+		if err := nameNativeTestImage(ctx, store, name, selection); err != nil {
+			t.Fatalf("native %s variant: %v", name, err)
 		}
 	}
 	importVariant("older-oci", olderOCI)
@@ -247,10 +237,10 @@ func TestLocalSigningPreservesSiblingManifestSignaturesSharingImageID(t *testing
 	if olderOCI.ImageID != newerDocker.ImageID {
 		t.Fatalf("fixture image IDs differ: OCI %s, Docker %s", olderOCI.ImageID, newerDocker.ImageID)
 	}
-	commitIndex := func(name string, selected []imagecatalog.Selection) {
+	commitIndex := func(name string, selected []oci.StoredSelection) {
 		t.Helper()
 		index := v1.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: v1.MediaTypeImageIndex}
-		selections := make(map[string]imagecatalog.Selection, len(selected))
+		selections := make(map[string]oci.StoredSelection, len(selected))
 		for position, selection := range selected {
 			architecture := runtime.GOARCH
 			if position == 1 {
@@ -275,12 +265,12 @@ func TestLocalSigningPreservesSiblingManifestSignaturesSharingImageID(t *testing
 			selection.Root = rootDescriptor
 			selections[key] = selection
 		}
-		if err := imagecatalog.CommitIndex(ctx, storeDir, name, rootDescriptor, indexData, selections); err != nil {
-			t.Fatalf("catalog signing index %s: %v", name, err)
+		if err := nativeTestIndex(ctx, store, name, rootDescriptor, indexData, selections); err != nil {
+			t.Fatalf("native signing index %s: %v", name, err)
 		}
 	}
-	commitIndex("oci-only:latest", []imagecatalog.Selection{olderOCI})
-	commitIndex("docker-only:latest", []imagecatalog.Selection{newerDocker})
+	commitIndex("oci-only:latest", []oci.StoredSelection{olderOCI})
+	commitIndex("docker-only:latest", []oci.StoredSelection{newerDocker})
 
 	gpgHome, err := os.MkdirTemp("", "coopr-gpg-")
 	if err != nil {
@@ -314,7 +304,7 @@ func TestLocalSigningPreservesSiblingManifestSignaturesSharingImageID(t *testing
 		t.Fatalf("resolve native default manifest: %v", err)
 	}
 	defaultSource, siblingSource := "", ""
-	var defaultSelection, siblingSelection imagecatalog.Selection
+	var defaultSelection, siblingSelection oci.StoredSelection
 	switch resolvedDefault.Selected.Digest {
 	case olderOCI.Manifest.Digest:
 		defaultSource, siblingSource, defaultSelection, siblingSelection = "oci-only:latest", "docker-only:latest", olderOCI, newerDocker
@@ -325,8 +315,8 @@ func TestLocalSigningPreservesSiblingManifestSignaturesSharingImageID(t *testing
 	}
 	localIdentity := repository + ":signing"
 	localSigning := Options{
-		ImageStoreDir: storeDir, BuildStore: store,
-		Signing: SigningOptions{SignBy: fingerprint, PassphraseFile: passphraseFile},
+		BuildStore: store,
+		Signing:    SigningOptions{SignBy: fingerprint, PassphraseFile: passphraseFile},
 	}
 	syntheticSignature := []byte("\x00sigstore-json\n{\"mimeType\":\"application/vnd.dev.cosign.simplesigning.v1+json\",\"payload\":\"cGF5bG9hZA==\",\"annotations\":{\"coopr.test\":\"preserve\"}}")
 	unknownMetadata := json.RawMessage(`{"coopr-test-preserve":["unknown",{"value":7}]}`)
@@ -340,16 +330,16 @@ func TestLocalSigningPreservesSiblingManifestSignaturesSharingImageID(t *testing
 	}
 	assertStoredSignatureFixture(t, store, siblingSelection.ImageID, siblingSelection.Manifest.Digest, syntheticSignature, unknownMetadata)
 	if _, err := Copy(ctx, oci.Image, siblingSelection.Manifest.Digest.String(), Destination{Transport: "registry", Name: "127.0.0.1:1/coopr/failure:test"}, Options{
-		ImageStoreDir: storeDir, BuildStore: store, PlainHTTP: true, RetrySet: true,
+		BuildStore: store, PlainHTTP: true, RetrySet: true,
 	}); err == nil {
 		t.Fatal("selected publish to unavailable registry unexpectedly succeeded")
 	}
 	assertStoredTransferState(t, store, siblingSelection.ImageID, siblingSelection.Manifest.Digest)
-	publishAndVerify := func(selected imagecatalog.Selection, tag string) {
+	publishAndVerify := func(selected oci.StoredSelection, tag string) {
 		t.Helper()
 		name := repository + ":" + tag
 		if _, err := Copy(ctx, oci.Image, selected.Manifest.Digest.String(), Destination{Transport: "registry", Name: name}, Options{
-			ImageStoreDir: storeDir, BuildStore: store, PlainHTTP: true,
+			BuildStore: store, PlainHTTP: true,
 		}); err != nil {
 			t.Fatalf("publish selected manifest %s: %v", selected.Manifest.Digest, err)
 		}
@@ -596,7 +586,7 @@ func executeStoredSignatureFixture(requestPath string) (retErr error) {
 	return store.SetMetadata(request.ImageID, string(encoded))
 }
 
-func selectedCopySharedConfigFixture(t *testing.T, ctx context.Context) (imagecatalog.Selection, string, imagecatalog.Selection, string) {
+func selectedCopySharedConfigFixture(t *testing.T, ctx context.Context) (oci.StoredSelection, string, oci.StoredSelection, string) {
 	t.Helper()
 	layout, olderOCI, newerDocker := selectedCopySharedConfigLayoutFixture(t, ctx)
 	server := httptest.NewServer(registry.New())
@@ -617,7 +607,7 @@ func selectedCopySharedConfigFixture(t *testing.T, ctx context.Context) (imageca
 	return olderOCI, olderRef, newerDocker, newerRef
 }
 
-func selectedCopySharedConfigLayoutFixture(t *testing.T, ctx context.Context) (string, imagecatalog.Selection, imagecatalog.Selection) {
+func selectedCopySharedConfigLayoutFixture(t *testing.T, ctx context.Context) (string, oci.StoredSelection, oci.StoredSelection) {
 	t.Helper()
 	layout := t.TempDir()
 	source, err := orasoci.NewWithContext(ctx, layout)
@@ -654,8 +644,8 @@ func selectedCopySharedConfigLayoutFixture(t *testing.T, ctx context.Context) (s
 	}
 	ociManifest := manifest(v1.MediaTypeImageManifest, v1.MediaTypeImageConfig)
 	dockerManifest := manifest(selectedCopyDockerManifest, selectedCopyDockerConfig)
-	selection := func(descriptor v1.Descriptor) imagecatalog.Selection {
-		return imagecatalog.Selection{
+	selection := func(descriptor v1.Descriptor) oci.StoredSelection {
+		return oci.StoredSelection{
 			Root: descriptor, Manifest: descriptor, ImageID: config.Digest.Encoded(), ConfigData: configData,
 		}
 	}
@@ -663,7 +653,7 @@ func selectedCopySharedConfigLayoutFixture(t *testing.T, ctx context.Context) (s
 	return layout, olderOCI, newerDocker
 }
 
-func selectedSigningSharedConfigLayoutFixture(t *testing.T, ctx context.Context) (string, imagecatalog.Selection, imagecatalog.Selection) {
+func selectedSigningSharedConfigLayoutFixture(t *testing.T, ctx context.Context) (string, oci.StoredSelection, oci.StoredSelection) {
 	t.Helper()
 	layoutPath := t.TempDir()
 	store, _, manifests := multiPlatformImageFixtureAt(t, ctx, layoutPath)
@@ -703,8 +693,8 @@ func selectedSigningSharedConfigLayoutFixture(t *testing.T, ctx context.Context)
 	if err := store.Push(ctx, dockerManifest, bytes.NewReader(dockerData)); err != nil {
 		t.Fatal(err)
 	}
-	selection := func(descriptor v1.Descriptor) imagecatalog.Selection {
-		return imagecatalog.Selection{Root: descriptor, Manifest: descriptor, ImageID: manifest.Config.Digest.Encoded(), ConfigData: configData}
+	selection := func(descriptor v1.Descriptor) oci.StoredSelection {
+		return oci.StoredSelection{Root: descriptor, Manifest: descriptor, ImageID: manifest.Config.Digest.Encoded(), ConfigData: configData}
 	}
 	return layoutPath, selection(ociManifest), selection(dockerManifest)
 }

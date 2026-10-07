@@ -12,7 +12,7 @@ import (
 
 func newComponentCommandWithGlobals(standalone bool) *cobra.Command {
 	cmd := &cobra.Command{
-		Use: "component", Short: "Build reusable OCI components",
+		Use: "component", Short: "Build and manage reusable OCI components",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) != 0 {
 				return fmt.Errorf("unknown command %q for %q", args[0], cmd.CommandPath())
@@ -20,9 +20,13 @@ func newComponentCommandWithGlobals(standalone bool) *cobra.Command {
 			return cmd.Help()
 		},
 	}
-	cmd.AddCommand(newComponentBuildCommandWithGlobals(standalone))
-	cmd.AddCommand(newCopyCommandWithGlobals(oci.Component, standalone))
-	addComponentMaintenanceCommands(cmd)
+	cmd.AddCommand(
+		newComponentBuildCommandWithGlobals(standalone),
+		newCopyCommandWithGlobals(oci.Component, standalone),
+		newComponentListCommand(),
+		newComponentInspectCommand(),
+		newComponentRemoveCommand(),
+	)
 	return cmd
 }
 
@@ -57,7 +61,8 @@ func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
 	var logFile string
 	var rusageLogFile string
 	cmd := &cobra.Command{
-		Use: "build [file|context]", Short: "Build a component into the local OCI store",
+		Annotations: map[string]string{nativeStorageAnnotation: "true"},
+		Use:         "build [file|context]", Short: "Build a component into the local OCI store",
 		Long: "Build a selected component output into Coopr's local OCI store. Supply a definition file path or --file with a build context; no filename is selected automatically. Use --tag NAME for a local tag or --tag registry:NAME or oci-archive:PATH to copy it. --push publishes the name supplied by --tag to a registry.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, paths []string) error {
@@ -69,7 +74,7 @@ func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			store, catalogue, err := commandStorage(cmd)
+			store, err := commandStorage(cmd)
 			if err != nil {
 				return err
 			}
@@ -123,7 +128,7 @@ func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
 			ref, err := build.BuildComponent(cmd.Context(), build.ComponentOptions{
 				File: file, Context: resolvedContext, DefinitionInContext: definitionInContext, From: from, IgnoreFile: ignoreFile, Tags: tags, MetadataFile: metadataFile, Push: push, Pull: pull, PullPolicy: pullPolicy, NoCache: noCache, Network: network, AddHosts: addHosts,
 				Lifecycle: controls.lifecycle(), Quiet: quiet, LogFile: logFile, LogSplit: logSplit, LogRusage: logRusage && !quiet, RusageLogFile: rusageLogFile,
-				BuildStore: store, ImageStoreDir: catalogue,
+				BuildStore:  store,
 				RunControls: runControls, Jobs: controls.jobs,
 				RewriteTimestamp: rewriteTimestamp,
 				Timestamp:        timestamp, SourceDateEpoch: epoch, CacheTTL: ttl,

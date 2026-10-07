@@ -82,7 +82,6 @@ type stageWorkerRequest struct {
 	RegistryOptions   oci.Options         `json:"registry_options,omitempty"`
 	ResolverEnabled   bool                `json:"resolver_enabled,omitempty"`
 	ComponentStore    string              `json:"component_store,omitempty"`
-	ImageStore        string              `json:"image_store,omitempty"`
 	PlainHTTP         bool                `json:"plain_http,omitempty"`
 	PlainHTTPHosts    []string            `json:"plain_http_hosts,omitempty"`
 	Pull              bool                `json:"pull,omitempty"`
@@ -211,7 +210,6 @@ func (executor *graphExecutor) executeGraphStageIsolated(ctx context.Context, pl
 		request.RegistryOptions = executor.options.Resolver.RegistryOptions()
 		request.ResolverEnabled = true
 		request.ComponentStore = executor.options.Resolver.ComponentStoreDir()
-		request.ImageStore = executor.options.Resolver.ImageStoreDir()
 		request.PlainHTTP = executor.options.Resolver.PlainHTTP()
 		request.PlainHTTPHosts = executor.options.Resolver.PlainHTTPRegistries()
 		request.Pull = executor.options.Resolver.PullImages()
@@ -369,7 +367,7 @@ func executeStageWorkerRequest(ctx context.Context, request stageWorkerRequest) 
 		registry.Pull, registry.PullPolicy = request.Pull, request.PullPolicy
 		registry.AuthFile, registry.CertDir, registry.SkipTLSVerify = request.AuthFile, request.CertDir, request.SkipTLSVerify
 		registry.SignaturePolicyPath = request.SignaturePolicy
-		registry.ComponentStoreDir, registry.ImageStoreDir = request.ComponentStore, request.ImageStore
+		registry.ComponentStoreDir = request.ComponentStore
 		resolver, err = oci.NewResolver(registry)
 		if err != nil {
 			return response, fmt.Errorf("create stage resolver: %w", err)

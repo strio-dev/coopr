@@ -13,8 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/imagecatalog"
-	"coopr/internal/localstore"
+	"coopr/internal/buildah"
 	"coopr/internal/oci"
 	"coopr/internal/transfer"
 	"github.com/google/go-containerregistry/pkg/registry"
@@ -36,10 +35,10 @@ func TestRunBuildsAndCopiesMultiPlatformIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	const tag = "multi:latest"
-	if got, err := Run(ctx, Options{File: file, StoreDir: storeDir, Tag: tag, Platforms: []string{"linux/arm64", "linux/amd64"}}); err != nil || got != tag {
+	if got, err := Run(ctx, Options{File: file, BuildStore: nativeBuildTestStore(storeDir), Tag: tag, Platforms: []string{"linux/arm64", "linux/amd64"}}); err != nil || got != tag {
 		t.Fatalf("multi-platform build = %q, %v", got, err)
 	}
-	root, indexData, selections, found, err := imagecatalog.LookupIndex(ctx, storeDir, tag)
+	root, indexData, selections, found, err := testStoredImageIndex(ctx, nativeBuildTestStore(storeDir), tag)
 	if err != nil || !found || len(selections) != 2 {
 		t.Fatalf("cataloged index = %s, %t, %d platforms, %v", root.Digest, found, len(selections), err)
 	}
@@ -51,7 +50,7 @@ func TestRunBuildsAndCopiesMultiPlatformIndex(t *testing.T) {
 		t.Fatalf("index platform order = %+v", index.Manifests)
 	}
 	archive := filepath.Join(work, "multi.oci.tar")
-	if _, err := transfer.Copy(ctx, oci.Image, tag, transfer.Destination{Transport: "oci-archive", Name: archive}, transfer.Options{ImageStoreDir: storeDir}); err != nil {
+	if _, err := transfer.Copy(ctx, oci.Image, tag, transfer.Destination{Transport: "oci-archive", Name: archive}, transfer.Options{BuildStore: nativeBuildTestStore(storeDir)}); err != nil {
 		t.Fatalf("copy complete index to archive: %v", err)
 	}
 	archived, err := orasoci.NewFromTar(ctx, archive)
@@ -74,10 +73,10 @@ func TestRunBuildsAndCopiesMultiPlatformIndex(t *testing.T) {
 	server := httptest.NewServer(registry.New())
 	defer server.Close()
 	remote := strings.TrimPrefix(server.URL, "http://") + "/coopr/multi:latest"
-	if _, err := transfer.Copy(ctx, oci.Image, tag, transfer.Destination{Transport: "registry", Name: remote}, transfer.Options{ImageStoreDir: storeDir, PlainHTTP: true}); err != nil {
+	if _, err := transfer.Copy(ctx, oci.Image, tag, transfer.Destination{Transport: "registry", Name: remote}, transfer.Options{BuildStore: nativeBuildTestStore(storeDir), PlainHTTP: true}); err != nil {
 		t.Fatalf("copy complete index to registry: %v", err)
 	}
-	resolver, err := oci.NewResolver(oci.Options{PlainHTTP: true, ImageStoreDir: filepath.Join(work, "remote-images")})
+	resolver, err := oci.NewResolver(oci.Options{PlainHTTP: true, NativeStore: buildah.NativeStoreOptions(nativeBuildTestStore(filepath.Join(work, "remote-images")))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +87,7 @@ func TestRunBuildsAndCopiesMultiPlatformIndex(t *testing.T) {
 		}
 	}
 	directRemote := strings.TrimPrefix(server.URL, "http://") + "/coopr/direct:latest"
-	immutable, err := Run(ctx, Options{File: file, StoreDir: storeDir, Tag: directRemote, Push: true, PlainHTTP: true, Platforms: []string{"linux/arm64", "linux/amd64"}})
+	immutable, err := Run(ctx, Options{File: file, BuildStore: nativeBuildTestStore(storeDir), Tag: directRemote, Push: true, PlainHTTP: true, Platforms: []string{"linux/arm64", "linux/amd64"}})
 	if err != nil || !strings.HasPrefix(immutable, strings.TrimSuffix(directRemote, ":latest")+"@sha256:") {
 		t.Fatalf("direct multi-platform push = %q, %v", immutable, err)
 	}
@@ -99,23 +98,23 @@ func TestRunBuildsAndCopiesMultiPlatformIndex(t *testing.T) {
 		}
 	}
 	alias := "localhost/multi-alias:latest"
-	if _, err := transfer.Copy(ctx, oci.Image, tag, transfer.Destination{Transport: "local", Name: alias}, transfer.Options{ImageStoreDir: storeDir}); err != nil {
+	if _, err := transfer.Copy(ctx, oci.Image, tag, transfer.Destination{Transport: "local", Name: alias}, transfer.Options{BuildStore: nativeBuildTestStore(storeDir)}); err != nil {
 		t.Fatalf("retag complete index: %v", err)
 	}
-	aliasedRoot, _, _, found, err := imagecatalog.LookupIndex(ctx, storeDir, alias)
+	aliasedRoot, _, _, found, err := testStoredImageIndex(ctx, nativeBuildTestStore(storeDir), alias)
 	if err != nil || !found || aliasedRoot.Digest != root.Digest {
 		t.Fatalf("aliased index = %s, %t, %v", aliasedRoot.Digest, found, err)
 	}
 	selectedAlias := "multi-amd64:latest"
 	if _, err := transfer.Copy(ctx, oci.Image, tag, transfer.Destination{Transport: "local", Name: selectedAlias}, transfer.Options{
-		ImageStoreDir: storeDir, Platform: v1.Platform{OS: "linux", Architecture: "amd64"}, PlatformExplicit: true,
+		BuildStore: nativeBuildTestStore(storeDir), Platform: v1.Platform{OS: "linux", Architecture: "amd64"}, PlatformExplicit: true,
 	}); err != nil {
 		t.Fatalf("retag selected platform: %v", err)
 	}
-	if unexpectedRoot, _, _, complete, err := imagecatalog.LookupIndex(ctx, storeDir, selectedAlias); err != nil || complete {
+	if unexpectedRoot, _, _, complete, err := testStoredImageIndex(ctx, nativeBuildTestStore(storeDir), selectedAlias); err != nil || complete {
 		t.Fatalf("selected alias resolves to complete index %s, complete=%t, err=%v", unexpectedRoot.Digest, complete, err)
 	}
-	selected, found, err := imagecatalog.Lookup(ctx, storeDir, selectedAlias, v1.Platform{OS: "linux", Architecture: "amd64"})
+	selected, found, err := testStoredImageSelection(ctx, nativeBuildTestStore(storeDir), selectedAlias, v1.Platform{OS: "linux", Architecture: "amd64"})
 	if err != nil || !found || selected.Root.Digest != selections["linux/amd64"].Manifest.Digest {
 		t.Fatalf("selected alias root = %s, found=%t, err=%v", selected.Root.Digest, found, err)
 	}
@@ -125,7 +124,7 @@ func TestRunBuildsAndCopiesMultiPlatformIndex(t *testing.T) {
 	}
 	for _, arch := range []string{"arm64", "amd64"} {
 		output := filepath.Join(work, "child-"+arch+".oci.tar")
-		if _, err := Run(ctx, Options{File: child, StoreDir: storeDir, Tag: "oci-archive:" + output, Platform: "linux/" + arch}); err != nil {
+		if _, err := Run(ctx, Options{File: child, BuildStore: nativeBuildTestStore(storeDir), Tag: "oci-archive:" + output, Platform: "linux/" + arch}); err != nil {
 			t.Fatalf("build child for %s from local index: %v", arch, err)
 		}
 		_, image := readExampleImage(t, ctx, output)
@@ -142,7 +141,7 @@ func TestCopyMultiPlatformIndexToPodman(t *testing.T) {
 	}
 	ctx := context.Background()
 	work := t.TempDir()
-	storeDir, err := localstore.DefaultImageDir()
+	storeOptions, err := buildah.DefaultStoreOptions()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,10 +150,10 @@ func TestCopyMultiPlatformIndexToPodman(t *testing.T) {
 		t.Fatal(err)
 	}
 	sourceTag := fmt.Sprintf("podman-index-%d-%d:test", os.Getpid(), time.Now().UnixNano())
-	if _, err := Run(ctx, Options{File: file, StoreDir: storeDir, Tag: sourceTag, Platforms: []string{"linux/amd64", "linux/arm64"}}); err != nil {
+	if _, err := Run(ctx, Options{File: file, BuildStore: storeOptions, Tag: sourceTag, Platforms: []string{"linux/amd64", "linux/arm64"}}); err != nil {
 		t.Fatal(err)
 	}
-	sourceRoot, sourceData, _, found, err := imagecatalog.LookupIndex(ctx, storeDir, sourceTag)
+	sourceRoot, sourceData, _, found, err := testStoredImageIndex(ctx, storeOptions, sourceTag)
 	if err != nil || !found {
 		t.Fatalf("lookup source index: %t, %v", found, err)
 	}
@@ -184,10 +183,10 @@ func TestCopyMultiPlatformIndexToPodman(t *testing.T) {
 	if err := os.WriteFile(file, []byte("from \"scratch\"\nlabel copied=\"updated\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Run(ctx, Options{File: file, StoreDir: storeDir, Tag: sourceTag, Platforms: []string{"linux/amd64", "linux/arm64"}}); err != nil {
+	if _, err := Run(ctx, Options{File: file, BuildStore: storeOptions, Tag: sourceTag, Platforms: []string{"linux/amd64", "linux/arm64"}}); err != nil {
 		t.Fatal(err)
 	}
-	updatedRoot, updatedData, _, found, err := imagecatalog.LookupIndex(ctx, storeDir, sourceTag)
+	updatedRoot, updatedData, _, found, err := testStoredImageIndex(ctx, storeOptions, sourceTag)
 	if err != nil || !found || updatedRoot.Digest == sourceRoot.Digest {
 		t.Fatalf("lookup updated source index: %s, %t, %v", updatedRoot.Digest, found, err)
 	}
@@ -243,10 +242,10 @@ func TestRunBuildsDockerManifestList(t *testing.T) {
 		t.Fatal(err)
 	}
 	const tag = "docker-multi:latest"
-	if _, err := Run(ctx, Options{File: file, StoreDir: storeDir, Tag: tag, Platforms: []string{"linux/amd64", "linux/arm64"}, Format: "docker"}); err != nil {
+	if _, err := Run(ctx, Options{File: file, BuildStore: nativeBuildTestStore(storeDir), Tag: tag, Platforms: []string{"linux/amd64", "linux/arm64"}, Format: "docker"}); err != nil {
 		t.Fatal(err)
 	}
-	root, data, selections, found, err := imagecatalog.LookupIndex(ctx, storeDir, tag)
+	root, data, selections, found, err := testStoredImageIndex(ctx, nativeBuildTestStore(storeDir), tag)
 	if err != nil || !found || len(selections) != 2 {
 		t.Fatalf("Docker list catalog = %s, %t, %d, %v", root.Digest, found, len(selections), err)
 	}
@@ -262,7 +261,7 @@ func TestRunBuildsDockerManifestList(t *testing.T) {
 		}
 	}
 	archive := filepath.Join(work, "docker-multi.oci.tar")
-	if _, err := transfer.Copy(ctx, oci.Image, tag, transfer.Destination{Transport: "oci-archive", Name: archive}, transfer.Options{ImageStoreDir: storeDir}); err != nil {
+	if _, err := transfer.Copy(ctx, oci.Image, tag, transfer.Destination{Transport: "oci-archive", Name: archive}, transfer.Options{BuildStore: nativeBuildTestStore(storeDir)}); err != nil {
 		t.Fatalf("copy Docker list to archive: %v", err)
 	}
 	source, err := orasoci.NewFromTar(ctx, archive)

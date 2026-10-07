@@ -30,9 +30,8 @@ import (
 	"go.podman.io/storage"
 )
 
-// StoreOptions identifies a private containers/storage store used for a build.
-// Both roots are required so a caller does not silently use the host's default
-// Podman or Buildah store.
+// StoreOptions identifies the effective native containers/storage settings.
+// Explicit selections supply both roots; defaults come from storage.conf.
 type StoreOptions struct {
 	RunRoot            string
 	GraphRoot          string
@@ -41,10 +40,8 @@ type StoreOptions struct {
 	GraphDriverOptions []string
 	TransientStore     bool
 	// Native preserves effective containers/storage settings which do not have
-	// dedicated Coopr CLI overrides. Shared marks the host Podman store so
-	// maintenance never treats unrelated unnamed records as Coopr-owned.
+	// dedicated Coopr CLI overrides.
 	Native storage.StoreOptions
-	Shared bool
 }
 
 // Request is one ordered, single-stage build.
@@ -264,7 +261,7 @@ func newBuilderOptionsWithHosts(base string, isolation define.Isolation, capabil
 	options := upstream.BuilderOptions{
 		FromImage: base,
 		// Base resolution is deliberately local-only. The caller imports a
-		// verified digest into this private store before executing the graph.
+		// verified digest into native storage before executing the graph.
 		PullPolicy:       define.PullNever,
 		Isolation:        isolation,
 		Capabilities:     capabilities,

@@ -168,8 +168,8 @@ func nativeRetryOptions(opts Options) (*retry.Options, error) {
 	})
 }
 
-func publishStoredImage(ctx context.Context, storeDir, imageID string, root v1.Descriptor, destination string, opts Options) (string, error) {
-	transferOptions, cleanup, err := storedTransferOptions(storeDir, imageID, root.Digest, opts)
+func publishStoredImage(ctx context.Context, imageID string, root v1.Descriptor, destination string, opts Options) (string, error) {
+	transferOptions, cleanup, err := storedTransferOptions(imageID, root.Digest, opts)
 	if err != nil {
 		return "", err
 	}
@@ -201,8 +201,8 @@ func signedTransferSystemContext(authFile, certDir, registriesDir, authority str
 	return system, nil
 }
 
-func signStoredImage(ctx context.Context, storeDir, imageID string, manifest digest.Digest, name string, opts Options) error {
-	transferOptions, cleanup, err := storedTransferOptions(storeDir, imageID, manifest, opts)
+func signStoredImage(ctx context.Context, imageID string, manifest digest.Digest, name string, opts Options) error {
+	transferOptions, cleanup, err := storedTransferOptions(imageID, manifest, opts)
 	if err != nil {
 		return err
 	}
@@ -214,8 +214,8 @@ func signStoredImage(ctx context.Context, storeDir, imageID string, manifest dig
 	return nil
 }
 
-func storedTransferOptions(storeDir, imageID string, manifest digest.Digest, opts Options) (buildah.StoredTransferOptions, func(), error) {
-	storeOptions, err := nativeStoreOptions(opts, storeDir)
+func storedTransferOptions(imageID string, manifest digest.Digest, opts Options) (buildah.StoredTransferOptions, func(), error) {
+	storeOptions, err := nativeStoreOptions(opts)
 	if err != nil {
 		return buildah.StoredTransferOptions{}, func() {}, err
 	}

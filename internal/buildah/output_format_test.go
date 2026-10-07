@@ -187,7 +187,7 @@ run "od -An -N16 -tx1 /dev/urandom | tr -d ' \n' >/proof" network="none"
 		layout := filepath.Join(root, name)
 		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-			Output: Output{Path: layout, Format: format}, ImageStoreDir: base.imageStoreDir,
+			Output:              Output{Path: layout, Format: format},
 			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {

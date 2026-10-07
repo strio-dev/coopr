@@ -22,7 +22,7 @@ func TestSquashUnchangedAndMetadataOnlyRetainsBaseLayers(t *testing.T) {
 		plan := testPlan(t, fmt.Sprintf("from %q\n%s", base.reference, tail))
 		for _, squash := range []bool{false, true} {
 			layout := filepath.Join(root, fmt.Sprintf("output-%d-%t", index, squash))
-			_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{Store: store, ContextDir: root, ImageStoreDir: base.imageStoreDir, SignaturePolicyPath: policy, Isolation: "rootless", Runtime: "crun", Output: Output{Path: layout, Squash: squash, DisableCompression: true}, Stdout: io.Discard, Stderr: io.Discard})
+			_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{Store: store, ContextDir: root, SignaturePolicyPath: policy, Isolation: "rootless", Runtime: "crun", Output: Output{Path: layout, Squash: squash, DisableCompression: true}, Stdout: io.Discard, Stderr: io.Discard})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -47,7 +47,7 @@ func TestSquashUnchangedAndMetadataOnlyRetainsBaseLayers(t *testing.T) {
 		plan := testPlan(t, fmt.Sprintf("from %q\n%s", base.reference, tail))
 		for _, squash := range []bool{false, true} {
 			layout := filepath.Join(root, fmt.Sprintf("gzip-output-%d-%t", index, squash))
-			_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{Store: store, ContextDir: root, ImageStoreDir: base.imageStoreDir, SignaturePolicyPath: policy, Isolation: "rootless", Runtime: "crun", Output: Output{Path: layout, Squash: squash}, Stdout: io.Discard, Stderr: io.Discard})
+			_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{Store: store, ContextDir: root, SignaturePolicyPath: policy, Isolation: "rootless", Runtime: "crun", Output: Output{Path: layout, Squash: squash}, Stdout: io.Discard, Stderr: io.Discard})
 			if err != nil {
 				t.Fatal(err)
 			}

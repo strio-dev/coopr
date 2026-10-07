@@ -11,7 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/imagecatalog"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
@@ -49,7 +48,7 @@ func TestBuildArchiveAndDefinitionStdinWithMultipleDestinations(t *testing.T) {
 			store := filepath.Join(os.Getenv("XDG_DATA_HOME"), "input-fixtures", strings.ReplaceAll(t.Name(), "/", "-"))
 			output := filepath.Join(t.TempDir(), "output.oci.tar")
 			metadata := filepath.Join(t.TempDir(), "metadata.json")
-			opts := Options{File: definition, Context: root, StoreDir: store, Platform: "linux/" + runtime.GOARCH, Jobs: 1,
+			opts := Options{File: definition, Context: root, BuildStore: nativeBuildTestStore(store), Platform: "linux/" + runtime.GOARCH, Jobs: 1,
 				Tags: []string{"app:one", "app:two", "oci-archive:" + output}, MetadataFile: metadata}
 			switch mode {
 			case "definition-stdin", "definition-and-run-stdin":
@@ -70,11 +69,11 @@ func TestBuildArchiveAndDefinitionStdinWithMultipleDestinations(t *testing.T) {
 				t.Fatalf("multiple result references = %q", result)
 			}
 			platform := v1.Platform{OS: "linux", Architecture: runtime.GOARCH}
-			first, found, err := imagecatalog.Lookup(context.Background(), store, "app:one", platform)
+			first, found, err := testStoredImageSelection(context.Background(), nativeBuildTestStore(store), "app:one", platform)
 			if err != nil || !found {
 				t.Fatalf("first local tag: %v, %t", err, found)
 			}
-			second, found, err := imagecatalog.Lookup(context.Background(), store, "app:two", platform)
+			second, found, err := testStoredImageSelection(context.Background(), nativeBuildTestStore(store), "app:two", platform)
 			if err != nil || !found || second.ImageID != first.ImageID || second.Manifest.Digest != first.Manifest.Digest {
 				t.Fatalf("tags rebuilt or differ: %+v/%+v found=%t err=%v", first, second, found, err)
 			}

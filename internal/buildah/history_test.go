@@ -168,7 +168,7 @@ cmd { exec "/bin/true" }
 		Arguments: map[string]string{"SOURCE_DATE_EPOCH": fmt.Sprint(epoch)},
 	}, SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-		Output: Output{Path: layout}, ImageStoreDir: base.imageStoreDir,
+		Output:              Output{Path: layout},
 		SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 	})
 	if err != nil {
@@ -244,7 +244,7 @@ run "od -An -N16 -tx1 /dev/urandom | tr -d ' \n' >/proof" network="none"
 		layout := filepath.Join(root, fmt.Sprintf("layout-%d", attempt))
 		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-			Output: Output{Path: layout}, ImageStoreDir: base.imageStoreDir,
+			Output:              Output{Path: layout},
 			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {
@@ -310,7 +310,7 @@ cmd { exec "/bin/cat" "/payload" }
 					var progress strings.Builder
 					_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 						Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-						Output: Output{Path: layout, Format: format}, ImageStoreDir: base.imageStoreDir,
+						Output:              Output{Path: layout, Format: format},
 						SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: &progress,
 					})
 					if err != nil {
@@ -406,7 +406,7 @@ label after="run"
 	layout := filepath.Join(root, "layout")
 	_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-		Output: Output{Path: layout}, ImageStoreDir: base.imageStoreDir,
+		Output:  Output{Path: layout},
 		Secrets: []string{"id=token,src=" + secret}, Stdout: io.Discard, Stderr: io.Discard,
 	})
 	if err != nil {

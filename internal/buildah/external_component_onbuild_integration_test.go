@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"coopr/internal/componentstore"
-	"coopr/internal/imagecatalog"
 	"coopr/internal/oci"
 	"coopr/internal/planner"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -35,11 +34,10 @@ func TestComponentInvocationPlansExternalOnBuildAgainstPublishedPackageOffline(t
 	store := StoreOptions{
 		RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs",
 	}
-	imageStoreDir := filepath.Join(root, "images")
 	componentDir := filepath.Join(root, "components")
 
 	// The image is invocation-only. Publishing must therefore succeed before
-	// the reference exists in either a registry or the local image catalog.
+	// the reference exists in either a registry or the native image store.
 	component := parseWorkerDefinition(t, `
 arg "runtime_base" "registry.invalid/coopr/missing:latest"
 package as="assets"
@@ -53,7 +51,7 @@ copy "/inherited" "/selected" from="prepared"
 		Mode: planner.Publish, Platform: "linux/" + runtime.GOARCH,
 	}, SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Output: Output{Path: componentLayout},
-		ImageStoreDir: imageStoreDir, SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
+		SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -63,7 +61,7 @@ copy "/inherited" "/selected" from="prepared"
 		t.Fatalf("published packages = %+v, want assets", metadata.Packages)
 	}
 	platform := v1.Platform{OS: "linux", Architecture: runtime.GOARCH}
-	if selection, found, err := imagecatalog.Lookup(ctx, imageStoreDir, "registry.invalid/coopr/missing:latest", platform); err != nil {
+	if selection, found, err := nativeFixtureSelection(ctx, store, "registry.invalid/coopr/missing:latest", platform); err != nil {
 		t.Fatal(err)
 	} else if found {
 		t.Fatalf("publication selected invocation-only image: %+v", selection)
@@ -99,12 +97,12 @@ onbuild { copy "/artifact" "/inherited" from="$source" }
 		t.Fatal(err)
 	}
 	const baseReference = "registry.example/coopr/invocation-base:latest"
-	if err := imagecatalog.Commit(ctx, imageStoreDir, baseReference, platform, imagecatalog.Selection{
+	if err := nameNativeFixture(ctx, store, baseReference, oci.StoredSelection{
 		Root: baseManifest, Manifest: baseManifest, ImageID: base.ImageID, ConfigData: baseConfig,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	selection, found, err := imagecatalog.Lookup(ctx, imageStoreDir, baseReference, platform)
+	selection, found, err := nativeFixtureSelection(ctx, store, baseReference, platform)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +119,7 @@ from "scratch"
 component "local:external-onbuild" runtime_base="registry.example/coopr/invocation-base:latest"
 `), planner.Options{Mode: planner.Build, Platform: "linux/" + runtime.GOARCH}, SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Output: Output{Path: invokedLayout},
-		ImageStoreDir: imageStoreDir, ComponentStoreDir: componentDir, Pull: false,
+		ComponentStoreDir: componentDir, Pull: false,
 		SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 	})
 	if err != nil {

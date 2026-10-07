@@ -19,7 +19,6 @@ import (
 	"coopr/internal/componentstore"
 	"coopr/internal/definition"
 	"coopr/internal/imageconfig"
-	"coopr/internal/localstore"
 	"coopr/internal/planner"
 	dockerreference "github.com/distribution/reference"
 	digest "github.com/opencontainers/go-digest"
@@ -97,9 +96,7 @@ type Options struct {
 	DecryptionKeys      []string
 	SignaturePolicyPath string
 	ComponentStoreDir   string               // Override the local component OCI layout.
-	ImageStoreDir       string               // Override Coopr's local image catalog directory.
-	NativeStore         storage.StoreOptions // Exact containers/storage selection associated with the catalog.
-	NativeStoreShared   bool                 // Native names are authoritative in a shared Podman/custom store.
+	NativeStore         storage.StoreOptions // Exact containers/storage selection for image inputs and outputs.
 }
 
 type Resolver struct {
@@ -111,7 +108,6 @@ type Resolver struct {
 	plainHTTPRegistries map[string]struct{}
 	pullPolicy          PullPolicy
 	componentStoreDir   string
-	imageStoreDir       string
 	system              *types.SystemContext
 	credentials         string
 	retry               uint
@@ -119,7 +115,6 @@ type Resolver struct {
 	retryDelay          time.Duration
 	decryptionKeys      []string
 	nativeStore         storage.StoreOptions
-	nativeStoreShared   bool
 	retryOptions        *retry.Options
 }
 
@@ -129,6 +124,7 @@ type Resolved struct {
 	Kind           Kind               `json:"kind"`
 	Platform       v1.Platform        `json:"platform"`
 	Root           v1.Descriptor      `json:"root"`
+	SourceManifest *v1.Descriptor     `json:"source_manifest,omitempty"`
 	Selected       v1.Descriptor      `json:"selected"`
 	Manifest       v1.Manifest        `json:"manifest"`
 	Config         v1.Descriptor      `json:"config"`
@@ -200,13 +196,6 @@ func NewResolver(opts Options) (*Resolver, error) {
 			return nil, err
 		}
 	}
-	imageStoreDir := opts.ImageStoreDir
-	if imageStoreDir == "" {
-		imageStoreDir, err = localstore.DefaultImageDir()
-		if err != nil {
-			return nil, err
-		}
-	}
 	retryOptions, err := RegistryRetryOptions(opts)
 	if err != nil {
 		return nil, err
@@ -214,10 +203,10 @@ func NewResolver(opts Options) (*Resolver, error) {
 	return &Resolver{
 		httpClient: opts.Client, credential: credential, certDir: opts.CertDir, skipTLSVerify: opts.SkipTLSVerify,
 		plainHTTP: opts.PlainHTTP, plainHTTPRegistries: plainHTTPRegistries, pullPolicy: pullPolicy,
-		componentStoreDir: componentStoreDir, imageStoreDir: imageStoreDir,
-		system: system, credentials: opts.Credentials, retry: opts.Retry, retrySet: opts.RetrySet,
+		componentStoreDir: componentStoreDir,
+		system:            system, credentials: opts.Credentials, retry: opts.Retry, retrySet: opts.RetrySet,
 		retryDelay: opts.RetryDelay, decryptionKeys: slices.Clone(opts.DecryptionKeys),
-		nativeStore: cloneNativeStoreOptions(opts.NativeStore), nativeStoreShared: opts.NativeStoreShared,
+		nativeStore:  cloneNativeStoreOptions(opts.NativeStore),
 		retryOptions: retryOptions,
 	}, nil
 }
@@ -304,19 +293,14 @@ func validateCertificateDirectory(path string) error {
 	return nil
 }
 
-// ImageStoreDir returns Coopr's local image catalog directory.
-func (r *Resolver) ImageStoreDir() string { return r.imageStoreDir }
-
 // NativeStoreOptions returns the exact native store associated with the local
-// catalog, if the caller selected one explicitly.
+// image storage, if the caller selected one explicitly.
 func (r *Resolver) NativeStoreOptions() storage.StoreOptions {
 	if r == nil {
 		return storage.StoreOptions{}
 	}
 	return cloneNativeStoreOptions(r.nativeStore)
 }
-
-func (r *Resolver) NativeStoreShared() bool { return r != nil && r.nativeStoreShared }
 
 func cloneNativeStoreOptions(options storage.StoreOptions) storage.StoreOptions {
 	options.GraphDriverOptions = slices.Clone(options.GraphDriverOptions)
@@ -329,7 +313,7 @@ func (r *Resolver) ComponentStoreDir() string { return r.componentStoreDir }
 // PullImages reports whether mutable image references must be refreshed.
 func (r *Resolver) PullImages() bool { return r.pullPolicy == PullAlways }
 
-// PullPolicy reports how mutable remote image references use the local catalog.
+// PullPolicy reports how mutable remote image references use native local storage.
 func (r *Resolver) PullPolicy() PullPolicy { return r.pullPolicy }
 
 // PlainHTTP reports whether loopback registries may use plain HTTP.
@@ -379,13 +363,13 @@ func (r *Resolver) RegistryOptions() Options {
 		SkipTLSVerify: system.DockerInsecureSkipTLSVerify == types.OptionalBoolTrue,
 		Credentials:   r.credentials, Retry: r.retry, RetrySet: r.retrySet, RetryDelay: r.retryDelay,
 		DecryptionKeys: slices.Clone(r.decryptionKeys), SignaturePolicyPath: system.SignaturePolicyPath,
-		ComponentStoreDir: r.componentStoreDir, ImageStoreDir: r.imageStoreDir,
-		NativeStore: cloneNativeStoreOptions(r.nativeStore), NativeStoreShared: r.nativeStoreShared,
+		ComponentStoreDir: r.componentStoreDir,
+		NativeStore:       cloneNativeStoreOptions(r.nativeStore),
 	}
 }
 
 // ResolveRemoteImage fetches a registry image after the Buildah backend has
-// consulted its persistent image catalog.
+// consulted native image storage.
 func (r *Resolver) ResolveRemoteImage(ctx context.Context, reference string, platform v1.Platform) (*Resolved, error) {
 	return r.resolveNativeImage(ctx, reference, platform)
 }

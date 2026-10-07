@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"coopr/internal/buildah"
-	"coopr/internal/imagecatalog"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
@@ -27,7 +26,7 @@ func TestDockerAnnotationControlsAreIgnored(t *testing.T) {
 		for attempt := range 2 {
 			archive := filepath.Join(root, format+".tar")
 			_, err := Run(context.Background(), Options{
-				File: definition, StoreDir: filepath.Join(root, "store"), Format: format,
+				File: definition, Format: format,
 				Tag:        "oci-archive:" + archive,
 				BuildStore: buildah.StoreOptions{GraphRoot: filepath.Join(root, "store", "graph"), RunRoot: filepath.Join(root, "run"), GraphDriverName: "vfs"},
 				ImageControls: buildah.ImageControls{
@@ -69,7 +68,7 @@ func TestMultiPlatformTarFilesystemOutputUsesLastPlatform(t *testing.T) {
 	}
 	output := filepath.Join(root, "rootfs.tar")
 	_, err := Run(context.Background(), Options{
-		File: definition, StoreDir: filepath.Join(root, "store"), Tag: "tar-output:latest",
+		File: definition, Tag: "tar-output:latest",
 		Platforms: []string{"linux/amd64", "linux/arm64"}, Jobs: 0,
 		Output:     buildah.FilesystemOutput{Type: "tar", Path: output},
 		BuildStore: buildah.StoreOptions{GraphRoot: filepath.Join(root, "store", "graph"), RunRoot: filepath.Join(root, "run"), GraphDriverName: "vfs"},
@@ -113,7 +112,7 @@ func TestMultiPlatformLocalFilesystemExports(t *testing.T) {
 	output := filepath.Join(root, "output")
 	store := filepath.Join(root, "store")
 	for range 2 {
-		if _, err := Run(context.Background(), Options{File: definition, StoreDir: store, Tag: "exported:latest", Platforms: []string{"linux/amd64", "linux/arm64"}, Output: buildah.FilesystemOutput{Type: "local", Path: output}, Squash: true}); err != nil {
+		if _, err := Run(context.Background(), Options{File: definition, BuildStore: nativeBuildTestStore(store), Tag: "exported:latest", Platforms: []string{"linux/amd64", "linux/arm64"}, Output: buildah.FilesystemOutput{Type: "local", Path: output}, Squash: true}); err != nil {
 			t.Fatal(err)
 		}
 		for _, platform := range []string{"linux_amd64", "linux_arm64"} {
@@ -122,7 +121,7 @@ func TestMultiPlatformLocalFilesystemExports(t *testing.T) {
 				t.Fatalf("%s output=%q %v", platform, data, err)
 			}
 		}
-		_, _, selections, found, err := imagecatalog.LookupIndex(context.Background(), store, "exported:latest")
+		_, _, selections, found, err := testStoredImageIndex(context.Background(), nativeBuildTestStore(store), "exported:latest")
 		if err != nil || !found || len(selections) != 2 {
 			t.Fatalf("retained index found=%t selections=%d err=%v", found, len(selections), err)
 		}

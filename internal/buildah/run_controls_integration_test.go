@@ -41,7 +41,7 @@ run "set -e; test \"$HTTP_PROXY\" = http://host-proxy.example:3128; /bin/busybox
 	layout := filepath.Join(root, "layout")
 	_, err = BuildDefinitionSupervised(ctx, def, planner.Options{Mode: planner.Build, Platform: runtime.GOOS + "/" + runtime.GOARCH}, SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun", Network: "none",
-		Output: Output{Path: layout}, ImageStoreDir: base.imageStoreDir, RunControls: controls,
+		Output: Output{Path: layout}, RunControls: controls,
 		Stdout: os.Stdout, Stderr: os.Stderr,
 	})
 	if err != nil {
@@ -73,7 +73,7 @@ run "set -ex; cat /proc/self/cgroup; cgroup=$( /bin/busybox awk -F: '$1 == 0 { p
 	layout := filepath.Join(root, "layout")
 	_, err = BuildDefinitionSupervised(ctx, def, planner.Options{Mode: planner.Build, Platform: "linux/" + runtime.GOARCH}, SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun", Network: "none",
-		Output: Output{Path: layout}, ImageStoreDir: base.imageStoreDir,
+		Output:      Output{Path: layout},
 		RunControls: RunControls{Memory: 64 << 20, CPUQuota: 5000, CPUPeriod: 10000},
 		Stdout:      os.Stdout, Stderr: os.Stderr,
 	})
@@ -124,7 +124,7 @@ run "set -e; test \"$(cat /host-input/message)\" = mounted; printf ready >/proof
 	layout := filepath.Join(root, "layout")
 	_, err = BuildDefinitionSupervised(ctx, def, planner.Options{Mode: planner.Build, Platform: "linux/" + runtime.GOARCH}, SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun", Network: "none",
-		Output: Output{Path: layout}, ImageStoreDir: base.imageStoreDir, RunControls: controls,
+		Output: Output{Path: layout}, RunControls: controls,
 		Stdout: os.Stdout, Stderr: os.Stderr,
 	})
 	if err != nil {
@@ -156,7 +156,7 @@ run "set -e; test ! -e /etc/hostname; test ! -e /etc/hosts; printf ready >/proof
 	layout := filepath.Join(root, "layout")
 	_, err = BuildDefinitionSupervised(ctx, def, planner.Options{Mode: planner.Build, Platform: runtime.GOOS + "/" + runtime.GOARCH}, SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun", Network: "none",
-		Output: Output{Path: layout}, ImageStoreDir: base.imageStoreDir,
+		Output:      Output{Path: layout},
 		RunControls: RunControls{NoHostname: true, NoHosts: true},
 		Stdout:      os.Stdout, Stderr: os.Stderr,
 	})
@@ -198,7 +198,7 @@ run "set -e; test \"$(ulimit -n)\" = 333; test \"$(/bin/busybox df -k /dev/shm |
 	layout := filepath.Join(root, "layout")
 	_, err = BuildDefinitionSupervised(ctx, def, planner.Options{Mode: planner.Build, Platform: runtime.GOOS + "/" + runtime.GOARCH}, SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun", Network: "none",
-		Output: Output{Path: layout}, ImageStoreDir: base.imageStoreDir, RunControls: controls,
+		Output: Output{Path: layout}, RunControls: controls,
 		Stdout: os.Stdout, Stderr: os.Stderr,
 	})
 	if err != nil {
@@ -236,7 +236,7 @@ func TestBuildDefinitionExecutesNativeBuildNetworkModes(t *testing.T) {
 			var stderr bytes.Buffer
 			_, err = BuildDefinitionSupervised(ctx, def, planner.Options{Mode: planner.Build, Platform: runtime.GOOS + "/" + runtime.GOARCH}, SupervisedPlanOptions{
 				Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun", Network: test.network,
-				Output: Output{Path: layout}, ImageStoreDir: base.imageStoreDir,
+				Output: Output{Path: layout},
 				Stdout: os.Stdout, Stderr: &stderr,
 			})
 			if err != nil {

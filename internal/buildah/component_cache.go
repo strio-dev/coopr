@@ -132,7 +132,6 @@ func validateComponentCachePathValue(options PlanOptions, cacheDir string) error
 	}
 	if options.Resolver != nil {
 		protectedPaths = append(protectedPaths,
-			struct{ name, path string }{"image store", options.Resolver.ImageStoreDir()},
 			struct{ name, path string }{"component store", options.Resolver.ComponentStoreDir()},
 		)
 	}

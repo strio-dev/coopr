@@ -11,8 +11,6 @@ import (
 	"coopr/internal/buildah"
 	"coopr/internal/buildcontext"
 	"coopr/internal/definition"
-	"coopr/internal/imagecatalog"
-	"coopr/internal/localstore"
 	"coopr/internal/oci"
 	"coopr/internal/planner"
 	"github.com/containerd/platforms"
@@ -20,15 +18,15 @@ import (
 	"go.podman.io/storage"
 )
 
-func discoverBuildPlatforms(ctx context.Context, def *definition.Definition, planning planner.Options, opts Options, imageStoreDir, componentStoreDir string) ([]string, error) {
+func discoverBuildPlatforms(ctx context.Context, def *definition.Definition, planning planner.Options, opts Options, componentStoreDir string) ([]string, error) {
 	from, err := planner.ResolveFromSources(def, planning)
 	if err != nil {
 		return nil, err
 	}
 	resolver, err := oci.NewResolver(oci.Options{
-		ImageStoreDir: imageStoreDir, ComponentStoreDir: componentStoreDir,
-		NativeStore: buildah.NativeStoreOptions(opts.BuildStore), NativeStoreShared: opts.BuildStore.Shared,
-		Pull: opts.Pull, PullPolicy: opts.PullPolicy, PlainHTTP: opts.PlainHTTP, PlainHTTPRegistries: opts.PlainHTTPRegistries,
+		ComponentStoreDir: componentStoreDir,
+		NativeStore:       buildah.NativeStoreOptions(opts.BuildStore),
+		Pull:              opts.Pull, PullPolicy: opts.PullPolicy, PlainHTTP: opts.PlainHTTP, PlainHTTPRegistries: opts.PlainHTTPRegistries,
 		AuthFile: opts.AuthFile, CertDir: opts.CertDir, SkipTLSVerify: opts.SkipTLSVerify,
 		Credentials: opts.Credentials, Retry: opts.Retry, RetrySet: opts.RetrySet, RetryDelay: opts.RetryDelay, DecryptionKeys: opts.DecryptionKeys, SignaturePolicyPath: opts.SignaturePolicyPath,
 	})
@@ -87,46 +85,28 @@ func discoverBuildPlatforms(ctx context.Context, def *definition.Definition, pla
 }
 
 func availableImagePlatforms(ctx context.Context, resolver *oci.Resolver, store buildah.StoreOptions, reference string) ([]v1.Platform, error) {
-	canonical, err := oci.ParseReference(reference)
+	var err error
+	pinned := strings.Contains(reference, "@")
+	var local []v1.Platform
+	err = buildah.WithStore(store, func(backend storage.Store) error {
+		_, _, selections, nativeErr := oci.StoredImageSelections(ctx, backend, reference)
+		if errors.Is(nativeErr, storage.ErrImageUnknown) {
+			return nil
+		}
+		if nativeErr != nil {
+			return nativeErr
+		}
+		for key := range selections {
+			platform, err := platforms.Parse(key)
+			if err != nil {
+				return err
+			}
+			local = append(local, platform)
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
-	}
-	selectors := []string{reference, canonical.String()}
-	if name, err := localstore.NormalizeImageTag(reference); err == nil {
-		selectors = append(selectors, name)
-	}
-	pinned := strings.Contains(reference, "@")
-	if pinned {
-		selectors = append(selectors, reference[strings.LastIndex(reference, "@")+1:])
-	}
-	var local []v1.Platform
-	nativeFound := false
-	if store.Shared && !pinned {
-		err := buildah.WithStore(store, func(backend storage.Store) error {
-			var nativeErr error
-			local, nativeErr = oci.StoredImagePlatforms(ctx, backend, reference)
-			if errors.Is(nativeErr, storage.ErrImageUnknown) {
-				return nil
-			}
-			return nativeErr
-		})
-		if err != nil {
-			return nil, err
-		}
-		nativeFound = len(local) != 0
-	}
-	for _, selector := range selectors {
-		if nativeFound {
-			break
-		}
-		cached, err := imagecatalog.AvailablePlatforms(ctx, resolver.ImageStoreDir(), selector)
-		if err != nil {
-			return nil, err
-		}
-		if len(cached) != 0 {
-			local = cached
-			break
-		}
 	}
 	if len(local) > 0 && (pinned || resolver.PullPolicy() == oci.PullMissing || resolver.PullPolicy() == oci.PullNever) {
 		return local, nil

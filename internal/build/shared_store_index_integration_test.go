@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"coopr/internal/buildah"
-	"coopr/internal/imagecatalog"
 	"coopr/internal/oci"
 	"coopr/internal/transfer"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -32,9 +31,8 @@ func TestSharedStoreMultiPlatformLocalIndex(t *testing.T) {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 				defer cancel()
 				work := t.TempDir()
-				catalog := filepath.Join(work, "catalog")
 				storeOptions := buildah.StoreOptions{
-					Shared: true, RunRoot: filepath.Join(work, "runtime"), GraphRoot: filepath.Join(work, "native-graph"),
+					RunRoot: filepath.Join(work, "runtime"), GraphRoot: filepath.Join(work, "native-graph"),
 					ImageStore: filepath.Join(work, "native-images"), GraphDriverName: "vfs",
 					GraphDriverOptions: []string{"vfs.ignore_chown_errors=true"}, TransientStore: true,
 				}
@@ -48,7 +46,7 @@ func TestSharedStoreMultiPlatformLocalIndex(t *testing.T) {
 				}
 				writeDefinition("original")
 				const tag = "localhost/shared-index:latest"
-				opts := Options{File: definition, Context: work, StoreDir: catalog, BuildStore: storeOptions, Platforms: []string{"linux/amd64", "linux/arm64"}, Format: format}
+				opts := Options{File: definition, Context: work, BuildStore: storeOptions, Platforms: []string{"linux/amd64", "linux/arm64"}, Format: format}
 				if tagged {
 					opts.Tag = tag
 				}
@@ -56,13 +54,13 @@ func TestSharedStoreMultiPlatformLocalIndex(t *testing.T) {
 				if err != nil {
 					t.Fatalf("build shared-store multi-platform image: %v", err)
 				}
-				copyOptions := transfer.Options{ImageStoreDir: catalog, BuildStore: storeOptions}
+				copyOptions := transfer.Options{BuildStore: storeOptions}
 				if !tagged {
 					if got, err := transfer.Copy(ctx, oci.Image, built, transfer.Destination{Transport: "local", Name: tag}, copyOptions); err != nil || got != tag {
 						t.Fatalf("tag untagged index by digest: got=%q err=%v", got, err)
 					}
 				}
-				root, data, selections, found, err := imagecatalog.LookupIndex(ctx, catalog, tag)
+				root, data, selections, found, err := testStoredImageIndex(ctx, storeOptions, tag)
 				if err != nil || !found || len(selections) != 2 {
 					t.Fatalf("catalog index: root=%s found=%t selections=%d err=%v", root.Digest, found, len(selections), err)
 				}
@@ -74,19 +72,19 @@ func TestSharedStoreMultiPlatformLocalIndex(t *testing.T) {
 					t.Fatalf("index media type=%s want=%s", root.MediaType, wantType)
 				}
 				original := inspectSharedIndex(t, ctx, storeOptions, tag, root, data, selections)
-				before, err := imagecatalog.List(ctx, catalog)
+				before, err := testNativeNames(storeOptions)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := transfer.Copy(ctx, oci.Image, root.Digest.String(), transfer.Destination{Transport: "local", Name: "/"}, copyOptions); err == nil || !strings.Contains(err.Error(), "tag shared-store multi-platform image") {
+				if _, err := transfer.Copy(ctx, oci.Image, root.Digest.String(), transfer.Destination{Transport: "local", Name: "/"}, copyOptions); err == nil || !strings.Contains(err.Error(), "tag stored multi-platform image") {
 					t.Fatalf("expected native tagging failure for invalid destination, got %v", err)
 				}
-				after, err := imagecatalog.List(ctx, catalog)
+				after, err := testNativeNames(storeOptions)
 				if err != nil || !reflect.DeepEqual(before, after) {
-					t.Fatalf("failed native tag changed catalog: before=%+v after=%+v err=%v", before, after, err)
+					t.Fatalf("failed native tag changed names: before=%+v after=%+v err=%v", before, after, err)
 				}
-				if _, _, _, found, err := imagecatalog.LookupIndex(ctx, catalog, "/"); err != nil || found {
-					t.Fatalf("failed native tag became catalog-addressable: found=%t err=%v", found, err)
+				if _, _, _, found, err := testStoredImageIndex(ctx, storeOptions, "/"); err == nil || found {
+					t.Fatalf("invalid native reference was accepted: found=%t err=%v", found, err)
 				}
 				const alias = "localhost/shared-index-alias:latest"
 				for _, source := range []string{root.Digest.String(), tag, root.Digest.String()} {
@@ -104,7 +102,7 @@ func TestSharedStoreMultiPlatformLocalIndex(t *testing.T) {
 				}
 				for _, arch := range []string{"amd64", "arm64"} {
 					archive := filepath.Join(work, "child-"+arch+".tar")
-					if _, err := Run(ctx, Options{File: child, Context: work, StoreDir: filepath.Join(work, "consumer-"+arch), BuildStore: storeOptions, Platform: "linux/" + arch, Format: format, Tag: "oci-archive:" + archive}); err != nil {
+					if _, err := Run(ctx, Options{File: child, Context: work, BuildStore: storeOptions, Platform: "linux/" + arch, Format: format, Tag: "oci-archive:" + archive}); err != nil {
 						t.Fatalf("consume local index for %s: %v", arch, err)
 					}
 					_, image := readExampleImage(t, ctx, archive)
@@ -119,7 +117,7 @@ func TestSharedStoreMultiPlatformLocalIndex(t *testing.T) {
 				if _, err := Run(ctx, opts); err != nil {
 					t.Fatalf("rebuild tagged index: %v", err)
 				}
-				updatedRoot, updatedData, updatedSelections, found, err := imagecatalog.LookupIndex(ctx, catalog, tag)
+				updatedRoot, updatedData, updatedSelections, found, err := testStoredImageIndex(ctx, storeOptions, tag)
 				if err != nil || !found || updatedRoot.Digest == root.Digest {
 					t.Fatalf("rebuild did not update index: root=%s found=%t err=%v", updatedRoot.Digest, found, err)
 				}
@@ -147,7 +145,7 @@ type sharedIndexSnapshot struct {
 	ChildIDs map[string]string
 }
 
-func inspectSharedIndex(t *testing.T, ctx context.Context, opts buildah.StoreOptions, name string, root v1.Descriptor, data []byte, selections map[string]imagecatalog.Selection) sharedIndexSnapshot {
+func inspectSharedIndex(t *testing.T, ctx context.Context, opts buildah.StoreOptions, name string, root v1.Descriptor, data []byte, selections map[string]oci.StoredSelection) sharedIndexSnapshot {
 	t.Helper()
 	backend, err := storage.GetStore(buildah.NativeStoreOptions(opts))
 	if err != nil {

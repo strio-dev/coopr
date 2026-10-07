@@ -35,7 +35,7 @@ func readLocalComponent(ctx context.Context, options PlanOptions, reference stri
 	}
 	artifacts := append(slices.Clone(options.ContextArtifacts), options.Store.RunRoot, options.Store.GraphRoot, options.Output.Path, options.CacheLocalDir)
 	if options.Resolver != nil {
-		artifacts = append(artifacts, options.Resolver.ComponentStoreDir(), options.Resolver.ImageStoreDir())
+		artifacts = append(artifacts, options.Resolver.ComponentStoreDir())
 	}
 	policy, err := prepareContextPolicyWithIgnore(options.ContextDir, artifacts, options.IgnoreFile)
 	if err != nil {

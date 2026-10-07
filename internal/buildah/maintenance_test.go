@@ -2,7 +2,6 @@ package buildah
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,7 +9,6 @@ import (
 
 	"coopr/internal/storeactivity"
 	"github.com/opencontainers/go-digest"
-	"go.podman.io/storage"
 )
 
 func TestCachePruneRemovesAliasesButPreservesProtectedImages(t *testing.T) {
@@ -25,12 +23,12 @@ func TestCachePruneRemovesAliasesButPreservesProtectedImages(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := maintainStore(context.Background(), StoreMaintenanceRequest{
-		Store: options, Mode: StoreMaintenanceCachePrune, ProtectedImageIDs: []string{protected},
+		Store: options, Mode: StoreMaintenanceCachePrune,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.RemovedCacheAliases != 2 || result.RemovedImages != 1 {
+	if result.RemovedCacheAliases != 2 || result.RemovedImages != 0 {
 		t.Fatalf("cache prune result = %+v", result)
 	}
 	lease, err = acquireStore(options)
@@ -44,13 +42,13 @@ func TestCachePruneRemovesAliasesButPreservesProtectedImages(t *testing.T) {
 	if image, err := lease.store.Image(protected); err != nil || len(image.Names) != 0 {
 		t.Fatalf("protected cache aliases remain: %+v, %v", image, err)
 	}
-	if _, err := lease.store.Image(dangling); !errors.Is(err, storage.ErrImageUnknown) {
-		t.Fatalf("dangling image lookup = %v", err)
+	if _, err := lease.store.Image(dangling); err != nil {
+		t.Fatalf("native cache image removed: %v", err)
 	}
 }
 
 func TestSharedStorePruneNeverDeletesUnownedImages(t *testing.T) {
-	options := StoreOptions{RunRoot: filepath.Join(t.TempDir(), "run"), GraphRoot: filepath.Join(t.TempDir(), "graph"), GraphDriverName: "vfs", Shared: true}
+	options := StoreOptions{RunRoot: filepath.Join(t.TempDir(), "run"), GraphRoot: filepath.Join(t.TempDir(), "graph"), GraphDriverName: "vfs"}
 	lease, err := acquireStore(options)
 	if err != nil {
 		t.Fatal(err)
@@ -108,7 +106,7 @@ func TestMaintainStoreSupervisedWaitsForActiveBuildLease(t *testing.T) {
 		t.Skip("set COOPR_TEST_BUILDAH=1 for live maintenance worker coverage")
 	}
 	root := t.TempDir()
-	activity, err := storeactivity.AcquireShared(context.Background(), root)
+	activity, err := storeactivity.AcquireShared(context.Background(), filepath.Join(root, "graph"), filepath.Join(root, "run"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +129,7 @@ func TestMaintainStoreSupervisedWaitsForActiveBuildLease(t *testing.T) {
 	if err := <-finished; err != nil {
 		t.Fatalf("maintenance after active build lease: %v", err)
 	}
-	exclusive, err := storeactivity.AcquireExclusive(context.Background(), root)
+	exclusive, err := storeactivity.AcquireExclusive(context.Background(), filepath.Join(root, "graph"), filepath.Join(root, "run"))
 	if err != nil {
 		t.Fatal(err)
 	}

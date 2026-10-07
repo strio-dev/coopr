@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/imagecatalog"
+	"coopr/internal/buildah"
 	"coopr/internal/oci"
 	"coopr/internal/transfer"
 	"github.com/opencontainers/go-digest"
@@ -73,7 +73,7 @@ func TestResultOutputPreflightAndFinalizationFailures(t *testing.T) {
 	if err := os.Mkdir(store, 0700); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{store, filepath.Join(store, "catalog.json"), filepath.Join(root, "missing", "result.json")} {
+	for _, path := range []string{store, filepath.Join(store, "storage.lock"), filepath.Join(root, "missing", "result.json")} {
 		if err := preflightOutputArtifacts([]string{path}, store); err == nil {
 			t.Fatalf("invalid result path accepted: %s", path)
 		}
@@ -112,13 +112,48 @@ func TestResultOutputPreflightAndFinalizationFailures(t *testing.T) {
 	}
 }
 
+func TestOutputPreflightUsesConfiguredNativeRoots(t *testing.T) {
+	for _, separateImages := range []bool{false, true} {
+		t.Run(fmt.Sprint(separateImages), func(t *testing.T) {
+			workspace := t.TempDir()
+			t.Chdir(workspace)
+			store := buildah.StoreOptions{GraphRoot: t.TempDir(), RunRoot: t.TempDir()}
+			if separateImages {
+				store.ImageStore = t.TempDir()
+			}
+			roots := buildah.ActivityRoots(store, t.TempDir())
+			archive := filepath.Join(workspace, "image.oci.tar")
+			if err := preflightOutputArtifacts([]string{archive}, roots...); err != nil {
+				t.Fatalf("archive outside native storage rejected: %v", err)
+			}
+			if _, err := os.Stat(archive); !os.IsNotExist(err) {
+				t.Fatalf("preflight modified archive output: %v", err)
+			}
+			definition := filepath.Join(workspace, "image.coopr")
+			filesystem := buildah.FilesystemOutput{Type: "local", Path: filepath.Join(workspace, "rootfs")}
+			if err := preflightFilesystemOutput(filesystem, definition, roots...); err != nil {
+				t.Fatalf("filesystem outside native storage rejected: %v", err)
+			}
+			for _, root := range roots {
+				if err := preflightOutputArtifacts([]string{filepath.Join(root, "image.oci.tar")}, roots...); err == nil {
+					t.Fatalf("output inside native/component root %q accepted", root)
+				}
+				filesystem.Path = filepath.Join(root, "rootfs")
+				if err := preflightFilesystemOutput(filesystem, definition, roots...); err == nil {
+					t.Fatalf("filesystem inside native/component root %q accepted", root)
+				}
+			}
+		})
+	}
+}
+
 func TestMetadataIncludesIndexAndPlatformConfigurationDigests(t *testing.T) {
 	root := v1.Descriptor{MediaType: v1.MediaTypeImageIndex, Digest: digest.FromString("index"), Size: 24}
 	manifest := v1.Descriptor{MediaType: v1.MediaTypeImageManifest, Digest: digest.FromString("instance"), Size: 12}
 	platform := v1.Platform{OS: "linux", Architecture: "amd64"}
 	config := digest.FromString("config")
 	variants := []oci.IndexVariant{{Manifest: manifest, Platform: platform}}
-	selections := map[string]imagecatalog.Selection{"linux/amd64": {Manifest: manifest, ImageID: config.Encoded()}}
+	selections := map[string]oci.StoredSelection{"linux/amd64": {Manifest: manifest, ImageID: config.Encoded()}}
 	directory := t.TempDir()
 	metadata, iid := filepath.Join(directory, "result.json"), filepath.Join(directory, "iid")
 	if err := writeOutputMetadata(metadata, iid, root, variants, selections, outputReport{References: []string{"app:latest"}}, nil); err != nil {

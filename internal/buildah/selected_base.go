@@ -18,7 +18,7 @@ const selectedBaseAliasDomain = "coopr.buildah.selected-base.v1"
 // top layer, so Buildah can initialize from an exact manifest without copying
 // the root filesystem or changing the original image's mutable default.
 //
-// Aliases are retained in Coopr's private graph store. There is at most one
+// Aliases are retained in native storage. There is at most one
 // small image record per source-image/manifest pair, but each record keeps its
 // shared TopLayer reachable until the graph store is pruned or removed. We do
 // not delete aliases after a build: another concurrent builder may have

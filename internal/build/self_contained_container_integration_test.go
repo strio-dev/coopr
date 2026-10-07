@@ -11,6 +11,10 @@ import (
 	"time"
 )
 
+// TestMain changes XDG_DATA_HOME for Coopr tests. Podman must retain the
+// invoking user's environment to find the image loaded before the test.
+var hostPodmanEnvironment = os.Environ()
+
 // This opt-in test uses the shipped scratch image. Separate CLI invocations
 // share only Coopr's persisted image and component stores.
 func TestSelfContainedContainerBuildsAndReusesLocalState(t *testing.T) {
@@ -31,6 +35,15 @@ func TestSelfContainedContainerBuildsAndReusesLocalState(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	t.Cleanup(func() {
+		// Image layers contain subordinate UID/GID ownership. Remove this
+		// test's store in Podman's user namespace before TempDir cleanup.
+		command := exec.Command("podman", "unshare", "rm", "-rf", "--", state)
+		command.Env = hostPodmanEnv()
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Errorf("remove test-owned container state: %v: %s", err, output)
+		}
+	})
 	component := "extend\nenv SELF_CONTAINED_PROOF=ready\n"
 	if err := os.WriteFile(filepath.Join(workspace, "component.coopr"), []byte(component), 0600); err != nil {
 		t.Fatal(err)
@@ -41,17 +54,22 @@ func TestSelfContainedContainerBuildsAndReusesLocalState(t *testing.T) {
 	}
 
 	if output := runSelfContainedCLI(t, ctx, image, workspace, state, "none",
-		"component", "build", "/work/component.coopr", "--tag", "proof", "--platform", "linux/amd64"); !strings.Contains(output, "\nproof\n") {
+		"component", "build", "/work/component.coopr", "--tag", "proof", "--platform", "linux/amd64"); strings.TrimSpace(output) != "proof" {
 		t.Fatalf("component was not stored locally: %s", output)
 	}
-	runSelfContainedCLI(t, ctx, image, workspace, state, "slirp4netns",
+	runSelfContainedCLI(t, ctx, image, workspace, state, "",
 		"build", "/work/app.coopr", "--tag", "oci-archive:/work/online.oci.tar", "--platform", "linux/amd64")
 	// Restart Coopr with no network. The base image and component must come
 	// from the mounted local stores.
 	runSelfContainedCLI(t, ctx, image, workspace, state, "none",
 		"build", "/work/app.coopr", "--tag", "oci-archive:/work/offline.oci.tar", "--platform", "linux/amd64")
+	// Chroot reuses the outer network. It must not launch a nested slirp
+	// helper or replace DNS with an address only that helper can serve.
+	runSelfContainedCLI(t, ctx, image, workspace, state, "none",
+		"build", "/work/app.coopr", "--network=slirp4netns", "--no-cache",
+		"--tag", "oci-archive:/work/chroot.oci.tar", "--platform", "linux/amd64")
 	for _, path := range []string{
-		filepath.Join(state, "coopr", "images"),
+		filepath.Join(state, "containers", "storage"),
 		filepath.Join(state, "coopr", "components"),
 	} {
 		if info, err := os.Stat(path); err != nil || !info.IsDir() {
@@ -90,15 +108,17 @@ func TestSelfContainedContainerBuildsAndReusesLocalState(t *testing.T) {
 
 func runSelfContainedCLI(t *testing.T, ctx context.Context, image, workspace, state, network string, args ...string) string {
 	t.Helper()
-	command := []string{
-		"run", "--rm", "--network=" + network,
-		"--userns=keep-id:uid=1000,gid=1000", "--user=1000:1000",
-		"--cap-add=SYS_ADMIN", "--security-opt=seccomp=unconfined",
-		"--security-opt=label=disable", "--security-opt=unmask=ALL",
-		"--mount", "type=bind,src=" + workspace + ",dst=/work,rw",
-		"--mount", "type=bind,src=" + state + ",dst=/home/user/.local/share,rw",
-		image,
+	command := []string{"run", "--rm"}
+	if network != "" {
+		command = append(command, "--network="+network)
 	}
+	command = append(command,
+		"--device=/dev/fuse:rw", "--security-opt=seccomp=unconfined",
+		"--security-opt=label=disable",
+		"--mount", "type=bind,src="+workspace+",dst=/work,rw",
+		"--mount", "type=bind,src="+state+",dst=/var/lib,rw",
+		image,
+	)
 	command = append(command, args...)
 	cmd := exec.CommandContext(ctx, "podman", command...)
 	cmd.Env = hostPodmanEnv()
@@ -109,4 +129,4 @@ func runSelfContainedCLI(t *testing.T, ctx context.Context, image, workspace, st
 	return string(output)
 }
 
-func hostPodmanEnv() []string { return os.Environ() }
+func hostPodmanEnv() []string { return hostPodmanEnvironment }

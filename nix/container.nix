@@ -7,6 +7,7 @@
   aardvark-dns,
   crun,
   e2fsprogs,
+  fuse-overlayfs,
   gitMinimal,
   openssh,
   gnupg,
@@ -23,6 +24,7 @@ let
     aardvark-dns
     crun
     e2fsprogs
+    fuse-overlayfs
     gitMinimal
     gnupg
     netavark
@@ -38,11 +40,11 @@ let
     cp ${shadow}/bin/newgidmap "$out/bin/newgidmap"
   '';
   root = runCommand "coopr-container-config" { } ''
-    mkdir -p "$out"/{work,tmp,home/user/.local/share,run/user/1000,etc/containers,usr/bin}
-    printf 'user:x:1000:1000::/home/user:/bin/false\n' > "$out/etc/passwd"
-    printf 'user:x:1000:\n' > "$out/etc/group"
-    printf 'user:1:999\nuser:1001:64536\n' > "$out/etc/subuid"
-    printf 'user:1:999\nuser:1001:64536\n' > "$out/etc/subgid"
+    mkdir -p "$out"/{work,tmp,root,var/lib/coopr,home/user/.local/share,run/coopr,run/user/1000,etc/containers,usr/bin}
+    printf 'root:x:0:0::/root:/bin/false\nuser:x:1000:1000::/home/user:/bin/false\n' > "$out/etc/passwd"
+    printf 'root:x:0:\nuser:x:1000:\n' > "$out/etc/group"
+    printf 'root:1:65535\nuser:1:999\nuser:1001:64536\n' > "$out/etc/subuid"
+    printf 'root:1:65535\nuser:1:999\nuser:1001:64536\n' > "$out/etc/subgid"
     cp ${uidmapTools}/bin/newuidmap "$out/usr/bin/newuidmap"
     cp ${uidmapTools}/bin/newgidmap "$out/usr/bin/newgidmap"
     cat > "$out/etc/containers/policy.json" <<'POLICY'
@@ -52,6 +54,16 @@ let
     [engine]
     helper_binaries_dir = ["/bin"]
     CONFIG
+    cat > "$out/etc/containers/storage.conf" <<'STORAGE'
+    [storage]
+    driver = "overlay"
+    runroot = "/run/containers/storage"
+    graphroot = "/var/lib/containers/storage"
+
+    [storage.options.overlay]
+    mount_program = "${fuse-overlayfs}/bin/fuse-overlayfs"
+    mountopt = "nodev,fsync=0"
+    STORAGE
   '';
   runtime = buildEnv {
     name = "coopr-image-root";
@@ -68,7 +80,7 @@ let
   };
   permissions = [
     {
-      regex = "/(home|run|run/user|etc|etc/containers|usr|usr/bin)$";
+      regex = "/(home|run|run/user|var|var/lib|var/lib/coopr|etc|etc/containers|usr|usr/bin)$";
       mode = "0755";
     }
     {
@@ -84,11 +96,15 @@ let
       gid = 1000;
     }
     {
+      regex = "/(root|run/coopr)$";
+      mode = "0700";
+    }
+    {
       regex = "/(work|tmp)$";
       mode = "1777";
     }
     {
-      regex = "/etc/(passwd|group|subuid|subgid|containers/(policy\\.json|containers\\.conf))$";
+      regex = "/etc/(passwd|group|subuid|subgid|containers/(policy\\.json|containers\\.conf|storage\\.conf))$";
       mode = "0644";
     }
     {
@@ -123,22 +139,23 @@ nix2container.buildImage {
         root
       ];
   config = {
-    User = "1000:1000";
+    User = "0:0";
     WorkingDir = "/work";
     Entrypoint = [ "${coopr}/bin/coopr" ];
     Labels."org.opencontainers.image.version" = coopr.version;
     Env = [
       "PATH=/usr/bin:${lib.makeBinPath runtimeTools}"
-      "HOME=/home/user"
-      "USER=user"
-      "XDG_DATA_HOME=/home/user/.local/share"
-      "XDG_CACHE_HOME=/home/user/.local/share/cache"
-      "XDG_RUNTIME_DIR=/run/user/1000"
+      "HOME=/root"
+      "USER=root"
+      "XDG_DATA_HOME=/var/lib"
+      "XDG_CACHE_HOME=/var/lib/coopr/cache"
+      "XDG_RUNTIME_DIR=/run/coopr"
+      "BUILDAH_ISOLATION=chroot"
       "TMPDIR=/tmp"
       "SSL_CERT_FILE=${cacert}/etc/ssl/certs/ca-bundle.crt"
     ];
     Volumes = {
-      "/home/user/.local/share" = { };
+      "/var/lib" = { };
     };
   };
 }

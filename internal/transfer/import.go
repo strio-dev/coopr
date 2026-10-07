@@ -10,11 +10,13 @@ import (
 
 	"coopr/internal/buildah"
 	"coopr/internal/enginecopy"
-	"coopr/internal/imagecatalog"
+	"coopr/internal/imagestore"
 	"coopr/internal/localstore"
 	"coopr/internal/oci"
 	"github.com/containerd/platforms"
+	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"go.podman.io/storage"
 	"oras.land/oras-go/v2/content"
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
@@ -37,23 +39,18 @@ func copyEngineImage(ctx context.Context, engine, name string, destination Desti
 	if err != nil {
 		return "", err
 	}
-	storeDir, err := storeDirectory(oci.Image, opts)
+	storeOptions, err := nativeStoreOptions(opts)
 	if err != nil {
 		return "", err
 	}
-	storeOptions, err := nativeStoreOptions(opts, storeDir)
-	if err != nil {
-		return "", err
-	}
-	if err := importImageLayout(ctx, storeDir, storeOptions, layout, root); err != nil {
+	if err := importImageLayout(ctx, storeOptions, layout, root); err != nil {
 		return "", fmt.Errorf("retain imported %s image: %w", engine, err)
 	}
 	return copyStoredImage(ctx, root.Digest.String(), destination, opts)
 }
 
-// importImageLayout commits image bytes first and publishes catalog records only
-// after every selected instance has been imported and verified.
-func importImageLayout(ctx context.Context, storeDir string, store buildah.StoreOptions, layout string, root v1.Descriptor) error {
+// importImageLayout imports native children before publishing a native manifest list.
+func importImageLayout(ctx context.Context, store buildah.StoreOptions, layout string, root v1.Descriptor) error {
 	source, err := orasoci.NewWithContext(ctx, layout)
 	if err != nil {
 		return err
@@ -75,7 +72,7 @@ func importImageLayout(ctx context.Context, storeDir string, store buildah.Store
 		}
 		children = index.Manifests
 	}
-	selections := make(map[string]imagecatalog.Selection, len(children))
+	selections := make(map[string]oci.StoredSelection, len(children))
 	var selectedPlatform v1.Platform
 	for i, child := range children {
 		childLayout := layout
@@ -108,18 +105,25 @@ func importImageLayout(ctx context.Context, storeDir string, store buildah.Store
 		if err != nil {
 			return err
 		}
-		selections[key] = imagecatalog.Selection{Root: root, Manifest: child, ImageID: imageID, ConfigData: raw}
+		selections[key] = oci.StoredSelection{Root: root, Manifest: child, ImageID: imageID, ConfigData: raw}
 	}
 	if indexed {
-		return imagecatalog.CommitIndex(ctx, storeDir, "", root, indexData, selections)
+		imageIDs := make(map[digest.Digest]string, len(selections))
+		for _, selection := range selections {
+			imageIDs[selection.Manifest.Digest] = selection.ImageID
+		}
+		return buildah.WithStore(store, func(backend storage.Store) error {
+			_, err := imagestore.FromStore(backend).WriteStoredIndex(ctx, root, indexData, imageIDs, "")
+			return err
+		})
 	}
-	return imagecatalog.Commit(ctx, storeDir, "", selectedPlatform, selections[platforms.Format(selectedPlatform)])
+	return nil
 }
 
 // Engine import accepts a runnable image graph: one Linux image manifest per
 // platform. Auxiliary descriptors such as BuildKit/Docker attestations are not
 // runnable images and must be selected or removed by the source engine before
-// Coopr publishes the index in its local catalog.
+// Coopr publishes the index in native storage.
 func validateImportedImageIndex(index v1.Index) error {
 	if index.SchemaVersion != 2 || len(index.Manifests) == 0 {
 		return errors.New("imported index has no image instances")

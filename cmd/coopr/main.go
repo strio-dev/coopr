@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 
 	"coopr/internal/buildah"
@@ -12,5 +13,5 @@ func main() {
 	if buildah.InitReexec() {
 		return
 	}
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	os.Exit(runContextWithStorageNamespace(context.Background(), os.Args[1:], os.Stdout, os.Stderr, prepareStorageNamespace))
 }

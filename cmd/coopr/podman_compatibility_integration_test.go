@@ -29,7 +29,6 @@ func TestConfiguredPodmanStoreInvokesCompatibilityListsColdAndWarm(t *testing.T)
 	storageConfig := filepath.Join(root, "storage.conf")
 	writePodmanCompatibilityFile(t, storageConfig, fmt.Sprintf("[storage]\ndriver = \"vfs\"\ngraphroot = %q\nrunroot = %q\n", graphRoot, runRoot), 0o600)
 	t.Setenv("CONTAINERS_STORAGE_CONF", storageConfig)
-	writePodmanCompatibilityFile(t, filepath.Join(configHome, "coopr", "config.toml"), "image-store = \"podman\"\n", 0o600)
 	t.Cleanup(func() { makePodmanCompatibilityStoreRemovable(t, graphRoot) })
 
 	goodBase := writePodmanCompatibilityBase(t, root, "good-base", "ID=fedora\nVERSION_ID=42\n")

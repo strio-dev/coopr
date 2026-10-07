@@ -4,14 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"coopr/internal/buildah"
-	"coopr/internal/imagecatalog"
 	"coopr/internal/imagestore"
 	"coopr/internal/oci"
+	"coopr/internal/storeactivity"
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -23,7 +25,7 @@ func TestMaintenanceCommandShape(t *testing.T) {
 	root := newRootCommand()
 	for _, path := range [][]string{
 		{"images"}, {"image", "ls"}, {"image", "inspect"}, {"image", "rm"},
-		{"components"}, {"component", "ls"}, {"component", "inspect"}, {"component", "rm"},
+		{"component", "build"}, {"component", "copy"}, {"component", "ls"}, {"component", "inspect"}, {"component", "rm"},
 		{"system", "df"}, {"system", "prune"}, {"cache", "df"}, {"cache", "prune"},
 	} {
 		command, _, err := root.Find(path)
@@ -39,6 +41,24 @@ func TestMaintenanceCommandShape(t *testing.T) {
 	}
 }
 
+func TestComponentListingUsesSingularCommand(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"component", "ls"}, &stdout, &stderr); code != 0 || stdout.String() != "NAME\tDIGEST\n" {
+		t.Fatalf("component ls status=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"components"}, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), `unknown command "components"`) {
+		t.Fatalf("plural shortcut status=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--help"}, &stdout, &stderr); code != 0 || strings.Contains(stdout.String(), "\n  components ") {
+		t.Fatalf("root help status=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
 func TestImageRemoveAcceptsNativeOnlyName(t *testing.T) {
 	root := t.TempDir()
 	options := maintenanceStoreOptions(root)
@@ -51,13 +71,6 @@ func TestImageRemoveAcceptsNativeOnlyName(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	catalog, err := selectedStoreCatalog(options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := refreshSharedNativeCatalog(context.Background(), options, catalog, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -80,15 +93,7 @@ func TestImageRemoveAcceptsNativeOnlyName(t *testing.T) {
 	if _, err := store.Tag(imageID.Encoded(), "retained"); err != nil {
 		t.Fatalf("native-only rm deleted the underlying image: %v", err)
 	}
-	entries, err := imagecatalog.List(context.Background(), catalog)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, entry := range entries {
-		if entry.Reference == "native-only:latest" || entry.Reference == "localhost/native-only:latest" {
-			t.Fatalf("removed native alias remains cataloged: %s", entry.Reference)
-		}
-	}
+
 }
 
 func TestImageRemoveShortNameRemovesMatchedDockerQualifiedTag(t *testing.T) {
@@ -104,17 +109,6 @@ func TestImageRemoveShortNameRemovesMatchedDockerQualifiedTag(t *testing.T) {
 	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
-	}
-	catalog, err := selectedStoreCatalog(options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := refreshSharedNativeCatalog(context.Background(), options, catalog, "qualified"); err != nil {
-		t.Fatal(err)
-	}
-	if _, found, err := imagecatalog.Lookup(context.Background(), catalog, "qualified:latest", v1.Platform{OS: "linux", Architecture: "amd64"}); err != nil || !found {
-		entries, _ := imagecatalog.List(context.Background(), catalog)
-		t.Fatalf("short lookup alias for Docker-qualified native name: found=%t err=%v entries=%+v", found, err, entries)
 	}
 	var stdout, stderr bytes.Buffer
 	status := run([]string{
@@ -134,7 +128,7 @@ func TestImageRemoveShortNameRemovesMatchedDockerQualifiedTag(t *testing.T) {
 	}
 }
 
-func TestRefreshSharedNativeCatalogDiscoversAllAndForeignPlatforms(t *testing.T) {
+func TestNativeImageListingDiscoversAllAndForeignPlatforms(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	options := maintenanceStoreOptions(root)
@@ -165,11 +159,7 @@ func TestRefreshSharedNativeCatalogDiscoversAllAndForeignPlatforms(t *testing.T)
 		t.Fatal(err)
 	}
 
-	catalog := filepath.Join(root, "catalog")
-	if err := refreshSharedNativeCatalog(ctx, options, catalog, ""); err != nil {
-		t.Fatal(err)
-	}
-	entries, err := imagecatalog.List(ctx, catalog)
+	entries, err := nativeImageEntries(ctx, options, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,18 +167,23 @@ func TestRefreshSharedNativeCatalogDiscoversAllAndForeignPlatforms(t *testing.T)
 	for _, entry := range entries {
 		platformCounts[entry.Reference] = len(entry.Platforms)
 	}
-	if got := platformCounts["multi:latest"]; got != 2 {
-		t.Fatalf("multi-platform catalog selections = %d, want 2; entries=%+v", got, entries)
+	if got := platformCounts["localhost/multi:latest"]; got != 2 {
+		t.Fatalf("multi-platform native selections = %d, want 2; entries=%+v", got, entries)
 	}
-	if got := platformCounts["foreign-only:latest"]; got != 1 {
-		t.Fatalf("foreign-only catalog selections = %d, want 1; entries=%+v", got, entries)
+	if got := platformCounts["localhost/foreign-only:latest"]; got != 1 {
+		t.Fatalf("foreign-only native selections = %d, want 1; entries=%+v", got, entries)
 	}
-	indexedRoot, indexData, indexedSelections, complete, err := imagecatalog.LookupIndex(ctx, catalog, "multi:latest")
-	if err != nil {
+	if err := buildah.WithStore(options, func(backend storage.Store) error {
+		indexedRoot, indexData, indexedSelections, err := oci.StoredImageSelections(ctx, backend, "multi")
+		if err != nil {
+			return err
+		}
+		if indexedRoot.Digest != index.Digest || len(indexData) == 0 || len(indexedSelections) != 2 {
+			t.Fatalf("native index root=%s data=%d selections=%d", indexedRoot.Digest, len(indexData), len(indexedSelections))
+		}
+		return nil
+	}); err != nil {
 		t.Fatal(err)
-	}
-	if !complete || indexedRoot.Digest != index.Digest || len(indexData) == 0 || len(indexedSelections) != 2 {
-		t.Fatalf("refreshed native index complete=%t root=%s data=%d selections=%d", complete, indexedRoot.Digest, len(indexData), len(indexedSelections))
 	}
 	var stdout, stderr bytes.Buffer
 	status := run([]string{"--root", options.GraphRoot, "--runroot", options.RunRoot, "--storage-driver", "vfs", "images"}, &stdout, &stderr)
@@ -210,7 +205,7 @@ func maintenanceStoreOptions(root string) buildah.StoreOptions {
 	graphRoot := filepath.Join(root, "graph")
 	runRoot := filepath.Join(root, "run")
 	return buildah.StoreOptions{
-		GraphRoot: graphRoot, RunRoot: runRoot, GraphDriverName: "vfs", Shared: true,
+		GraphRoot: graphRoot, RunRoot: runRoot, GraphDriverName: "vfs",
 		Native: storage.StoreOptions{GraphRoot: graphRoot, RunRoot: runRoot, GraphDriverName: "vfs"},
 	}
 }
@@ -246,4 +241,24 @@ func maintenanceImageLayout(t *testing.T, platform v1.Platform, label string) (s
 		t.Fatal(err)
 	}
 	return dir, descriptor, imageID
+}
+
+func TestNativeImageEntriesWaitsForNativeMaintenance(t *testing.T) {
+	options := buildah.StoreOptions{GraphRoot: t.TempDir(), RunRoot: t.TempDir(), ImageStore: t.TempDir(), GraphDriverName: "vfs"}
+	for _, root := range buildah.ActivityRoots(options, "") {
+		exclusive, err := storeactivity.AcquireExclusive(context.Background(), root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		_, readErr := nativeImageEntries(ctx, options, "")
+		cancel()
+		closeErr := exclusive.Close()
+		if closeErr != nil {
+			t.Fatal(closeErr)
+		}
+		if !errors.Is(readErr, context.DeadlineExceeded) {
+			t.Fatalf("native image read bypassed exclusive root %q: %v", root, readErr)
+		}
+	}
 }

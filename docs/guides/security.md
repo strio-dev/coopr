@@ -34,13 +34,15 @@ Image inputs honor native registry routing and signature policy. Keep TLS verifi
 
 ## Nested container profile
 
-The scratch-based container image includes Coopr, `crun`, network and UID-map helpers, Git/SSH, GPGME/GnuPG, certificates, and archive support. It runs as UID/GID 1000, without a distribution package manager or builder daemon.
+The scratch-based container image includes Coopr's embedded Buildah backend, `fuse-overlayfs`, `crun`, network and UID-map helpers, Git/SSH, GPGME/GnuPG, certificates, and archive support. It runs as UID/GID 0 inside the container; with rootless Podman, that identity maps to the invoking host user. It has no distribution package manager or builder daemon.
 
-The tested Linux/amd64 profile requires nested user/mount namespaces, working setuid UID-map helpers, namespace-scoped `CAP_SYS_ADMIN`, and outer policies permitting clone/unshare/mount. Mount a writable project directory and persist `/home/user/.local/share` for images and components. Networked builds also require `/dev/net/tun` and outer networking.
+Use the [getting-started command](../getting-started/index.md#run-the-published-container) to expose `/dev/fuse`, permit the required mounts with unconfined seccomp and disabled labeling, mount a writable project, and persist `/var/lib`. The image configures `fuse-overlayfs` for its overlay store and keeps images, components, and caches in that volume.
 
-The tested Podman profile uses `--userns=keep-id:uid=1000,gid=1000`, `--user=1000:1000`, `--cap-add=SYS_ADMIN`, and unconfined seccomp, disabled labeling, and `unmask=ALL`. This permissive acceptance profile demonstrates nested execution; a narrower policy must still permit the required operations.
+Volumes mounted at the previous UID/GID 1000 image's `/home/user/.local/share` path are no longer used; preserve or back up their state before replacing them.
 
-Native overlay worked without `/dev/fuse` on the tested host; other drivers/kernels may require it. Nested OCI failures do not trigger a chroot fallback, which would weaken `network="none"` isolation.
+The packaged default is `BUILDAH_ISOLATION=chroot`. RUNs share the outer container's network, IPC, PID, and cgroup namespaces. Apply offline restrictions with outer Podman `--network=none`, and resource limits with outer Podman memory and CPU options. Per-RUN network isolation and cgroup memory or CPU controls require OCI isolation.
+
+Select OCI explicitly with `coopr build --isolation=rootless` or `--isolation=oci` (after the image name when using Podman). Nested OCI execution also needs user/mount namespaces, working UID-map helpers, and outer policies permitting clone/unshare/mount; network helpers may need `/dev/net/tun`. Insecure RUNs still require their entitlement and OCI/rootless isolation. OCI failures are reported without an automatic chroot fallback.
 
 ## Supported limitations
 

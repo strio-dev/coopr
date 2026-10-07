@@ -21,7 +21,7 @@ func TestDirectionalComponentCacheReusesDefaultNetworkRunAcrossStores(t *testing
 run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof"
 `, false)
 	resolver, err := oci.NewResolver(oci.Options{
-		ImageStoreDir: componentResolver.ImageStoreDir(), ComponentStoreDir: componentResolver.ComponentStoreDir(), PlainHTTPRegistries: []string{host},
+		ComponentStoreDir: componentResolver.ComponentStoreDir(), PlainHTTPRegistries: []string{host},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -37,7 +37,7 @@ run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof"
 				RunRoot: filepath.Join(baseDir, "run"), GraphRoot: filepath.Join(baseDir, "graph"), GraphDriverName: "vfs",
 			},
 			ContextDir: root, Isolation: "rootless", Runtime: "crun", Output: Output{Path: filepath.Join(baseDir, "layout")},
-			ImageStoreDir: resolver.ImageStoreDir(), ComponentStoreDir: resolver.ComponentStoreDir(), CacheFrom: cacheFrom, CacheTo: cacheTo,
+			ComponentStoreDir: resolver.ComponentStoreDir(), CacheFrom: cacheFrom, CacheTo: cacheTo,
 			PlainHTTPRegistries: []string{host},
 			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		})

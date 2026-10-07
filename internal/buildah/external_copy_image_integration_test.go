@@ -32,7 +32,7 @@ func TestBuildDefinitionCopiesFromSelectedExternalImage(t *testing.T) {
 		Mode: planner.Build, Platform: "linux/" + runtime.GOARCH,
 	}, SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Output: Output{Path: layout},
-		ImageStoreDir: base.imageStoreDir, Pull: false, SignaturePolicyPath: policy,
+		Pull: false, SignaturePolicyPath: policy,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -70,7 +70,7 @@ run "cp /external-busybox /bind-proof && cp /external-cache/busybox /cache-proof
 		Mode: planner.Build, Platform: "linux/" + runtime.GOARCH,
 	}, SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Output: Output{Path: layout},
-		ImageStoreDir: base.imageStoreDir, Pull: false, SignaturePolicyPath: policy,
+		Pull: false, SignaturePolicyPath: policy,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -90,7 +90,7 @@ func TestParallelStagesCopyFromSelectedExternalImage(t *testing.T) {
 	defer cancel()
 	root := t.TempDir()
 	store := cacheTestStore(root)
-	base := newLiveBusyBoxStorage(t, ctx, root, store)
+	_ = newLiveBusyBoxStorage(t, ctx, root, store)
 	policy := filepath.Join(root, "policy.json")
 	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -108,7 +108,7 @@ copy "/right" "/right" from="right"
 		Mode: planner.Build, Platform: "linux/" + runtime.GOARCH,
 	}, SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Output: Output{Path: layout},
-		ImageStoreDir: base.imageStoreDir, Pull: false, SignaturePolicyPath: policy,
+		Pull: false, SignaturePolicyPath: policy,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -133,7 +133,7 @@ func TestComponentInvocationCopiesFromSelectedExternalImage(t *testing.T) {
 	defer cancel()
 	root := t.TempDir()
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
-	base := newLiveBusyBoxStorage(t, ctx, root, store)
+	_ = newLiveBusyBoxStorage(t, ctx, root, store)
 	policy := filepath.Join(root, "policy.json")
 	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -143,7 +143,7 @@ func TestComponentInvocationCopiesFromSelectedExternalImage(t *testing.T) {
 extend
 copy "/artifact" "/artifact" from="pkg"
 copy "/bin/busybox" "/tool" from="fixture.local/coopr/busybox:latest"
-`, base.imageStoreDir)
+`)
 	layout := filepath.Join(root, "result")
 	_, err := BuildPlan(ctx, testPlan(t, "from \"scratch\"\ncomponent \"local:tool\"\n"), PlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Output: Output{Path: layout}, Resolver: resolver,

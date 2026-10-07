@@ -25,7 +25,6 @@ func TestBuildAndCopyUseExplicitNativeStoreOptions(t *testing.T) {
 	if err := os.WriteFile(definition, []byte("from \"scratch\"\nenv STORED=\"yes\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	catalog := filepath.Join(root, "catalog")
 	store := buildah.StoreOptions{
 		RunRoot: filepath.Join(root, "runtime"), GraphRoot: filepath.Join(root, "arbitrary-native-root"),
 		ImageStore: filepath.Join(root, "split-images"), GraphDriverName: "vfs",
@@ -33,14 +32,14 @@ func TestBuildAndCopyUseExplicitNativeStoreOptions(t *testing.T) {
 	}
 	name := "explicit-store:latest"
 	if _, err := Run(ctx, Options{
-		File: definition, Context: root, StoreDir: catalog, BuildStore: store,
+		File: definition, Context: root, BuildStore: store,
 		Platform: "linux/" + runtime.GOARCH, Tag: name,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	archive := filepath.Join(root, "image.tar")
 	if _, err := transfer.Copy(ctx, oci.Image, name, transfer.Destination{Transport: "oci-archive", Name: archive}, transfer.Options{
-		ImageStoreDir: catalog, BuildStore: store,
+		BuildStore: store,
 	}); err != nil {
 		t.Fatal(err)
 	}

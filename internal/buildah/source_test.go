@@ -16,7 +16,6 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"coopr/internal/imagecatalog"
 	"coopr/internal/oci"
 	"github.com/google/go-containerregistry/pkg/registry"
 	"github.com/opencontainers/go-digest"
@@ -30,7 +29,7 @@ import (
 	"oras.land/oras-go/v2/registry/remote"
 )
 
-func TestResolveImageSourceReusesCatalogSelectionFromBuildahStore(t *testing.T) {
+func TestResolveImageSourceReusesNativeSelectionFromBuildahStore(t *testing.T) {
 	ctx := context.Background()
 	sourceDir := t.TempDir()
 	source, err := orasoci.NewWithContext(ctx, sourceDir)
@@ -45,9 +44,8 @@ func TestResolveImageSourceReusesCatalogSelectionFromBuildahStore(t *testing.T) 
 	amdChild.Platform, armChild.Platform = &amd64, &arm64
 	root := sourceTestIndex(t, ctx, source, amdChild, armChild)
 
-	imageStoreDir := filepath.Join(t.TempDir(), "images")
 	canonicalRef := "registry.example/team/base:latest"
-	resolver, err := oci.NewResolver(oci.Options{ImageStoreDir: imageStoreDir})
+	resolver, err := oci.NewResolver(oci.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,16 +76,24 @@ func TestResolveImageSourceReusesCatalogSelectionFromBuildahStore(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := imagecatalog.Commit(ctx, imageStoreDir, canonicalRef, amd64, imagecatalog.Selection{
-		Root: root, Manifest: amdManifest, ImageID: imageID, ConfigData: configData,
-	}); err != nil {
+	if err := privateStore.AddNames(imageID, []string{canonicalRef}); err != nil {
+		t.Fatal(err)
+	}
+	rootData, err := content.FetchAll(ctx, source, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := privateStore.SetImageBigData(imageID, storage.ImageDigestManifestBigDataNamePrefix+"-"+root.Digest.String(), rootData, func([]byte) (digest.Digest, error) { return root.Digest, nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := oci.RecordStoredOrigin(ctx, privateStore, canonicalRef, oci.StoredSelection{Root: root, Manifest: amdManifest, ImageID: imageID, ConfigData: configData}); err != nil {
 		t.Fatal(err)
 	}
 	if image, err := privateStore.Image(armConfig.Digest.Encoded()); err == nil {
-		t.Fatalf("unselected arm64 image exists in storage: %+v", image)
+		t.Fatalf("unselected arm64 image exists: %+v", image)
 	}
-	if _, found, err := imagecatalog.Lookup(ctx, imageStoreDir, canonicalRef, arm64); err != nil || found {
-		t.Fatalf("unselected arm64 catalog lookup found=%v, err=%v", found, err)
+	if _, err := oci.ResolveStoredImage(ctx, privateStore, canonicalRef, arm64); !errors.Is(err, storage.ErrImageUnknown) {
+		t.Fatalf("unselected arm64 lookup: %v", err)
 	}
 
 	resolvedSource, err := ResolveImageSource(ctx, resolver, canonicalRef, amd64, privateStore, system)
@@ -107,20 +113,16 @@ func TestResolveImageSourceReusesCatalogSelectionFromBuildahStore(t *testing.T) 
 	if err != nil || stored.ID != resolvedSource.ImageID {
 		t.Fatalf("stored image = %+v, %v", stored, err)
 	}
-	selection, found, err := imagecatalog.Lookup(ctx, imageStoreDir, canonicalRef, amd64)
-	if err != nil || !found || selection.Root.Digest != root.Digest || selection.Manifest.Digest != amdManifest.Digest || selection.ImageID != amdConfig.Digest.Encoded() {
-		t.Fatalf("source catalog lookup = (%+v, %v, %v)", selection, found, err)
+	selection, err := oci.ResolveStoredImage(ctx, privateStore, canonicalRef, amd64)
+	if err != nil || selection.Root.Digest != root.Digest || selection.Selected.Digest != amdManifest.Digest {
+		t.Fatalf("native selection = %+v, %v", selection, err)
 	}
 	tampered := amdManifest
 	tampered.Digest = digest.FromString("different-manifest")
-	if err := imagecatalog.Commit(ctx, imageStoreDir, canonicalRef, amd64, imagecatalog.Selection{
-		Root: root, Manifest: tampered, ImageID: imageID, ConfigData: configData,
-	}); err != nil {
-		t.Fatal(err)
+	if err := verifyStoredManifest(ctx, privateStore, system, oci.StoredSelection{Root: root, Manifest: tampered, ImageID: imageID, ConfigData: configData}); err == nil {
+		t.Fatal("accepted mismatched native manifest")
 	}
-	if _, err := ResolveImageSource(ctx, resolver, canonicalRef, amd64, privateStore, system); err == nil {
-		t.Fatal("accepted catalog manifest that differs from stored image")
-	}
+
 }
 
 func TestResolveImageSourceRequiresResolverAndStore(t *testing.T) {
@@ -128,7 +130,7 @@ func TestResolveImageSourceRequiresResolverAndStore(t *testing.T) {
 	if _, err := ResolveImageSource(context.Background(), nil, "base:latest", platform, nil, nil); err == nil {
 		t.Fatal("ResolveImageSource accepted a nil resolver")
 	}
-	resolver, err := oci.NewResolver(oci.Options{ImageStoreDir: filepath.Join(t.TempDir(), "images")})
+	resolver, err := oci.NewResolver(oci.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +140,7 @@ func TestResolveImageSourceRequiresResolverAndStore(t *testing.T) {
 }
 
 func TestSelectImageSourcePullNeverRejectsMissingLocalImage(t *testing.T) {
-	resolver, err := oci.NewResolver(oci.Options{ImageStoreDir: t.TempDir(), PullPolicy: string(oci.PullNever)})
+	resolver, err := oci.NewResolver(oci.Options{NativeStore: NativeStoreOptions(cacheTestStore(t.TempDir())), PullPolicy: string(oci.PullNever)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,8 +184,7 @@ func TestResolveImageSourceRefreshesAuthoritativeSharedStoreName(t *testing.T) {
 	if err := backend.AddNames(firstID, []string{"localhost/shared-base:latest"}); err != nil {
 		t.Fatal(err)
 	}
-	catalog := filepath.Join(root, "catalog")
-	resolver, err := oci.NewResolver(oci.Options{ImageStoreDir: catalog, PullPolicy: string(oci.PullNever), NativeStoreShared: true})
+	resolver, err := oci.NewResolver(oci.Options{PullPolicy: string(oci.PullNever)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,9 +206,7 @@ func TestResolveImageSourceRefreshesAuthoritativeSharedStoreName(t *testing.T) {
 	if _, err := ResolveImageSource(ctx, resolver, "shared-base:latest", platform, backend, system); err == nil || !strings.Contains(err.Error(), "pull policy is never") {
 		t.Fatalf("removed shared name resolve = %v", err)
 	}
-	if _, found, err := imagecatalog.Lookup(ctx, catalog, "shared-base:latest", platform); err != nil || found {
-		t.Fatalf("stale catalog remains: found=%t err=%v", found, err)
-	}
+
 }
 
 func TestResolveImageSourceEnforcesRegistryScopedPolicy(t *testing.T) {
@@ -236,7 +235,7 @@ func TestResolveImageSourceEnforcesRegistryScopedPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	resolver, err := oci.NewResolver(oci.Options{
-		ImageStoreDir:       filepath.Join(root, "images"),
+
 		PlainHTTPRegistries: []string{authority},
 	})
 	if err != nil {
@@ -270,7 +269,7 @@ func TestResolveImageSourcePullsRegistryDirectlyIntoBuildahStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	resolver, err := oci.NewResolver(oci.Options{
-		ImageStoreDir: filepath.Join(root, "images"), PlainHTTPRegistries: []string{authority},
+		PlainHTTPRegistries: []string{authority},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -387,25 +386,16 @@ func TestResolveImageSourceSharedWrongPlatformPullPolicies(t *testing.T) {
 			if err := backend.AddNames(id, []string{reference}); err != nil {
 				t.Fatal(err)
 			}
-			catalog := filepath.Join(root, "images")
-			resolver, err := oci.NewResolver(oci.Options{ImageStoreDir: catalog, NativeStoreShared: true, PullPolicy: string(policy), PlainHTTPRegistries: []string{parsed.Host}})
+			resolver, err := oci.NewResolver(oci.Options{PullPolicy: string(policy), PlainHTTPRegistries: []string{parsed.Host}})
 			if err != nil {
 				t.Fatal(err)
 			}
-			// Seed a now-stale arm64 alias, then ensure authoritative native naming invalidates it.
 			data, err := content.FetchAll(ctx, source, armManifest)
 			if err != nil {
 				t.Fatal(err)
 			}
 			var manifest v1.Manifest
 			if err := json.Unmarshal(data, &manifest); err != nil {
-				t.Fatal(err)
-			}
-			configData, err := content.FetchAll(ctx, source, manifest.Config)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := imagecatalog.Commit(ctx, catalog, reference, arm, imagecatalog.Selection{Root: index, Manifest: armManifest, ImageID: manifest.Config.Digest.Encoded(), ConfigData: configData}); err != nil {
 				t.Fatal(err)
 			}
 			before := requests.Load()

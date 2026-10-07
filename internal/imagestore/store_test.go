@@ -360,6 +360,46 @@ func TestWriteIndexLayoutRetagReusesNativeList(t *testing.T) {
 	}
 }
 
+func TestWriteUntaggedIndexRemainsNativeAfterReopen(t *testing.T) {
+	ctx := context.Background()
+	store := testVFSStore(t)
+	platform := v1.Platform{OS: "linux", Architecture: "amd64"}
+	layout, manifest, imageID := testLayoutPlatform(t, "unnamed", platform)
+	if _, err := store.WriteLayout(ctx, layout, manifest, ""); err != nil {
+		t.Fatal(err)
+	}
+	indexLayout := filepath.Join(t.TempDir(), "index")
+	root, data, err := oci.AssembleImageIndex(ctx, indexLayout, []oci.ImageVariant{{Layout: layout, Manifest: manifest, Platform: platform}}, "oci")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := store.WriteStoredIndex(ctx, root, data, map[digest.Digest]string{manifest.Digest: imageID.Encoded()}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := storage.StoreOptions{GraphRoot: store.backend.GraphRoot(), RunRoot: store.backend.RunRoot(), GraphDriverName: "vfs"}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = NewWithOptions(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	gotRoot, gotData, found, err := store.Index(ctx, id)
+	if err != nil || !found || gotRoot.Digest != root.Digest || !bytes.Equal(gotData, data) {
+		t.Fatalf("reopened unnamed index: root=%+v found=%t err=%v", gotRoot, found, err)
+	}
+	resolved, err := store.Resolve(ctx, id, platform)
+	if err != nil || resolved.StorageImageID != imageID.Encoded() {
+		t.Fatalf("reopened index child: resolved=%+v err=%v", resolved, err)
+	}
+}
+
 func TestWriteRejectsInvalidArchiveBeforeStorage(t *testing.T) {
 	store := testVFSStore(t)
 	path := filepath.Join(t.TempDir(), "invalid.oci.tar")

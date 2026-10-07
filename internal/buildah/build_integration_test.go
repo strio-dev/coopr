@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/imagecatalog"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
@@ -36,7 +35,7 @@ func TestBuildRunsAndCommitsOCIImage(t *testing.T) {
 		store.GraphRoot = filepath.Join(root, "graph")
 		store.GraphDriverName = "vfs"
 		fixture := newLiveBusyBoxStorage(t, ctx, root, store)
-		selection, found, err := imagecatalog.Lookup(ctx, fixture.imageStoreDir, fixture.reference, v1.Platform{OS: "linux", Architecture: runtime.GOARCH})
+		selection, found, err := nativeFixtureSelection(ctx, store, fixture.reference, v1.Platform{OS: "linux", Architecture: runtime.GOARCH})
 		if err != nil || !found {
 			t.Fatalf("preloaded fixture lookup found=%t: %v", found, err)
 		}

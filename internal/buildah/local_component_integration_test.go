@@ -31,7 +31,7 @@ func newLocalComponentFixture(t *testing.T) localComponentFixture {
 	if err := os.Mkdir(contextDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	resolver, err := oci.NewResolver(oci.Options{ComponentStoreDir: filepath.Join(root, "components"), ImageStoreDir: filepath.Join(root, "images")})
+	resolver, err := oci.NewResolver(oci.Options{ComponentStoreDir: filepath.Join(root, "components")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,8 +261,8 @@ func TestLocalComponentSupervisedBuildPackagesWithoutPrebuild(t *testing.T) {
 	layout := filepath.Join(f.root, "supervised")
 	_, err := BuildDefinitionSupervised(f.ctx, parseWorkerDefinition(t, "from \"scratch\"\ncomponent \"./components/shared.coopr\"\n"), planner.Options{Mode: planner.Build}, SupervisedPlanOptions{
 		Store: f.options.Store, ContextDir: f.contextDir, Isolation: "rootless", Runtime: "crun", Output: Output{Path: layout},
-		ImageStoreDir: filepath.Join(f.root, "images"), ComponentStoreDir: filepath.Join(f.root, "components"),
-		CacheLocalDir: f.options.CacheLocalDir, SignaturePolicyPath: f.options.SystemContext.SignaturePolicyPath,
+		ComponentStoreDir: filepath.Join(f.root, "components"),
+		CacheLocalDir:     f.options.CacheLocalDir, SignaturePolicyPath: f.options.SystemContext.SignaturePolicyPath,
 	})
 	if err != nil {
 		t.Fatal(err)

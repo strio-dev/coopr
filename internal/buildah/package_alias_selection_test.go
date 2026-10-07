@@ -2,13 +2,13 @@ package buildah
 
 import (
 	"context"
+	"go.podman.io/image/v5/types"
+	orasoci "oras.land/oras-go/v2/content/oci"
 	"runtime"
 	"testing"
 
-	"coopr/internal/imagecatalog"
 	"coopr/internal/oci"
 	"coopr/internal/planner"
-	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
@@ -17,14 +17,29 @@ func TestPackageSelectionKeepsExternalSourceBeforeLaterAlias(t *testing.T) {
 	root := t.TempDir()
 	platform := v1.Platform{OS: runtime.GOOS, Architecture: runtime.GOARCH}
 	platformString := runtime.GOOS + "/" + runtime.GOARCH
-	manifest := oci.Descriptor(v1.MediaTypeImageManifest, []byte("selected base manifest"))
-	config := []byte(`{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}`)
-	if err := imagecatalog.Commit(ctx, root, "base:latest", platform, imagecatalog.Selection{
-		Root: manifest, Manifest: manifest, ImageID: digest.FromBytes(config).Encoded(), ConfigData: config,
-	}); err != nil {
+	store := cacheTestStore(root)
+	sourceDir := t.TempDir()
+	source, err := orasoci.NewWithContext(ctx, sourceDir)
+	if err != nil {
 		t.Fatal(err)
 	}
-	resolver, err := oci.NewResolver(oci.Options{ImageStoreDir: root})
+	manifest, _ := sourceTestImage(t, ctx, source, platform, "base")
+	lease, err := acquireStore(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := ImportSelectedImage(ctx, lease.store, &types.SystemContext{BigFilesTemporaryDir: t.TempDir()}, sourceDir, manifest)
+	if err != nil {
+		_ = lease.Close()
+		t.Fatal(err)
+	}
+	if err := lease.store.AddNames(id, []string{"localhost/base:latest"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Close(); err != nil {
+		t.Fatal(err)
+	}
+	resolver, err := oci.NewResolver(oci.Options{NativeStore: NativeStoreOptions(store), PullPolicy: "never"})
 	if err != nil {
 		t.Fatal(err)
 	}

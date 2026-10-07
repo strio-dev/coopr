@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/imagecatalog"
 	"coopr/internal/oci"
 	"coopr/internal/transfer"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -45,7 +44,7 @@ func TestBuildAndCopyToDockerEngine(t *testing.T) {
 			t.Cleanup(func() { removeDockerEngineImages(t, created) })
 			options := Options{
 				File: file, Platform: "linux/" + runtime.GOARCH,
-				Tag: "docker:" + name, Format: format, StoreDir: storeDir,
+				Tag: "docker:" + name, Format: format, BuildStore: nativeBuildTestStore(storeDir),
 			}
 			got, err := Run(ctx, options)
 			if err != nil || got != "docker:"+name {
@@ -61,7 +60,7 @@ func TestBuildAndCopyToDockerEngine(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := transfer.Copy(ctx, oci.Image, localName, destination, transfer.Options{ImageStoreDir: storeDir}); err != nil {
+			if _, err := transfer.Copy(ctx, oci.Image, localName, destination, transfer.Options{BuildStore: nativeBuildTestStore(storeDir)}); err != nil {
 				t.Fatalf("copy stored image into Docker: %v", err)
 			}
 			created = append(created, copiedName)
@@ -186,7 +185,7 @@ cmd { exec "/proof" }
 			name := "localhost/coopr-docker-" + marker + "-" + format + ":latest"
 			var created []string
 			t.Cleanup(func() { removeDockerEngineImages(t, created) })
-			options := Options{File: file, StoreDir: storeDir, Format: format,
+			options := Options{File: file, BuildStore: nativeBuildTestStore(storeDir), Format: format,
 				Platforms: []string{"linux/amd64", "linux/arm64"}, Tag: "docker:" + name}
 			got, err := Run(ctx, options)
 			if !modern {
@@ -203,12 +202,12 @@ cmd { exec "/proof" }
 			if _, err := Run(ctx, options); err != nil {
 				t.Fatal(err)
 			}
-			root, _, _, found, err := imagecatalog.LookupIndex(ctx, storeDir, options.Tag)
+			root, _, _, found, err := testStoredImageIndex(ctx, nativeBuildTestStore(storeDir), options.Tag)
 			if err != nil || !found {
 				t.Fatalf("lookup local source index: found=%t error=%v", found, err)
 			}
 			copiedName := name + "-copy"
-			if _, err := transfer.Copy(ctx, oci.Image, options.Tag, transfer.Destination{Transport: "docker", Name: copiedName}, transfer.Options{ImageStoreDir: storeDir}); err != nil {
+			if _, err := transfer.Copy(ctx, oci.Image, options.Tag, transfer.Destination{Transport: "docker", Name: copiedName}, transfer.Options{BuildStore: nativeBuildTestStore(storeDir)}); err != nil {
 				t.Fatalf("copy complete local index into Docker: %v", err)
 			}
 			created = append(created, copiedName)

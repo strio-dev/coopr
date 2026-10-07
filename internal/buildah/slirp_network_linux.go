@@ -22,7 +22,7 @@ const slirpNetworkName = "slirp4netns"
 
 func (b nativeBuilder) runWithSlirpNetwork(command []string, options upstream.RunOptions) (retErr error) {
 	mode, found := slirpNetworkMode(options.NamespaceOptions)
-	if !found {
+	if options.Isolation == define.IsolationChroot || !found {
 		return b.Run(command, options)
 	}
 

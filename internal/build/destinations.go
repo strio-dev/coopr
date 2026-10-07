@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"coopr/internal/imagecatalog"
 	"coopr/internal/oci"
 	"coopr/internal/transfer"
 	"github.com/containerd/platforms"
@@ -143,7 +142,7 @@ func applyOutputDestinations(ctx context.Context, kind oci.Kind, layout string, 
 		if destination.Transport != "registry" && (destination.Transport != "local" || opts.Signing.SignBy == "") {
 			copyOptions.Signing = transfer.SigningOptions{}
 		}
-		if kind == oci.Image && destination.Transport == "local" {
+		if kind == oci.Image {
 			return transfer.Copy(ctx, kind, root.Digest.String(), destination, copyOptions)
 		}
 		return transfer.CopyRoot(ctx, kind, layout, root, destination, copyOptions)
@@ -177,7 +176,7 @@ func publishDestinations(ctx context.Context, kind oci.Kind, root v1.Descriptor,
 
 // Metadata uses the established buildx image keys, with per-platform entries
 // for consumers that need the individual manifest and configuration digests.
-func finishOutputs(path, iidPath string, root v1.Descriptor, variants []oci.IndexVariant, selections map[string]imagecatalog.Selection, report outputReport, publicationErr error) (string, error) {
+func finishOutputs(path, iidPath string, root v1.Descriptor, variants []oci.IndexVariant, selections map[string]oci.StoredSelection, report outputReport, publicationErr error) (string, error) {
 	metadataErr := writeOutputMetadata(path, iidPath, root, variants, selections, report, publicationErr)
 	if metadataErr != nil {
 		metadataErr = fmt.Errorf("result retained as %s; completed destinations %v; %w", root.Digest, report.References, metadataErr)
@@ -185,7 +184,7 @@ func finishOutputs(path, iidPath string, root v1.Descriptor, variants []oci.Inde
 	return strings.Join(report.References, "\n"), errors.Join(publicationErr, metadataErr)
 }
 
-func writeOutputMetadata(path, iidPath string, root v1.Descriptor, variants []oci.IndexVariant, selections map[string]imagecatalog.Selection, report outputReport, publicationErr error) error {
+func writeOutputMetadata(path, iidPath string, root v1.Descriptor, variants []oci.IndexVariant, selections map[string]oci.StoredSelection, report outputReport, publicationErr error) error {
 	if path == "" && iidPath == "" {
 		return nil
 	}

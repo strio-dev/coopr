@@ -6,11 +6,16 @@ import (
 	"testing"
 
 	"go.podman.io/storage/pkg/reexec"
+	"go.podman.io/storage/pkg/unshare"
 )
 
 func TestMain(m *testing.M) {
 	if reexec.Init() {
 		return
+	}
+	if os.Getenv("COOPR_TEST_BUILDAH") != "" || os.Getenv("COOPR_TEST_BUILDAH_REGISTRY") != "" || os.Getenv("COOPR_TEST_CONTAINER_STORAGE") != "" {
+		// Live native storage needs the same user/mount namespace as the CLI.
+		unshare.MaybeReexecUsingUserNamespace(false)
 	}
 	dataDir, err := os.MkdirTemp("", "coopr-build-test-data-*")
 	if err != nil {

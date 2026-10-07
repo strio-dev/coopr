@@ -37,7 +37,6 @@ func TestInstructionCacheSeparatesInheritedPlatformMetadata(t *testing.T) {
 	root := t.TempDir()
 	store := cacheTestStore(root)
 	fixture := liveBusyBoxImage(t, ctx)
-	imageStore := filepath.Join(root, "images")
 	policy := writeComponentTestPolicy(t, root)
 	system := &types.SystemContext{SignaturePolicyPath: policy, BigFilesTemporaryDir: root}
 	manifestData, err := os.ReadFile(filepath.Join(fixture.layout, "blobs", "sha256", fixture.manifest.Digest.Encoded()))
@@ -83,7 +82,7 @@ func TestInstructionCacheSeparatesInheritedPlatformMetadata(t *testing.T) {
 			}
 		}
 		reference := "fixture.local/coopr/platform:" + change.name
-		importTestImageToCatalog(t, ctx, store, imageStore, fixture.layout, reference, selected, selected, configData, fixture.platform, system)
+		importTestImageToNative(t, ctx, store, fixture.layout, reference, selected, system)
 		plan := testPlan(t, fmt.Sprintf(`from %q
 run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" network="none"
 `, reference))
@@ -93,7 +92,7 @@ run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" network="none"
 			var logs strings.Builder
 			_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 				Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-				Output: Output{Path: layout}, ImageStoreDir: imageStore,
+				Output:              Output{Path: layout},
 				SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: &logs,
 			})
 			t.Logf("%s attempt %d worker progress:\n%s", change.name, attempt, logs.String())
@@ -128,7 +127,6 @@ func testCachedParentAnnotations(t *testing.T, tail string) {
 	root := t.TempDir()
 	store := cacheTestStore(root)
 	fixture := liveBusyBoxImage(t, ctx)
-	imageStore := filepath.Join(root, "images")
 	policy := writeComponentTestPolicy(t, root)
 	system := &types.SystemContext{SignaturePolicyPath: policy, BigFilesTemporaryDir: root}
 	var coldProof string
@@ -143,8 +141,7 @@ func testCachedParentAnnotations(t *testing.T, tail string) {
 		}
 		reference := "fixture.local/coopr/annotated:" + origin
 		// Both manifests share exactly the original config and root filesystem.
-		importTestImageToCatalog(t, ctx, store, imageStore, fixture.layout, reference,
-			manifest, manifest, fixture.configData, fixture.platform, system)
+		importTestImageToNative(t, ctx, store, fixture.layout, reference, manifest, system)
 		plan := testPlan(t, fmt.Sprintf(`from %q
 run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" network="none"
 %s`, reference, tail))
@@ -152,7 +149,7 @@ run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" network="none"
 		var logs strings.Builder
 		_, err = BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-			Output: Output{Path: layout}, ImageStoreDir: imageStore,
+			Output:              Output{Path: layout},
 			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: &logs,
 		})
 		t.Logf("%s worker progress:\n%s", origin, logs.String())

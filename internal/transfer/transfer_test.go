@@ -55,18 +55,14 @@ func TestDestinationTransports(t *testing.T) {
 
 func TestCopyRootArchiveAndRegistryWithoutRebuild(t *testing.T) {
 	ctx := context.Background()
-	dataHome := t.TempDir()
-	t.Setenv("XDG_DATA_HOME", dataHome)
-	storeDir, err := localstore.DefaultImageDir()
-	if err != nil {
-		t.Fatal(err)
-	}
+	options := nativeTestStore(t.TempDir())
 	source, root := imageFixture(t, ctx)
-	if err := localstore.Put(ctx, storeDir, source, root, "old:latest"); err != nil {
+	layout := filepath.Join(t.TempDir(), "layout")
+	if err := localstore.Put(ctx, layout, source, root); err != nil {
 		t.Fatal(err)
 	}
 	archive := filepath.Join(t.TempDir(), "image.oci.tar")
-	result, err := CopyRoot(ctx, oci.Image, storeDir, root, Destination{Transport: "oci-archive", Name: archive}, Options{})
+	result, err := CopyRoot(ctx, oci.Image, layout, root, Destination{Transport: "oci-archive", Name: archive}, Options{BuildStore: options})
 	if err != nil || result != archive {
 		t.Fatalf("copy archive = %q, %v", result, err)
 	}
@@ -96,7 +92,7 @@ func TestCopyRootArchiveAndRegistryWithoutRebuild(t *testing.T) {
 	server := httptest.NewServer(registry.New())
 	defer server.Close()
 	registryRef := strings.TrimPrefix(server.URL, "http://") + "/coopr/copy:dev"
-	result, err = CopyRoot(ctx, oci.Image, storeDir, root, Destination{Transport: "registry", Name: registryRef}, Options{PlainHTTP: true})
+	result, err = CopyRoot(ctx, oci.Image, layout, root, Destination{Transport: "registry", Name: registryRef}, Options{BuildStore: options, PlainHTTP: true})
 	if err != nil || result != strings.TrimSuffix(registryRef, ":dev")+"@"+root.Digest.String() {
 		t.Fatalf("copy registry = %q, %v", result, err)
 	}

@@ -1,6 +1,6 @@
 # CLI
 
-Use `coopr --help` or `coopr COMMAND --help` for all flags in the installed binary. `coopr --version` prints its version. Image commands use the [selected image store](configuration.md); components use their separate OCI store.
+Use `coopr --help` or `coopr COMMAND --help` for all flags in the installed binary. `coopr --version` prints its version. Image commands use the [native image store](configuration.md); components use their separate OCI store.
 
 | Command | Purpose |
 | --- | --- |
@@ -10,7 +10,7 @@ Use `coopr --help` or `coopr COMMAND --help` for all flags in the installed bina
 | `component copy SOURCE DESTINATION` | Retag/export a component. |
 | `image ls`, `images` | List locally named images. |
 | `image inspect NAME`, `image rm NAME...` | Inspect images or remove local names. |
-| `component ls`, `components` | List locally named components. |
+| `component ls` | List locally named components. |
 | `component inspect REF`, `component rm NAME...` | Inspect components or remove names. |
 | `system df`, `system prune` | Inspect/prune aggregate local state. |
 | `cache df`, `cache prune` | Inspect/prune instruction-cache aliases and images. |

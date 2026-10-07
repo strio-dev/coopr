@@ -35,7 +35,7 @@ run "cat /run/secrets/token >/proof" network="none" { mount "secret" id="token" 
 		layout := filepath.Join(root, name)
 		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-			Output: Output{Path: layout}, ImageStoreDir: base.imageStoreDir,
+			Output:              Output{Path: layout},
 			Secrets:             []string{"id=token,src=" + secretPath},
 			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		})
@@ -81,7 +81,7 @@ run "test ! -e /run/buildkit/ssh_agent.0 && echo cleaned >/cleanup" network="non
 	layout := filepath.Join(root, "image")
 	_, err = BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-		Output: Output{Path: layout}, ImageStoreDir: base.imageStoreDir,
+		Output:              Output{Path: layout},
 		SSH:                 []string{"default=" + listener.Addr().String()},
 		SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 	})

@@ -16,7 +16,6 @@ import (
 	"time"
 
 	buildahbackend "coopr/internal/buildah"
-	"coopr/internal/imagecatalog"
 	"coopr/internal/localstore"
 	"coopr/internal/oci"
 	"github.com/containerd/platforms"
@@ -31,6 +30,7 @@ import (
 	"go.podman.io/image/v5/signature"
 	"go.podman.io/image/v5/signature/sigstore"
 	"go.podman.io/image/v5/types"
+	"go.podman.io/storage/pkg/reexec"
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
 
@@ -49,7 +49,7 @@ func TestSigningOptionsPassphraseAndDestinationValidation(t *testing.T) {
 		t.Fatalf("local GPG signing rejected: %v", err)
 	}
 	missingStore := filepath.Join(t.TempDir(), "must-not-be-created")
-	if _, err := Copy(context.Background(), oci.Image, "source:latest", Destination{Transport: "local", Name: "dest:latest"}, Options{ImageStoreDir: missingStore, Signing: options}); err == nil || !strings.Contains(err.Error(), "requires a registry") {
+	if _, err := Copy(context.Background(), oci.Image, "source:latest", Destination{Transport: "local", Name: "dest:latest"}, Options{BuildStore: nativeTestStore(missingStore), Signing: options}); err == nil || !strings.Contains(err.Error(), "requires a registry") {
 		t.Fatalf("Copy accepted nonregistry signing: %v", err)
 	}
 	if _, err := CopyRoot(context.Background(), oci.Image, missingStore, v1.Descriptor{}, Destination{Transport: "local", Name: "example:latest"}, Options{Signing: options}); err == nil || !strings.Contains(err.Error(), "requires a registry") {
@@ -90,7 +90,7 @@ func TestStoredTransferOptionsCaptureCosignPasswordForSanitizedWorker(t *testing
 	root := t.TempDir()
 	store.RunRoot = filepath.Join(root, "runroot")
 	store.GraphRoot = filepath.Join(root, "graphroot")
-	options, cleanup, err := storedTransferOptions(filepath.Join(root, "catalog"), "image-id", digest.FromString("manifest"), Options{
+	options, cleanup, err := storedTransferOptions("image-id", digest.FromString("manifest"), Options{
 		BuildStore: store,
 		Signing:    SigningOptions{SigstorePrivateKeyFile: "cosign.key"},
 	})
@@ -209,14 +209,8 @@ func TestSignStoredImageWithGPGKey(t *testing.T) {
 	layoutPath := filepath.Join(t.TempDir(), "layout")
 	layoutStore, root, manifests := multiPlatformImageFixtureAt(t, ctx, layoutPath)
 	storeDir := filepath.Join(t.TempDir(), "images")
-	storeOptions, err := buildahbackend.DefaultStoreOptions()
-	if err != nil {
-		t.Fatal(err)
-	}
-	storeOptions.GraphRoot = filepath.Join(storeDir, "graph")
-	storeOptions.GraphDriverName = "overlay"
-	storeOptions.GraphDriverOptions = nil
-	selections := make(map[string]imagecatalog.Selection, len(manifests))
+	storeOptions := nativeTestStore(storeDir)
+	selections := make(map[string]oci.StoredSelection, len(manifests))
 	for _, selected := range manifests {
 		imageID, err := buildahbackend.ImportLayoutSupervised(ctx, storeOptions, layoutPath, selected)
 		if err != nil {
@@ -243,7 +237,7 @@ func TestSignStoredImageWithGPGKey(t *testing.T) {
 			t.Fatal(err)
 		}
 		platform := platforms.Normalize(*selected.Platform)
-		selections[platforms.Format(platform)] = imagecatalog.Selection{Root: root, Manifest: selected, ImageID: imageID, ConfigData: configData}
+		selections[platforms.Format(platform)] = oci.StoredSelection{Root: root, Manifest: selected, ImageID: imageID, ConfigData: configData}
 	}
 	indexReader, err := layoutStore.Fetch(ctx, root)
 	if err != nil {
@@ -253,7 +247,7 @@ func TestSignStoredImageWithGPGKey(t *testing.T) {
 	if err := errors.Join(readErr, indexReader.Close()); err != nil {
 		t.Fatal(err)
 	}
-	if err := imagecatalog.CommitIndex(ctx, storeDir, "source:latest", root, indexData, selections); err != nil {
+	if err := nativeTestIndex(ctx, storeOptions, "source:latest", root, indexData, selections); err != nil {
 		t.Fatal(err)
 	}
 
@@ -275,16 +269,16 @@ func TestSignStoredImageWithGPGKey(t *testing.T) {
 	defer server.Close()
 	name := strings.TrimPrefix(server.URL, "http://") + "/coopr/signed:latest"
 	if _, err := Copy(ctx, oci.Image, "source:latest", Destination{Transport: "local", Name: name}, Options{
-		ImageStoreDir: storeDir,
-		BuildStore:    storeOptions,
-		Signing:       SigningOptions{SignBy: fingerprint, PassphraseFile: passphraseFile},
+
+		BuildStore: storeOptions,
+		Signing:    SigningOptions{SignBy: fingerprint, PassphraseFile: passphraseFile},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Copy(ctx, oci.Image, name, Destination{Transport: "registry", Name: name}, Options{
-		ImageStoreDir: storeDir,
-		BuildStore:    storeOptions,
-		PlainHTTP:     true,
+
+		BuildStore: storeOptions,
+		PlainHTTP:  true,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -308,10 +302,10 @@ func TestSignStoredImageWithGPGKey(t *testing.T) {
 	}
 	t.Setenv("COSIGN_PASSWORD", string(sigstorePassphrase))
 	if _, err := Copy(ctx, oci.Image, "source:latest", Destination{Transport: "registry", Name: name}, Options{
-		ImageStoreDir: storeDir,
-		BuildStore:    storeOptions,
-		PlainHTTP:     true,
-		Signing:       SigningOptions{SigstorePrivateKeyFile: sigstorePrivateKey},
+
+		BuildStore: storeOptions,
+		PlainHTTP:  true,
+		Signing:    SigningOptions{SigstorePrivateKeyFile: sigstorePrivateKey},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -529,7 +523,7 @@ func verifyGPGSignedReference(t *testing.T, ctx context.Context, registryName, p
 
 func verifyGPGSignedReferenceInSubprocess(t *testing.T, ctx context.Context, registryName, publicKey string, wantAllowed bool) {
 	t.Helper()
-	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestGPGVerificationHelper$")
+	command := exec.CommandContext(ctx, reexec.Self(), "-test.run=^TestGPGVerificationHelper$")
 	wantAllowedValue := "0"
 	if wantAllowed {
 		wantAllowedValue = "1"

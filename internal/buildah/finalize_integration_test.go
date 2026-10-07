@@ -41,7 +41,7 @@ label purpose="finalization"
 		output := Output{Path: layout, Squash: mode == "squash" || mode == "warm-squash", SquashAll: mode == "all", Filesystem: FilesystemOutput{Type: "tar", Path: tarPath}}
 		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun", Output: output,
-			ImageStoreDir: base.imageStoreDir, SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
+			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -112,7 +112,7 @@ cmd { exec "echo" "hello" }
 `, base.reference))
 	layout := filepath.Join(root, "layout")
 	_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
-		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun", ImageStoreDir: base.imageStoreDir,
+		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
 		SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		Output: Output{Path: layout, ConfidentialWorkload: define.ConfidentialWorkloadOptions{
 			Convert: true, TeeType: define.SNP, DiskEncryptionPassphrase: "coopr-test-passphrase", Slop: "16m", TempDir: root,
@@ -240,7 +240,7 @@ func TestSBOMScannerImageUsesFilteredContextAndEmbedsOutput(t *testing.T) {
 			scan.ImagePURLOutput = ""
 		}
 		_, err := BuildDefinitionSupervised(ctx, def, planner.Options{Mode: planner.Build, Platform: platform}, SupervisedPlanOptions{
-			Store: store, ContextDir: root, ContextArtifacts: []string{store.GraphRoot, store.RunRoot, base.imageStoreDir, localSBOM, localPURL, flat}, Isolation: "rootless", Runtime: "crun", ImageStoreDir: base.imageStoreDir, SignaturePolicyPath: policy,
+			Store: store, ContextDir: root, ContextArtifacts: []string{store.GraphRoot, store.RunRoot, base.graphRoot, localSBOM, localPURL, flat}, Isolation: "rootless", Runtime: "crun", SignaturePolicyPath: policy,
 			Output: Output{Path: filepath.Join(root, fmt.Sprintf("sbom-layout-%d", attempt)), SBOM: []define.SBOMScanOptions{scan}, Squash: strings.Contains(mode, "squash"), SquashAll: mode == "all", Filesystem: FilesystemOutput{Type: "tar", Path: flat}}, Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {

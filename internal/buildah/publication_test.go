@@ -469,7 +469,7 @@ func TestPublishPlanRunsProducerWithStageMount(t *testing.T) {
 	root := t.TempDir()
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	base := newLiveBusyBoxStorage(t, ctx, root, store)
-	resolver, err := oci.NewResolver(oci.Options{ImageStoreDir: base.imageStoreDir})
+	resolver, err := oci.NewResolver(oci.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

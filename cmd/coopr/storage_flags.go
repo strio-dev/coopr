@@ -4,35 +4,33 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
-	"strings"
 
 	"coopr/internal/buildah"
-	"coopr/internal/localstore"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
 
 type storageSelection struct {
-	store   buildah.StoreOptions
-	catalog string
+	store buildah.StoreOptions
 }
 
 type storageSelectionKey struct{}
 
-func addGlobalFlags(root *cobra.Command) {
+const nativeStorageAnnotation = "coopr.native-storage"
+
+func addGlobalFlags(root *cobra.Command, prepareNamespace func() error) {
 	f := root.PersistentFlags()
-	var graphRoot, runRoot, driver, imageStoreDir, imageStoreMode string
+	var graphRoot, runRoot, driver, imageStoreDir string
 	var storageOptions []string
 	var logLevel string
 	var transient bool
 	f.StringVar(&logLevel, "log-level", "warn", "diagnostic log level: trace, debug, info, warn, error, fatal, panic")
-	f.StringVar(&graphRoot, "root", "", "containers/storage graph root (default: Coopr's image graph)")
+	f.StringVar(&graphRoot, "root", "", "containers/storage graph root (default: effective storage.conf)")
 	f.StringVar(&runRoot, "runroot", "", "containers/storage runtime root")
 	f.StringVar(&driver, "storage-driver", "", "containers/storage driver")
 	f.StringArrayVar(&storageOptions, "storage-opt", nil, "containers/storage driver option (repeatable)")
 	f.StringVar(&imageStoreDir, "imagestore", "", "separate native image storage directory")
-	f.StringVar(&imageStoreMode, "image-store", "", "default image store: coopr or podman (overrides config.toml)")
 	f.BoolVar(&transient, "transient-store", false, "keep transient container metadata in the runtime root")
 	addGlobalRunFlags(f)
 	addSignaturePolicyFlag(f)
@@ -43,34 +41,19 @@ func addGlobalFlags(root *cobra.Command) {
 		}
 		logrus.SetLevel(level)
 		logrus.SetOutput(cmd.ErrOrStderr())
-		config, err := loadCooprConfig()
-		if err != nil {
-			return err
-		}
-		mode := config.ImageStore
-		if f.Changed("image-store") {
-			mode = strings.ToLower(imageStoreMode)
-			if err := validateImageStore(mode); err != nil {
+		if cmd.Annotations[nativeStorageAnnotation] == "true" && prepareNamespace != nil {
+			if err := prepareNamespace(); err != nil {
 				return err
 			}
 		}
-		store, catalog, err := defaultCommandStorage(mode)
+		store, err := defaultCommandStorage()
 		if err != nil {
 			return err
-		}
-		customStorage := f.Changed("root") || f.Changed("runroot") || f.Changed("storage-driver") || f.Changed("storage-opt") || f.Changed("imagestore") || f.Changed("transient-store")
-		if customStorage {
-			// Arbitrary stores may be shared with another containers/storage
-			// client. Maintenance must retain unowned image records there.
-			store.Shared = true
 		}
 		if graphRoot != "" {
 			store.GraphRoot, err = filepath.Abs(graphRoot)
 			if err != nil {
 				return err
-			}
-			if mode == imageStoreCoopr {
-				catalog = filepath.Join(store.GraphRoot, "coopr")
 			}
 		}
 		if runRoot != "" {
@@ -99,27 +82,9 @@ func addGlobalFlags(root *cobra.Command) {
 		if err != nil {
 			return err
 		}
-		if mode == imageStorePodman || customStorage {
-			catalog, err = selectedStoreCatalog(store)
-			if err != nil {
-				return err
-			}
-		}
-		cmd.SetContext(context.WithValue(cmd.Context(), storageSelectionKey{}, storageSelection{store, catalog}))
+		cmd.SetContext(context.WithValue(cmd.Context(), storageSelectionKey{}, storageSelection{store}))
 		return nil
 	}
-}
-
-func selectedStoreCatalog(store buildah.StoreOptions) (string, error) {
-	base, err := localstore.DefaultImageDir()
-	if err != nil {
-		return "", err
-	}
-	identity, err := buildah.StoreIdentity(store)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(base, "catalogs", identity), nil
 }
 
 // Standalone constructors use the same declarations as root persistent flags.
@@ -135,36 +100,10 @@ func addSignaturePolicyFlag(set *pflag.FlagSet) {
 	set.String("signature-policy", "", "containers/image signature policy file")
 }
 
-func commandStorage(cmd *cobra.Command) (buildah.StoreOptions, string, error) {
+func commandStorage(cmd *cobra.Command) (buildah.StoreOptions, error) {
 	if selected, ok := cmd.Context().Value(storageSelectionKey{}).(storageSelection); ok {
-		return selected.store, selected.catalog, nil
+		return selected.store, nil
 	}
-	config, err := loadCooprConfig()
-	if err != nil {
-		return buildah.StoreOptions{}, "", err
-	}
-	return defaultCommandStorage(config.ImageStore)
+	return defaultCommandStorage()
 }
-
-func defaultCommandStorage(mode string) (buildah.StoreOptions, string, error) {
-	var store buildah.StoreOptions
-	var err error
-	if mode == imageStorePodman {
-		store, err = buildah.PodmanStoreOptions()
-	} else {
-		store, err = buildah.DefaultStoreOptions()
-	}
-	if err != nil {
-		return buildah.StoreOptions{}, "", err
-	}
-	catalog, err := localstore.DefaultImageDir()
-	if err == nil && mode == imageStorePodman {
-		catalog, err = selectedStoreCatalog(store)
-	}
-	return store, catalog, err
-}
-
-func commandImageDirectory(cmd *cobra.Command) (string, error) {
-	_, dir, err := commandStorage(cmd)
-	return dir, err
-}
+func defaultCommandStorage() (buildah.StoreOptions, error) { return buildah.DefaultStoreOptions() }

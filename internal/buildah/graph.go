@@ -2259,6 +2259,10 @@ func capturePackageRootMetadata(store storage.Store, builder *upstream.Builder) 
 		}
 	}
 	ambientSELinux := storageAmbientSELinux(builder.MountLabel, storageLabel)
+	ambientSELinux, err = mountedAmbientSELinux(mountPoint, store.GraphRoot(), ambientSELinux)
+	if err != nil {
+		return nil, err
+	}
 	metadata, err = packageRootMetadataFromMount(mountPoint, layer.UIDMap, layer.GIDMap, builder.MountLabel, ambientSELinux)
 	if err != nil {
 		return nil, fmt.Errorf("read package builder root metadata: %w", err)

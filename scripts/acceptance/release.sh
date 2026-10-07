@@ -279,20 +279,12 @@ chmod 0666 "$workspace/base.coopr" "$workspace/child.coopr" \
 coopr_container() {
   local network=$1
   shift
-  local -a device_args=()
-  if [[ $network != none ]]; then
-    device_args+=(--device=/dev/net/tun)
-  fi
   podman run --rm --network="$network" \
-    --userns=keep-id:uid=1000,gid=1000 \
-    --user=1000:1000 \
-    --cap-add=SYS_ADMIN \
-    "${device_args[@]}" \
+    --device=/dev/fuse:rw \
     --security-opt=seccomp=unconfined \
     --security-opt=label=disable \
-    --security-opt=unmask=ALL \
     --mount "type=bind,src=${workspace},dst=/work,rw" \
-    --mount "type=bind,src=${state},dst=/home/user/.local/share,rw" \
+    --mount "type=bind,src=${state},dst=/var/lib,rw" \
     "${cli_runtime_args[@]}" "$cli_run_image" "$@"
 }
 
@@ -434,6 +426,11 @@ printf 'Building through embedded Buildah in the packaged image\n'
 coopr_container slirp4netns \
   build /work/base.coopr --tag "$base_tag" --platform "$native_platform"
 
+printf 'Checking that chroot does not start an unused nested network helper\n'
+coopr_container none \
+  build /work/base.coopr --network=slirp4netns --no-cache \
+  --tag "$base_tag" --platform "$native_platform"
+
 printf 'Reusing the packaged image store without network access\n'
 coopr_container none \
   build /work/child.coopr --tag oci-archive:/work/child.oci.tar --platform "$native_platform"
@@ -479,7 +476,7 @@ coopr_container none \
   component build /work/component.coopr --tag "$component_tag" --platform "$native_platform"
 coopr_container none \
   build /work/component-child.coopr --tag oci-archive:/work/component-child.oci.tar \
-  --cache oci-layout:/home/user/.local/share/coopr/component-cache --platform "$native_platform"
+  --cache oci-layout:/var/lib/coopr/component-cache --platform "$native_platform"
 [[ -s "$state/coopr/component-cache/index.json" ]] || fail 'packaged component cache was not populated'
 
 component_load_output=$(podman load -i "$workspace/component-child.oci.tar")
@@ -490,5 +487,23 @@ component_runtime_output=$(podman run --rm --network=none "$component_runtime_im
 if [[ $component_runtime_output != $'base-'"$run_id"$'\ncomponent' ]]; then
   fail "unexpected component image output: $component_runtime_output"
 fi
+
+[[ -f "$state/containers/storage/overlay/.has-mount-program" ]] || fail 'packaged builds did not use fuse-overlayfs'
+
+printf 'Checking the explicit OCI isolation override\n'
+oci_state="$acceptance_root/oci-state"
+mkdir -m 0777 "$oci_state"
+podman run --rm --network=none \
+  --userns=keep-id:uid=1000,gid=1000 --user=1000:1000 \
+  --cap-add=SYS_ADMIN --device=/dev/fuse:rw \
+  --security-opt=seccomp=unconfined --security-opt=label=disable \
+  --security-opt=unmask=ALL \
+  --env HOME=/home/user --env USER=user --env XDG_RUNTIME_DIR=/run/user/1000 \
+  --mount "type=bind,src=${workspace},dst=/work,rw" \
+  --mount "type=bind,src=${oci_state},dst=/var/lib,rw" \
+  "${cli_runtime_args[@]}" "$cli_run_image" \
+  build /work/multi-platform.coopr --isolation=rootless --network=none \
+  --platform "$native_platform" --tag oci-archive:/work/oci-override.oci.tar
+[[ -s "$workspace/oci-override.oci.tar" ]] || fail 'explicit OCI override did not produce an image'
 
 printf 'Packaged acceptance passed on %s\n' "$native_platform"
