@@ -2,7 +2,6 @@ package main
 
 import (
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -17,35 +16,6 @@ func TestRemovedBuildKitCacheFlagsAreAbsent(t *testing.T) {
 	}
 }
 
-func TestBuildCacheDestinations(t *testing.T) {
-	local, repository, err := parseBuildCaches([]string{"registry:example.org/coopr/cache", "oci-layout:cache"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantLocal, err := filepath.Abs("cache")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if local != wantLocal || repository != "example.org/coopr/cache" {
-		t.Fatalf("cache destinations = %q, %q", local, repository)
-	}
-	for _, test := range []struct {
-		values []string
-		want   string
-	}{
-		{[]string{"registry:"}, "invalid cache"},
-		{[]string{"registry:example.org"}, "invalid cache repository"},
-		{[]string{"oci-archive:/tmp/cache"}, "unsupported cache transport"},
-		{[]string{"oci-layout:/tmp/a", "oci-layout:/tmp/b"}, "only one oci-layout cache"},
-		{[]string{"registry:example.org/a", "registry:example.org/b"}, "only one registry cache"},
-	} {
-		_, _, err := parseBuildCaches(test.values)
-		if err == nil || !strings.Contains(err.Error(), test.want) {
-			t.Errorf("parseBuildCaches(%q) = %v, want %q", test.values, err, test.want)
-		}
-	}
-}
-
 func TestBuildAndComponentExposeDirectionalCacheFlags(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -54,9 +24,22 @@ func TestBuildAndComponentExposeDirectionalCacheFlags(t *testing.T) {
 		{name: "build", cmd: newBuildCommand()},
 		{name: "component build", cmd: newComponentBuildCommand()},
 	} {
-		for _, flag := range []string{"cache", "cache-from", "cache-to"} {
+		for _, flag := range []string{"cache-from", "cache-to"} {
 			if test.cmd.Flags().Lookup(flag) == nil {
 				t.Errorf("%s missing --%s", test.name, flag)
+			}
+			values := []string{"oci-layout:first", "oci-layout:second", "registry:example.org/one", "registry:example.org/two"}
+			for _, value := range values {
+				if err := test.cmd.ParseFlags([]string{"--" + flag, value}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			parsed, err := test.cmd.Flags().GetStringArray(flag)
+			if err != nil || len(parsed) != len(values) {
+				t.Fatalf("%s --%s lost repeated values: %v, %v", test.name, flag, parsed, err)
+			}
+			if _, err := parseCacheSpecs(parsed); err != nil {
+				t.Fatal(err)
 			}
 		}
 	}
@@ -70,7 +53,9 @@ func TestParseCacheSpecsSupportsRepeatedTransports(t *testing.T) {
 	if len(specs) != 2 || specs[0].Transport != "oci-layout" || !filepath.IsAbs(specs[0].Reference) || specs[1].Reference != "example.org/coopr/cache" {
 		t.Fatalf("cache specs = %#v", specs)
 	}
-	if _, err := parseCacheSpecs([]string{"registry:example.org"}); err == nil {
-		t.Fatal("invalid cache repository accepted")
+	for _, invalid := range []string{"registry:", "registry:example.org", "oci-archive:/tmp/cache"} {
+		if _, err := parseCacheSpecs([]string{invalid}); err == nil {
+			t.Fatalf("invalid cache %q accepted", invalid)
+		}
 	}
 }

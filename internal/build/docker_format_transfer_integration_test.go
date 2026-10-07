@@ -83,7 +83,7 @@ onbuild { env FROM_PARENT="yes" }
 		t.Fatal(err)
 	}
 	immutable, err := transfer.Copy(ctx, oci.Image, tag, registryDestination, transfer.Options{
-		BuildStore: nativeBuildTestStore(storeDir), PlainHTTP: true,
+		BuildStore: nativeBuildTestStore(storeDir), TLSVerify: new(false),
 	})
 	if err != nil {
 		t.Fatalf("copy catalog image to registry: %v", err)
@@ -93,7 +93,7 @@ onbuild { env FROM_PARENT="yes" }
 		t.Fatalf("registry result = %q, want %q", immutable, wantImmutable)
 	}
 	resolver, err := oci.NewResolver(oci.Options{
-		PlainHTTP: true, NativeStore: buildah.NativeStoreOptions(nativeBuildTestStore(filepath.Join(root, "empty-image-store"))),
+		TLSVerify: new(false), NativeStore: buildah.NativeStoreOptions(nativeBuildTestStore(filepath.Join(root, "empty-image-store"))),
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -64,7 +64,7 @@ func TestNativeImageResolutionAcceptsTagWithDigest(t *testing.T) {
 	platform := v1.Platform{OS: "linux", Architecture: "amd64"}
 	manifest, _ := imageManifest(t, repo, platform, "pinned")
 	host := strings.TrimPrefix(server.URL, "http://")
-	resolver, err := NewResolver(Options{PlainHTTPRegistries: []string{host}})
+	resolver, err := NewResolver(Options{TLSVerify: boolOption(false)})
 	if err != nil {
 		t.Fatal(err)
 	}

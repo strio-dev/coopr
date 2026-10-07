@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -85,8 +83,7 @@ func ValidateSigningDestination(kind oci.Kind, destination Destination, options 
 
 func publishImage(ctx context.Context, layout string, root v1.Descriptor, destination string, opts Options) (_ string, retErr error) {
 	if _, err := oci.NewResolver(oci.Options{
-		PlainHTTP: opts.PlainHTTP, PlainHTTPRegistries: opts.PlainHTTPRegistries,
-		AuthFile: opts.AuthFile, CertDir: opts.CertDir, SkipTLSVerify: opts.SkipTLSVerify,
+		AuthFile: opts.AuthFile, CertDir: opts.CertDir, TLSVerify: opts.TLSVerify,
 		Credentials: opts.Credentials, Retry: opts.Retry, RetrySet: opts.RetrySet, RetryDelay: opts.RetryDelay, DecryptionKeys: opts.DecryptionKeys, SignaturePolicyPath: opts.SignaturePolicyPath,
 	}); err != nil {
 		return "", err
@@ -119,11 +116,10 @@ func publishImageReference(ctx context.Context, src types.ImageReference, root v
 	if err != nil {
 		return "", err
 	}
-	parsed, err := oci.ParseReference(destination)
-	if err != nil {
+	if _, err := oci.ParseReference(destination); err != nil {
 		return "", fmt.Errorf("parse registry destination: %w", err)
 	}
-	system, err := signedTransferSystemContext(authFile, certDir, registriesDir, parsed.Registry, opts)
+	system, err := signedTransferSystemContext(authFile, certDir, registriesDir, opts)
 	if err != nil {
 		return "", err
 	}
@@ -182,15 +178,15 @@ func publishStoredImage(ctx context.Context, imageID string, root v1.Descriptor,
 	return repository + "@" + root.Digest.String(), nil
 }
 
-func signedTransferSystemContext(authFile, certDir, registriesDir, authority string, opts Options) (*types.SystemContext, error) {
+func signedTransferSystemContext(authFile, certDir, registriesDir string, opts Options) (*types.SystemContext, error) {
 	system := &types.SystemContext{
-		AuthFilePath:                authFile,
-		DockerCertPath:              certDir,
-		RegistriesDirPath:           registriesDir,
-		BigFilesTemporaryDir:        os.TempDir(),
-		SignaturePolicyPath:         opts.SignaturePolicyPath,
-		DockerInsecureSkipTLSVerify: types.NewOptionalBool(opts.SkipTLSVerify || registryUsesPlainHTTP(authority, opts)),
+		AuthFilePath:         authFile,
+		DockerCertPath:       certDir,
+		RegistriesDirPath:    registriesDir,
+		BigFilesTemporaryDir: os.TempDir(),
+		SignaturePolicyPath:  opts.SignaturePolicyPath,
 	}
+	oci.ApplyTLSVerify(system, opts.TLSVerify)
 	if opts.Credentials != "" {
 		username, password, _ := strings.Cut(opts.Credentials, ":")
 		if username == "" {
@@ -249,11 +245,9 @@ func storedTransferOptions(imageID string, manifest digest.Digest, opts Options)
 		Store:                  storeOptions,
 		ImageID:                imageID,
 		ExpectedManifest:       manifest,
-		PlainHTTP:              opts.PlainHTTP,
-		PlainHTTPRegistries:    opts.PlainHTTPRegistries,
 		AuthFile:               opts.AuthFile,
 		CertDir:                opts.CertDir,
-		SkipTLSVerify:          opts.SkipTLSVerify,
+		TLSVerify:              opts.TLSVerify,
 		Credentials:            opts.Credentials,
 		Retry:                  opts.Retry,
 		RetrySet:               opts.RetrySet,
@@ -309,22 +303,4 @@ func sigstoreAttachmentsConfig() (string, error) {
 		return "", fmt.Errorf("write signature registry configuration: %w", err)
 	}
 	return dir, nil
-}
-
-func registryUsesPlainHTTP(authority string, opts Options) bool {
-	for _, allowed := range opts.PlainHTTPRegistries {
-		if strings.EqualFold(authority, allowed) {
-			return true
-		}
-	}
-	if !opts.PlainHTTP {
-		return false
-	}
-	u, err := url.Parse("https://" + authority)
-	if err != nil {
-		return false
-	}
-	host := u.Hostname()
-	ip := net.ParseIP(host)
-	return strings.EqualFold(host, "localhost") || strings.HasSuffix(strings.ToLower(host), ".localhost") || ip != nil && ip.IsLoopback()
 }

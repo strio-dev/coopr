@@ -69,33 +69,47 @@ func TestBuildPlanOverlapsIndependentComponentStages(t *testing.T) {
 		t.Skip("set COOPR_TEST_BUILDAH=1 for live parallel component coverage")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
+	var requests atomic.Int32
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		if requests.Add(1) == 2 {
+			close(release)
+		}
+		select {
+		case <-release:
+			_, _ = response.Write([]byte("component proof\n"))
+		case <-ctx.Done():
+		}
+	}))
+	t.Cleanup(server.Close)
+	t.Cleanup(cancel)
 	root := t.TempDir()
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	base := newLiveBusyBoxStorage(t, ctx, root, store)
-	resolver := localConfigComponentResolver(t, ctx, root, `extend
-run "sleep 10; touch /component-proof" network="none"
-`, false)
+	resolver := localConfigComponentResolver(t, ctx, root, fmt.Sprintf(`extend
+arg "branch"
+add %q "/component-proof"
+`, server.URL+"/${branch}"), false)
 	policy := writeComponentTestPolicy(t, root)
 	plan := testPlan(t, fmt.Sprintf(`
 from %q as="left"
-component "local:config"
+component "local:config" branch="left"
 from %q as="right"
-component "local:config"
+component "local:config" branch="right"
 from "scratch"
 copy "/component-proof" "/left" from="left"
 copy "/component-proof" "/right" from="right"
 `, base.reference, base.reference))
-	started := time.Now()
 	if _, err := BuildPlan(ctx, plan, PlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun", Resolver: resolver, Jobs: 2,
+		NoCache:       true,
 		Output:        Output{Path: filepath.Join(root, "layout")},
 		SystemContext: &types.SystemContext{SignaturePolicyPath: policy, BigFilesTemporaryDir: root},
 	}); err != nil {
 		t.Fatalf("parallel component stages: %v", err)
 	}
-	if elapsed := time.Since(started); elapsed >= 19*time.Second {
-		t.Fatalf("independent component stages ran serially: %s", elapsed)
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("component requests = %d, want 2 overlapping requests", got)
 	}
 }
 
@@ -671,8 +685,8 @@ func TestBuildPlanReusesRegistryComponentCacheAcrossStores(t *testing.T) {
 	defer server.Close()
 	host := strings.TrimPrefix(server.URL, "http://")
 	resolver, err := oci.NewResolver(oci.Options{
-		ComponentStoreDir:   componentResolver.ComponentStoreDir(),
-		PlainHTTPRegistries: []string{host},
+		ComponentStoreDir: componentResolver.ComponentStoreDir(),
+		TLSVerify:         new(false),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -774,7 +788,6 @@ func TestBuildPlanAppliesNetworkOptionsToComponentRun(t *testing.T) {
 	options.Runtime = "crun"
 	options.Network = "host"
 	options.AddHosts = []string{"Component.Test:127.0.0.43"}
-	options.Allow = []string{"network.host"}
 	if _, err := BuildPlan(ctx, plan, options); err != nil {
 		t.Fatal(err)
 	}

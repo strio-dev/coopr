@@ -140,12 +140,12 @@ build_command() {
     if [[ $phase == multi-platform-* ]]; then
       # shellcheck disable=SC2034
       result=(env "XDG_DATA_HOME=$bench_root/coopr-data-$iteration"
-        "$bench_root/coopr" build "$definition" --context "$context"
+        "$bench_root/coopr" build --file "$definition" "$context"
         --platform linux/amd64 --platform linux/arm64 --tag "$tag")
     else
       # shellcheck disable=SC2034
       result=(env "XDG_DATA_HOME=$bench_root/coopr-data-$iteration"
-        "$bench_root/coopr" build "$definition" --context "$context"
+        "$bench_root/coopr" build --file "$definition" "$context"
         --platform "$platform" --tag "$tag" "${build_args[@]}")
     fi
   else

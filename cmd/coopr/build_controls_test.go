@@ -97,6 +97,32 @@ func TestRegistryFlagsAreSharedByBuildComponentAndCopy(t *testing.T) {
 	}
 }
 
+func TestRegistryTLSVerifyPreservesExplicitPolicy(t *testing.T) {
+	for _, args := range [][]string{nil, {"--tls-verify=true"}, {"--tls-verify=false"}} {
+		command := &cobra.Command{Use: "test"}
+		var flags registryFlags
+		flags.addTo(command)
+		if err := command.ParseFlags(args); err != nil {
+			t.Fatal(err)
+		}
+		verify := flags.tlsPolicy(command)
+		if len(args) == 0 {
+			if verify != nil {
+				t.Fatal("omitted --tls-verify must inherit native registry configuration")
+			}
+		} else if verify == nil || *verify != (args[0] == "--tls-verify=true") {
+			t.Fatalf("TLS policy for %v = %v", args, verify)
+		}
+	}
+	for _, command := range []*cobra.Command{newBuildCommand(), newComponentBuildCommand(), newCopyCommand(oci.Image), newCopyCommand(oci.Component)} {
+		for _, name := range []string{"plain-http", "plain-http-registry"} {
+			if command.Flags().Lookup(name) != nil {
+				t.Errorf("%s retains --%s", command.Use, name)
+			}
+		}
+	}
+}
+
 func TestPullPolicyFlagsUseMissingByDefault(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -105,12 +131,61 @@ func TestPullPolicyFlagsUseMissingByDefault(t *testing.T) {
 		{name: "build", cmd: newBuildCommand()},
 		{name: "component build", cmd: newComponentBuildCommand()},
 	} {
-		flag := test.cmd.Flags().Lookup("pull-policy")
+		flag := test.cmd.Flags().Lookup("pull")
 		if flag == nil || flag.DefValue != string(oci.PullMissing) {
-			t.Errorf("%s --pull-policy = %#v", test.name, flag)
+			t.Fatalf("%s --pull = %#v", test.name, flag)
 		}
-		if test.cmd.Flags().Lookup("pull") == nil {
-			t.Errorf("%s missing --pull compatibility flag", test.name)
+		if flag.NoOptDefVal != "always" {
+			t.Fatalf("%s bare --pull = %q", test.name, flag.NoOptDefVal)
+		}
+		for _, policy := range []string{"always", "missing", "never", "newer"} {
+			if err := test.cmd.ParseFlags([]string{"--pull=" + policy}); err != nil {
+				t.Fatalf("%s --pull=%s: %v", test.name, policy, err)
+			}
+			if flag.Value.String() != policy {
+				t.Fatalf("%s --pull=%s became %q", test.name, policy, flag.Value.String())
+			}
+		}
+		if err := test.cmd.ParseFlags([]string{"--pull=invalid"}); err == nil {
+			t.Fatalf("%s accepted invalid pull policy", test.name)
+		}
+	}
+}
+
+func TestBuildAndCopyFlagsHaveCommandLocalScope(t *testing.T) {
+	root := newRootCommand()
+	if root.PersistentFlags().Lookup("signature-policy") != nil {
+		t.Fatal("signature policy must not be global")
+	}
+	for _, path := range [][]string{{"build"}, {"component", "build"}, {"copy"}, {"component", "copy"}} {
+		command, _, err := root.Find(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		isBuild := command.Name() == "build"
+		for _, name := range []string{"pull-policy", "context", "cache"} {
+			if command.Flags().Lookup(name) != nil {
+				t.Fatalf("%v retains removed --%s", path, name)
+			}
+		}
+		if got := command.Flags().Lookup("decryption-key") != nil; got != isBuild {
+			t.Fatalf("%v decryption-key present=%v, want %v", path, got, isBuild)
+		}
+		policy := command.LocalNonPersistentFlags().Lookup("signature-policy")
+		if len(path) == 2 && path[1] == "copy" {
+			if policy != nil || command.InheritedFlags().Lookup("signature-policy") != nil {
+				t.Fatal("component copy must not have image signature policy")
+			}
+			continue
+		}
+		if policy == nil || !policy.Hidden {
+			t.Fatalf("%v signature policy must be hidden and local", path)
+		}
+		if err := command.ParseFlags([]string{"--signature-policy=/policy.json"}); err != nil {
+			t.Fatal(err)
+		}
+		if commandSignaturePolicy(command) != "/policy.json" {
+			t.Fatalf("%v signature policy was not applied", path)
 		}
 	}
 }

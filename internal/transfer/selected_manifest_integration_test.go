@@ -106,7 +106,7 @@ func TestCopyPinnedManifestExportsExactVariantSharingImageID(t *testing.T) {
 			Mode: planner.Build, Platform: platform.OS + "/" + platform.Architecture,
 		}, buildah.SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-			Output: buildah.Output{Path: filepath.Join(root, name), Format: format}, PlainHTTP: true, Pull: true,
+			Output: buildah.Output{Path: filepath.Join(root, name), Format: format}, TLSVerify: new(false), Pull: true,
 		})
 		if err != nil {
 			t.Fatalf("import %s variant: %v", name, err)
@@ -152,7 +152,7 @@ func TestCopyPinnedManifestExportsExactVariantSharingImageID(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := Copy(ctx, oci.Image, olderOCI.Manifest.Digest.String(), Destination{Transport: "registry", Name: registryName}, Options{
-		BuildStore: store, PlainHTTP: true, SignaturePolicyPath: policyPath,
+		BuildStore: store, TLSVerify: new(false), SignaturePolicyPath: policyPath,
 	})
 	if err != nil {
 		t.Fatalf("copy pinned OCI manifest to registry: %v", err)
@@ -291,11 +291,11 @@ func TestLocalSigningPreservesSiblingManifestSignaturesSharingImageID(t *testing
 	repository := strings.TrimPrefix(server.URL, "http://") + "/coopr/shared"
 	defaultName := repository + ":native-default"
 	if _, err := buildah.TransferStoredImageSupervised(ctx, buildah.StoredTransferOptions{
-		Store: store, ImageID: olderOCI.ImageID, RegistryDestination: defaultName, PlainHTTP: true,
+		Store: store, ImageID: olderOCI.ImageID, RegistryDestination: defaultName, TLSVerify: new(false),
 	}); err != nil {
 		t.Fatalf("publish unsigned native default manifest: %v", err)
 	}
-	resolver, err := oci.NewResolver(oci.Options{PlainHTTP: true})
+	resolver, err := oci.NewResolver(oci.Options{TLSVerify: new(false)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,7 +330,7 @@ func TestLocalSigningPreservesSiblingManifestSignaturesSharingImageID(t *testing
 	}
 	assertStoredSignatureFixture(t, store, siblingSelection.ImageID, siblingSelection.Manifest.Digest, syntheticSignature, unknownMetadata)
 	if _, err := Copy(ctx, oci.Image, siblingSelection.Manifest.Digest.String(), Destination{Transport: "registry", Name: "127.0.0.1:1/coopr/failure:test"}, Options{
-		BuildStore: store, PlainHTTP: true, RetrySet: true,
+		BuildStore: store, TLSVerify: new(false), RetrySet: true,
 	}); err == nil {
 		t.Fatal("selected publish to unavailable registry unexpectedly succeeded")
 	}
@@ -339,7 +339,7 @@ func TestLocalSigningPreservesSiblingManifestSignaturesSharingImageID(t *testing
 		t.Helper()
 		name := repository + ":" + tag
 		if _, err := Copy(ctx, oci.Image, selected.Manifest.Digest.String(), Destination{Transport: "registry", Name: name}, Options{
-			BuildStore: store, PlainHTTP: true,
+			BuildStore: store, TLSVerify: new(false),
 		}); err != nil {
 			t.Fatalf("publish selected manifest %s: %v", selected.Manifest.Digest, err)
 		}
@@ -351,7 +351,7 @@ func TestLocalSigningPreservesSiblingManifestSignaturesSharingImageID(t *testing
 	assertStoredTransferState(t, store, olderOCI.ImageID, olderOCI.Manifest.Digest, newerDocker.Manifest.Digest)
 	assertRemoteSyntheticSigstore(t, ctx, server.Client(), server.URL, "coopr/shared", siblingSelection.Manifest.Digest)
 	if _, err := buildah.TransferStoredImageSupervised(ctx, buildah.StoredTransferOptions{
-		Store: store, ImageID: olderOCI.ImageID, RegistryDestination: defaultName, PlainHTTP: true,
+		Store: store, ImageID: olderOCI.ImageID, RegistryDestination: defaultName, TLSVerify: new(false),
 	}); err != nil {
 		t.Fatalf("publish native default manifest: %v", err)
 	}
@@ -365,7 +365,7 @@ func TestLocalSigningPreservesSiblingManifestSignaturesSharingImageID(t *testing
 	publishAndVerify(newerDocker, "docker-after-sibling-resign")
 	assertStoredTransferState(t, store, olderOCI.ImageID, olderOCI.Manifest.Digest, newerDocker.Manifest.Digest)
 	if _, err := buildah.TransferStoredImageSupervised(ctx, buildah.StoredTransferOptions{
-		Store: store, ImageID: olderOCI.ImageID, RegistryDestination: defaultName, PlainHTTP: true,
+		Store: store, ImageID: olderOCI.ImageID, RegistryDestination: defaultName, TLSVerify: new(false),
 	}); err != nil {
 		t.Fatalf("republish native default manifest: %v", err)
 	}
@@ -592,7 +592,7 @@ func selectedCopySharedConfigFixture(t *testing.T, ctx context.Context) (oci.Sto
 	server := httptest.NewServer(registry.New())
 	t.Cleanup(server.Close)
 	host := strings.TrimPrefix(server.URL, "http://")
-	resolver, err := oci.NewResolver(oci.Options{PlainHTTP: true})
+	resolver, err := oci.NewResolver(oci.Options{TLSVerify: new(false)})
 	if err != nil {
 		t.Fatal(err)
 	}

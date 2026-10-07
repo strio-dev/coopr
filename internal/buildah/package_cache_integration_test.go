@@ -32,7 +32,7 @@ func TestPublishPlanReusesRegistryPackageCacheAcrossBuildStores(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(contextDir, "payload"), []byte("registry package\n"), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	resolver, err := oci.NewResolver(oci.Options{PlainHTTP: true, ComponentStoreDir: filepath.Join(root, "components")})
+	resolver, err := oci.NewResolver(oci.Options{TLSVerify: new(false), ComponentStoreDir: filepath.Join(root, "components")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestPublishPlanReusesNetworkedPackageFromRegistryCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	resolver, err := oci.NewResolver(oci.Options{
-		PlainHTTPRegistries: []string{host}, ComponentStoreDir: filepath.Join(root, "components"),
+		TLSVerify: new(false), ComponentStoreDir: filepath.Join(root, "components"),
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -9,8 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"oras.land/oras-go/v2/registry/remote/auth"
-	orasretry "oras.land/oras-go/v2/registry/remote/retry"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +18,7 @@ import (
 
 	"coopr/internal/definition"
 	"coopr/internal/planner"
+
 	registryserver "github.com/google/go-containerregistry/pkg/registry"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -65,119 +64,6 @@ func TestComponentLayoutIdenticalPackagesAndRepeatRemainValidated(t *testing.T) 
 	}
 }
 
-func TestComponentRegistryRetryControlsApplyToCustomAndTLSClients(t *testing.T) {
-	for _, tlsServer := range []bool{false, true} {
-		for _, maxRetry := range []uint{0, 1} {
-			backend := registryserver.New()
-			var armed atomic.Bool
-			var requests atomic.Int32
-			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if armed.Load() && strings.Contains(r.URL.Path, "/manifests/") && requests.Add(1) == 1 {
-					http.Error(w, "transient", http.StatusServiceUnavailable)
-					return
-				}
-				backend.ServeHTTP(w, r)
-			})
-			server := httptest.NewServer(handler)
-			if tlsServer {
-				server.Close()
-				server = httptest.NewTLSServer(handler)
-			}
-			t.Cleanup(server.Close)
-			host := strings.TrimPrefix(strings.TrimPrefix(server.URL, "http://"), "https://")
-			client := server.Client()
-			client.Timeout = 10 * time.Second
-			opts := Options{Client: client, PlainHTTP: !tlsServer, RetrySet: true, Retry: maxRetry, RetryDelay: time.Millisecond}
-			resolver, err := NewResolver(opts)
-			if err != nil {
-				t.Fatal(err)
-			}
-			parsed, err := ParseReference(host + "/test/component:stable")
-			if err != nil {
-				t.Fatal(err)
-			}
-			repo, err := resolver.repository(parsed)
-			if err != nil {
-				t.Fatal(err)
-			}
-			effective := repo.Client.(*auth.Client).Client
-			if effective.Timeout != client.Timeout {
-				t.Fatalf("custom timeout discarded: %v", effective.Timeout)
-			}
-			meta, paths := publicationMetadata(t, nil, false)
-			if _, err := resolver.PublishComponent(context.Background(), host+"/test/component:stable", meta, paths); err != nil {
-				t.Fatal(err)
-			}
-			armed.Store(true)
-			_, err = resolver.Resolve(context.Background(), host+"/test/component:stable", meta.Platform, Component)
-			if maxRetry == 0 {
-				if err == nil || requests.Load() != 1 {
-					t.Fatalf("TLS=%v explicit zero: requests=%d err=%v", tlsServer, requests.Load(), err)
-				}
-			} else if err != nil || requests.Load() < 2 {
-				t.Fatalf("TLS=%v retry missing: requests=%d err=%v", tlsServer, requests.Load(), err)
-			}
-			if client.Timeout != 10*time.Second {
-				t.Fatal("caller timeout mutated")
-			}
-		}
-	}
-}
-
-func TestComponentRetryPreservesCallerTransportAndExplicitZeroOverrides(t *testing.T) {
-	backend := registryserver.New()
-	var armed atomic.Bool
-	var requests atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if armed.Load() && strings.Contains(r.URL.Path, "/manifests/") && requests.Add(1) == 1 {
-			http.Error(w, "transient", http.StatusServiceUnavailable)
-			return
-		}
-		backend.ServeHTTP(w, r)
-	}))
-	defer server.Close()
-	host := strings.TrimPrefix(server.URL, "http://")
-	policy := &orasretry.GenericPolicy{MaxRetry: 1, Retryable: orasretry.DefaultPredicate, Backoff: func(int, *http.Response) time.Duration { return time.Millisecond }, MaxWait: time.Millisecond}
-	base := http.DefaultTransport
-	transport := &orasretry.Transport{Base: base, Policy: func() orasretry.Policy { return policy }}
-	client := &http.Client{Transport: transport, Timeout: time.Second}
-	resolver, err := NewResolver(Options{PlainHTTP: true, Client: client})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ref, err := ParseReference(host + "/test/component:stable")
-	if err != nil {
-		t.Fatal(err)
-	}
-	repo, err := resolver.repository(ref)
-	if err != nil {
-		t.Fatal(err)
-	}
-	effective := repo.Client.(*auth.Client).Client.Transport.(*orasretry.Transport)
-	if effective.Base != base || effective.Policy() != policy || effective == transport {
-		t.Fatal("caller retry transport lost or mutated")
-	}
-	meta, paths := publicationMetadata(t, nil, false)
-	if _, err := resolver.PublishComponent(context.Background(), ref.String(), meta, paths); err != nil {
-		t.Fatal(err)
-	}
-	armed.Store(true)
-	if _, err := resolver.Resolve(context.Background(), ref.String(), meta.Platform, Component); err != nil || requests.Load() < 2 {
-		t.Fatalf("caller retry disabled: %d %v", requests.Load(), err)
-	}
-	requests.Store(0)
-	resolver, err = NewResolver(Options{PlainHTTP: true, Client: client, RetrySet: true, Retry: 0})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := resolver.Resolve(context.Background(), ref.String(), meta.Platform, Component); err == nil || requests.Load() != 1 {
-		t.Fatalf("explicit zero ignored caller retries: %d %v", requests.Load(), err)
-	}
-	if transport.Policy() != policy || client.Transport != transport {
-		t.Fatal("caller transport changed")
-	}
-}
-
 func TestComponentPublicationRetryCoversTransientUploadAndTLSOptions(t *testing.T) {
 	for _, tlsServer := range []bool{false, true} {
 		for _, maxRetry := range []uint{0, 1} {
@@ -197,9 +83,7 @@ func TestComponentPublicationRetryCoversTransientUploadAndTLSOptions(t *testing.
 			}
 			t.Cleanup(server.Close)
 			host := strings.TrimPrefix(strings.TrimPrefix(server.URL, "http://"), "https://")
-			client := server.Client()
-			client.Timeout = 5 * time.Second
-			resolver, err := NewResolver(Options{PlainHTTP: !tlsServer, SkipTLSVerify: tlsServer, Client: client, RetrySet: true, Retry: maxRetry, RetryDelay: time.Millisecond})
+			resolver, err := NewResolver(Options{TLSVerify: boolOption(false), RetrySet: true, Retry: maxRetry, RetryDelay: time.Millisecond})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -212,38 +96,7 @@ func TestComponentPublicationRetryCoversTransientUploadAndTLSOptions(t *testing.
 			} else if err != nil || uploads.Load() < 2 {
 				t.Fatalf("TLS=%v publication retry missing: %d %v", tlsServer, uploads.Load(), err)
 			}
-			if client.Transport.(*http.Transport).TLSClientConfig != nil && client.Transport.(*http.Transport).TLSClientConfig.InsecureSkipVerify {
-				t.Fatal("caller TLS config mutated")
-			}
-		}
-	}
-}
 
-func TestComponentRegistryDefaultsUseNativeRetrySettings(t *testing.T) {
-	for _, custom := range []bool{false, true} {
-		options := Options{}
-		if custom {
-			options.Client = &http.Client{Timeout: time.Second}
-		}
-		resolver, err := NewResolver(options)
-		if err != nil {
-			t.Fatal(err)
-		}
-		native, err := RegistryRetryOptions(options)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ref, err := ParseReference("example.invalid/component:stable")
-		if err != nil {
-			t.Fatal(err)
-		}
-		repo, err := resolver.repository(ref)
-		if err != nil {
-			t.Fatal(err)
-		}
-		policy := repo.Client.(*auth.Client).Client.Transport.(*orasretry.Transport).Policy().(*orasretry.GenericPolicy)
-		if policy.MaxRetry != native.MaxRetry {
-			t.Fatalf("custom=%v component retries=%d native=%d", custom, policy.MaxRetry, native.MaxRetry)
 		}
 	}
 }

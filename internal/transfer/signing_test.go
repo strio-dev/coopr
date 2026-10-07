@@ -117,8 +117,8 @@ func TestStoredTransferOptionsCaptureCosignPasswordForSanitizedWorker(t *testing
 
 func TestSignedTransferSystemContextUsesDirectCredentialsAndCertLeaf(t *testing.T) {
 	certDir := t.TempDir()
-	system, err := signedTransferSystemContext("auth.json", certDir, "", "registry.test", Options{
-		Credentials: "user:pass", CertDir: certDir, SkipTLSVerify: true, SignaturePolicyPath: "policy.json",
+	system, err := signedTransferSystemContext("auth.json", certDir, "", Options{
+		Credentials: "user:pass", CertDir: certDir, TLSVerify: new(false), SignaturePolicyPath: "policy.json",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -126,8 +126,27 @@ func TestSignedTransferSystemContextUsesDirectCredentialsAndCertLeaf(t *testing.
 	if system.DockerCertPath != certDir || system.DockerPerHostCertDirPath != "" || system.DockerAuthConfig == nil || system.DockerAuthConfig.Username != "user" || system.DockerAuthConfig.Password != "pass" || system.SignaturePolicyPath != "policy.json" || system.DockerInsecureSkipTLSVerify != types.OptionalBoolTrue {
 		t.Fatalf("system context = %#v", system)
 	}
-	if _, err := signedTransferSystemContext("", "", "", "registry.test", Options{Credentials: ":pass"}); err == nil {
+	if _, err := signedTransferSystemContext("", "", "", Options{Credentials: ":pass"}); err == nil {
 		t.Fatal("empty credential username accepted")
+	}
+}
+
+func TestSignedTransferTLSVerifyPolicy(t *testing.T) {
+	for _, test := range []struct {
+		verify *bool
+		want   types.OptionalBool
+	}{
+		{nil, types.OptionalBoolUndefined},
+		{new(true), types.OptionalBoolFalse},
+		{new(false), types.OptionalBoolTrue},
+	} {
+		system, err := signedTransferSystemContext("", "", "", Options{TLSVerify: test.verify})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if system.DockerInsecureSkipTLSVerify != test.want {
+			t.Fatalf("native TLS policy = %v, want %v", system.DockerInsecureSkipTLSVerify, test.want)
+		}
 	}
 }
 
@@ -183,7 +202,7 @@ func TestCopyRootSignsRegistryImageWithGPGKey(t *testing.T) {
 	defer server.Close()
 	registryName := strings.TrimPrefix(server.URL, "http://") + "/coopr/gpg-signed:test"
 	result, err := CopyRoot(ctx, oci.Image, storeDir, root, Destination{Transport: "registry", Name: registryName}, Options{
-		PlainHTTP: true,
+		TLSVerify: new(false),
 		Signing:   SigningOptions{SignBy: fingerprint, PassphraseFile: passphraseFile},
 	})
 	if err != nil {
@@ -278,7 +297,7 @@ func TestSignStoredImageWithGPGKey(t *testing.T) {
 	if _, err := Copy(ctx, oci.Image, name, Destination{Transport: "registry", Name: name}, Options{
 
 		BuildStore: storeOptions,
-		PlainHTTP:  true,
+		TLSVerify:  new(false),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +323,7 @@ func TestSignStoredImageWithGPGKey(t *testing.T) {
 	if _, err := Copy(ctx, oci.Image, "source:latest", Destination{Transport: "registry", Name: name}, Options{
 
 		BuildStore: storeOptions,
-		PlainHTTP:  true,
+		TLSVerify:  new(false),
 		Signing:    SigningOptions{SigstorePrivateKeyFile: sigstorePrivateKey},
 	}); err != nil {
 		t.Fatal(err)
@@ -370,7 +389,7 @@ func TestCopyRootSignsRegistryImageWithSigstoreKey(t *testing.T) {
 	defer server.Close()
 	registryName := strings.TrimPrefix(server.URL, "http://") + "/coopr/signed:test"
 	result, err := CopyRoot(ctx, oci.Image, storeDir, root, Destination{Transport: "registry", Name: registryName}, Options{
-		PlainHTTP: true,
+		TLSVerify: new(false),
 		Signing: SigningOptions{
 			SigstorePrivateKeyFile: privateKey,
 			PassphraseFile:         passphraseFile,
@@ -429,7 +448,7 @@ func TestCopyRootSignsMultiPlatformIndexAndEveryInstance(t *testing.T) {
 	registryAuthority := strings.TrimPrefix(server.URL, "http://")
 	registryName := registryAuthority + "/coopr/signed-index:test"
 	result, err := CopyRoot(ctx, oci.Image, storeDir, root, Destination{Transport: "registry", Name: registryName}, Options{
-		PlainHTTPRegistries: []string{registryAuthority}, Signing: SigningOptions{SigstorePrivateKeyFile: privateKey},
+		TLSVerify: new(false), Signing: SigningOptions{SigstorePrivateKeyFile: privateKey},
 	})
 	if err != nil {
 		t.Fatal(err)

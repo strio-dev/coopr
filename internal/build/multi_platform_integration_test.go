@@ -73,10 +73,10 @@ func TestRunBuildsAndCopiesMultiPlatformIndex(t *testing.T) {
 	server := httptest.NewServer(registry.New())
 	defer server.Close()
 	remote := strings.TrimPrefix(server.URL, "http://") + "/coopr/multi:latest"
-	if _, err := transfer.Copy(ctx, oci.Image, tag, transfer.Destination{Transport: "registry", Name: remote}, transfer.Options{BuildStore: nativeBuildTestStore(storeDir), PlainHTTP: true}); err != nil {
+	if _, err := transfer.Copy(ctx, oci.Image, tag, transfer.Destination{Transport: "registry", Name: remote}, transfer.Options{BuildStore: nativeBuildTestStore(storeDir), TLSVerify: new(false)}); err != nil {
 		t.Fatalf("copy complete index to registry: %v", err)
 	}
-	resolver, err := oci.NewResolver(oci.Options{PlainHTTP: true, NativeStore: buildah.NativeStoreOptions(nativeBuildTestStore(filepath.Join(work, "remote-images")))})
+	resolver, err := oci.NewResolver(oci.Options{TLSVerify: new(false), NativeStore: buildah.NativeStoreOptions(nativeBuildTestStore(filepath.Join(work, "remote-images")))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestRunBuildsAndCopiesMultiPlatformIndex(t *testing.T) {
 		}
 	}
 	directRemote := strings.TrimPrefix(server.URL, "http://") + "/coopr/direct:latest"
-	immutable, err := Run(ctx, Options{File: file, BuildStore: nativeBuildTestStore(storeDir), Tag: directRemote, Push: true, PlainHTTP: true, Platforms: []string{"linux/arm64", "linux/amd64"}})
+	immutable, err := Run(ctx, Options{File: file, BuildStore: nativeBuildTestStore(storeDir), Tag: directRemote, Push: true, TLSVerify: new(false), Platforms: []string{"linux/arm64", "linux/amd64"}})
 	if err != nil || !strings.HasPrefix(immutable, strings.TrimSuffix(directRemote, ":latest")+"@sha256:") {
 		t.Fatalf("direct multi-platform push = %q, %v", immutable, err)
 	}

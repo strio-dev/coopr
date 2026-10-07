@@ -16,9 +16,11 @@ Authorize host-network RUNs explicitly:
 coopr build image.coopr --allow network.host
 ```
 
-`run network="host"` requires `network.host`, including on cache hits. Insecure RUNs require `--allow security.insecure` and OCI/rootless isolation; chroot is rejected. CDI devices require `device` or a matching `device=SELECTOR` entitlement unless authorized by CDI metadata. These authorizations cannot grant privileges unavailable in the outer environment.
+`run network="host"` requires `network.host`, including on cache hits. Setting `--network=host` on the build command also grants this permission; an additional `--allow network.host` is unnecessary. Insecure RUNs require `--allow security.insecure` and OCI/rootless isolation; chroot is rejected. CDI devices require `device` or a matching `device=SELECTOR` entitlement unless authorized by CDI metadata. These authorizations cannot grant privileges unavailable in the outer environment.
 
 ## Credentials and remote sources
+
+`coopr login REGISTRY` and `coopr logout REGISTRY` use the native credential file and helpers shared with Podman and Buildah. Supply `--authfile PATH` to choose another file. In automation, use `login --username USER --password-stdin`; avoid passing a password as a command-line argument. Authentication applies to both image and component registries.
 
 Supply secret and SSH sources per build:
 
@@ -30,7 +32,7 @@ Keep credentials out of the context and image layers. Use `--no-cache` when chan
 
 HTTPS Git accepts host-scoped `GIT_AUTH_HEADER.<host>` or `GIT_AUTH_TOKEN.<host>` secrets. Authenticated Git rejects redirects and withholds parent credentials from out-of-scope submodules. SSH Git needs `GIT_KNOWN_HOSTS[.host]` and an SSH source. HTTP ADD selects authorization per redirect host. Registry requests use the configured authentication, certificate, TLS, and retry options.
 
-Image inputs honor native registry routing and signature policy. Keep TLS verification enabled outside deliberately configured local test registries. For immutable selection, pin image and component references by digest, including nested references. A component digest alone does not establish publisher trust or signature policy.
+Image inputs honor native registry routing and signature policy. Images, components, and registry caches share native registry TLS settings; see [configuration](../reference/configuration.md#runtime-and-trust). Keep TLS verification enabled outside deliberately configured test registries. For immutable selection, pin image and component references by digest, including nested references. A component digest alone does not establish publisher trust or signature policy.
 
 ## Nested container profile
 

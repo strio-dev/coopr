@@ -24,18 +24,17 @@ func planDefinitionInWorker(ctx context.Context, request planWorkerRequest) (*pl
 	planning := *request.PlannerOptions
 	planning.SourceDateEpochResolver = sourceDateEpochResolver(ctx, buildCredentialSource{secretSpecs: request.Secrets, sshSpecs: request.SSH})
 	system := &types.SystemContext{
-		SignaturePolicyPath:         request.SignaturePolicyPath,
-		BigFilesTemporaryDir:        filepath.Dir(request.ResultPath),
-		AuthFilePath:                request.AuthFile,
-		DockerCertPath:              request.CertDir,
-		DockerInsecureSkipTLSVerify: optionalBool(request.SkipTLSVerify),
+		SignaturePolicyPath:  request.SignaturePolicyPath,
+		BigFilesTemporaryDir: filepath.Dir(request.ResultPath),
+		AuthFilePath:         request.AuthFile,
+		DockerCertPath:       request.CertDir,
 	}
+	oci.ApplyTLSVerify(system, request.TLSVerify)
 	ensureResolver := func() error {
 		if resolver == nil {
 			var err error
 			resolver, err = oci.NewResolver(oci.Options{
-				PlainHTTP: request.PlainHTTP, PlainHTTPRegistries: request.PlainHTTPRegistries,
-				AuthFile: request.AuthFile, CertDir: request.CertDir, SkipTLSVerify: request.SkipTLSVerify,
+				AuthFile: request.AuthFile, CertDir: request.CertDir, TLSVerify: request.TLSVerify,
 				Credentials: request.Credentials, Retry: request.Retry, RetrySet: request.RetrySet, RetryDelay: request.RetryDelay, DecryptionKeys: request.DecryptionKeys, SignaturePolicyPath: request.SignaturePolicyPath,
 				Pull: request.Pull, PullPolicy: request.PullPolicy, ComponentStoreDir: request.ComponentStoreDir, NativeStore: NativeStoreOptions(request.Store),
 			})

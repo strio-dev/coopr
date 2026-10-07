@@ -121,11 +121,11 @@ func TestWarmHostNetworkRunCacheStillRequiresEntitlement(t *testing.T) {
 	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	plan := testPlan(t, fmt.Sprintf("from %q\nrun \"printf cached-host-run >/proof\"\n", base.reference))
+	plan := testPlan(t, fmt.Sprintf("from %q\nrun \"printf cached-host-run >/proof\" network=\"host\"\n", base.reference))
 	common := SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
 		Pull: false, SignaturePolicyPath: policy,
-		Network: "host", Stdout: io.Discard, Stderr: io.Discard,
+		Stdout: io.Discard, Stderr: io.Discard,
 	}
 	allowed := common
 	allowed.Allow = []string{"network.host"}
@@ -137,6 +137,12 @@ func TestWarmHostNetworkRunCacheStillRequiresEntitlement(t *testing.T) {
 	denied.Output = Output{Path: filepath.Join(root, "denied-layout")}
 	if _, err := BuildPlanSupervised(ctx, plan, denied); err == nil || !strings.Contains(err.Error(), "--allow network.host") {
 		t.Fatalf("warm cache without entitlement error = %v", err)
+	}
+	buildWide := common
+	buildWide.Network = "host"
+	buildWide.Output = Output{Path: filepath.Join(root, "build-wide-layout")}
+	if _, err := BuildPlanSupervised(ctx, plan, buildWide); err != nil {
+		t.Fatalf("warm cache with build-wide host network: %v", err)
 	}
 }
 

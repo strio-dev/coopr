@@ -23,7 +23,7 @@ import (
 // resolveNativeImage keeps image inputs on the containers/image Docker
 // transport. That transport applies registries.conf mirrors, remapping,
 // blocking, insecure endpoints, and short-name policy before any metadata is
-// admitted. Component artifacts intentionally continue to use ORAS.
+// admitted. Component artifacts share this transport through the raw target.
 func (r *Resolver) resolveNativeImage(ctx context.Context, reference string, platform v1.Platform) (*Resolved, error) {
 	if ctx == nil {
 		return nil, errors.New("image resolve context is nil")
@@ -90,9 +90,6 @@ func (r *Resolver) openNativeImage(ctx context.Context, reference string, platfo
 	var candidateErrors []error
 	for _, candidate := range resolvedName.PullCandidates {
 		candidateSystem := *system
-		if r.usePlainHTTP(dockerreference.Domain(candidate.Value)) {
-			candidateSystem.DockerInsecureSkipTLSVerify = types.OptionalBoolTrue
-		}
 		// The Docker transport expects either a tag or a digest. The native
 		// parser accepts repo:tag@digest and selects the immutable digest.
 		name, err := dockerreference.ParseDockerRef(candidate.Value.String())

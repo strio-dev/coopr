@@ -74,7 +74,7 @@ func TestEncryptedRegistryInputDecryptsIntoCanonicalStore(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	options := oci.Options{PlainHTTPRegistries: []string{authority}, SignaturePolicyPath: policyPath}
+	options := oci.Options{TLSVerify: new(false), SignaturePolicyPath: policyPath}
 	store := StoreOptions{GraphRoot: filepath.Join(root, "graph"), RunRoot: filepath.Join(root, "run"), GraphDriverName: "vfs"}
 	lease, err := acquireStore(store)
 	if err != nil {
@@ -297,7 +297,7 @@ func TestEncryptedRegistryIndexRetainsOfflinePlatformSelections(t *testing.T) {
 	if err := repository.PushReference(ctx, index, bytes.NewReader(indexData), "latest"); err != nil {
 		t.Fatal(err)
 	}
-	options := oci.Options{PlainHTTPRegistries: []string{authority}, SignaturePolicyPath: policyPath, DecryptionKeys: []string{privatePath}}
+	options := oci.Options{TLSVerify: new(false), SignaturePolicyPath: policyPath, DecryptionKeys: []string{privatePath}}
 	store := StoreOptions{GraphRoot: filepath.Join(root, "graph"), RunRoot: filepath.Join(root, "run"), GraphDriverName: "vfs"}
 	lease, err := acquireStore(store)
 	if err != nil {

@@ -2,12 +2,32 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
 	"coopr/internal/oci"
 )
+
+func TestComponentCopyDoesNotLoadNativeImageStorage(t *testing.T) {
+	dir := t.TempDir()
+	config := filepath.Join(dir, "storage.conf")
+	if err := os.WriteFile(config, []byte("[storage\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CONTAINERS_STORAGE_CONF", config)
+	t.Setenv("XDG_DATA_HOME", dir)
+	var stdout, stderr bytes.Buffer
+	status := runContextWithStorageNamespace(t.Context(), []string{"component", "copy", "missing:latest", "local:copy"}, &stdout, &stderr, func() error {
+		t.Fatal("component copy initialized image storage namespace")
+		return nil
+	})
+	if status == 0 || !strings.Contains(stderr.String(), "missing:latest") || strings.Contains(stderr.String(), "TOML") {
+		t.Fatalf("status=%d stderr=%s", status, &stderr)
+	}
+}
 
 func TestCopyCommandsRejectInvalidInputsBeforeTransfer(t *testing.T) {
 	for _, test := range []struct {

@@ -20,10 +20,15 @@ Coopr loads effective `storage.conf`, including rootless/user settings. Images b
 
 | Controls | Purpose |
 | --- | --- |
-| `--module`, `--cgroup-manager`, `--cdi-spec-dir`, `--network-config-dir`, `--network-cmd-path` | Configure supervised execution. |
+| `--module`, `--cgroup-manager`, `--cdi-spec-dir`, `--network-config-dir` | Configure supervised execution. |
 | `--authfile`, `--cert-dir`, `--creds`, `--tls-verify`, `--retry`, `--retry-delay` | Registry authentication, trust, and retries. |
-| `--signature-policy`, `--decryption-key` | Image-input signature policy and decryption. |
+| `--signature-policy` | Image signature policy override on both build commands and image copy. |
+| `--decryption-key` | Image-input decryption on both build commands. |
 
 Native `containers.conf`, registry settings, credentials, and signature policy apply at their respective boundaries. Credential helpers must be available in the execution environment.
+
+Image, component, and registry cache transfers use Podman/Buildah's registry transport. Without an explicit `--tls-verify`, `registries.conf` controls TLS and HTTP access. `--tls-verify=true` requires verified HTTPS; `--tls-verify=false` tries HTTPS with certificate verification disabled and permits HTTP fallback. Registry routing, mirrors, blocked registries, authentication, and certificates follow the native configuration.
+
+Native helper executables use `PATH` and `containers.conf`'s `[engine] helper_binaries_dir` setting.
 
 Ambient `SOURCE_DATE_EPOCH` sets creation time unless overridden explicitly. `--timestamp` forces creation/new-layer file times and conflicts with source-date-epoch and rewrite-timestamp. `--cache-ttl` uses wall-clock publication age independently of image times. See [timestamp rules](execution.md#timestamps-and-cache-age).

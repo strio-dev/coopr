@@ -54,7 +54,7 @@ func TestBuildExcludesAmbientGPGKeyringFromCopyDot(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusBadGateway) }))
 	defer server.Close()
 	archive := filepath.Join(t.TempDir(), "image.tar")
-	_, err := Run(context.Background(), Options{File: definition, PlainHTTP: true, Tags: []string{"oci-archive:" + archive, "registry:" + strings.TrimPrefix(server.URL, "http://") + "/coopr/signing:latest"}, Signing: transfer.SigningOptions{SignBy: "missing-test-key"}})
+	_, err := Run(context.Background(), Options{File: definition, TLSVerify: new(false), Tags: []string{"oci-archive:" + archive, "registry:" + strings.TrimPrefix(server.URL, "http://") + "/coopr/signing:latest"}, Signing: transfer.SigningOptions{SignBy: "missing-test-key"}})
 	if err == nil {
 		t.Fatal("unavailable signed destination succeeded")
 	}

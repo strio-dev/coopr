@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/go-containerregistry/pkg/registry"
 	"github.com/spf13/cobra"
+	"go.podman.io/image/v5/pkg/sysregistriesv2"
 )
 
 func TestComponentBuildCommandValidation(t *testing.T) {
@@ -124,7 +125,7 @@ func TestBuildCommandsAcceptNetworkAndAddHost(t *testing.T) {
 
 func TestBuildCommandsExposeCredentialAndCacheInputs(t *testing.T) {
 	for _, cmd := range []*cobra.Command{newBuildCommand(), newComponentBuildCommand()} {
-		for _, name := range []string{"secret", "ssh", "cache", "allow", "build-context"} {
+		for _, name := range []string{"secret", "ssh", "cache-from", "cache-to", "allow", "build-context"} {
 			if cmd.Flags().Lookup(name) == nil {
 				t.Errorf("%s does not expose --%s", cmd.CommandPath(), name)
 			}
@@ -140,7 +141,7 @@ func TestComponentBuildArgHelpHasNoDefault(t *testing.T) {
 	if strings.Contains(out.String(), "(default name[=value])") {
 		t.Fatalf("help shows an invented build argument default: %s", out.String())
 	}
-	for _, text := range []string{"--pull", "base image pull policy", "--no-cache", "save fresh results to the build cache", "--network", "--add-host", "--secret", "--ssh", "--cache", "--allow", "network.host", "security.insecure"} {
+	for _, text := range []string{"--pull", "base image pull policy", "--no-cache", "save fresh results to the build cache", "--network", "--add-host", "--secret", "--ssh", "--cache-from", "--cache-to", "--allow", "network.host", "security.insecure"} {
 		if !strings.Contains(out.String(), text) {
 			t.Errorf("component help missing %q", text)
 		}
@@ -156,12 +157,50 @@ func TestComponentBuildPushCommandLive(t *testing.T) {
 	ref := strings.TrimPrefix(server.URL, "http://") + "/coopr/cli:stable"
 	file := definitionFile(t, "extend as=\"base\"\nenv FROM_CLI=\"yes\"\n")
 	var output, stderr bytes.Buffer
-	code := run([]string{"component", "build", file, "--push", "--tag", ref, "--plain-http", "--platform", "linux/amd64"}, &output, &stderr)
+	code := run([]string{"component", "build", file, "--push", "--tag", ref, "--tls-verify=false", "--platform", "linux/amd64"}, &output, &stderr)
 	if code != 0 {
 		t.Fatalf("CLI publication failed: %s", stderr.String())
 	}
 	if got := strings.TrimSpace(output.String()); !strings.HasPrefix(got, strings.TrimSuffix(ref, ":stable")+"@sha256:") {
 		t.Fatalf("CLI did not print immutable reference: %q", got)
+	}
+}
+
+func TestComponentBuildRegistryTLSPolicyCommandLive(t *testing.T) {
+	if os.Getenv("COOPR_TEST_BUILDAH_REGISTRY") == "" {
+		t.Skip("set COOPR_TEST_BUILDAH_REGISTRY for live Buildah registry tests")
+	}
+	server := httptest.NewServer(registry.New())
+	defer server.Close()
+	host := strings.TrimPrefix(server.URL, "http://")
+	config := filepath.Join(t.TempDir(), "registries.conf")
+	if err := os.WriteFile(config, []byte("[[registry]]\nlocation = \""+host+"\"\ninsecure = true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CONTAINERS_REGISTRIES_CONF", config)
+	sysregistriesv2.InvalidateCache()
+	t.Cleanup(sysregistriesv2.InvalidateCache)
+	file := definitionFile(t, "extend\nenv registry_policy=\"native\"\n")
+	for _, test := range []struct {
+		name        string
+		flag        string
+		wantSuccess bool
+	}{
+		{"configured", "", true},
+		{"insecure", "--tls-verify=false", true},
+		{"strict", "--tls-verify=true", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			args := []string{"component", "build", file, "--push", "--tag", host + "/coopr/policy:" + test.name, "--retry", "0"}
+			if test.flag != "" {
+				args = append(args, test.flag)
+			}
+			var stdout, stderr bytes.Buffer
+			code := run(args, &stdout, &stderr)
+			if (code == 0) != test.wantSuccess {
+				t.Fatalf("status %d, stderr: %s", code, stderr.String())
+			}
+		})
 	}
 }
 
@@ -232,7 +271,7 @@ func TestComponentBuildLocalThenInvokeCommandLive(t *testing.T) {
 	cacheDir := filepath.Join(dataDir, "component-cache")
 	output.Reset()
 	stderr.Reset()
-	if code := run([]string{"build", app, "--tag", "oci-archive:" + archive, "--cache", "oci-layout:" + cacheDir, "--platform", "linux/amd64"}, &output, &stderr); code != 0 {
+	if code := run([]string{"build", app, "--tag", "oci-archive:" + archive, "--cache-from", "oci-layout:" + cacheDir, "--cache-to", "oci-layout:" + cacheDir, "--platform", "linux/amd64"}, &output, &stderr); code != 0 {
 		t.Fatalf("local component invocation failed: %s", stderr.String())
 	}
 	if info, err := os.Stat(archive); err != nil || info.Size() == 0 {
@@ -244,7 +283,7 @@ func TestComponentBuildLocalThenInvokeCommandLive(t *testing.T) {
 	secondArchive := filepath.Join(t.TempDir(), "cached-app.oci.tar")
 	output.Reset()
 	stderr.Reset()
-	if code := run([]string{"build", app, "--tag", "oci-archive:" + secondArchive, "--cache", "oci-layout:" + cacheDir, "--platform", "linux/amd64"}, &output, &stderr); code != 0 {
+	if code := run([]string{"build", app, "--tag", "oci-archive:" + secondArchive, "--cache-from", "oci-layout:" + cacheDir, "--cache-to", "oci-layout:" + cacheDir, "--platform", "linux/amd64"}, &output, &stderr); code != 0 {
 		t.Fatalf("second component invocation with CLI cache failed: %s", stderr.String())
 	}
 	if info, err := os.Stat(secondArchive); err != nil || info.Size() == 0 {

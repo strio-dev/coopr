@@ -36,7 +36,7 @@ func TestPublishPlanPartialPackageCacheMissRestoresSelectedBaseAcrossStores(t *t
 
 	root := t.TempDir()
 	resolver, err := oci.NewResolver(oci.Options{
-		PlainHTTPRegistries: []string{authority},
+		TLSVerify: new(false),
 	})
 	if err != nil {
 		t.Fatal(err)

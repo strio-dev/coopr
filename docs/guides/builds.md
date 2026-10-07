@@ -6,7 +6,7 @@ Choose a definition file and a tag:
 coopr build image.coopr --tag app:dev
 ```
 
-Coopr reads KDL v2 from the exact path supplied; it does not choose a default filename or add `.coopr`. A positional definition uses its directory as the context. With `--file FILE`, the context defaults to the current directory. Supply a context or use `--context` to choose another:
+Coopr reads KDL v2 from the exact path supplied; it does not choose a default filename or add `.coopr`. A positional definition uses its directory as the context. With `--file FILE`, the context defaults to the current directory. Supply a positional context to choose another:
 
 ```sh
 coopr build . --file build/release.coopr --tag app:dev
@@ -58,7 +58,7 @@ Image format and destination are separate choices. `--format docker` changes the
 
 ```sh
 coopr build image.coopr --pull
-coopr build image.coopr --pull-policy never
+coopr build image.coopr --pull=never
 ```
 
 The default `missing` policy reuses locally selected images. `--pull` selects `always`; `never` requires local images. `newer` compares registry content and permits local reuse if the registry request fails. Component registry tags resolve on each build. Pin references by digest when selection must be immutable, including references inside components.

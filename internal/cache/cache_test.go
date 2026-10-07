@@ -87,7 +87,7 @@ func TestStoreLocalAndRegistryRoundTrip(t *testing.T) {
 			if remote {
 				server := httptest.NewServer(registry.New())
 				t.Cleanup(server.Close)
-				resolver, e := oci.NewResolver(oci.Options{PlainHTTP: true})
+				resolver, e := oci.NewResolver(oci.Options{TLSVerify: new(false)})
 				if e != nil {
 					t.Fatal(e)
 				}

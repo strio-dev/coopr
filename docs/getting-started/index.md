@@ -21,14 +21,14 @@ See [rootless setup](../guides/security.md#native-rootless-requirements) for hos
 
 ## Build an image
 
-[Build your first image](../tutorials/first-image.md) builds an NGINX image and runs it with Podman. Then [reuse two components](../tutorials/reusable-components.md) to add shared settings and a policy check.
+[Build your first image](../tutorials/first-image.md) builds an NGINX image and runs it with Podman. The [component tutorial](../tutorials/reusable-components.md) builds a separate UBI9 image with shared settings and a policy check.
 
 ## Run the published container
 
 Run Coopr from GHCR:
 
 ```sh
-podman run --rm --network=none ghcr.io/strio-dev/coopr:latest --help
+podman run --rm ghcr.io/strio-dev/coopr:latest --help
 ```
 
 Use a release tag in place of `latest` to select an exact version. From the repository checkout described in the [first-image tutorial](../tutorials/first-image.md), build with rootless Podman:

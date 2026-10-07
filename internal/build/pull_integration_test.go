@@ -36,7 +36,7 @@ func testRunPullRefresh(t *testing.T, withLayers bool) {
 	server := httptest.NewServer(registry.New())
 	defer server.Close()
 	ref := strings.TrimPrefix(server.URL, "http://") + "/coopr/base:stable"
-	resolver, err := oci.NewResolver(oci.Options{PlainHTTP: true})
+	resolver, err := oci.NewResolver(oci.Options{TLSVerify: new(false)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func testRunPullRefresh(t *testing.T, withLayers bool) {
 	consumerArchive := filepath.Join(dir, "consumer.oci.tar")
 	opts := Options{
 		File: consumerFile, Tag: "oci-archive:" + consumerArchive,
-		Platform: "linux/amd64", PlainHTTP: true, BuildStore: nativeBuildTestStore(filepath.Join(storeBase, "consumer-store")),
+		Platform: "linux/amd64", TLSVerify: new(false), BuildStore: nativeBuildTestStore(filepath.Join(storeBase, "consumer-store")),
 	}
 	assertRevision := func(want string) {
 		t.Helper()

@@ -29,7 +29,7 @@ func TestPublishDefinitionPackageCacheHitSkipsProducersAndBaseLayers(t *testing.
 	defer cancel()
 	root := t.TempDir()
 	_, upstreamAuthority := newLiveBusyBoxRegistry(t, ctx)
-	resolver, err := oci.NewResolver(oci.Options{PlainHTTPRegistries: []string{upstreamAuthority}})
+	resolver, err := oci.NewResolver(oci.Options{TLSVerify: new(false)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ copy "/copy-busybox" "/copy-busybox" from="copy-bundle"
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
 			Output:            Output{Path: filepath.Join(storeRoot, "component")},
 			ComponentStoreDir: componentStoreDir, CacheLocalDir: cacheDir,
-			PlainHTTPRegistries: []string{authority}, SignaturePolicyPath: policy,
+			TLSVerify: new(false), SignaturePolicyPath: policy,
 			Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {

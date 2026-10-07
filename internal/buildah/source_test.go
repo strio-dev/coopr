@@ -236,7 +236,7 @@ func TestResolveImageSourceEnforcesRegistryScopedPolicy(t *testing.T) {
 	}
 	resolver, err := oci.NewResolver(oci.Options{
 
-		PlainHTTPRegistries: []string{authority},
+		TLSVerify: new(false),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -255,7 +255,7 @@ func TestResolveImageSourcePullsRegistryDirectlyIntoBuildahStore(t *testing.T) {
 		t.Skip("set COOPR_TEST_BUILDAH=1 for the live registry pull test")
 	}
 	ctx := context.Background()
-	reference, authority := newLiveBusyBoxRegistry(t, ctx)
+	reference, _ := newLiveBusyBoxRegistry(t, ctx)
 	root := t.TempDir()
 	store, err := storage.GetStore(storage.StoreOptions{
 		GraphDriverName: "vfs", GraphRoot: filepath.Join(root, "graph"), RunRoot: filepath.Join(root, "run"),
@@ -269,7 +269,7 @@ func TestResolveImageSourcePullsRegistryDirectlyIntoBuildahStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	resolver, err := oci.NewResolver(oci.Options{
-		PlainHTTPRegistries: []string{authority},
+		TLSVerify: new(false),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -386,7 +386,7 @@ func TestResolveImageSourceSharedWrongPlatformPullPolicies(t *testing.T) {
 			if err := backend.AddNames(id, []string{reference}); err != nil {
 				t.Fatal(err)
 			}
-			resolver, err := oci.NewResolver(oci.Options{PullPolicy: string(policy), PlainHTTPRegistries: []string{parsed.Host}})
+			resolver, err := oci.NewResolver(oci.Options{PullPolicy: string(policy), TLSVerify: new(false)})
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -24,6 +24,7 @@ import (
 	"coopr/internal/oci"
 	"coopr/internal/planner"
 	"github.com/containerd/platforms"
+	"github.com/moby/buildkit/util/entitlements"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 
@@ -134,7 +135,7 @@ type graphExecutor struct {
 	nextBuilderID            uint64
 	sharedBuilderCounter     *uint64
 	activeLocalComponents    map[string]bool
-	allowedEntitlements      map[string]bool
+	allowedEntitlements      entitlements.Set
 	stageRelayMu             sync.Mutex
 }
 

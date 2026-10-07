@@ -302,8 +302,7 @@ podman build --pull=never --format docker --layers --network=none \
   --tag "$containerfile_conformance_image" \
   "$conformance_root" >/dev/null
 coopr_container none \
-  build /work/containerfile-conformance/image.coopr \
-  --context /work/containerfile-conformance \
+  build --file /work/containerfile-conformance/image.coopr /work/containerfile-conformance \
   --build-arg message=release-acceptance \
   --format docker \
   --tag oci-archive:/work/containerfile-conformance/coopr.oci.tar \
@@ -476,7 +475,7 @@ coopr_container none \
   component build /work/component.coopr --tag "$component_tag" --platform "$native_platform"
 coopr_container none \
   build /work/component-child.coopr --tag oci-archive:/work/component-child.oci.tar \
-  --cache oci-layout:/var/lib/coopr/component-cache --platform "$native_platform"
+  --cache-from oci-layout:/var/lib/coopr/component-cache --cache-to oci-layout:/var/lib/coopr/component-cache --platform "$native_platform"
 [[ -s "$state/coopr/component-cache/index.json" ]] || fail 'packaged component cache was not populated'
 
 component_load_output=$(podman load -i "$workspace/component-child.oci.tar")

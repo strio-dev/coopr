@@ -17,7 +17,7 @@ func TestGlobalStorageFlagsSelectOneCanonicalGraph(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(rootDir, "config"))
 	root := newRootCommand()
 	var captured bool
-	probe := &cobra.Command{Use: "storage-probe", RunE: func(cmd *cobra.Command, _ []string) error {
+	probe := &cobra.Command{Use: "storage-probe", Annotations: map[string]string{nativeStorageAnnotation: "true"}, RunE: func(cmd *cobra.Command, _ []string) error {
 		store, err := commandStorage(cmd)
 		if err != nil {
 			return err
@@ -45,6 +45,25 @@ func TestRootHasNoImageStoreModeFlag(t *testing.T) {
 	}
 }
 
+func TestNetworkHelperIsNotACommandFlag(t *testing.T) {
+	for _, args := range [][]string{{"--network-cmd-path=/slirp", "build"}, {"build", "--network-cmd-path=/slirp"}, {"component", "build", "--network-cmd-path=/slirp"}} {
+		var stdout, stderr bytes.Buffer
+		if status := run(args, &stdout, &stderr); status == 0 || !strings.Contains(stderr.String(), "unknown flag: --network-cmd-path") {
+			t.Fatalf("%v: status=%d stderr=%s", args, status, &stderr)
+		}
+	}
+	for _, cmd := range []*cobra.Command{newRootCommand(), newBuildCommand(), newComponentBuildCommand()} {
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		if err := cmd.Help(); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(out.String(), "--network-cmd-path") {
+			t.Fatalf("%s still advertises the network helper flag", cmd.Name())
+		}
+	}
+}
+
 func TestCommandsDefaultToEffectiveNativeStorage(t *testing.T) {
 	rootDir := t.TempDir()
 	configHome := filepath.Join(rootDir, "config")
@@ -64,7 +83,7 @@ func TestCommandsDefaultToEffectiveNativeStorage(t *testing.T) {
 	}
 	root := newRootCommand()
 
-	probe := &cobra.Command{Use: "storage-config-probe", RunE: func(cmd *cobra.Command, _ []string) error {
+	probe := &cobra.Command{Use: "storage-config-probe", Annotations: map[string]string{nativeStorageAnnotation: "true"}, RunE: func(cmd *cobra.Command, _ []string) error {
 		store, err := commandStorage(cmd)
 		if err != nil {
 			return err
@@ -118,7 +137,7 @@ func TestRootBuildFlagsUseCobraInheritance(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, name := range []string{"cgroup-manager", "module", "cdi-spec-dir", "network-config-dir", "network-cmd-path", "signature-policy"} {
+		for _, name := range []string{"cgroup-manager", "module", "cdi-spec-dir", "network-config-dir"} {
 			if cmd.LocalNonPersistentFlags().Lookup(name) != nil {
 				t.Fatalf("%v shadows root --%s", path, name)
 			}
@@ -157,15 +176,12 @@ func TestInheritedBuildFlagsPreserveDefaultsAndOrderedOverrides(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				if controls.CgroupManager != "cgroupfs" || controls.NetworkConfigDir != "/config" || controls.NetworkCmdPath != "/slirp" || !reflect.DeepEqual(controls.ConfigModules, modules) || !reflect.DeepEqual(controls.CDISpecDirs, []string{"/cdi-one", "/cdi-two"}) {
+				if controls.CgroupManager != "cgroupfs" || controls.NetworkConfigDir != "/config" || !reflect.DeepEqual(controls.ConfigModules, modules) || !reflect.DeepEqual(controls.CDISpecDirs, []string{"/cdi-one", "/cdi-two"}) {
 					t.Fatalf("%v before=%v: controls=%+v", path, before, controls)
-				}
-				if commandSignaturePolicy(cmd) != "/policy.json" {
-					t.Fatal("signature policy was not inherited")
 				}
 				return nil
 			}
-			globals := []string{"--cgroup-manager=cgroupfs", "--module=" + modules[1], "--module=" + modules[2], "--cdi-spec-dir=/cdi-one", "--cdi-spec-dir=/cdi-two", "--network-config-dir=/config", "--network-cmd-path=/slirp", "--signature-policy=/policy.json"}
+			globals := []string{"--cgroup-manager=cgroupfs", "--module=" + modules[1], "--module=" + modules[2], "--cdi-spec-dir=/cdi-one", "--cdi-spec-dir=/cdi-two", "--network-config-dir=/config"}
 			args := append(append([]string(nil), path...), globals...)
 			if before {
 				args = append(globals, path...)
@@ -180,8 +196,13 @@ func TestInheritedBuildFlagsPreserveDefaultsAndOrderedOverrides(t *testing.T) {
 
 func TestStandaloneCommandsKeepSharedFlagDefaults(t *testing.T) {
 	for _, cmd := range []*cobra.Command{newBuildCommand(), newComponentBuildCommand(), newCopyCommand(oci.Image), newCopyCommand(oci.Component)} {
-		if cmd.Flags().Lookup("signature-policy") == nil || commandSignaturePolicy(cmd) != "" {
+		policy := cmd.Flags().Lookup("signature-policy")
+		isComponentCopy := cmd.Name() == "copy" && strings.Contains(cmd.Long, "stored component")
+		if !isComponentCopy && (policy == nil || !policy.Hidden || commandSignaturePolicy(cmd) != "") {
 			t.Fatalf("%s lost signature policy default", cmd.Name())
+		}
+		if isComponentCopy && policy != nil {
+			t.Fatal("component copy exposes image signature policy")
 		}
 		if cmd.Name() == "build" {
 			flags := buildControlFlags{command: cmd}

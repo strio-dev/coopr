@@ -13,6 +13,7 @@ import (
 	"time"
 
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"go.podman.io/common/libimage"
 )
 
 func TestConfiguredStoreInteroperatesWithPodmanNativeNames(t *testing.T) {
@@ -61,7 +62,17 @@ func TestConfiguredStoreInteroperatesWithPodmanNativeNames(t *testing.T) {
 	}
 	const nativeBase = "docker.io/library/external-base:latest"
 	buildNativeBase(nativeBase, "first")
-	runPodmanCompatibilityCLI(t, "image", "inspect", "external-base")
+	var inspected libimage.ImageData
+	if err := json.Unmarshal([]byte(runPodmanCompatibilityCLI(t, "image", "inspect", "external-base")), &inspected); err != nil {
+		t.Fatal(err)
+	}
+	var nativeInspected []libimage.ImageData
+	if err := json.Unmarshal([]byte(podman("image", "inspect", nativeBase)), &nativeInspected); err != nil || len(nativeInspected) != 1 {
+		t.Fatalf("native inspection: %+v, %v", nativeInspected, err)
+	}
+	if inspected.ID == "" || inspected.ID != nativeInspected[0].ID || inspected.Digest != nativeInspected[0].Digest || inspected.Architecture != nativeInspected[0].Architecture || inspected.Os != nativeInspected[0].Os {
+		t.Fatalf("Coopr inspection differs from native identity/platform: Coopr=%+v Podman=%+v", inspected, nativeInspected[0])
+	}
 	definition := filepath.Join(root, "application.coopr")
 	writePodmanCompatibilityFile(t, definition, "from \"external-base\"\n", 0o600)
 	for _, payload := range []string{"first", "second"} {
@@ -135,9 +146,19 @@ func TestConfiguredStoreInteroperatesWithPodmanNativeNames(t *testing.T) {
 	if len(original.Manifests) != 2 || len(copied.Manifests) != 2 {
 		t.Fatalf("native index copy lost a platform: original=%+v copied=%+v", original.Manifests, copied.Manifests)
 	}
+	var cooprList v1.Index
+	if err := json.Unmarshal([]byte(runPodmanCompatibilityCLI(t, "image", "inspect", "external-list-copy")), &cooprList); err != nil {
+		t.Fatal(err)
+	}
+	if len(cooprList.Manifests) != len(copied.Manifests) {
+		t.Fatalf("Coopr inspection lost native index platforms: %+v", cooprList)
+	}
 	for i, descriptor := range original.Manifests {
 		if descriptor.Digest != copied.Manifests[i].Digest {
 			t.Fatalf("native index copy changed child %d: original=%s copied=%s", i, descriptor.Digest, copied.Manifests[i].Digest)
+		}
+		if cooprList.Manifests[i].Digest != descriptor.Digest || cooprList.Manifests[i].Platform == nil || cooprList.Manifests[i].Platform.Architecture != descriptor.Platform.Architecture {
+			t.Fatalf("Coopr inspection changed native index child %d: %+v", i, cooprList.Manifests[i])
 		}
 	}
 

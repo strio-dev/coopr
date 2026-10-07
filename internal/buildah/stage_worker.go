@@ -78,12 +78,10 @@ type stageWorkerRequest struct {
 	BigFilesTempDir   string              `json:"big_files_temporary_dir,omitempty"`
 	AuthFile          string              `json:"auth_file,omitempty"`
 	CertDir           string              `json:"cert_dir,omitempty"`
-	SkipTLSVerify     bool                `json:"skip_tls_verify,omitempty"`
+	TLSVerify         *bool               `json:"tls_verify,omitempty"`
 	RegistryOptions   oci.Options         `json:"registry_options,omitempty"`
 	ResolverEnabled   bool                `json:"resolver_enabled,omitempty"`
 	ComponentStore    string              `json:"component_store,omitempty"`
-	PlainHTTP         bool                `json:"plain_http,omitempty"`
-	PlainHTTPHosts    []string            `json:"plain_http_hosts,omitempty"`
 	Pull              bool                `json:"pull,omitempty"`
 	PullPolicy        string              `json:"pull_policy,omitempty"`
 	ResultPath        string              `json:"result_path"`
@@ -196,8 +194,10 @@ func (executor *graphExecutor) executeGraphStageIsolated(ctx context.Context, pl
 		JobID: jobID, SignaturePolicy: executor.system.SignaturePolicyPath,
 		BigFilesTempDir: executor.system.BigFilesTemporaryDir,
 		AuthFile:        executor.system.AuthFilePath, CertDir: executor.system.DockerCertPath,
-		SkipTLSVerify: executor.system.DockerInsecureSkipTLSVerify == types.OptionalBoolTrue,
-		ResultPath:    filepath.Join(jobDir, "result.json"),
+		ResultPath: filepath.Join(jobDir, "result.json"),
+	}
+	if executor.system.DockerInsecureSkipTLSVerify != types.OptionalBoolUndefined {
+		request.TLSVerify = new(executor.system.DockerInsecureSkipTLSVerify == types.OptionalBoolFalse)
 	}
 	request.ComponentPins = cloneStringMap(prepared.componentPins)
 	if executor.componentCache != nil {
@@ -210,8 +210,6 @@ func (executor *graphExecutor) executeGraphStageIsolated(ctx context.Context, pl
 		request.RegistryOptions = executor.options.Resolver.RegistryOptions()
 		request.ResolverEnabled = true
 		request.ComponentStore = executor.options.Resolver.ComponentStoreDir()
-		request.PlainHTTP = executor.options.Resolver.PlainHTTP()
-		request.PlainHTTPHosts = executor.options.Resolver.PlainHTTPRegistries()
 		request.Pull = executor.options.Resolver.PullImages()
 		request.PullPolicy = string(executor.options.Resolver.PullPolicy())
 	}
@@ -363,9 +361,8 @@ func executeStageWorkerRequest(ctx context.Context, request stageWorkerRequest) 
 	var resolver *oci.Resolver
 	if request.ResolverEnabled {
 		registry := request.RegistryOptions
-		registry.PlainHTTP, registry.PlainHTTPRegistries = request.PlainHTTP, request.PlainHTTPHosts
 		registry.Pull, registry.PullPolicy = request.Pull, request.PullPolicy
-		registry.AuthFile, registry.CertDir, registry.SkipTLSVerify = request.AuthFile, request.CertDir, request.SkipTLSVerify
+		registry.AuthFile, registry.CertDir, registry.TLSVerify = request.AuthFile, request.CertDir, request.TLSVerify
 		registry.SignaturePolicyPath = request.SignaturePolicy
 		registry.ComponentStoreDir = request.ComponentStore
 		resolver, err = oci.NewResolver(registry)
@@ -403,9 +400,9 @@ func executeStageWorkerRequest(ctx context.Context, request stageWorkerRequest) 
 		SystemContext: &types.SystemContext{
 			SignaturePolicyPath: request.SignaturePolicy, BigFilesTemporaryDir: request.BigFilesTempDir,
 			AuthFilePath: request.AuthFile, DockerCertPath: request.CertDir,
-			DockerInsecureSkipTLSVerify: optionalBool(request.SkipTLSVerify),
 		},
 	}
+	oci.ApplyTLSVerify(options.SystemContext, request.TLSVerify)
 	executor, err := newGraphExecutor(ctx, options)
 	if err != nil {
 		return response, err

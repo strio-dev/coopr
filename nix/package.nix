@@ -21,7 +21,7 @@
       ../examples
     ];
   };
-  vendorHash = "sha256-VoZsv17TDOCMiClseSpzGiL6x5o2rf+7a4THscKbpw4=";
+  vendorHash = "sha256-v3klBYyr5nqENYe3z1Ir6+sOGDuDTmodWozm+Th1wfg=";
   subPackages = [ "./cmd/coopr" ];
   ldflags = [ "-X main.version=${version}" ];
   tags = [

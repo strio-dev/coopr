@@ -169,7 +169,7 @@ func materializeImageSource(ctx context.Context, resolver *oci.Resolver, referen
 	if registryReference == "" {
 		registryReference = reference
 	}
-	pullSystem := resolver.NativeSystemContext(registryReference)
+	pullSystem := resolver.SystemContext()
 	destinationName, err := dockerreference.ParseDockerRef(registryReference)
 	if err != nil {
 		return ResolvedImageSource{}, err

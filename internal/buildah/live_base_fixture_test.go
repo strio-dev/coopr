@@ -205,7 +205,7 @@ func TestLiveBusyBoxRegistryFixtureResolvesWithoutExternalRegistry(t *testing.T)
 	}
 	ctx := context.Background()
 	reference, authority := newLiveBusyBoxRegistry(t, ctx)
-	resolver, err := oci.NewResolver(oci.Options{PlainHTTPRegistries: []string{authority}})
+	resolver, err := oci.NewResolver(oci.Options{TLSVerify: new(false)})
 	if err != nil {
 		t.Fatal(err)
 	}

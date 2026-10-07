@@ -16,12 +16,12 @@ func TestDirectionalComponentCacheReusesDefaultNetworkRunAcrossStores(t *testing
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	root := t.TempDir()
-	base, host := newLiveBusyBoxRegistry(t, ctx)
+	base, _ := newLiveBusyBoxRegistry(t, ctx)
 	componentResolver := localConfigComponentResolver(t, ctx, root, `extend
 run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof"
 `, false)
 	resolver, err := oci.NewResolver(oci.Options{
-		ComponentStoreDir: componentResolver.ComponentStoreDir(), PlainHTTPRegistries: []string{host},
+		ComponentStoreDir: componentResolver.ComponentStoreDir(), TLSVerify: new(false),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -38,7 +38,7 @@ run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof"
 			},
 			ContextDir: root, Isolation: "rootless", Runtime: "crun", Output: Output{Path: filepath.Join(baseDir, "layout")},
 			ComponentStoreDir: resolver.ComponentStoreDir(), CacheFrom: cacheFrom, CacheTo: cacheTo,
-			PlainHTTPRegistries: []string{host},
+			TLSVerify:           new(false),
 			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {

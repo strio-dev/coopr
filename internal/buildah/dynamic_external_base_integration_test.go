@@ -25,7 +25,7 @@ func TestDynamicComponentOnbuildMaterializesLateExternalImageAndContext(t *testi
 			root := t.TempDir()
 			store := StoreOptions{GraphRoot: filepath.Join(root, "graph"), RunRoot: filepath.Join(root, "run"), GraphDriverName: "vfs"}
 			base := newLiveBusyBoxStorage(t, ctx, root, store)
-			external, authority := newLiveBusyBoxRegistry(t, ctx)
+			external, _ := newLiveBusyBoxRegistry(t, ctx)
 			from := external
 			var contexts []buildcontext.Spec
 			if named {
@@ -37,7 +37,7 @@ func TestDynamicComponentOnbuildMaterializesLateExternalImageAndContext(t *testi
 			layout := filepath.Join(root, "result")
 			_, err := BuildDefinitionSupervised(ctx, def, planner.Options{Mode: planner.Build, Platform: "linux/" + runtime.GOARCH}, SupervisedPlanOptions{
 				Store: store, ContextDir: root, Isolation: "rootless", ComponentStoreDir: filepath.Join(root, "components"),
-				PlainHTTPRegistries: []string{authority}, SignaturePolicyPath: writeComponentTestPolicy(t, root), BuildContexts: contexts,
+				TLSVerify: new(false), SignaturePolicyPath: writeComponentTestPolicy(t, root), BuildContexts: contexts,
 				Output: Output{Path: layout},
 			})
 			if err != nil {

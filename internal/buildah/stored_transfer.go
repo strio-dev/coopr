@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/url"
 	"os"
 	"os/signal"
@@ -52,11 +51,9 @@ type StoredTransferOptions struct {
 	ExpectedManifest       digest.Digest
 	LocalName              string
 	RegistryDestination    string
-	PlainHTTP              bool
-	PlainHTTPRegistries    []string
 	AuthFile               string
 	CertDir                string
-	SkipTLSVerify          bool
+	TLSVerify              *bool
 	Credentials            string
 	Retry                  uint
 	RetrySet               bool
@@ -431,19 +428,11 @@ func storedTransferSystemContext(options StoredTransferOptions, registriesDir st
 	if err != nil {
 		return nil, err
 	}
-	insecure := options.SkipTLSVerify
-	if options.RegistryDestination != "" {
-		parsed, err := oci.ParseReference(options.RegistryDestination)
-		if err != nil {
-			return nil, err
-		}
-		insecure = insecure || storedRegistryUsesPlainHTTP(parsed.Registry, options)
-	}
 	system := &types.SystemContext{
 		AuthFilePath: authFile, DockerCertPath: certDir, RegistriesDirPath: registriesDir,
 		BigFilesTemporaryDir: os.TempDir(), SignaturePolicyPath: options.SignaturePolicyPath,
-		DockerInsecureSkipTLSVerify: types.NewOptionalBool(insecure),
 	}
+	oci.ApplyTLSVerify(system, options.TLSVerify)
 	if options.Credentials != "" {
 		username, password, _ := strings.Cut(options.Credentials, ":")
 		if username == "" {
@@ -452,24 +441,6 @@ func storedTransferSystemContext(options StoredTransferOptions, registriesDir st
 		system.DockerAuthConfig = &types.DockerAuthConfig{Username: username, Password: password}
 	}
 	return system, nil
-}
-
-func storedRegistryUsesPlainHTTP(authority string, options StoredTransferOptions) bool {
-	for _, allowed := range options.PlainHTTPRegistries {
-		if strings.EqualFold(authority, allowed) {
-			return true
-		}
-	}
-	if !options.PlainHTTP {
-		return false
-	}
-	u, err := url.Parse("https://" + authority)
-	if err != nil {
-		return false
-	}
-	host := u.Hostname()
-	ip := net.ParseIP(host)
-	return strings.EqualFold(host, "localhost") || strings.HasSuffix(strings.ToLower(host), ".localhost") || ip != nil && ip.IsLoopback()
 }
 
 func readStoredTransferPassphrase(path string) ([]byte, error) {

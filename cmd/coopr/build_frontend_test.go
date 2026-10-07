@@ -16,7 +16,7 @@ func TestResolveBuildInput(t *testing.T) {
 	if err := os.WriteFile(definition, []byte("from \"scratch\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	file, context, _, err := resolveBuildInput(definition, "", "")
+	file, context, _, err := resolveBuildInput(definition, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,7 +28,7 @@ func TestResolveBuildInput(t *testing.T) {
 
 func TestResolveBuildInputReadsExplicitExtractedContextDefinitions(t *testing.T) {
 	for _, source := range []string{"https://registry.invalid/context.tar", "https://git.invalid/project.git", "-"} {
-		file, context, inContext, err := resolveBuildInput(source, "custom-definition", "")
+		file, context, inContext, err := resolveBuildInput(source, "custom-definition")
 		if err != nil || file != "custom-definition" || context != source || !inContext {
 			t.Fatalf("input %q = (%q,%q,%t), %v", source, file, context, inContext, err)
 		}
@@ -38,7 +38,7 @@ func TestResolveBuildInputReadsExplicitExtractedContextDefinitions(t *testing.T)
 func TestResolveBuildInputKeepsExplicitHTTPDefinitionOutsideContext(t *testing.T) {
 	definition := "https://example.invalid/custom.coopr"
 	for _, contextSource := range []string{".", "https://example.invalid/context.tar"} {
-		file, context, inContext, err := resolveBuildInput(contextSource, definition, "")
+		file, context, inContext, err := resolveBuildInput(contextSource, definition)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -86,7 +86,7 @@ func TestResolveBuildInputRequiresExplicitDefinition(t *testing.T) {
 	}
 	for _, argument := range []string{"", root, archiveFile, "https://example.invalid/context.tar", "https://git.invalid/project.git", "-"} {
 		t.Run(argument, func(t *testing.T) {
-			_, _, _, err := resolveBuildInput(argument, "", "")
+			_, _, _, err := resolveBuildInput(argument, "")
 			if err == nil || !strings.Contains(err.Error(), "definition file is required") {
 				t.Fatalf("input %q: got %v, want required definition error", argument, err)
 			}
@@ -103,7 +103,7 @@ func TestResolveBuildInputKeepsExactExtensionlessPaths(t *testing.T) {
 	}
 	for _, name := range []string{"definition", "missing"} {
 		path := filepath.Join(root, name)
-		file, context, extracted, err := resolveBuildInput(path, "", "")
+		file, context, extracted, err := resolveBuildInput(path, "")
 		if err != nil || file != path || context != root || extracted {
 			t.Fatalf("input %q: (%q,%q,%t), %v", path, file, context, extracted, err)
 		}
@@ -113,13 +113,14 @@ func TestResolveBuildInputKeepsExactExtensionlessPaths(t *testing.T) {
 func TestResolveBuildInputExplicitFileContextAndStdin(t *testing.T) {
 	root := t.TempDir()
 	for _, file := range []string{"-", filepath.Join(root, "definition")} {
-		resolved, context, extracted, err := resolveBuildInput("", file, root)
+		resolved, context, extracted, err := resolveBuildInput(root, file)
 		if err != nil || resolved != file || context != root || extracted {
 			t.Fatalf("(%q,%q,%t), %v", resolved, context, extracted, err)
 		}
 	}
-	if _, _, _, err := resolveBuildInput(root, "definition", root); err == nil || !strings.Contains(err.Error(), "context specified both") {
-		t.Fatalf("conflict error = %v", err)
+	resolved, context, extracted, err := resolveBuildInput("", "-")
+	if err != nil || resolved != "-" || context != "." || extracted {
+		t.Fatalf("stdin definition default = (%q,%q,%t), %v", resolved, context, extracted, err)
 	}
 }
 

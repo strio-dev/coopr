@@ -46,7 +46,7 @@ func TestPullNewerCopyFailureBindsCachedConfigBeforeBuildAndPublication(t *testi
 	defer server.Close()
 	authority := strings.TrimPrefix(server.URL, "http://")
 	reference := authority + "/coopr/newer:latest"
-	registryOptions := oci.Options{PlainHTTPRegistries: []string{authority}, SignaturePolicyPath: policy, RetrySet: true}
+	registryOptions := oci.Options{TLSVerify: new(false), SignaturePolicyPath: policy, RetrySet: true}
 	resolver, err := oci.NewResolver(registryOptions)
 	if err != nil {
 		t.Fatal(err)
@@ -107,7 +107,7 @@ func TestPullNewerCopyFailureBindsCachedConfigBeforeBuildAndPublication(t *testi
 	if fallback.ImageID != old.ImageID || fallback.Selected.Digest != oldManifest.Digest || string(fallback.ConfigData) != string(old.ConfigData) {
 		t.Fatalf("copy failure selected newer metadata: %+v", fallback)
 	}
-	options := SupervisedPlanOptions{Store: consumerStore, ContextDir: root, Isolation: "rootless", SignaturePolicyPath: policy, PlainHTTPRegistries: []string{authority}, PullPolicy: string(oci.PullNewer), RetrySet: true}
+	options := SupervisedPlanOptions{Store: consumerStore, ContextDir: root, Isolation: "rootless", SignaturePolicyPath: policy, TLSVerify: new(false), PullPolicy: string(oci.PullNewer), RetrySet: true}
 	options.Output = Output{Path: filepath.Join(root, "child"), Format: outputFormatDocker}
 	if _, err := BuildDefinitionSupervised(ctx, parseWorkerDefinition(t, fmt.Sprintf("from %q\nlabel selected=\"$revision\"\n", reference)), planner.Options{Mode: planner.Build}, options); err != nil {
 		t.Fatal(err)

@@ -6,17 +6,12 @@ import (
 
 	"coopr/internal/oci"
 	"coopr/internal/transfer"
+
 	"github.com/containerd/platforms"
 	"github.com/spf13/cobra"
 )
 
 func newCopyCommand(kind oci.Kind) *cobra.Command {
-	return newCopyCommandWithGlobals(kind, true)
-}
-
-func newCopyCommandWithGlobals(kind oci.Kind, standalone bool) *cobra.Command {
-	var plainHTTP bool
-	var plainHTTPRegistries []string
 	var registry registryFlags
 	var signing signingFlags
 	platformValue := "linux/" + runtime.GOARCH
@@ -43,18 +38,16 @@ func newCopyCommandWithGlobals(kind oci.Kind, standalone bool) *cobra.Command {
 			if err := transfer.ValidateSigningDestination(kind, destination, signing.options()); err != nil {
 				return err
 			}
-			store, err := commandStorage(cmd)
-			if err != nil {
-				return err
+			options := registry.transferOptions(cmd)
+			options.Platform, options.PlatformExplicit = platforms.Normalize(platform), cmd.Flags().Changed("platform")
+			options.Signing = signing.options()
+			if kind == oci.Image {
+				options.BuildStore, err = commandStorage(cmd)
+				if err != nil {
+					return err
+				}
 			}
-			result, err := transfer.Copy(cmd.Context(), kind, args[0], destination, transfer.Options{
-				BuildStore: store,
-				PlainHTTP:  plainHTTP, PlainHTTPRegistries: plainHTTPRegistries,
-				AuthFile: registry.authFile, CertDir: registry.certDir, SkipTLSVerify: !registry.tlsVerify,
-				Credentials: registry.credentials, Retry: registry.retry, RetrySet: cmd.Flags().Changed("retry"), RetryDelay: registry.retryDelay, DecryptionKeys: registry.decryptionKeys, SignaturePolicyPath: commandSignaturePolicy(cmd),
-				Platform: platforms.Normalize(platform), PlatformExplicit: cmd.Flags().Changed("platform"),
-				Signing: signing.options(),
-			})
+			result, err := transfer.Copy(cmd.Context(), kind, args[0], destination, options)
 			if err != nil {
 				return err
 			}
@@ -66,13 +59,9 @@ func newCopyCommandWithGlobals(kind oci.Kind, standalone bool) *cobra.Command {
 		cmd.Annotations = map[string]string{nativeStorageAnnotation: "true"}
 	}
 	flags := cmd.Flags()
-	flags.BoolVar(&plainHTTP, "plain-http", false, "allow Coopr HTTP transport for loopback OCI registries")
-	flags.StringArrayVar(&plainHTTPRegistries, "plain-http-registry", nil, "allow Coopr HTTP transport for an exact registry host[:port] (repeatable)")
-	if standalone {
-		addSignaturePolicyFlag(cmd.Flags())
-	}
 	registry.addTo(cmd)
 	if kind == oci.Image {
+		addSignaturePolicyFlag(flags)
 		flags.StringVar(&platformValue, "platform", platformValue, "select the stored image platform")
 		signing.addTo(cmd)
 	}

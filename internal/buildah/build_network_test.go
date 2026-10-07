@@ -40,6 +40,53 @@ func TestNormalizeBuildNetworkOptions(t *testing.T) {
 	}
 }
 
+func TestBuildWideHostNetworkAuthorizesRuns(t *testing.T) {
+	for _, authored := range []string{"", ` network="host"`} {
+		plan := testPlan(t, "from \"scratch\"\nrun \"true\""+authored+"\n")
+		for _, network := range []string{"default", "host"} {
+			request, err := RequestFromPlan(plan, PlanOptions{Network: network})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = authorizeOperations(request.Operations, request.Allow)
+			if network == "default" && authored != "" {
+				if err == nil || !strings.Contains(err.Error(), "--allow network.host") {
+					t.Fatalf("authored host network without grant: %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("network %q, authored %q: %v", network, authored, err)
+			}
+		}
+	}
+}
+
+func TestNormalizePlanOptionsHostGrantIsIdempotentAndPreservesCaller(t *testing.T) {
+	allow := make([]string, 1, 2)
+	allow[0] = securityInsecureEntitlement
+	options, err := normalizePlanOptions(PlanOptions{Network: " host ", Allow: allow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(options.Allow, []string{securityInsecureEntitlement, networkHostEntitlement}) {
+		t.Fatalf("host network grants = %v", options.Allow)
+	}
+	if allow[:cap(allow)][1] != "" {
+		t.Fatal("normalization changed caller's entitlement backing array")
+	}
+	options, err = normalizePlanOptions(options)
+	if err != nil || len(options.Allow) != 2 {
+		t.Fatalf("repeated normalization = %v, %v", options.Allow, err)
+	}
+	allowed, err := allowedEntitlements(options.Allow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation := planner.Operation{Instruction: definition.Instruction{Name: "run", Properties: map[string]string{"network": "host"}}, NetworkExplicit: true}
+	if err := authorizePlannedOperation(operation, allowed, nil); err != nil {
+		t.Fatalf("planned host RUN with build-wide grant: %v", err)
+	}
+}
+
 func TestRunNetworkOptionsUseNativeBuildahNamespaceSemantics(t *testing.T) {
 	namespaceFile := filepath.Join(t.TempDir(), "netns")
 	if err := os.WriteFile(namespaceFile, nil, 0o600); err != nil {

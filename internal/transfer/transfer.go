@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -21,6 +22,7 @@ import (
 	"coopr/internal/localstore"
 	"coopr/internal/oci"
 	"coopr/internal/storeactivity"
+
 	"github.com/containerd/platforms"
 	"github.com/distribution/reference"
 	"github.com/opencontainers/go-digest"
@@ -33,13 +35,12 @@ type Destination struct {
 }
 
 type Options struct {
+	ArchiveReference    string // Name in the archive's outer index; rooted graph bytes are unchanged.
 	ComponentStoreDir   string
 	BuildStore          buildah.StoreOptions
-	PlainHTTP           bool
-	PlainHTTPRegistries []string
 	AuthFile            string
 	CertDir             string
-	SkipTLSVerify       bool
+	TLSVerify           *bool
 	Credentials         string
 	Retry               uint
 	RetrySet            bool
@@ -49,6 +50,15 @@ type Options struct {
 	Platform            v1.Platform
 	PlatformExplicit    bool
 	Signing             SigningOptions
+}
+
+func (opts Options) RegistryOptions() oci.Options {
+	return oci.Options{
+		AuthFile: opts.AuthFile, CertDir: opts.CertDir, TLSVerify: opts.TLSVerify,
+		Credentials: opts.Credentials, Retry: opts.Retry, RetrySet: opts.RetrySet, RetryDelay: opts.RetryDelay,
+		DecryptionKeys: opts.DecryptionKeys, SignaturePolicyPath: opts.SignaturePolicyPath,
+		ComponentStoreDir: opts.ComponentStoreDir, NativeStore: buildah.NativeStoreOptions(opts.BuildStore),
+	}
 }
 
 func nativeStoreOptions(opts Options) (buildah.StoreOptions, error) {
@@ -399,7 +409,7 @@ func copyStoredIndex(ctx context.Context, storeDir string, root v1.Descriptor, i
 		if manifest.Digest != selection.Manifest.Digest || manifest.Size != selection.Manifest.Size || manifest.MediaType != selection.Manifest.MediaType {
 			return "", fmt.Errorf("stored platform %s manifest changed from %s to %s", key, selection.Manifest.Digest, manifest.Digest)
 		}
-		variants = append(variants, oci.ImageVariant{Layout: exported.Layout, Manifest: manifest, Platform: platform})
+		variants = append(variants, oci.ImageVariant{Layout: exported.Layout, Manifest: manifestInIndex, Platform: platform})
 	}
 	layout := filepath.Join(stageDir, "index")
 	if err := oci.RestoreImageIndex(ctx, layout, root, indexData, variants); err != nil {
@@ -495,6 +505,13 @@ func CopyRoot(ctx context.Context, kind oci.Kind, storeDir string, root v1.Descr
 				}
 			}
 		}
+		if opts.ArchiveReference != "" {
+			root.Annotations = maps.Clone(root.Annotations)
+			if root.Annotations == nil {
+				root.Annotations = make(map[string]string)
+			}
+			root.Annotations[v1.AnnotationRefName] = opts.ArchiveReference
+		}
 		if err := localstore.WriteArchive(ctx, store, root, destination.Name); err != nil {
 			return "", err
 		}
@@ -503,11 +520,7 @@ func CopyRoot(ctx context.Context, kind oci.Kind, storeDir string, root v1.Descr
 		if kind == oci.Image {
 			return publishImage(ctx, storeDir, root, destination.Name, opts)
 		}
-		resolver, err := oci.NewResolver(oci.Options{
-			PlainHTTP: opts.PlainHTTP, PlainHTTPRegistries: opts.PlainHTTPRegistries,
-			AuthFile: opts.AuthFile, CertDir: opts.CertDir, SkipTLSVerify: opts.SkipTLSVerify,
-			Credentials: opts.Credentials, Retry: opts.Retry, RetrySet: opts.RetrySet, RetryDelay: opts.RetryDelay, DecryptionKeys: opts.DecryptionKeys, SignaturePolicyPath: opts.SignaturePolicyPath,
-		})
+		resolver, err := oci.NewResolver(opts.RegistryOptions())
 		if err != nil {
 			return "", err
 		}

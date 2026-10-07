@@ -92,11 +92,11 @@ func TestCopyRootArchiveAndRegistryWithoutRebuild(t *testing.T) {
 	server := httptest.NewServer(registry.New())
 	defer server.Close()
 	registryRef := strings.TrimPrefix(server.URL, "http://") + "/coopr/copy:dev"
-	result, err = CopyRoot(ctx, oci.Image, layout, root, Destination{Transport: "registry", Name: registryRef}, Options{BuildStore: options, PlainHTTP: true})
+	result, err = CopyRoot(ctx, oci.Image, layout, root, Destination{Transport: "registry", Name: registryRef}, Options{BuildStore: options, TLSVerify: new(false)})
 	if err != nil || result != strings.TrimSuffix(registryRef, ":dev")+"@"+root.Digest.String() {
 		t.Fatalf("copy registry = %q, %v", result, err)
 	}
-	resolver, err := oci.NewResolver(oci.Options{PlainHTTP: true})
+	resolver, err := oci.NewResolver(oci.Options{TLSVerify: new(false)})
 	if err != nil {
 		t.Fatal(err)
 	}

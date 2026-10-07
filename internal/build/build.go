@@ -67,11 +67,9 @@ type Options struct {
 	Jobs                 int
 	RewriteTimestamp     bool
 	Args                 map[string]string
-	PlainHTTP            bool
-	PlainHTTPRegistries  []string
 	AuthFile             string
 	CertDir              string
-	SkipTLSVerify        bool
+	TLSVerify            *bool
 	Credentials          string
 	Retry                uint
 	RetrySet             bool
@@ -373,7 +371,7 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 			ProgressReference: progressReference,
 			Store:             buildStore, ContextDir: opts.Context, IgnoreFile: opts.IgnoreFile, ContextArtifacts: contextArtifacts,
 			Output: buildah.Output{Path: output, Format: opts.Format, Squash: opts.Squash, SquashAll: opts.SquashAll, DisableCompression: opts.DisableCompression, ConfidentialWorkload: opts.ConfidentialWorkload, SBOM: opts.SBOM, Filesystems: platformFilesystemOutputs(outputs, targetPlatform, len(targets))}, ComponentStoreDir: componentStoreDir,
-			PlainHTTP: opts.PlainHTTP, PlainHTTPRegistries: opts.PlainHTTPRegistries, Pull: opts.Pull, PullPolicy: opts.PullPolicy,
+			Pull: opts.Pull, PullPolicy: opts.PullPolicy,
 			NoCache:     opts.NoCache,
 			Network:     opts.Network,
 			AddHosts:    opts.AddHosts,
@@ -393,7 +391,7 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 			CacheFrom:        opts.CacheFrom,
 			CacheTo:          opts.CacheTo,
 			Secrets:          opts.Secrets, SSH: opts.SSH,
-			AuthFile: opts.AuthFile, CertDir: opts.CertDir, SkipTLSVerify: opts.SkipTLSVerify,
+			AuthFile: opts.AuthFile, CertDir: opts.CertDir, TLSVerify: opts.TLSVerify,
 			Credentials: opts.Credentials, Retry: opts.Retry, RetrySet: opts.RetrySet, RetryDelay: opts.RetryDelay, DecryptionKeys: opts.DecryptionKeys, SignaturePolicyPath: opts.SignaturePolicyPath,
 			Stdin: opts.RunStdin, Stdout: platformStdout, Stderr: platformStderr,
 		})
@@ -497,8 +495,7 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 		ctx = storeactivity.ContextWithLease(ctx, activity)
 	}
 	report, publicationErr := applyOutputDestinations(ctx, oci.Image, outputLayout, root, destinations, transfer.Options{
-		BuildStore: buildStore, PlainHTTP: opts.PlainHTTP, PlainHTTPRegistries: opts.PlainHTTPRegistries,
-		AuthFile: opts.AuthFile, CertDir: opts.CertDir, SkipTLSVerify: opts.SkipTLSVerify,
+		BuildStore: buildStore, AuthFile: opts.AuthFile, CertDir: opts.CertDir, TLSVerify: opts.TLSVerify,
 		Credentials: opts.Credentials, Retry: opts.Retry, RetrySet: opts.RetrySet, RetryDelay: opts.RetryDelay, DecryptionKeys: opts.DecryptionKeys, SignaturePolicyPath: opts.SignaturePolicyPath, Signing: opts.Signing,
 	})
 	if opts.LogSplit {

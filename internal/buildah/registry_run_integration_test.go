@@ -25,9 +25,9 @@ func TestBuildPlanRunsWithAndWithoutNetworkFromRegistryBase(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	root := t.TempDir()
-	base, authority := newLiveBusyBoxRegistry(t, ctx)
+	base, _ := newLiveBusyBoxRegistry(t, ctx)
 	resolver, err := oci.NewResolver(oci.Options{
-		Pull: true, PlainHTTPRegistries: []string{authority},
+		Pull: true, TLSVerify: new(false),
 	})
 	if err != nil {
 		t.Fatal(err)

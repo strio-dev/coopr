@@ -7,7 +7,7 @@ coopr component build examples/published-components/components/company-config/co
 coopr component build examples/published-components/components/gofmt/component.coopr --tag coopr-gofmt
 coopr build examples/published-components/image.coopr --tag coopr-company:formatted
 coopr copy coopr-company:formatted podman:localhost/coopr-company:formatted
-podman run --rm --network=none localhost/coopr-company:formatted
+podman run --rm localhost/coopr-company:formatted
 ```
 
 The container prints the formatted `main.go` and company defaults. The company component offers `debug` and `runtime` outputs; `--target debug` selects the output for this artifact. Invocation supplies `channel="preview"`. The tool component compiles `gofmt` once during packaging and copies it into the consuming image.

@@ -65,7 +65,7 @@ func TestPackageStoreRegistrySeedsIndependentLocalLayout(t *testing.T) {
 	ctx := context.Background()
 	server := httptest.NewServer(registry.New())
 	t.Cleanup(server.Close)
-	resolver, err := oci.NewResolver(oci.Options{PlainHTTP: true})
+	resolver, err := oci.NewResolver(oci.Options{TLSVerify: new(false)})
 	if err != nil {
 		t.Fatal(err)
 	}

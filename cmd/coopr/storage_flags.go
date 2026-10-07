@@ -33,7 +33,6 @@ func addGlobalFlags(root *cobra.Command, prepareNamespace func() error) {
 	f.StringVar(&imageStoreDir, "imagestore", "", "separate native image storage directory")
 	f.BoolVar(&transient, "transient-store", false, "keep transient container metadata in the runtime root")
 	addGlobalRunFlags(f)
-	addSignaturePolicyFlag(f)
 	root.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
 		level, err := logrus.ParseLevel(logLevel)
 		if err != nil {
@@ -41,7 +40,10 @@ func addGlobalFlags(root *cobra.Command, prepareNamespace func() error) {
 		}
 		logrus.SetLevel(level)
 		logrus.SetOutput(cmd.ErrOrStderr())
-		if cmd.Annotations[nativeStorageAnnotation] == "true" && prepareNamespace != nil {
+		if cmd.Annotations[nativeStorageAnnotation] != "true" {
+			return nil
+		}
+		if prepareNamespace != nil {
 			if err := prepareNamespace(); err != nil {
 				return err
 			}
@@ -93,11 +95,11 @@ func addGlobalRunFlags(set *pflag.FlagSet) {
 	set.StringArray("module", nil, "containers.conf module (repeatable)")
 	set.StringArray("cdi-spec-dir", nil, "CDI specification directory (repeatable)")
 	set.String("network-config-dir", "", "native network configuration directory")
-	set.String("network-cmd-path", "", "slirp4netns helper executable")
 }
 
 func addSignaturePolicyFlag(set *pflag.FlagSet) {
 	set.String("signature-policy", "", "containers/image signature policy file")
+	_ = set.MarkHidden("signature-policy")
 }
 
 func commandStorage(cmd *cobra.Command) (buildah.StoreOptions, error) {

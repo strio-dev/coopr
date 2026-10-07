@@ -32,7 +32,7 @@ func TestPublishComponentServiceFromSourceAndConsume(t *testing.T) {
 		t.Fatal(err)
 	}
 	immutable, err := PublishComponent(context.Background(), PublishOptions{
-		File: component, Reference: ref, Platform: "linux/amd64", PlainHTTP: true,
+		File: component, Reference: ref, Platform: "linux/amd64", TLSVerify: new(false),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -52,7 +52,7 @@ func TestPublishComponentServiceFromSourceAndConsume(t *testing.T) {
 		t.Fatal(err)
 	}
 	archive := filepath.Join(consumer, "app.oci.tar")
-	if _, err := Run(context.Background(), Options{File: app, Tag: "oci-archive:" + archive, Platform: "linux/amd64", PlainHTTP: true}); err != nil {
+	if _, err := Run(context.Background(), Options{File: app, Tag: "oci-archive:" + archive, Platform: "linux/amd64", TLSVerify: new(false)}); err != nil {
 		t.Fatal(err)
 	}
 	if !containsName(archiveLayerNames(t, archive), "installed") {
@@ -108,7 +108,7 @@ func TestPublishComponentDoesNotRunInvocationSteps(t *testing.T) {
 		t.Fatal(err)
 	}
 	immutable, err := PublishComponent(context.Background(), PublishOptions{
-		File: component, Reference: ref, Platform: "linux/amd64", PlainHTTP: true,
+		File: component, Reference: ref, Platform: "linux/amd64", TLSVerify: new(false),
 	})
 	if err != nil {
 		t.Fatalf("publication executed invocation RUN: %v", err)
@@ -136,7 +136,7 @@ func TestPublishIndependentPackages(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	immutable, err := PublishComponent(context.Background(), PublishOptions{File: file, Reference: ref, Platform: "linux/amd64", PlainHTTP: true})
+	immutable, err := PublishComponent(context.Background(), PublishOptions{File: file, Reference: ref, Platform: "linux/amd64", TLSVerify: new(false)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestPublishIndependentPackages(t *testing.T) {
 		t.Fatal(err)
 	}
 	archive := filepath.Join(consumer, "app.oci.tar")
-	if _, err := Run(context.Background(), Options{File: app, Tag: "oci-archive:" + archive, Platform: "linux/amd64", PlainHTTP: true}); err != nil {
+	if _, err := Run(context.Background(), Options{File: app, Tag: "oci-archive:" + archive, Platform: "linux/amd64", TLSVerify: new(false)}); err != nil {
 		t.Fatal(err)
 	}
 	names := archiveLayerNames(t, archive)
@@ -177,10 +177,10 @@ func TestPublishCopyDotExcludesPackageStagingInsideContext(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "marker"), []byte("authored\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := PublishComponent(context.Background(), PublishOptions{File: component, Reference: ref, Platform: "linux/amd64", PlainHTTP: true}); err != nil {
+	if _, err := PublishComponent(context.Background(), PublishOptions{File: component, Reference: ref, Platform: "linux/amd64", TLSVerify: new(false)}); err != nil {
 		t.Fatal(err)
 	}
-	resolver, err := oci.NewResolver(oci.Options{PlainHTTP: true})
+	resolver, err := oci.NewResolver(oci.Options{TLSVerify: new(false)})
 	if err != nil {
 		t.Fatal(err)
 	}

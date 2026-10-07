@@ -2,14 +2,31 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 
 	"coopr/internal/oci"
+
 	"github.com/spf13/cobra"
 )
 
 var version = "dev"
+
+type commandExitError struct {
+	Code int
+	Err  error
+}
+
+func (err commandExitError) Error() string {
+	if err.Err == nil {
+		return ""
+	}
+	return err.Err.Error()
+}
+
+func (err commandExitError) Unwrap() error { return err.Err }
+func (err commandExitError) ExitCode() int { return err.Code }
 
 func newRootCommand() *cobra.Command {
 	return newRootCommandWithStorageNamespace(nil)
@@ -24,12 +41,15 @@ func newRootCommandWithStorageNamespace(prepareNamespace func() error) *cobra.Co
 		SilenceErrors: true,
 	}
 	root.AddCommand(newBuildCommandWithGlobals(false))
-	root.AddCommand(newCopyCommandWithGlobals(oci.Image, false))
+	root.AddCommand(newCopyCommand(oci.Image))
 	root.AddCommand(newImageCommand())
 	root.AddCommand(newImagesCommand())
 	root.AddCommand(newComponentCommandWithGlobals(false))
+	root.AddCommand(newComponentListCommand("components"))
 	root.AddCommand(newSystemCommand())
-	root.AddCommand(newCacheCommand())
+	root.AddCommand(newLoginCommand(), newLogoutCommand())
+	root.AddCommand(newManifestCommand(), newInfoCommand())
+	root.AddCommand(newImagePullCommand(), newImagePushCommand(), newImageTagCommand(), newImageSaveCommand(), newImageLoadCommand(), newImageExistsCommand(), newImageHistoryCommand())
 	addGlobalFlags(root, prepareNamespace)
 	return root
 }
@@ -47,8 +67,18 @@ func runContextWithStorageNamespace(ctx context.Context, args []string, stdout, 
 	root.SetArgs(args)
 	root.SetOut(stdout)
 	root.SetErr(stderr)
-	if err := root.ExecuteContext(ctx); err != nil {
-		_, _ = fmt.Fprintln(stderr, err)
+	command, err := root.ExecuteContextC(ctx)
+	if err != nil {
+		if err.Error() != "" {
+			_, _ = fmt.Fprintln(stderr, err)
+		}
+		var exit interface{ ExitCode() int }
+		if errors.As(err, &exit) {
+			return exit.ExitCode()
+		}
+		if command != nil && command.Name() == "exists" {
+			return 125
+		}
 		return 1
 	}
 	return 0

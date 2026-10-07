@@ -63,3 +63,28 @@ func TestSlirpNetworkConfigSelectsExplicitArbitrarilyNamedHelper(t *testing.T) {
 		t.Fatalf("selected network helper = %q -> %q, want %q", selected, target, helper)
 	}
 }
+
+func TestSlirpNetworkConfigUsesNativeHelperDirectories(t *testing.T) {
+	dir := t.TempDir()
+	helper := filepath.Join(dir, slirpNetworkName)
+	if err := os.WriteFile(helper, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configFile := filepath.Join(dir, "containers.conf")
+	if err := os.WriteFile(configFile, []byte("[engine]\nhelper_binaries_dir = [\""+dir+"\"]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CONTAINERS_CONF", configFile)
+	t.Setenv("CONTAINERS_CONF_OVERRIDE", "")
+	config, err := slirpNetworkConfig(RunControls{}, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected, err := config.FindHelperBinary(slirpNetworkName, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected != helper {
+		t.Fatalf("native helper = %q, want %q", selected, helper)
+	}
+}

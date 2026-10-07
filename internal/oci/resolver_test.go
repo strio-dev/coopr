@@ -18,11 +18,13 @@ import (
 
 	"coopr/internal/definition"
 	"coopr/internal/planner"
+
 	"github.com/google/go-containerregistry/pkg/registry"
 	digest "github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/storage"
+	"oras.land/oras-go/v2"
 	"oras.land/oras-go/v2/registry/remote"
 	"oras.land/oras-go/v2/registry/remote/auth"
 )
@@ -96,7 +98,7 @@ func testRepository(t *testing.T, handler http.Handler) (*httptest.Server, *remo
 		t.Fatal(err)
 	}
 	repo.PlainHTTP = true
-	resolver, err := NewResolver(Options{PlainHTTP: true})
+	resolver, err := NewResolver(Options{TLSVerify: boolOption(false)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +113,7 @@ func TestResolveRemoteImageFromRegistry(t *testing.T) {
 	if err := repo.Tag(ctx, root, "remote"); err != nil {
 		t.Fatal(err)
 	}
-	resolver, err := NewResolver(Options{PlainHTTP: true})
+	resolver, err := NewResolver(Options{TLSVerify: boolOption(false)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +135,7 @@ func TestResolveRegistryImageDoesNotCreateAbsentLocalStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	storeDir := filepath.Join(t.TempDir(), "missing", "images")
-	resolver, err := NewResolver(Options{PlainHTTP: true})
+	resolver, err := NewResolver(Options{TLSVerify: boolOption(false)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,93 +144,6 @@ func TestResolveRegistryImageDoesNotCreateAbsentLocalStore(t *testing.T) {
 	}
 	if _, err := os.Stat(storeDir); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("registry resolution created local store %q: %v", storeDir, err)
-	}
-}
-
-type transportFunc func(*http.Request) (*http.Response, error)
-
-func (fn transportFunc) RoundTrip(req *http.Request) (*http.Response, error) { return fn(req) }
-
-func TestPlainHTTPIsSelectedPerRegistryAndPreservesHTTPSAuth(t *testing.T) {
-	const secureHost = "secure-registry.example"
-	const insecureHost = "private-http.example:5000"
-	configDir := t.TempDir()
-	config := `{"auths":{"secure-registry.example":{"auth":"dGVzdGVyOnNlY3JldA=="}}}`
-	if err := os.WriteFile(filepath.Join(configDir, "config.json"), []byte(config), 0600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("DOCKER_CONFIG", configDir)
-	var challenged, authorized, usedHTTP bool
-	client := &http.Client{Transport: transportFunc(func(req *http.Request) (*http.Response, error) {
-		status := http.StatusNotFound
-		header := make(http.Header)
-		switch req.URL.Host {
-		case secureHost:
-			if req.URL.Scheme != "https" {
-				t.Errorf("secure registry used %s", req.URL.Scheme)
-			}
-			username, password, ok := req.BasicAuth()
-			if !ok {
-				challenged = true
-				status = http.StatusUnauthorized
-				header.Set("WWW-Authenticate", `Basic realm="registry"`)
-			} else if username == "tester" && password == "secret" {
-				authorized = true
-			} else {
-				t.Errorf("unexpected HTTPS registry credential")
-			}
-		case insecureHost:
-			if req.URL.Scheme != "http" {
-				t.Errorf("explicit HTTP registry used %s", req.URL.Scheme)
-			}
-			usedHTTP = true
-		default:
-			t.Errorf("unexpected registry %q", req.URL.Host)
-		}
-		return &http.Response{StatusCode: status, Header: header, Body: io.NopCloser(strings.NewReader("not found")), Request: req}, nil
-	})}
-	resolver, err := NewResolver(Options{PlainHTTP: true, PlainHTTPRegistries: []string{insecureHost}, Client: client})
-	if err != nil {
-		t.Fatal(err)
-	}
-	platform := v1.Platform{OS: "linux", Architecture: "amd64"}
-	for _, reference := range []string{secureHost + "/team/image:latest", insecureHost + "/team/image:latest"} {
-		if _, err := resolver.Resolve(context.Background(), reference, platform, Component); err == nil {
-			t.Fatalf("synthetic missing registry object %q unexpectedly resolved", reference)
-		}
-	}
-	if !challenged || !authorized || !usedHTTP {
-		t.Fatalf("mixed registry transport/auth incomplete: challenge=%v authorized=%v HTTP=%v", challenged, authorized, usedHTTP)
-	}
-}
-
-func TestPlainHTTPRegistryAuthorityValidation(t *testing.T) {
-	for _, invalid := range []string{"", "https://registry.example", "registry.example/team", "user@registry.example", "*.example", "registry.example:bad", "registry.example:0", "registry.example:65536", "::1", "::1:5000"} {
-		if _, err := NewResolver(Options{PlainHTTPRegistries: []string{invalid}}); err == nil {
-			t.Errorf("accepted invalid registry authority %q", invalid)
-		}
-	}
-	for _, valid := range []string{"registry.example", "registry.example:5000", "localhost:5000", "[::1]", "[::1]:5000"} {
-		if _, err := NewResolver(Options{PlainHTTPRegistries: []string{valid}}); err != nil {
-			t.Errorf("rejected valid registry authority %q: %v", valid, err)
-		}
-	}
-}
-
-func TestPlainHTTPLoopbackAuthorities(t *testing.T) {
-	r, err := NewResolver(Options{PlainHTTP: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, authority := range []string{"localhost", "localhost:5000", "registry.localhost:5000", "127.0.0.1:5000", "[::1]", "[::1]:5000"} {
-		if !r.usePlainHTTP(authority) {
-			t.Errorf("loopback registry %q did not use HTTP", authority)
-		}
-	}
-	for _, authority := range []string{"docker.io", "registry.example:5000", "10.0.0.5:5000"} {
-		if r.usePlainHTTP(authority) {
-			t.Errorf("nonloopback registry %q used HTTP", authority)
-		}
 	}
 }
 
@@ -257,7 +172,7 @@ func TestValidateComponentReferenceLocalSyntax(t *testing.T) {
 	}
 }
 
-func push(t *testing.T, repo *remote.Repository, mediaType string, value []byte) v1.Descriptor {
+func push(t *testing.T, repo oras.Target, mediaType string, value []byte) v1.Descriptor {
 	t.Helper()
 	desc := Descriptor(mediaType, value)
 	if err := repo.Push(context.Background(), desc, bytes.NewReader(value)); err != nil {
@@ -266,20 +181,20 @@ func push(t *testing.T, repo *remote.Repository, mediaType string, value []byte)
 	return desc
 }
 
-func pushManifest(t *testing.T, repo *remote.Repository, manifest v1.Manifest, tag string) v1.Descriptor {
+func pushManifest(t *testing.T, repo oras.Target, manifest v1.Manifest, tag string) v1.Descriptor {
 	t.Helper()
 	data, err := json.Marshal(manifest)
 	if err != nil {
 		t.Fatal(err)
 	}
 	desc := Descriptor(v1.MediaTypeImageManifest, data)
-	if err := repo.PushReference(context.Background(), desc, bytes.NewReader(data), tag); err != nil {
+	if err := pushAndTag(repo, desc, data, tag); err != nil {
 		t.Fatal(err)
 	}
 	return desc
 }
 
-func imageManifest(t *testing.T, repo *remote.Repository, platform v1.Platform, payload string) (v1.Descriptor, v1.Descriptor) {
+func imageManifest(t *testing.T, repo oras.Target, platform v1.Platform, payload string) (v1.Descriptor, v1.Descriptor) {
 	t.Helper()
 	layer := push(t, repo, v1.MediaTypeImageLayer, []byte(payload))
 	configBytes, err := json.Marshal(v1.Image{Platform: platform, RootFS: v1.RootFS{Type: "layers"}})
@@ -290,7 +205,7 @@ func imageManifest(t *testing.T, repo *remote.Repository, platform v1.Platform, 
 	return pushManifest(t, repo, VersionedManifest(config, []v1.Descriptor{layer}, ""), "by-digest"), layer
 }
 
-func pushIndex(t *testing.T, repo *remote.Repository, tag string, manifests ...v1.Descriptor) v1.Descriptor {
+func pushIndex(t *testing.T, repo oras.Target, tag string, manifests ...v1.Descriptor) v1.Descriptor {
 	t.Helper()
 	index := v1.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: v1.MediaTypeImageIndex, Manifests: manifests}
 	data, err := json.Marshal(index)
@@ -298,7 +213,7 @@ func pushIndex(t *testing.T, repo *remote.Repository, tag string, manifests ...v
 		t.Fatal(err)
 	}
 	desc := Descriptor(v1.MediaTypeImageIndex, data)
-	if err := repo.PushReference(context.Background(), desc, bytes.NewReader(data), tag); err != nil {
+	if err := pushAndTag(repo, desc, data, tag); err != nil {
 		t.Fatal(err)
 	}
 	return desc
@@ -507,10 +422,8 @@ func TestAuthUsesDockerCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("DOCKER_CONFIG", dir)
-	repo, _ := remote.NewRepository(host + "/coopr/auth")
-	repo.PlainHTTP = true
 	// Publishing uses the same Docker credential store as resolving.
-	store, err := NewResolver(Options{PlainHTTP: true})
+	store, err := NewResolver(Options{TLSVerify: boolOption(false)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -518,7 +431,7 @@ func TestAuthUsesDockerCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repo, err = store.repository(refForPublish)
+	repo, err := store.repository(refForPublish)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -530,7 +443,7 @@ func TestAuthUsesDockerCredentials(t *testing.T) {
 		t.Fatalf("Docker credential auth failed: %v", err)
 	}
 	t.Setenv("DOCKER_CONFIG", t.TempDir())
-	unauthorized, err := NewResolver(Options{PlainHTTP: true})
+	unauthorized, err := NewResolver(Options{TLSVerify: boolOption(false)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -563,7 +476,7 @@ func TestImageResolutionUsesExplicitCredentials(t *testing.T) {
 	if err := repo.Tag(context.Background(), manifest, "latest"); err != nil {
 		t.Fatal(err)
 	}
-	resolver, err := NewResolver(Options{PlainHTTPRegistries: []string{host}, Credentials: "tester:secret"})
+	resolver, err := NewResolver(Options{TLSVerify: boolOption(false), Credentials: "tester:secret"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -673,7 +586,7 @@ func TestNormalizePullPolicy(t *testing.T) {
 
 func TestRegistryOptionsReturnsIndependentWorkerCopy(t *testing.T) {
 	resolver, err := NewResolver(Options{
-		PlainHTTPRegistries: []string{"registry.example:5000"}, PullPolicy: "always",
+		TLSVerify: boolOption(false), PullPolicy: "always",
 		Credentials: "user:pass", Retry: 0, RetrySet: true, RetryDelay: 2 * time.Second,
 		DecryptionKeys: []string{"provider:key"}, SignaturePolicyPath: "/tmp/policy.json",
 		ComponentStoreDir: t.TempDir(),
@@ -686,11 +599,11 @@ func TestRegistryOptionsReturnsIndependentWorkerCopy(t *testing.T) {
 	if !options.RetrySet || options.Retry != 0 || options.PullPolicy != "always" || options.Credentials != "user:pass" || options.SignaturePolicyPath != "/tmp/policy.json" {
 		t.Fatalf("worker registry options = %+v", options)
 	}
-	options.PlainHTTPRegistries[0] = "changed.example"
+	*options.TLSVerify = true
 	options.DecryptionKeys[0] = "changed"
 	options.NativeStore.GraphDriverOptions[0] = "changed"
 	again := resolver.RegistryOptions()
-	if again.PlainHTTPRegistries[0] != "registry.example:5000" || again.DecryptionKeys[0] != "provider:key" || again.NativeStore.GraphDriverOptions[0] != "vfs.ignore_chown_errors=true" {
+	if *again.TLSVerify != false || again.DecryptionKeys[0] != "provider:key" || again.NativeStore.GraphDriverOptions[0] != "vfs.ignore_chown_errors=true" {
 		t.Fatalf("worker registry options alias resolver state: %+v", again)
 	}
 	if got := resolver.NativeStoreOptions(); got.GraphRoot != "/var/lib/coopr" || got.ImageStore != "/var/lib/coopr-images" || !got.TransientStore {
@@ -709,7 +622,7 @@ func TestMissingDockerCredentialHelperFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("DOCKER_CONFIG", dir)
-	resolver, err := NewResolver(Options{PlainHTTP: true})
+	resolver, err := NewResolver(Options{TLSVerify: boolOption(false)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -717,4 +630,11 @@ func TestMissingDockerCredentialHelperFailsClosed(t *testing.T) {
 	if _, err := resolver.Resolve(context.Background(), host+"/coopr/private:latest", v1.Platform{OS: "linux", Architecture: "amd64"}, Image); err == nil {
 		t.Fatal("missing credential helper unexpectedly authenticated")
 	}
+}
+
+func pushAndTag(repo oras.Target, desc v1.Descriptor, data []byte, tag string) error {
+	if err := repo.Push(context.Background(), desc, bytes.NewReader(data)); err != nil {
+		return err
+	}
+	return repo.Tag(context.Background(), desc, tag)
 }

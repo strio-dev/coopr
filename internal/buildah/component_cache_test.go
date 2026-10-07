@@ -345,7 +345,7 @@ func TestComponentCacheSeedFailureReachesBuildCaller(t *testing.T) {
 	}))
 	defer server.Close()
 	host := strings.TrimPrefix(server.URL, "http://")
-	resolver, err := oci.NewResolver(oci.Options{ComponentStoreDir: componentResolver.ComponentStoreDir(), PlainHTTPRegistries: []string{host}})
+	resolver, err := oci.NewResolver(oci.Options{ComponentStoreDir: componentResolver.ComponentStoreDir(), TLSVerify: new(false)})
 	if err != nil {
 		t.Fatal(err)
 	}

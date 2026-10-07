@@ -1,8 +1,15 @@
 # Reuse two components
 
-Apply shared settings, then a policy check, to the image from the [first tutorial](first-image.md). Each component captures its files during packaging; the consuming build needs only the component reference.
+Apply shared settings and a policy check to a Red Hat UBI9 image from Docker Hub. Each component captures its files during packaging; the consuming build needs only the component reference.
 
-Run from the same checkout with Coopr and Podman available. This tutorial relies on the locally named `coopr-demo:base` image.
+After [installing Coopr](../getting-started/index.md), clone the repository to get the examples:
+
+```sh
+git clone https://github.com/strio-dev/coopr.git
+cd coopr
+```
+
+Run the commands from the repository root with Podman available and access to Docker Hub.
 
 ## Package settings
 
@@ -33,7 +40,7 @@ package as="payload"
 copy "policy.txt" "/policy.txt"
 
 extend as="checked"
-run "test -f /etc/demo/settings.conf" network="none"
+run "test -f /etc/demo/settings.conf"
 copy "/policy.txt" "/etc/demo/policy.txt" from="payload"
 ```
 
@@ -48,7 +55,7 @@ The check executes when the component is invoked, against the caller's filesyste
 `examples/reusable-components/image.coopr` invokes the two local tags in order:
 
 ```kdl
-from "coopr-demo:base"
+from "docker.io/redhat/ubi9:latest"
 component "local:coopr-demo-settings" channel="preview"
 component "local:coopr-demo-policy"
 cmd {
@@ -59,10 +66,10 @@ cmd {
 ```sh
 coopr build examples/reusable-components/image.coopr --tag coopr-demo:configured
 coopr copy coopr-demo:configured podman:localhost/coopr-demo:configured
-podman run --rm --network=none localhost/coopr-demo:configured
+podman run --rm localhost/coopr-demo:configured
 podman inspect localhost/coopr-demo:configured --format '{{json .Config.Env}}'
 ```
 
-This example replaces the base image's default command with `cat` to inspect both packaged files. Its environment contains `demo_channel=preview`. Reversing the calls fails the policy check on a fresh build because settings do not exist yet.
+The container prints both packaged files, and its environment contains `demo_channel=preview`. Reversing the calls fails the policy check on a fresh build because settings do not exist yet.
 
 For registry reuse, copy each component to your registry and use that reference in the definition. Pin the component and its nested OCI inputs by digest when stable selection matters. See [packaging components](../guides/components.md).

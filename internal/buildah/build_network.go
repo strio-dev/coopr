@@ -161,6 +161,11 @@ func normalizePlanOptions(options PlanOptions) (PlanOptions, error) {
 	}
 	options.Network = network
 	options.AddHosts = addHosts
+	// Selecting host networking for the whole build explicitly grants its
+	// entitlement, including authored RUN requests and component operations.
+	if network == "host" && !slices.Contains(options.Allow, networkHostEntitlement) {
+		options.Allow = append(slices.Clone(options.Allow), networkHostEntitlement)
+	}
 	cacheArtifacts, err := cacheArtifactPaths(options)
 	if err != nil {
 		return PlanOptions{}, err

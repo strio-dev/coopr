@@ -86,11 +86,9 @@ type SupervisedPlanOptions struct {
 	Secrets             []string
 	SSH                 []string
 	ProxyArgs           map[string]string
-	PlainHTTP           bool
-	PlainHTTPRegistries []string
 	AuthFile            string
 	CertDir             string
-	SkipTLSVerify       bool
+	TLSVerify           *bool
 	Credentials         string
 	Retry               uint
 	RetrySet            bool
@@ -145,11 +143,9 @@ type planWorkerRequest struct {
 	Secrets             []string               `json:"secrets,omitempty"`
 	SSH                 []string               `json:"ssh,omitempty"`
 	ProxyArgs           map[string]string      `json:"proxy_args,omitempty"`
-	PlainHTTP           bool                   `json:"plain_http,omitempty"`
-	PlainHTTPRegistries []string               `json:"plain_http_registries,omitempty"`
 	AuthFile            string                 `json:"auth_file,omitempty"`
 	CertDir             string                 `json:"cert_dir,omitempty"`
-	SkipTLSVerify       bool                   `json:"skip_tls_verify,omitempty"`
+	TLSVerify           *bool                  `json:"tls_verify,omitempty"`
 	Credentials         string                 `json:"credentials,omitempty"`
 	Retry               uint                   `json:"retry,omitempty"`
 	RetrySet            bool                   `json:"retry_set,omitempty"`
@@ -424,8 +420,7 @@ func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition
 		ContextArtifacts: append(append([]string(nil), options.ContextArtifacts...), jobDir, options.Store.ImageStore, options.ComponentStoreDir, options.CacheLocalDir, workerTemp, options.AuthFile, options.CertDir, options.RusageLogFile),
 		Isolation:        options.Isolation, Runtime: options.Runtime,
 		Output:            workerOutput,
-		ComponentStoreDir: options.ComponentStoreDir, PlainHTTP: options.PlainHTTP,
-		CacheLocalDir:   options.CacheLocalDir,
+		ComponentStoreDir: options.ComponentStoreDir, CacheLocalDir: options.CacheLocalDir,
 		CacheRepository: options.CacheRepository,
 		CacheFrom:       slices.Clone(options.CacheFrom),
 		CacheTo:         slices.Clone(options.CacheTo),
@@ -433,22 +428,22 @@ func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition
 		Network:         options.Network,
 		AddHosts:        append([]string(nil), options.AddHosts...),
 		RunControls:     options.RunControls, Lifecycle: options.Lifecycle,
-		ImageControls:       options.ImageControls,
-		Timestamp:           options.Timestamp,
-		SourceDateEpoch:     options.SourceDateEpoch,
-		CacheTTL:            options.CacheTTL,
-		ProgressPrefix:      options.ProgressPrefix,
-		ProgressReference:   options.ProgressReference,
-		Jobs:                options.Jobs,
-		LogRusage:           options.LogRusage,
-		RusageLogFile:       options.RusageLogFile,
-		RewriteTimestamp:    options.RewriteTimestamp,
-		Allow:               append([]string(nil), options.Allow...),
-		BuildContexts:       append([]buildcontext.Spec(nil), options.BuildContexts...),
-		Secrets:             append([]string(nil), options.Secrets...),
-		SSH:                 append([]string(nil), options.SSH...),
-		ProxyArgs:           proxyArgs,
-		PlainHTTPRegistries: options.PlainHTTPRegistries, AuthFile: options.AuthFile, CertDir: options.CertDir, SkipTLSVerify: options.SkipTLSVerify, Pull: options.Pull, PullPolicy: options.PullPolicy,
+		ImageControls:     options.ImageControls,
+		Timestamp:         options.Timestamp,
+		SourceDateEpoch:   options.SourceDateEpoch,
+		CacheTTL:          options.CacheTTL,
+		ProgressPrefix:    options.ProgressPrefix,
+		ProgressReference: options.ProgressReference,
+		Jobs:              options.Jobs,
+		LogRusage:         options.LogRusage,
+		RusageLogFile:     options.RusageLogFile,
+		RewriteTimestamp:  options.RewriteTimestamp,
+		Allow:             append([]string(nil), options.Allow...),
+		BuildContexts:     append([]buildcontext.Spec(nil), options.BuildContexts...),
+		Secrets:           append([]string(nil), options.Secrets...),
+		SSH:               append([]string(nil), options.SSH...),
+		ProxyArgs:         proxyArgs,
+		AuthFile:          options.AuthFile, CertDir: options.CertDir, TLSVerify: options.TLSVerify, Pull: options.Pull, PullPolicy: options.PullPolicy,
 		Credentials: options.Credentials, Retry: options.Retry, RetrySet: options.RetrySet, RetryDelay: options.RetryDelay, DecryptionKeys: options.DecryptionKeys,
 		SignaturePolicyPath: options.SignaturePolicyPath,
 		ResultPath:          filepath.Join(jobDir, "result.json"),
@@ -675,8 +670,7 @@ func executePlanWorker(requestPath string) error {
 		if input.Kind == "image" || input.Kind == "component" {
 			var err error
 			resolver, err = oci.NewResolver(oci.Options{
-				PlainHTTP: request.PlainHTTP, PlainHTTPRegistries: request.PlainHTTPRegistries,
-				AuthFile: request.AuthFile, CertDir: request.CertDir, SkipTLSVerify: request.SkipTLSVerify,
+				AuthFile: request.AuthFile, CertDir: request.CertDir, TLSVerify: request.TLSVerify,
 				Credentials: request.Credentials, Retry: request.Retry, RetrySet: request.RetrySet, RetryDelay: request.RetryDelay, DecryptionKeys: request.DecryptionKeys, SignaturePolicyPath: request.SignaturePolicyPath,
 				Pull: request.Pull, PullPolicy: request.PullPolicy, ComponentStoreDir: request.ComponentStoreDir, NativeStore: NativeStoreOptions(request.Store),
 			})
@@ -689,8 +683,7 @@ func executePlanWorker(requestPath string) error {
 	if resolver == nil && len(request.Output.SBOM) > 0 {
 		var err error
 		resolver, err = oci.NewResolver(oci.Options{
-			PlainHTTP: request.PlainHTTP, PlainHTTPRegistries: request.PlainHTTPRegistries,
-			AuthFile: request.AuthFile, CertDir: request.CertDir, SkipTLSVerify: request.SkipTLSVerify,
+			AuthFile: request.AuthFile, CertDir: request.CertDir, TLSVerify: request.TLSVerify,
 			Credentials: request.Credentials, Retry: request.Retry, RetrySet: request.RetrySet, RetryDelay: request.RetryDelay, DecryptionKeys: request.DecryptionKeys, SignaturePolicyPath: request.SignaturePolicyPath,
 			Pull: request.Pull, PullPolicy: request.PullPolicy, ComponentStoreDir: request.ComponentStoreDir, NativeStore: NativeStoreOptions(request.Store),
 		})
@@ -705,8 +698,7 @@ func executePlanWorker(requestPath string) error {
 			}
 			var err error
 			resolver, err = oci.NewResolver(oci.Options{
-				PlainHTTP: request.PlainHTTP, PlainHTTPRegistries: request.PlainHTTPRegistries,
-				AuthFile: request.AuthFile, CertDir: request.CertDir, SkipTLSVerify: request.SkipTLSVerify,
+				AuthFile: request.AuthFile, CertDir: request.CertDir, TLSVerify: request.TLSVerify,
 				Credentials: request.Credentials, Retry: request.Retry, RetrySet: request.RetrySet, RetryDelay: request.RetryDelay, DecryptionKeys: request.DecryptionKeys, SignaturePolicyPath: request.SignaturePolicyPath,
 				Pull: request.Pull, PullPolicy: request.PullPolicy, ComponentStoreDir: request.ComponentStoreDir, NativeStore: NativeStoreOptions(request.Store),
 			})
@@ -758,14 +750,14 @@ func executePlanWorker(requestPath string) error {
 		SSH:                     request.SSH,
 		ProxyArgs:               request.ProxyArgs,
 		SystemContext: &types.SystemContext{
-			SignaturePolicyPath:         request.SignaturePolicyPath,
-			BigFilesTemporaryDir:        filepath.Dir(request.ResultPath),
-			AuthFilePath:                request.AuthFile,
-			DockerCertPath:              request.CertDir,
-			DockerInsecureSkipTLSVerify: optionalBool(request.SkipTLSVerify),
+			SignaturePolicyPath:  request.SignaturePolicyPath,
+			BigFilesTemporaryDir: filepath.Dir(request.ResultPath),
+			AuthFilePath:         request.AuthFile,
+			DockerCertPath:       request.CertDir,
 		},
 		JobID: request.JobID,
 	}
+	oci.ApplyTLSVerify(planOptions.SystemContext, request.TLSVerify)
 	var buildErr error
 	if request.Mode == "build" {
 		response.Result, buildErr = BuildPlan(workerCtx, request.Plan, planOptions)
