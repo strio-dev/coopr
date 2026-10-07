@@ -795,7 +795,7 @@ func (executor *graphExecutor) executeGraphStage(ctx context.Context, plan *plan
 	builderOptions.Container = executor.builderContainerName(stage.ID)
 	builderBase := prepared.base
 	if prepared.baseManifest != "" {
-		builderBase, err = selectedBuilderBase(ctx, executor.store, prepared.base, prepared.baseManifest)
+		builderBase, err = oci.SelectedStoredImage(ctx, executor.store, prepared.base, prepared.baseManifest)
 		if err != nil {
 			return executedGraphStage{}, fmt.Errorf("stage %s select base manifest %s: %w", stage.ID, prepared.baseManifest, err)
 		}
@@ -1545,7 +1545,7 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 				if err := current.Delete(); err != nil {
 					return "", Result{}, nil, fmt.Errorf("operation %d delete cache-replaced builder: %w", index+1, err)
 				}
-				selectedCacheBase, selectErr := selectedBuilderBase(ctx, store, cachedImageID, cacheEntry.ManifestDigest)
+				selectedCacheBase, selectErr := oci.SelectedStoredImage(ctx, store, cachedImageID, cacheEntry.ManifestDigest)
 				if selectErr != nil {
 					return "", Result{}, nil, fmt.Errorf("operation %d select instruction cache manifest %s: %w", index+1, cacheEntry.ManifestDigest, selectErr)
 				}

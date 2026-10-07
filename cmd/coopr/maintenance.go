@@ -245,7 +245,7 @@ func newComponentInspectCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			descriptor, found, err := localstore.Inspect(cmd.Context(), dir, args[0])
+			descriptor, found, err := localstore.Inspect(cmd.Context(), dir, strings.TrimPrefix(args[0], "local:"))
 			if err != nil {
 				return err
 			}

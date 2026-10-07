@@ -29,7 +29,7 @@ func ResolveStoredImage(ctx context.Context, backend storage.Store, name string,
 	if backend == nil {
 		return nil, errors.New("nil containers/storage store")
 	}
-	image, err := findStoredImage(backend, name)
+	image, matched, err := findStoredImageAndName(backend, name)
 	if err != nil {
 		return nil, err
 	}
@@ -43,7 +43,7 @@ func ResolveStoredImage(ctx context.Context, backend storage.Store, name string,
 		return nil, fmt.Errorf("open stored image %q: %w", name, err)
 	}
 	defer func() { _ = source.Close() }()
-	rootData, rootType, err := storedRootManifest(ctx, backend, image.ID, name, source)
+	rootData, rootType, err := storedRootManifest(ctx, backend, image.ID, matched, source)
 	if err != nil {
 		return nil, fmt.Errorf("read stored image %q manifest: %w", name, err)
 	}
@@ -51,6 +51,7 @@ func ResolveStoredImage(ctx context.Context, backend storage.Store, name string,
 	selected := root
 	manifestData := rootData
 	manifestSource := source
+	storageImageID := image.ID
 	if rootType == v1.MediaTypeImageIndex || rootType == dockerIndexType {
 		var index v1.Index
 		if err := json.Unmarshal(rootData, &index); err != nil {
@@ -83,6 +84,7 @@ func ResolveStoredImage(ctx context.Context, backend storage.Store, name string,
 		}
 		defer func() { _ = selectedSource.Close() }()
 		manifestSource = selectedSource
+		storageImageID = selectedImages[0].ID
 		manifestData, rootType, err = selectedSource.GetManifest(ctx, &selected.Digest)
 		if err != nil {
 			return nil, err
@@ -147,12 +149,6 @@ func ResolveStoredImage(ctx context.Context, backend storage.Store, name string,
 	if !storedPlatformMatches(actualPlatform, platform) {
 		return nil, fmt.Errorf("%w: image %q has platform %s/%s/%s, want %s/%s/%s", ErrStoredPlatformUnavailable, name, actualPlatform.OS, actualPlatform.Architecture, actualPlatform.Variant, platform.OS, platform.Architecture, platform.Variant)
 	}
-	storageImageID := manifest.Config.Digest.Encoded()
-	if selectedImage, err := backend.Image(storageImageID); err != nil {
-		return nil, fmt.Errorf("resolve stored image %q selected storage record %s: %w", name, storageImageID, err)
-	} else if selectedImage.ID != storageImageID {
-		return nil, fmt.Errorf("stored image %q selected storage record changed from %s to %s", name, storageImageID, selectedImage.ID)
-	}
 	return &Resolved{
 		Reference: name, Repository: "containers-storage", Kind: Image, Platform: actualPlatform,
 		Root: root, Selected: selected, SourceManifest: sourceManifest, Manifest: manifest, Config: manifest.Config,
@@ -163,7 +159,7 @@ func ResolveStoredImage(ctx context.Context, backend storage.Store, name string,
 // StoredImagePlatforms returns the runnable platforms exposed by a native
 // image name, including every manifest-list instance.
 func StoredImagePlatforms(ctx context.Context, backend storage.Store, name string) ([]v1.Platform, error) {
-	image, err := findStoredImage(backend, name)
+	image, matched, err := findStoredImageAndName(backend, name)
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +172,7 @@ func StoredImagePlatforms(ctx context.Context, backend storage.Store, name strin
 		return nil, err
 	}
 	defer func() { _ = source.Close() }()
-	data, mediaType, err := storedRootManifest(ctx, backend, image.ID, name, source)
+	data, mediaType, err := storedRootManifest(ctx, backend, image.ID, matched, source)
 	if err != nil {
 		return nil, err
 	}
@@ -215,7 +211,7 @@ func StoredImagePlatforms(ctx context.Context, backend storage.Store, name strin
 // StoredImageIndex returns the exact manifest-list descriptor and bytes for a
 // native image name. The boolean is false for a single-platform image.
 func StoredImageIndex(ctx context.Context, backend storage.Store, name string) (v1.Descriptor, []byte, bool, error) {
-	image, err := findStoredImage(backend, name)
+	image, matched, err := findStoredImageAndName(backend, name)
 	if err != nil {
 		return v1.Descriptor{}, nil, false, err
 	}
@@ -228,7 +224,7 @@ func StoredImageIndex(ctx context.Context, backend storage.Store, name string) (
 		return v1.Descriptor{}, nil, false, err
 	}
 	defer func() { _ = source.Close() }()
-	data, mediaType, err := storedRootManifest(ctx, backend, image.ID, name, source)
+	data, mediaType, err := storedRootManifest(ctx, backend, image.ID, matched, source)
 	if err != nil {
 		return v1.Descriptor{}, nil, false, err
 	}
@@ -241,11 +237,6 @@ func StoredImageIndex(ctx context.Context, backend storage.Store, name string) (
 
 func storedPlatformMatches(actual, requested v1.Platform) bool {
 	return actual.OS == requested.OS && actual.Architecture == requested.Architecture && normalizeVariant(actual) == normalizeVariant(requested)
-}
-
-func findStoredImage(backend storage.Store, name string) (*storage.Image, error) {
-	image, _, err := findStoredImageAndName(backend, name)
-	return image, err
 }
 
 // StoredImageName returns the concrete native name selected by the same lookup
@@ -262,6 +253,11 @@ func findStoredImageAndName(backend storage.Store, name string) (*storage.Image,
 			return nil, "", err
 		}
 		if len(images) == 0 {
+			if image, err := backend.Image(d.Encoded()); err == nil && image.ID == d.Encoded() {
+				return image, image.ID, nil
+			} else if err != nil && !errors.Is(err, storage.ErrImageUnknown) {
+				return nil, "", err
+			}
 			return nil, "", fmt.Errorf("stored manifest %s: %w", d, storage.ErrImageUnknown)
 		}
 		return images[0], name, nil

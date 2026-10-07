@@ -231,51 +231,75 @@ func TestArchiveBoundaryHandlesMissingNativeRoots(t *testing.T) {
 }
 
 func TestSinglePlatformRetagClearsOnlyDestinationOrigin(t *testing.T) {
-	ctx := context.Background()
-	options := nativeTestStore(t.TempDir())
-	platform := v1.Platform{OS: "linux", Architecture: runtime.GOARCH}
-	selected := nativeEmptyImageFixture(t, options, platform, "origin-retag")
-	child := selected.Manifest
-	child.Platform = &platform
-	missing := oci.Descriptor(v1.MediaTypeImageManifest, []byte("missing foreign child"))
-	missing.Platform = &v1.Platform{OS: "linux", Architecture: "ppc64le"}
-	data, err := json.Marshal(v1.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: v1.MediaTypeImageIndex, Manifests: []v1.Descriptor{child, missing}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	root := oci.Descriptor(v1.MediaTypeImageIndex, data)
-	selected.Root = root
-	for _, name := range []string{"source:latest", "destination:latest"} {
-		if err := nameNativeTestImage(ctx, options, name, selected); err != nil {
-			t.Fatal(err)
-		}
-		if err := buildah.WithStore(options, func(store storage.Store) error {
-			if err := store.SetImageBigData(selected.ImageID, storage.ImageDigestManifestBigDataNamePrefix+"-"+root.Digest.String(), data, func([]byte) (digest.Digest, error) { return root.Digest, nil }); err != nil {
-				return err
-			}
-			return oci.RecordStoredOrigin(ctx, store, name, selected)
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := buildah.WithStore(options, func(store storage.Store) error {
-		_, err := imagestore.FromStore(store).TagSelected(ctx, selected.ImageID, selected.Manifest, "destination:latest")
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := buildah.WithStore(options, func(store storage.Store) error {
-		for name, want := range map[string]digest.Digest{"source:latest": root.Digest, "destination:latest": selected.Manifest.Digest} {
-			actual, _, _, err := oci.StoredImageSelections(ctx, store, name)
+	for _, variant := range []string{"same", "alternate"} {
+		t.Run(variant, func(t *testing.T) {
+			ctx := context.Background()
+			options := nativeTestStore(t.TempDir())
+			platform := v1.Platform{OS: "linux", Architecture: runtime.GOARCH}
+			selected := nativeEmptyImageFixture(t, options, platform, "origin-retag")
+			child := selected.Manifest
+			child.Platform = &platform
+			missing := oci.Descriptor(v1.MediaTypeImageManifest, []byte("missing foreign child"))
+			missing.Platform = &v1.Platform{OS: "linux", Architecture: "ppc64le"}
+			data, err := json.Marshal(v1.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: v1.MediaTypeImageIndex, Manifests: []v1.Descriptor{child, missing}})
 			if err != nil {
+				t.Fatal(err)
+			}
+			root := oci.Descriptor(v1.MediaTypeImageIndex, data)
+			selected.Root = root
+			for _, name := range []string{"source:latest", "destination:latest"} {
+				if err := nameNativeTestImage(ctx, options, name, selected); err != nil {
+					t.Fatal(err)
+				}
+				if err := buildah.WithStore(options, func(store storage.Store) error {
+					if err := store.SetImageBigData(selected.ImageID, storage.ImageDigestManifestBigDataNamePrefix+"-"+root.Digest.String(), data, func([]byte) (digest.Digest, error) { return root.Digest, nil }); err != nil {
+						return err
+					}
+					return oci.RecordStoredOrigin(ctx, store, name, selected)
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			target := selected.Manifest
+			if err := buildah.WithStore(options, func(store storage.Store) error {
+				if variant == "alternate" {
+					data, err := store.ImageBigData(selected.ImageID, storage.ImageDigestBigDataKey)
+					if err != nil {
+						return err
+					}
+					var manifest v1.Manifest
+					if err := json.Unmarshal(data, &manifest); err != nil {
+						return err
+					}
+					manifest.Annotations = map[string]string{"variant": variant}
+					data, err = json.Marshal(manifest)
+					if err != nil {
+						return err
+					}
+					target = oci.Descriptor(v1.MediaTypeImageManifest, data)
+					if err := store.SetImageBigData(selected.ImageID, storage.ImageDigestManifestBigDataNamePrefix+"-"+target.Digest.String(), data, func([]byte) (digest.Digest, error) { return target.Digest, nil }); err != nil {
+						return err
+					}
+				}
+				_, err := imagestore.FromStore(store).TagSelected(ctx, selected.ImageID, target, "destination:latest")
 				return err
+			}); err != nil {
+				t.Fatal(err)
 			}
-			if actual.Digest != want {
-				t.Fatalf("%s resolves to %s, want %s", name, actual.Digest, want)
+			if err := buildah.WithStore(options, func(store storage.Store) error {
+				for name, want := range map[string]digest.Digest{"source:latest": root.Digest, "destination:latest": target.Digest} {
+					actual, _, _, err := oci.StoredImageSelections(ctx, store, name)
+					if err != nil {
+						return err
+					}
+					if actual.Digest != want {
+						t.Fatalf("%s resolves to %s, want %s", name, actual.Digest, want)
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
 			}
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
+		})
 	}
 }

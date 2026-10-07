@@ -444,7 +444,7 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 	}
 
 	compactOptions := *builderOptions
-	compactBase, err := selectedBuilderBase(ctx, executor.store, callerImageID, callerManifest)
+	compactBase, err := oci.SelectedStoredImage(ctx, executor.store, callerImageID, callerManifest)
 	if err != nil {
 		return nil, fmt.Errorf("select component caller manifest %s: %w", callerManifest, err)
 	}

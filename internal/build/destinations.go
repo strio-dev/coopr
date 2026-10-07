@@ -12,6 +12,7 @@ import (
 	"coopr/internal/oci"
 	"coopr/internal/transfer"
 	"github.com/containerd/platforms"
+	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
@@ -197,16 +198,20 @@ func writeOutputMetadata(path, iidPath string, root v1.Descriptor, variants []oc
 	for _, variant := range variants {
 		key := platforms.Format(platforms.Normalize(variant.Platform))
 		entry := platformResult{Platform: key, Digest: variant.Manifest.Digest.String()}
-		if selection, ok := selections[key]; ok {
-			entry.ConfigDigest = "sha256:" + selection.ImageID
+		if selection, ok := selections[key]; ok && len(selection.ConfigData) != 0 {
+			entry.ConfigDigest = digest.FromBytes(selection.ConfigData).String()
 		}
 		entries = append(entries, entry)
 	}
 	metadata := map[string]any{"containerimage.digest": root.Digest.String(), "containerimage.descriptor": root, "coopr.platforms": entries, "coopr.references": report.References, "coopr.outputs": report.Destinations}
 	imageID := root.Digest.String()
-	if len(entries) == 1 && entries[0].ConfigDigest != "" {
-		imageID = entries[0].ConfigDigest
-		metadata["containerimage.config.digest"] = imageID
+	if len(entries) == 1 {
+		if selection, ok := selections[entries[0].Platform]; ok && selection.ImageID != "" {
+			imageID = "sha256:" + selection.ImageID
+		}
+		if entries[0].ConfigDigest != "" {
+			metadata["containerimage.config.digest"] = entries[0].ConfigDigest
+		}
 	}
 	var resultErr error
 	if iidPath != "" {

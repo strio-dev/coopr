@@ -84,8 +84,7 @@ func (s *Store) Tag(imageID, tag string) (string, error) {
 }
 
 // TagSelected names a verified manifest already present on a native image.
-// Like a native image copy, it makes that manifest the record's default; exact
-// digest references to its other stored manifests remain available.
+// It preserves existing native aliases when selecting a different manifest.
 func (s *Store) TagSelected(ctx context.Context, imageID string, selected v1.Descriptor, tag string) (string, error) {
 	name, err := NormalizeTag(tag)
 	if err != nil || name == "" {
@@ -131,6 +130,58 @@ func (s *Store) TagSelected(ctx context.Context, imageID string, selected v1.Des
 	selectedSignatures, err := oci.StoredSignatureBlobs(previous, selected.Digest, previousDigest == selected.Digest)
 	if err != nil {
 		return "", err
+	}
+	if previousDigest != selected.Digest {
+		image, err := s.backend.Image(imageID)
+		if err != nil {
+			return "", err
+		}
+		for _, existing := range image.Names {
+			if parsed, err := reference.ParseNormalizedNamed(existing); err == nil {
+				if _, immutable := parsed.(reference.Canonical); immutable {
+					continue
+				}
+			}
+			if existing == name {
+				continue
+			}
+			// Native names bind the entire record, not one stored manifest.
+			// Select the exact variant in its own record; native storage shares
+			// the existing layers and leaves other aliases and origins intact.
+			aliasID, err := oci.SelectedStoredImage(ctx, s.backend, imageID, selected.Digest)
+			if err != nil {
+				return "", err
+			}
+			aliasLock, err := manifests.LockerForImage(s.backend, aliasID)
+			if err != nil {
+				return "", err
+			}
+			aliasLock.Lock()
+			defer aliasLock.Unlock()
+			aliasSignatures, err := oci.CaptureStoredSignatures(s.backend, aliasID)
+			if err != nil {
+				return "", err
+			}
+			retainedSignatures, err := oci.StoredSignatureBlobs(aliasSignatures, selected.Digest, true)
+			if err != nil {
+				return "", err
+			}
+			for _, value := range selectedSignatures {
+				if !slices.ContainsFunc(retainedSignatures, func(existing []byte) bool { return bytes.Equal(existing, value) }) {
+					retainedSignatures = append(retainedSignatures, value)
+				}
+			}
+			if err := oci.WriteStoredManifestSignatures(s.backend, aliasID, selected.Digest, true, retainedSignatures, aliasSignatures); err != nil {
+				return "", errors.Join(err, oci.RestoreStoredSignatures(s.backend, aliasID, aliasSignatures))
+			}
+			if _, err := s.Tag(aliasID, name); err != nil {
+				return "", errors.Join(err, oci.RestoreStoredSignatures(s.backend, aliasID, aliasSignatures))
+			}
+			if err := oci.RecordStoredOrigin(ctx, s.backend, name, oci.StoredSelection{Root: selected, Manifest: selected, ImageID: aliasID}); err != nil {
+				return "", err
+			}
+			return name, nil
+		}
 	}
 	if previousDigest != selected.Digest {
 		previousSignatures, err := oci.StoredSignatureBlobs(previous, previousDigest, true)

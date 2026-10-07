@@ -144,6 +144,37 @@ func TestComponentListingAlignsNamesAndDigests(t *testing.T) {
 	}
 }
 
+func TestComponentInspectAcceptsLocalReferences(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	directory, err := componentstore.DefaultDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	layout, descriptor, _ := maintenanceImageLayout(t, v1.Platform{OS: "linux", Architecture: "amd64"}, "component-inspect")
+	source, err := orasoci.New(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := localstore.Put(context.Background(), directory, source, descriptor, "inspect"); err != nil {
+		t.Fatal(err)
+	}
+	for _, reference := range []string{"inspect", "local:inspect", descriptor.Digest.String(), "local:" + descriptor.Digest.String()} {
+		t.Run(reference, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if status := run([]string{"component", "inspect", reference}, &stdout, &stderr); status != 0 {
+				t.Fatalf("inspect status=%d stderr=%s", status, &stderr)
+			}
+			var actual v1.Descriptor
+			if err := json.Unmarshal(stdout.Bytes(), &actual); err != nil {
+				t.Fatal(err)
+			}
+			if actual.Digest != descriptor.Digest || actual.MediaType != descriptor.MediaType || actual.Size != descriptor.Size {
+				t.Fatalf("inspect changed descriptor: %+v", actual)
+			}
+		})
+	}
+}
+
 func TestImageInspectPreservesSelectedManifestFormat(t *testing.T) {
 	ctx := context.Background()
 	options := maintenanceStoreOptions(t.TempDir())

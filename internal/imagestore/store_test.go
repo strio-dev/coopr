@@ -20,6 +20,7 @@ import (
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/common/libimage/manifests"
 	imagecopy "go.podman.io/image/v5/copy"
+	imagestorage "go.podman.io/image/v5/storage"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/storage"
 	orasoci "oras.land/oras-go/v2/content/oci"
@@ -408,6 +409,128 @@ func TestWriteRejectsInvalidArchiveBeforeStorage(t *testing.T) {
 	}
 	if _, err := store.Write(context.Background(), path, "app:dev"); err == nil || !strings.Contains(err.Error(), "identify OCI image") {
 		t.Fatalf("invalid archive: %v", err)
+	}
+}
+
+func TestTagSelectedPreservesExistingNativeAliases(t *testing.T) {
+	ctx := context.Background()
+	store := testVFSStore(t)
+	layout, original, imageID := testLayoutPlatform(t, "alias-preservation", v1.Platform{OS: "linux", Architecture: "amd64"})
+	if _, err := store.WriteLayout(ctx, layout, original, ""); err != nil {
+		t.Fatal(err)
+	}
+	// These names are native Podman-style aliases without Coopr origin metadata.
+	if err := store.backend.AddNames(imageID.Encoded(), []string{"localhost/podman-created:latest", "localhost/another:latest", "localhost/destination:latest"}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := store.backend.ImageBigData(imageID.Encoded(), storage.ImageDigestBigDataKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest v1.Manifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	manifest.Annotations = map[string]string{"variant": "alternate"}
+	alternateData, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alternate := oci.Descriptor(v1.MediaTypeImageManifest, alternateData)
+	if err := store.backend.SetImageBigData(imageID.Encoded(), storage.ImageDigestManifestBigDataNamePrefix+"-"+alternate.Digest.String(), alternateData, func([]byte) (digest.Digest, error) { return alternate.Digest, nil }); err != nil {
+		t.Fatal(err)
+	}
+	originalSignature := []byte("\x00sigstore-json\n" + `{"mimeType":"application/vnd.dev.cosign.simplesigning.v1+json","payload":"b3JpZ2luYWw=","annotations":{"variant":"original"}}`)
+	alternateSignature := []byte("\x00sigstore-json\n" + `{"mimeType":"application/vnd.dev.cosign.simplesigning.v1+json","payload":"YWx0ZXJuYXRl","annotations":{"variant":"alternate"}}`)
+	metadata, err := json.Marshal(map[string]any{"signature-sizes": []int{len(originalSignature)}, "signatures-sizes": map[digest.Digest][]int{alternate.Digest: {len(alternateSignature)}}, "custom": "preserve"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.backend.SetMetadata(imageID.Encoded(), string(metadata)); err != nil {
+		t.Fatal(err)
+	}
+	for key, blob := range map[string][]byte{"signatures": originalSignature, "signature-" + alternate.Digest.Encoded(): alternateSignature} {
+		if err := store.backend.SetImageBigData(imageID.Encoded(), key, blob, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 2 {
+		if _, err := store.TagSelected(ctx, imageID.Encoded(), alternate, "destination:latest"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	destination, err := store.backend.Image("localhost/destination:latest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	additionalSignature := []byte("\x00sigstore-json\n" + `{"mimeType":"application/vnd.dev.cosign.simplesigning.v1+json","payload":"ZXh0cmE=","annotations":{"variant":"additional"}}`)
+	state, err := oci.CaptureStoredSignatures(store.backend, destination.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := oci.WriteStoredManifestSignatures(store.backend, destination.ID, alternate.Digest, true, [][]byte{alternateSignature, additionalSignature}, state); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if _, err := store.TagSelected(ctx, imageID.Encoded(), alternate, "second-destination:latest"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, want := range map[string]v1.Descriptor{
+		"podman-created:latest":     original,
+		"another:latest":            original,
+		"destination:latest":        alternate,
+		"second-destination:latest": alternate,
+	} {
+		resolved, err := store.Resolve(ctx, name, v1.Platform{OS: "linux", Architecture: "amd64"})
+		if err != nil || resolved.Selected.Digest != want.Digest {
+			t.Fatalf("Coopr alias %s = %+v, %v; want %s", name, resolved, err, want.Digest)
+		}
+		image, err := store.backend.Image("localhost/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resolved.StorageImageID != image.ID {
+			t.Fatalf("resolved storage record = %s, want %s", resolved.StorageImageID, image.ID)
+		}
+		state, err := oci.CaptureStoredSignatures(store.backend, image.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		signatures, err := oci.StoredSignatureBlobs(state, want.Digest, true)
+		wantSignature := originalSignature
+		wantCount := 1
+		if want.Digest == alternate.Digest {
+			wantSignature = alternateSignature
+			wantCount = 2
+		}
+		if err != nil || len(signatures) != wantCount || !bytes.Equal(signatures[0], wantSignature) {
+			t.Fatalf("alias %s signature = %q, %v; want %q", name, signatures, err, wantSignature)
+		}
+		if wantCount == 2 && !bytes.Equal(signatures[1], additionalSignature) {
+			t.Fatalf("retag removed additional signature from %s", name)
+		}
+		ref, err := imagestorage.Transport.NewStoreReference(store.backend, nil, image.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		source, err := ref.NewImageSource(ctx, store.system)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, _, err := source.GetManifest(ctx, nil)
+		closeErr := source.Close()
+		if err != nil || closeErr != nil || digest.FromBytes(data) != want.Digest {
+			t.Fatalf("native alias %s = %s, %v/%v; want %s", name, digest.FromBytes(data), err, closeErr, want.Digest)
+		}
+	}
+	if _, err := store.backend.DeleteImage(imageID.Encoded(), true); err != nil {
+		t.Fatal(err)
+	}
+	for _, selector := range []string{"destination:latest", destination.ID, "sha256:" + destination.ID} {
+		if resolved, err := store.Resolve(ctx, selector, v1.Platform{OS: "linux", Architecture: "amd64"}); err != nil || resolved.Selected.Digest != alternate.Digest {
+			t.Fatalf("surviving alias %s after original removal = %+v, %v", selector, resolved, err)
+		}
 	}
 }
 
