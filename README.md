@@ -25,13 +25,14 @@ cmd {
 }
 ```
 
-Build and tag it locally:
+Build and run it with Podman:
 
 ```sh
 coopr build image.coopr --tag hello:latest
+podman run --rm -p 127.0.0.1:8080:80 localhost/hello:latest
 ```
 
-Follow the [first-image tutorial](docs/tutorials/first-image.md) to run it with Podman.
+Coopr and Podman share native image storage when run as the same user with the same storage settings. Follow the [first-image tutorial](docs/tutorials/first-image.md) for the complete example.
 
 ## Reuse build steps
 

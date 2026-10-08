@@ -1,0 +1,9 @@
+This iana-etc data snapshot derives from the IANA Protocol Numbers and
+Service Name and Transport Protocol Port Number registries. IANA and IETF's
+joint statement of 10 November 2021 applies CC0 1.0 to their applicable
+rights in protocol registry data. Linked documents and third-party rights
+are outside that dedication. The CC0 text accompanies this notice.
+
+https://www.iana.org/assignments/protocol-numbers
+https://www.iana.org/assignments/service-names-port-numbers
+https://www.iana.org/help/licensing-terms

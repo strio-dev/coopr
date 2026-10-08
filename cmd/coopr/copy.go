@@ -16,7 +16,7 @@ func newCopyCommand(kind oci.Kind) *cobra.Command {
 	var signing signingFlags
 	platformValue := "linux/" + runtime.GOARCH
 	name := "image"
-	long := "Copy a stored image by local tag or bare sha256 digest to a new local tag, OCI archive, registry, or image engine. Complete multi-platform images built by Coopr copy as a whole by default; partial imported indexes select the native Linux platform, and single-platform tags select their sole platform. Use --platform OS/ARCH to copy one stored platform. Exact image-manifest digests retain their stored platform when --platform is omitted. Destinations use local:, oci-archive:, registry:, podman:, or docker: prefixes."
+	long := "Copy a stored image by local tag or bare sha256 digest to a new local tag, OCI archive, registry, or Docker Engine. Complete multi-platform images built by Coopr copy as a whole by default; partial imported indexes select the native Linux platform, and single-platform tags select their sole platform. Use --platform OS/ARCH to copy one stored platform. Exact image-manifest digests retain their stored platform when --platform is omitted. Destinations use local:, oci-archive:, registry:, or docker: prefixes."
 	if kind == oci.Component {
 		name = "component"
 		long = "Copy a stored component by local tag or bare sha256 digest to a new local tag, OCI archive, or registry. Destinations use local:, oci-archive:, or registry: prefixes."

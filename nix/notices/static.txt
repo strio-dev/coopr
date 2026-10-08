@@ -1,0 +1,11 @@
+Coopr statically links GPGME, libassuan, libgpg-error, libseccomp, and musl.
+Their licenses and copyright notices accompany this binary. GPGME,
+libassuan, libgpg-error, and libseccomp are covered by the GNU LGPL.
+Go runtime and vendored Go dependency notices are also included. GCC
+startup code is covered by the GCC Runtime Library Exception included here.
+
+The corresponding source archive provided with the same release contains
+the library sources, build definitions, patches, and rebuild instructions.
+Use those materials to rebuild Coopr with modified versions of the libraries.
+No additional restrictions apply to modifying the libraries or reverse
+engineering Coopr to debug those modifications.

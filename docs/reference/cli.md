@@ -67,7 +67,7 @@ Git query options are `branch`, `tag`, or `ref`; optional `subdir` and `checksum
 | Plain `NAME` or `local:NAME` | Local tag. | Local tag. |
 | `registry:HOST/REPOSITORY:TAG` | Registry image/index. | Registry artifact/index. |
 | `oci-archive:PATH` | OCI archive. | OCI archive. |
-| `podman:NAME`, `docker:NAME` | Explicit engine transfer. | Unsupported. |
+| `docker:NAME` | Docker Engine transfer. | Unsupported. |
 
 Bare digests select immutable local artifacts. Invoke a local component tag with `local:NAME`; registry references do not search the local component store. See [storage](../guides/storage.md) for platform selection and digest preservation. A failed post-build transfer reports the retained result; retry with `coopr copy` or `coopr component copy`.
 

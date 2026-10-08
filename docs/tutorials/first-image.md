@@ -31,16 +31,15 @@ The base is [Red Hat's UBI9 image on Docker Hub](https://hub.docker.com/r/redhat
 
 ```sh
 coopr build examples/first-image/image.coopr --tag coopr-demo:base
-coopr copy coopr-demo:base podman:localhost/coopr-demo:base
 podman run --rm -p 127.0.0.1:8080:80 localhost/coopr-demo:base
 ```
 
 Open [http://localhost:8080](http://localhost:8080) to see the page. Press Ctrl+C to stop the server; `--rm` removes the stopped container.
 
-Coopr keeps the built image in its selected store. The copy command makes it available to Podman. If [Podman is your default store](../guides/storage.md), skip that copy.
+Coopr builds into the same local image storage as Podman. Run both commands as the same user; `coopr-demo:base` is stored as `localhost/coopr-demo:base`. See [image storage](../guides/storage.md) for configuration.
 
 ## Change the page
 
-Edit `examples/first-image/index.html`, repeat the build and copy commands, then start the container again. The changed file produces a new COPY result; unchanged inputs can reuse the instruction cache.
+Edit `examples/first-image/index.html`, repeat the build command, then start the container again. The changed file produces a new COPY result; unchanged inputs can reuse the instruction cache.
 
 Next, [package and reuse two components](reusable-components.md) in a separate UBI9 image.

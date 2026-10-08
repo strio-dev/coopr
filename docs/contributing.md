@@ -61,3 +61,23 @@ See [security](guides/security.md) for namespace/runtime requirements. Skipped i
 After checks pass, push an unprefixed version tag such as `1.2.3` or `1.2.3-rc.1`. CI takes the build version from that tag and publishes Linux binary archives, corresponding sources, checksums, and a multi-platform GHCR image. No manual version bump is required.
 
 Prereleases keep their versioned tags; only the latest stable release updates the container's `latest` alias. Container tags replace `+` with `_` for build metadata, while the binary retains the exact release version. Documentation deploys from `main` after its checks pass.
+
+### Corresponding source
+
+Each release provides `coopr-sources.tar.gz` and a matching `ghcr.io/strio-dev/coopr:source-<version>` image containing the same source bundle. The runtime image's `org.opencontainers.image.source` label links to that release's `coopr-sources.tar.gz` asset. Source images are extracted, not run.
+
+With [regctl](https://regclient.org/install/), extract a release's source bundle directly from GHCR:
+
+```sh
+mkdir coopr-sources
+regctl image get-file ghcr.io/strio-dev/coopr:source-1.2.3 /coopr-sources.tar.gz | tar -xz -C coopr-sources
+```
+
+Or download `coopr-sources.tar.gz` from the matching GitHub release and extract it locally:
+
+```sh
+mkdir coopr-sources
+tar -xzf coopr-sources.tar.gz -C coopr-sources
+```
+
+Read `coopr-sources/REBUILD.txt` for the bundled application, dependency sources, patches, pinned build recipes, and instructions for rebuilding with modified libraries. Source archives are checksummed with the release binaries.

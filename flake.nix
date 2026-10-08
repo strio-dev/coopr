@@ -29,19 +29,35 @@
               pkgs.lib.fileContents ./nix/release-version
             else
               "dev";
+          sourceUrl =
+            if version == "dev" then
+              "https://github.com/strio-dev/coopr"
+            else
+              "https://github.com/strio-dev/coopr/releases/download/${version}/coopr-sources.tar.gz";
+          nix2container = (import inputs.nix2container { inherit pkgs; }).nix2container;
           coopr = pkgs.callPackage ./nix/package.nix { inherit version; };
           coopr-static = pkgs.callPackage ./nix/package-static.nix { inherit pkgs version; };
           release-sources = pkgs.callPackage ./nix/release-sources.nix {
-            inherit pkgs inputs coopr-static;
+            inherit
+              pkgs
+              inputs
+              coopr-static
+              container
+              ;
           };
           release = import ./nix/release-artifacts.nix {
-            inherit pkgs coopr-static release-sources;
+            inherit
+              pkgs
+              coopr-static
+              release-sources
+              nix2container
+              sourceUrl
+              ;
           };
           zensical = pkgs.callPackage ./nix/zensical.nix { };
           docs = pkgs.callPackage ./nix/docs.nix { inherit zensical; };
           container = pkgs.callPackage ./nix/container.nix {
-            inherit coopr;
-            nix2container = (import inputs.nix2container { inherit pkgs; }).nix2container;
+            inherit coopr nix2container sourceUrl;
           };
           container-archive = pkgs.callPackage ./nix/container-archive.nix { inherit container; };
         in
@@ -58,6 +74,7 @@
               ;
             release-binary = release.binary;
             release-source = release.sources;
+            container-source = release.sourceImage;
           };
           apps = {
             default = config.apps.coopr;
@@ -75,6 +92,7 @@
               docs
               release
               container-archive
+              sourceUrl
               ;
             inherit (pkgs) lib;
           };

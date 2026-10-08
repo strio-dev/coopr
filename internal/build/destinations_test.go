@@ -25,8 +25,12 @@ func TestOutputDestinationsValidateAndDeduplicate(t *testing.T) {
 	if _, err := outputDestinations(oci.Component, "", []string{"docker:bad"}, false); err == nil {
 		t.Fatal("engine component output accepted")
 	}
-	if _, err := outputDestinations(oci.Image, "", []string{"podman:bad"}, true); err == nil {
+	if _, err := outputDestinations(oci.Image, "", []string{"docker:bad"}, true); err == nil {
 		t.Fatal("push with engine destination accepted")
+	}
+	destinations, err = outputDestinations(oci.Image, "", []string{"podman:dev"}, false)
+	if err != nil || len(destinations) != 1 || destinations[0] != (transfer.Destination{Transport: "local", Name: "podman:dev"}) {
+		t.Fatalf("ordinary image output = %+v, %v", destinations, err)
 	}
 }
 

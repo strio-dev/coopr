@@ -143,7 +143,7 @@ func TestNativeRetagChangesDefaultSignaturesWithSelectedManifest(t *testing.T) {
 	}
 }
 
-func TestPodmanCopyUsesTheSameNativeRecord(t *testing.T) {
+func TestNativeTagCopyPreservesRecordAndPodmanImageName(t *testing.T) {
 	if os.Getenv("COOPR_TEST_BUILDAH") != "1" {
 		t.Skip("set COOPR_TEST_BUILDAH=1 for live native copy workers")
 	}
@@ -158,8 +158,8 @@ func TestPodmanCopyUsesTheSameNativeRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	selected := nativeEmptyImageFixture(t, options, v1.Platform{OS: "linux", Architecture: runtime.GOARCH}, "shared-podman")
-	if err := nameNativeTestImage(ctx, options, "shared:latest", selected); err != nil {
+	selected := nativeEmptyImageFixture(t, options, v1.Platform{OS: "linux", Architecture: runtime.GOARCH}, "shared-image")
+	if err := nameNativeTestImage(ctx, options, "podman:latest", selected); err != nil {
 		t.Fatal(err)
 	}
 	if err := buildah.WithStore(options, func(store storage.Store) error { return store.SetMetadata(selected.ImageID, `{"custom":"preserve"}`) }); err != nil {
@@ -170,8 +170,8 @@ func TestPodmanCopyUsesTheSameNativeRecord(t *testing.T) {
 		destination Destination
 		want        string
 	}{
-		{"shared:latest", Destination{Transport: "podman", Name: "localhost/alias:latest"}, "podman:localhost/alias:latest"},
-		{"podman:localhost/alias:latest", Destination{Transport: "local", Name: "final:latest"}, "final:latest"},
+		{"podman:latest", Destination{Transport: "local", Name: "alias:latest"}, "alias:latest"},
+		{"alias:latest", Destination{Transport: "local", Name: "final:latest"}, "final:latest"},
 	} {
 		result, err := Copy(ctx, oci.Image, test.source, test.destination, Options{BuildStore: options})
 		if err != nil || result != test.want {
@@ -193,7 +193,7 @@ func TestPodmanCopyUsesTheSameNativeRecord(t *testing.T) {
 		if len(images) != 1 || images[0].ID != selected.ImageID {
 			t.Fatalf("copy created another native image: %+v", images)
 		}
-		for _, name := range []string{"localhost/shared:latest", "localhost/alias:latest", "localhost/final:latest"} {
+		for _, name := range []string{"localhost/podman:latest", "localhost/alias:latest", "localhost/final:latest"} {
 			image, err := store.Image(name)
 			if err != nil {
 				return err

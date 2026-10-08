@@ -3,7 +3,6 @@ package build
 import (
 	"bytes"
 	"context"
-	"coopr/internal/buildah"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"coopr/internal/buildah"
 	"coopr/internal/oci"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -65,8 +65,8 @@ func TestNativeStorageMatchesArchiveAndRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("native storage build: %v", err)
 	}
-	if storedName != "podman:"+tag {
-		t.Fatalf("stored name %q, want podman:%s", storedName, tag)
+	if storedName != tag {
+		t.Fatalf("stored name %q, want %s", storedName, tag)
 	}
 	t.Cleanup(func() {
 		command := exec.Command("podman", "rmi", tag)
@@ -88,7 +88,7 @@ func TestNativeStorageMatchesArchiveAndRuns(t *testing.T) {
 	assertNoStageDirs(t, work)
 }
 
-func TestDefaultNativeStoreCanCopyToPodmanLater(t *testing.T) {
+func TestDefaultNativeStoreRetagRunsWithoutContext(t *testing.T) {
 	loadTestBackend(t)
 	if _, err := exec.LookPath("podman"); err != nil {
 		t.Fatalf("Podman is required for native storage acceptance: %v", err)
@@ -108,7 +108,7 @@ func TestDefaultNativeStoreCanCopyToPodmanLater(t *testing.T) {
 		t.Fatalf("store default image: %v", err)
 	}
 	if !strings.HasPrefix(localRef, "sha256:") {
-		t.Fatalf("default build returned %q, want local digest reference", localRef)
+		t.Fatalf("default build returned %q, want manifest digest", localRef)
 	}
 	storeOptions, err := buildah.DefaultStoreOptions()
 	if err != nil {
@@ -121,97 +121,23 @@ func TestDefaultNativeStoreCanCopyToPodmanLater(t *testing.T) {
 		t.Fatal(err)
 	}
 	tag := fmt.Sprintf("localhost/coopr-copy-test-%d-%d:acceptance", os.Getpid(), time.Now().UnixNano())
-	copy := exec.CommandContext(ctx, cli, "copy", localRef, "podman:"+tag)
+	copy := exec.CommandContext(ctx, cli, "copy", localRef, tag)
 	var copyOutput, copyDiagnostics bytes.Buffer
 	copy.Stdout = &copyOutput
 	copy.Stderr = &copyDiagnostics
 	err = copy.Run()
-	if err != nil || strings.TrimSpace(copyOutput.String()) != "podman:"+tag {
-		t.Fatalf("copy stored image into Podman: %v: stdout=%s stderr=%s", err, copyOutput.String(), copyDiagnostics.String())
+	if err != nil || strings.TrimSpace(copyOutput.String()) != tag {
+		t.Fatalf("retag stored image: %v: stdout=%s stderr=%s", err, copyOutput.String(), copyDiagnostics.String())
 	}
 	t.Cleanup(func() {
 		command := exec.Command("podman", "rmi", tag)
 		if output, err := command.CombinedOutput(); err != nil {
-			t.Errorf("remove owned copied image %s: %v: %s", tag, err, output)
+			t.Errorf("remove owned retagged image %s: %v: %s", tag, err, output)
 		}
 	})
 	output := string(loadPodman(t, ctx, "run", "--rm", "--network=none", tag))
 	if strings.TrimSpace(output) != "loaded:"+marker {
-		t.Fatalf("copied image did not run: %q", output)
-	}
-	assertNoStageDirs(t, work)
-}
-
-func TestStorageFailureCleansStagingAndDoesNotTag(t *testing.T) {
-	loadTestBackend(t)
-	if _, err := exec.LookPath("podman"); err != nil {
-		t.Fatalf("Podman is required for native storage acceptance: %v", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
-	work := t.TempDir()
-	t.Setenv("TMPDIR", work)
-	cli := storageTestCLI(t, ctx)
-	file := filepath.Join(work, "app.coopr")
-	if err := os.WriteFile(file, []byte("from \"scratch\"\ncopy \"marker\" \"/marker\"\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(work, "marker"), []byte("ready\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	home := t.TempDir()
-	policyDir := filepath.Join(home, ".config", "containers")
-	if err := os.MkdirAll(policyDir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(policyDir, "policy.json"), []byte(`{"default":[{"type":"reject"}]}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	tag := fmt.Sprintf("localhost/coopr-storage-failure-%d-%d:test", os.Getpid(), time.Now().UnixNano())
-	if output, err := exec.CommandContext(ctx, "podman", "image", "exists", tag).CombinedOutput(); err == nil {
-		t.Fatalf("test tag already exists: %s", tag)
-	} else if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
-		t.Fatalf("inspect test tag: %v: %s", err, output)
-	}
-	t.Cleanup(func() {
-		if err := exec.Command("podman", "image", "exists", tag).Run(); err == nil {
-			if output, err := exec.Command("podman", "rmi", tag).CombinedOutput(); err != nil {
-				t.Errorf("remove unexpected test image: %v: %s", err, output)
-			}
-		}
-	})
-	dataHome := os.Getenv("XDG_DATA_HOME")
-	if dataHome == "" {
-		originalHome, err := os.UserHomeDir()
-		if err != nil {
-			t.Fatal(err)
-		}
-		dataHome = filepath.Join(originalHome, ".local", "share")
-	}
-	childEnv := []string{"HOME=" + home, "XDG_CONFIG_HOME=" + filepath.Join(home, ".config"), "XDG_DATA_HOME=" + dataHome}
-	_, err := runStorageCLI(ctx, cli, file, tag, childEnv)
-	if err == nil || !strings.Contains(err.Error(), "policy") {
-		t.Fatalf("policy rejection after build = %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(work, "coopr.lock")); !os.IsNotExist(err) {
-		t.Fatalf("failed native transfer created a project lockfile: %v", err)
-	}
-	assertNoStageDirs(t, work)
-	if _, err := os.Stat(filepath.Join(work, "image.oci.tar")); !os.IsNotExist(err) {
-		t.Fatalf("failed native storage build left archive: %v", err)
-	}
-	if output, err := exec.CommandContext(ctx, "podman", "image", "exists", tag).CombinedOutput(); err == nil {
-		t.Fatalf("failed storage transfer created tag %s", tag)
-	} else if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
-		t.Fatalf("inspect failed transfer tag: %v: %s", err, output)
-	}
-	// Failure during the build itself must precede the storage policy check.
-	if err := os.Remove(filepath.Join(work, "marker")); err != nil {
-		t.Fatal(err)
-	}
-	_, err = runStorageCLI(ctx, cli, file, tag, childEnv)
-	if err == nil || strings.Contains(err.Error(), "policy") {
-		t.Fatalf("expected build failure before storage policy, got %v", err)
+		t.Fatalf("retagged image did not run: %q", output)
 	}
 	assertNoStageDirs(t, work)
 }
@@ -261,7 +187,7 @@ func validateStorageTestCLI(path string) error {
 func runStorageCLI(ctx context.Context, binary, definition, tag string, extraEnv []string) (string, error) {
 	args := []string{"build", definition, "--platform", "linux/" + runtime.GOARCH}
 	if tag != "" {
-		args = append(args, "--tag", "podman:"+tag)
+		args = append(args, "--tag", tag)
 	}
 	command := exec.CommandContext(ctx, binary, args...)
 	command.Env = append(os.Environ(), extraEnv...)

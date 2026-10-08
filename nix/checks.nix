@@ -7,6 +7,7 @@
   docs,
   container-archive,
   release,
+  sourceUrl,
 }:
 let
   goCheck =
@@ -65,7 +66,42 @@ in
       ];
   inherit docs;
   installer = pkgs.callPackage ./installer-check.nix { };
-  container = container-archive;
+  container =
+    pkgs.runCommand "coopr-container-license-check"
+      {
+        nativeBuildInputs = [ pkgs.jq ];
+      }
+      ''
+        test -s ${container-archive}
+        jq -e --arg source ${lib.escapeShellArg sourceUrl} \
+          '."image-config".Labels["org.opencontainers.image.source"] == $source' ${container}
+        test -s ${coopr}/share/licenses/coopr/third-party/go/LICENSE
+        test -s ${coopr}/share/licenses/coopr/third-party/go-modules/go.podman.io/buildah/LICENSE
+        jq -r '.[]' ${
+          pkgs.writeText "coopr-license-outputs.json" (
+            builtins.toJSON (container.candidateOutputs ++ container.knownGeneratedOutputs)
+          )
+        } | sort -u > attributed
+        sort -u ${pkgs.closureInfo { rootPaths = container.runtimeRoots; }}/store-paths > shipped
+        if grep -E '/[a-z0-9]+-libkrun(fw)?(-|$)' shipped > vm-runtime; then
+          echo 'Container unexpectedly ships optional VM runtime dependencies:' >&2
+          cat vm-runtime >&2
+          exit 1
+        fi
+        comm -23 shipped attributed > missing
+        if [ -s missing ]; then
+          echo 'Container outputs missing corresponding license/source attribution:' >&2
+          cat missing >&2
+          exit 1
+        fi
+        for package in ${container.licenseBundle}/share/licenses/coopr/container/*; do
+          if [ -z "$(find "$package" -type f -size +0c -print -quit)" ]; then
+            echo "Container package has no readable license notice: $package" >&2
+            exit 1
+          fi
+        done
+        touch "$out"
+      '';
   release-binary = release.check;
   release-source = release.sourceCheck;
   docs-examples =
@@ -93,7 +129,7 @@ in
         # Remove this exact diagnostic exception when upstream supports it:
         # https://github.com/rhysd/actionlint/issues/680
         actionlint -ignore '^unexpected key "queue" for "concurrency" section\. expected one of "cancel-in-progress", "group"$' \
-          ${../.github/workflows/ci.yml}
+          ${../.github/workflows}/*.yml
         touch "$out"
       '';
   justfile = pkgs.runCommand "coopr-justfile-check" { nativeBuildInputs = [ pkgs.just ]; } ''

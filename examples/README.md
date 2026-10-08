@@ -1,6 +1,6 @@
 # Examples
 
-[Install Coopr](../docs/getting-started/index.md), then run the example commands from the repository root. Examples that run containers also need Podman.
+[Install Coopr](../docs/getting-started/index.md), then run the example commands from the repository root. Examples that run containers also need Podman. Coopr and Podman share local image storage; build and run as the same user.
 
 | Example | Purpose |
 | --- | --- |

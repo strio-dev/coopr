@@ -1,9 +1,6 @@
 package buildah
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -153,19 +150,4 @@ func NativeStoreOptions(options StoreOptions) storage.StoreOptions {
 	native.GraphDriverOptions = slices.Clone(options.GraphDriverOptions)
 	native.TransientStore = options.TransientStore
 	return native
-}
-
-// StoreIdentity returns a stable identity for Coopr metadata associated with
-// one exact containers/storage configuration. It never includes payload data.
-func StoreIdentity(options StoreOptions) (string, error) {
-	normalized, err := NormalizeStoreOptions(options)
-	if err != nil {
-		return "", err
-	}
-	data, err := json.Marshal(NativeStoreOptions(normalized))
-	if err != nil {
-		return "", fmt.Errorf("encode containers/storage identity: %w", err)
-	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]), nil
 }

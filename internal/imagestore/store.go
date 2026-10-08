@@ -45,14 +45,6 @@ func FromStore(backend storage.Store) *Store {
 	return &Store{backend: backend, system: &types.SystemContext{BigFilesTemporaryDir: os.TempDir()}}
 }
 
-func New() (*Store, error) {
-	options, err := DefaultStoreOptions()
-	if err != nil {
-		return nil, err
-	}
-	return NewWithOptions(options)
-}
-
 // NewWithOptions opens an explicitly selected containers/storage graph.
 func NewWithOptions(options storagetypes.StoreOptions) (*Store, error) {
 	backend, err := storage.GetStore(options)

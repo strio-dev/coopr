@@ -105,24 +105,16 @@ func ParseDestination(value string, kind oci.Kind) (Destination, error) {
 		}
 	case "oci-archive":
 		// The path is checked against build inputs by the build command.
-	case "podman", "docker":
+	case "docker":
 		if kind == oci.Component {
 			return Destination{}, fmt.Errorf("%s cannot store Coopr component artifacts; use local, registry, or oci-archive", transport)
 		}
-		if transport == "podman" {
-			var err error
-			name, err = imagestore.NormalizeTag(name)
-			if err != nil {
-				return Destination{}, err
-			}
-		} else {
-			parsed, err := reference.ParseNormalizedNamed(name)
-			if err != nil {
-				return Destination{}, fmt.Errorf("invalid %s image tag %q: %w", transport, name, err)
-			}
-			if _, ok := parsed.(reference.Digested); ok {
-				return Destination{}, fmt.Errorf("%s image tag %q must not include a digest", transport, name)
-			}
+		parsed, err := reference.ParseNormalizedNamed(name)
+		if err != nil {
+			return Destination{}, fmt.Errorf("invalid %s image tag %q: %w", transport, name, err)
+		}
+		if _, ok := parsed.(reference.Digested); ok {
+			return Destination{}, fmt.Errorf("%s image tag %q must not include a digest", transport, name)
 		}
 	default:
 		return Destination{}, fmt.Errorf("unsupported destination transport %q", transport)
@@ -145,7 +137,7 @@ func ParsePushDestination(value string, kind oci.Kind) (Destination, error) {
 
 func knownTransport(value string) bool {
 	switch value {
-	case "local", "registry", "oci-archive", "podman", "docker":
+	case "local", "registry", "oci-archive", "docker":
 		return true
 	}
 	return false
@@ -176,32 +168,6 @@ func Copy(ctx context.Context, kind oci.Kind, source string, destination Destina
 			return "", err
 		}
 		roots = buildah.ActivityRoots(options, "")
-		if destination.Transport == "podman" || strings.HasPrefix(source, "podman:") {
-			defaults, err := buildah.DefaultStoreOptions()
-			if err != nil {
-				return "", err
-			}
-			roots = append(roots, buildah.ActivityRoots(defaults, "")...)
-			selectedID, err := buildah.StoreIdentity(options)
-			if err != nil {
-				return "", err
-			}
-			defaultID, err := buildah.StoreIdentity(defaults)
-			if err != nil {
-				return "", err
-			}
-			if selectedID == defaultID {
-				source = strings.TrimPrefix(source, "podman:")
-				if destination.Transport == "podman" {
-					destination.Transport = "local"
-					defer func() {
-						if retErr == nil {
-							result = "podman:" + result
-						}
-					}()
-				}
-			}
-		}
 	}
 	var activity *storeactivity.Lease
 	if kind == oci.Image && destination.Transport == "local" && opts.Signing.SignBy != "" {
@@ -218,7 +184,7 @@ func Copy(ctx context.Context, kind oci.Kind, source string, destination Destina
 	defer func() { retErr = errors.Join(retErr, activity.Close()) }()
 	ctx = storeactivity.ContextWithLease(ctx, activity)
 	if kind == oci.Image {
-		if engine, name, explicit := strings.Cut(source, ":"); explicit && (engine == "podman" || engine == "docker") {
+		if engine, name, explicit := strings.Cut(source, ":"); explicit && engine == "docker" {
 			return copyEngineImage(ctx, engine, name, destination, opts)
 		}
 		return copyStoredImage(ctx, source, destination, opts)
@@ -525,7 +491,7 @@ func CopyRoot(ctx context.Context, kind oci.Kind, storeDir string, root v1.Descr
 			return "", err
 		}
 		return resolver.PublishLayout(ctx, destination.Name, storeDir, root)
-	case "podman", "docker":
+	case "docker":
 		if kind != oci.Image {
 			return "", fmt.Errorf("%s cannot store Coopr components", destination.Transport)
 		}

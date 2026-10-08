@@ -134,7 +134,7 @@ func TestRunBuildsAndCopiesMultiPlatformIndex(t *testing.T) {
 	}
 }
 
-func TestCopyMultiPlatformIndexToPodman(t *testing.T) {
+func TestNativeMultiPlatformAliasesVisibleToPodman(t *testing.T) {
 	loadTestBackend(t)
 	if _, err := exec.LookPath("podman"); err != nil {
 		t.Skipf("Podman is unavailable: %v", err)
@@ -153,6 +153,11 @@ func TestCopyMultiPlatformIndexToPodman(t *testing.T) {
 	if _, err := Run(ctx, Options{File: file, BuildStore: storeOptions, Tag: sourceTag, Platforms: []string{"linux/amd64", "linux/arm64"}}); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if output, err := exec.Command("podman", "manifest", "rm", sourceTag).CombinedOutput(); err != nil {
+			t.Errorf("remove source native manifest %s: %v: %s", sourceTag, err, output)
+		}
+	})
 	sourceRoot, sourceData, _, found, err := testStoredImageIndex(ctx, storeOptions, sourceTag)
 	if err != nil || !found {
 		t.Fatalf("lookup source index: %t, %v", found, err)
@@ -163,8 +168,8 @@ func TestCopyMultiPlatformIndexToPodman(t *testing.T) {
 	}
 	tag := fmt.Sprintf("localhost/coopr-index-test-%d-%d:test", os.Getpid(), time.Now().UnixNano())
 	cli := storageTestCLI(t, ctx)
-	if output, err := exec.CommandContext(ctx, cli, "copy", sourceTag, "podman:"+tag).CombinedOutput(); err != nil {
-		t.Fatalf("copy complete index to Podman: %v: %s", err, output)
+	if output, err := exec.CommandContext(ctx, cli, "copy", sourceTag, tag).CombinedOutput(); err != nil {
+		t.Fatalf("alias complete native index: %v: %s", err, output)
 	}
 	t.Cleanup(func() {
 		if output, err := exec.Command("podman", "manifest", "rm", tag).CombinedOutput(); err != nil {
@@ -194,8 +199,8 @@ func TestCopyMultiPlatformIndexToPodman(t *testing.T) {
 	if err := json.Unmarshal(updatedData, &updatedSourceIndex); err != nil {
 		t.Fatalf("parse updated source index: %v", err)
 	}
-	if output, err := exec.CommandContext(ctx, cli, "copy", sourceTag, "podman:"+tag).CombinedOutput(); err != nil {
-		t.Fatalf("refresh Podman index tag: %v: %s", err, output)
+	if output, err := exec.CommandContext(ctx, cli, "copy", sourceTag, tag).CombinedOutput(); err != nil {
+		t.Fatalf("refresh native index alias: %v: %s", err, output)
 	}
 	updated, err := exec.CommandContext(ctx, "podman", "manifest", "inspect", tag).Output()
 	if err != nil || string(updated) == string(output) {

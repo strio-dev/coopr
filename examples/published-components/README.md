@@ -6,7 +6,6 @@ Package company defaults and a Go formatting tool, then consume both artifacts f
 coopr component build examples/published-components/components/company-config/component.coopr --target debug --tag coopr-company-config
 coopr component build examples/published-components/components/gofmt/component.coopr --tag coopr-gofmt
 coopr build examples/published-components/image.coopr --tag coopr-company:formatted
-coopr copy coopr-company:formatted podman:localhost/coopr-company:formatted
 podman run --rm localhost/coopr-company:formatted
 ```
 

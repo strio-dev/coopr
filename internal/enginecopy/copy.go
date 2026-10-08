@@ -1,4 +1,4 @@
-// Package enginecopy transfers Coopr images into explicit container-engine stores.
+// Package enginecopy transfers Coopr images to and from Docker Engine.
 package enginecopy
 
 import (
@@ -14,40 +14,16 @@ import (
 )
 
 // Copy transfers root from a Coopr OCI layout into an explicit engine store.
-// Engine must be podman or docker; name is the unprefixed image name.
+// Engine must be docker; name is the unprefixed image name.
 func Copy(ctx context.Context, layout string, root v1.Descriptor, engine, name string) (string, error) {
-	var (
-		result string
-		err    error
-	)
-	switch engine {
-	case "podman":
-		result, err = copyPodman(ctx, layout, root, name)
-	case "docker":
-		result, err = copyDocker(ctx, layout, root, name)
-	default:
+	if engine != "docker" {
 		return "", fmt.Errorf("unsupported image engine %q", engine)
 	}
+	result, err := copyDocker(ctx, layout, root, name)
 	if err != nil {
 		return "", err
 	}
 	return engine + ":" + result, nil
-}
-
-func copyPodman(ctx context.Context, layout string, root v1.Descriptor, name string) (result string, retErr error) {
-	store, err := imagestore.New()
-	if err != nil {
-		return "", err
-	}
-	defer func() {
-		if err := store.Close(); retErr == nil && err != nil {
-			retErr = err
-		}
-	}()
-	if root.MediaType == v1.MediaTypeImageIndex || root.MediaType == "application/vnd.docker.distribution.manifest.list.v2+json" {
-		return store.WriteIndexLayout(ctx, layout, root, name)
-	}
-	return store.WriteLayout(ctx, layout, root, name)
 }
 
 func copyDocker(ctx context.Context, layout string, root v1.Descriptor, name string) (string, error) {

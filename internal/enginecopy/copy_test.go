@@ -94,8 +94,13 @@ func TestCopyDockerStreamsConvertedImageToImageLoad(t *testing.T) {
 }
 
 func TestCopyRejectsUnsupportedEngine(t *testing.T) {
-	if _, err := Copy(context.Background(), "ignored", v1.Descriptor{}, "buildah", "app:dev"); err == nil {
-		t.Fatal("unsupported engine was accepted")
+	for _, engine := range []string{"podman", "buildah"} {
+		if _, err := Copy(context.Background(), "ignored", v1.Descriptor{}, engine, "app:dev"); err == nil || !strings.Contains(err.Error(), "unsupported image engine") {
+			t.Fatalf("Copy accepted engine %q: %v", engine, err)
+		}
+		if _, err := Read(context.Background(), engine, "app:dev", "ignored", v1.Platform{}); err == nil || !strings.Contains(err.Error(), "unsupported image engine") {
+			t.Fatalf("Read accepted engine %q: %v", engine, err)
+		}
 	}
 }
 

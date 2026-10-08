@@ -28,7 +28,7 @@ func TestDestinationTransports(t *testing.T) {
 	}{
 		{"app:dev", "local", "app:dev"},
 		{"local:app", "local", "app:latest"},
-		{"podman:app:dev", "podman", "localhost/app:dev"},
+		{"podman:5000/team/app:dev", "local", "podman:5000/team/app:dev"},
 		{"docker:app:dev", "docker", "app:dev"},
 		{"registry:example.com/team/app:dev", "registry", "example.com/team/app:dev"},
 		{"oci-archive:app.tar", "oci-archive", "app.tar"},
@@ -38,18 +38,34 @@ func TestDestinationTransports(t *testing.T) {
 			t.Fatalf("destination %q = %+v, %v", test.value, got, err)
 		}
 	}
-	for _, value := range []string{"podman:app:dev", "docker:app:dev"} {
+	for _, value := range []string{"docker:app:dev"} {
 		if _, err := ParseDestination(value, oci.Component); err == nil || !strings.Contains(err.Error(), "cannot store Coopr component") {
 			t.Fatalf("component destination %q accepted: %v", value, err)
 		}
 	}
-	for _, value := range []string{"podman:app:dev", "docker:app:dev", "local:app:dev", "oci-archive:app.tar"} {
+	for _, value := range []string{"docker:app:dev", "local:app:dev", "oci-archive:app.tar"} {
 		if _, err := ParsePushDestination(value, oci.Image); err == nil || !strings.Contains(err.Error(), "--push cannot use") {
 			t.Fatalf("push target %q accepted: %v", value, err)
 		}
 	}
 	if destination, err := ParsePushDestination("localhost:5000/team/app:dev", oci.Image); err != nil || destination.Transport != "registry" {
 		t.Fatalf("registry with port rejected: %+v, %v", destination, err)
+	}
+}
+
+func TestPodmanImageNameUsesOrdinaryTagSyntax(t *testing.T) {
+	for _, value := range []string{"podman:dev", "local:podman:dev"} {
+		got, err := ParseDestination(value, oci.Image)
+		if err != nil || got != (Destination{Transport: "local", Name: "podman:dev"}) {
+			t.Fatalf("destination %q = %+v, %v; want an ordinary local tag", value, got, err)
+		}
+	}
+	got, err := ParsePushDestination("podman:dev", oci.Image)
+	if err != nil || got != (Destination{Transport: "registry", Name: "podman:dev"}) {
+		t.Fatalf("push destination = %+v, %v; want an ordinary registry reference", got, err)
+	}
+	if _, err := ParseDestination("podman:app:dev", oci.Image); err == nil {
+		t.Fatal("invalid multi-colon image name accepted")
 	}
 }
 
