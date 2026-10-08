@@ -129,7 +129,7 @@ in
         # Remove this exact diagnostic exception when upstream supports it:
         # https://github.com/rhysd/actionlint/issues/680
         actionlint -ignore '^unexpected key "queue" for "concurrency" section\. expected one of "cancel-in-progress", "group"$' \
-          ${../.github/workflows/ci.yml}
+          ${../.github/workflows}/*.yml
         touch "$out"
       '';
   justfile = pkgs.runCommand "coopr-justfile-check" { nativeBuildInputs = [ pkgs.just ]; } ''
