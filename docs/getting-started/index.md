@@ -54,7 +54,7 @@ To pin a release, pass its unprefixed version tag:
 curl -fsSL https://coopr.strio.dev/install.sh | sh -s -- 1.2.3
 ```
 
-You can download the [installer](../install.sh) or binary archives from [GitHub releases](https://github.com/strio-dev/coopr/releases). Each release also includes dependency sources and rebuild instructions in `coopr-sources.tar.gz`.
+You can download the [installer](../install.sh) or binary archives from [GitHub releases](https://github.com/strio-dev/coopr/releases). Each release includes [corresponding sources and rebuild instructions](../contributing.md#corresponding-source) in `coopr-sources.tar.gz`.
 
 For an unprivileged installation, choose a writable prefix:
 

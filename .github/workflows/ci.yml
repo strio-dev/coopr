@@ -247,6 +247,9 @@ jobs:
       - name: Log in to GHCR
         uses: *registry-login
         with: *registry-credentials
+      - name: Publish corresponding sources
+        if: steps.state.outputs.published != 'true'
+        run: nix run --no-update-lock-file path:.#container-source.copyTo -- --format oci "docker://$IMAGE:source-$IMAGE_TAG"
       - name: Publish multi-platform index
         if: steps.state.outputs.published != 'true'
         run: |

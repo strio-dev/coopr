@@ -51,7 +51,7 @@ Select OCI explicitly with `coopr build --isolation=rootless` or `--isolation=oc
 - Only Linux target platforms are supported. Foreign RUNs need host `binfmt_misc` emulation; Coopr neither registers handlers nor bundles QEMU.
 - Root-directory mode, ownership, and portable xattrs can be lost by the upstream image commit path even when Coopr captures them in package/cache state. The build can succeed with this limitation.
 - Healthcheck and ONBUILD extensions are preserved with OCI/Docker output; receiving runtimes decide whether to honor them.
-- Docker's classic store requires a selected child for multi-platform transfer. Auxiliary attestation descriptors and duplicate runnable platform entries are rejected by current image selection.
+- Docker's classic store requires a selected child for multi-platform transfer. Engine imports reject auxiliary attestation descriptors and duplicate runnable platform entries. OCI archive loading omits descriptors with missing or `unknown` platforms.
 - Keyless signing is unsupported. Keyed Sigstore signatures do not include a Rekor transparency-log entry.
 - Mutable external inputs may not invalidate caches; see [refresh rules](caching.md#refresh-deliberately).
 - The tested host profile does not establish support for every kernel or CI runtime policy.

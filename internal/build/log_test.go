@@ -38,7 +38,7 @@ func TestQuietBuildWritersDiscardProgress(t *testing.T) {
 func TestCompletedTagProgressSkipsFailedPendingAndArchives(t *testing.T) {
 	destinations := []transfer.Destination{
 		{Transport: "local", Name: "app:latest"},
-		{Transport: "podman", Name: "localhost/app:latest"},
+		{Transport: "docker", Name: "app:exported"},
 		{Transport: "docker", Name: "app:failed"},
 		{Transport: "registry", Name: "example/app:pending"},
 		{Transport: "oci-archive", Name: "image.tar"},
@@ -48,7 +48,7 @@ func TestCompletedTagProgressSkipsFailedPendingAndArchives(t *testing.T) {
 	}}
 	var output bytes.Buffer
 	logCompletedTags(&output, destinations, report)
-	if got, want := output.String(), "Successfully tagged app:latest\nSuccessfully tagged localhost/app:latest\n"; got != want {
+	if got, want := output.String(), "Successfully tagged app:latest\nSuccessfully tagged app:exported\n"; got != want {
 		t.Fatalf("tags = %q, want %q", got, want)
 	}
 	logCompletedTags(io.Discard, destinations, report)

@@ -10,7 +10,7 @@ Coopr reads KDL v2, plans the selected output’s dependencies, and executes the
 | Embedded Buildah | Apply filesystem and image-configuration changes. |
 | Transfer | Copy results to local tags, archives, registries, or engine stores. |
 
-The pipeline uses Go APIs, without generated Containerfiles, builder CLIs, or a builder daemon. RUN starts an OCI runtime; storage, networking, Git, SSH, and credentials may need host helpers. Explicit Docker destinations use the Engine API.
+The pipeline uses Go APIs, without generated Containerfiles, builder CLIs, or a builder daemon. RUN uses Buildah's selected isolation mode; OCI/rootless execution needs an OCI runtime, while the packaged container defaults to chroot. Storage, networking, Git, SSH, and credentials may need host helpers. Explicit Docker destinations use the Engine API.
 
 ## State and dependencies
 

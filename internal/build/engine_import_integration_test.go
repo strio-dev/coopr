@@ -1,14 +1,11 @@
 package build
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 	"time"
 
@@ -16,62 +13,6 @@ import (
 	"coopr/internal/transfer"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
-
-func TestExplicitPodmanImportThenOfflineFrom(t *testing.T) {
-	loadTestBackend(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
-	work := t.TempDir()
-	config := filepath.Join(work, "storage.conf")
-	settings := fmt.Sprintf("[storage]\ndriver=\"vfs\"\nrunroot=%q\ngraphroot=%q\n", filepath.Join(os.Getenv("XDG_DATA_HOME"), "import-fixture-run"), filepath.Join(os.Getenv("XDG_DATA_HOME"), "import-fixture-graph"))
-	if err := os.WriteFile(config, []byte(settings), 0600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("CONTAINERS_STORAGE_CONF", config)
-	cli := storageTestCLI(t, ctx)
-	definition := filepath.Join(work, "base.coopr")
-	if err := os.WriteFile(definition, []byte("from \"scratch\"\ncopy \"marker\" \"/marker\"\nlabel imported=\"yes\"\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(work, "marker"), []byte("engine-only input\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	sourceTag := "localhost/coopr-import-fixture:latest"
-	if _, err := runStorageCLI(ctx, cli, definition, sourceTag, nil); err != nil {
-		t.Fatal(err)
-	}
-	// A fresh Coopr data home has no copy of the source graph or catalog.
-	dataHome := filepath.Join(os.Getenv("XDG_DATA_HOME"), "import-fresh-coopr")
-	command := exec.CommandContext(ctx, cli, "copy", "podman:"+sourceTag, "local:imported-base:latest")
-	command.Env = append(os.Environ(), "XDG_DATA_HOME="+dataHome)
-	var output, diagnostics bytes.Buffer
-	command.Stdout, command.Stderr = &output, &diagnostics
-	if err := command.Run(); err != nil {
-		t.Fatalf("import Podman image: %v: %s", err, diagnostics.String())
-	}
-	if !strings.Contains(output.String(), "imported-base:latest") {
-		t.Fatalf("import result: %s", output.String())
-	}
-	if err := os.Remove(filepath.Join(work, "marker")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(definition, []byte("from \"imported-base:latest\"\nlabel offline=\"yes\"\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	archive := filepath.Join(work, "offline.oci.tar")
-	command = exec.CommandContext(ctx, cli, "build", definition, "--platform", "linux/"+runtime.GOARCH, "--tag", "oci-archive:"+archive)
-	command.Env = append(os.Environ(), "XDG_DATA_HOME="+dataHome)
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("offline FROM imported engine image: %v: %s", err, output)
-	}
-	if names := archiveLayerNames(t, archive); !containsName(names, "marker") {
-		t.Fatalf("imported filesystem missing: %v", names)
-	}
-	configImage := archiveImageConfig(t, archive)
-	if configImage.Config.Labels["imported"] != "yes" || configImage.Config.Labels["offline"] != "yes" {
-		t.Fatalf("imported configuration missing: %+v", configImage.Config)
-	}
-}
 
 func TestExplicitDockerImportThenOfflineFrom(t *testing.T) {
 	if os.Getenv("COOPR_TEST_DOCKER") != "1" || os.Getenv("COOPR_TEST_BUILDAH") == "" {

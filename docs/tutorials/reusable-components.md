@@ -65,10 +65,11 @@ cmd {
 
 ```sh
 coopr build examples/reusable-components/image.coopr --tag coopr-demo:configured
-coopr copy coopr-demo:configured podman:localhost/coopr-demo:configured
 podman run --rm localhost/coopr-demo:configured
 podman inspect localhost/coopr-demo:configured --format '{{json .Config.Env}}'
 ```
+
+Coopr writes the image directly to the local storage shared with Podman. Run both tools as the same user.
 
 The container prints both packaged files, and its environment contains `demo_channel=preview`. Reversing the calls fails the policy check on a fresh build because settings do not exist yet.
 

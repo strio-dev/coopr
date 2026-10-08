@@ -1,0 +1,3 @@
+DNS root hints and DNSSEC trust-anchor data accompany the corresponding
+source archive. Nixpkgs declares this data under GPL-3.0-or-later; its
+exact package recipe and unmodified data are included in that archive.

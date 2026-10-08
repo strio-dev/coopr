@@ -35,7 +35,7 @@ func TestCopyCommandsRejectInvalidInputsBeforeTransfer(t *testing.T) {
 		want string
 	}{
 		{[]string{"copy"}, "accepts 2 arg(s)"},
-		{[]string{"copy", "sha256:" + strings.Repeat("a", 64), "podman:"}, "requires a name"},
+		{[]string{"copy", "sha256:" + strings.Repeat("a", 64), "docker:"}, "requires a name"},
 		{[]string{"copy", "--platform", "linux/", "missing:latest", "local:copy"}, "invalid copy platform"},
 		{[]string{"copy", "--sign-passphrase-file", "secret", "missing:latest", "registry:example.com/app:test"}, "requires --sign-by or --sign-by-sigstore-private-key"},
 		{[]string{"copy", "--sign-by-sigstore-private-key", "cosign.key", "missing:latest", "local:copy"}, "requires a registry"},

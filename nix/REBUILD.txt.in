@@ -1,0 +1,63 @@
+Coopr corresponding source
+
+This archive accompanies the Linux binaries and container image in the same release.
+coopr/ contains the application source and its build definitions.
+vendor/ contains the Go dependencies used for that build, including their
+license files. sources/ holds each shared upstream source once.
+libraries/ links to the sources for statically linked native libraries,
+with their applied patches in series order. container/ links to the
+sources supplied for shipped runtime packages and their applied patches.
+Its patch inventories describe the @hostSystem@ build;
+platform-specific patches for other targets are in the pinned Nixpkgs tree.
+Relative links work outside the Nix store. GCC sources are included for
+its distributed runtime libraries; general build tools such as the Go
+compiler are obtained through Nix rather than bundled here.
+build-inputs/ contains the pinned Nix inputs, including Nixpkgs' package
+recipes and local patches. Fetched patches accompany their source packages.
+Permissively licensed Netavark and Aardvark Rust sources are not bundled;
+their recursive license and copyright notices remain in the image.
+
+With Nix installed, rebuild the original application from this directory:
+
+  nix build path:./coopr#coopr-static
+  ./result/bin/coopr --help
+
+Rebuild the container using the same pinned package recipes:
+
+  nix build path:./coopr#container-archive
+
+To modify a container runtime dependency, override its source in the
+Nixpkgs input. Its original source is bundled under container/. The
+pinned Nixpkgs tree under build-inputs/ contains its build recipe; fetched
+patches are alongside its source under container/.
+
+Nix fetches the versions recorded in coopr/flake.lock and go.mod/go.sum.
+It may need network access to obtain the compiler and other build tools.
+
+To rebuild with a modified library, unpack its archive, make your changes,
+and override that library's src in coopr/nix/package-static.nix. For example,
+run the following from the archive root:
+
+  tar -xf libraries/gpgme/*.tar.bz2 -C coopr
+
+Add this attribute to the existing gpgme.overrideAttrs block in
+coopr/nix/package-static.nix, using your extracted directory name:
+
+  src = ../gpgme-@gpgmeVersion@;
+
+Re-run the nix build command. Nix rebuilds GPGME and relinks Coopr against
+the modified library. Other linked libraries can likewise be overridden
+through pkgs.pkgsStatic.callPackage's arguments or its stdenv for musl.
+
+To use the bundled Go dependency sources, copy vendor/ to coopr/vendor/,
+include ../vendor in the fileset in coopr/nix/package.nix, and set
+vendorHash = null in that file. Go then builds with those vendored sources.
+
+The original Nix input source trees can be extracted from build-inputs/.
+Use nix build's --override-input option to select modified local input
+trees instead of the locked remote inputs, such as a modified Nixpkgs.
+
+Coopr's MIT license does not replace the licenses of its dependencies.
+See the notices shipped with the binary and the licenses in these sources.
+No additional restrictions apply to modifying the LGPL libraries or reverse
+engineering Coopr to debug those modifications.

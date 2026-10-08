@@ -55,7 +55,7 @@ func logCompletedTags(writer io.Writer, destinations []transfer.Destination, rep
 			continue
 		}
 		switch destination.Transport {
-		case "local", "podman", "docker", "registry":
+		case "local", "docker", "registry":
 			_, _ = fmt.Fprintf(writer, "Successfully tagged %s\n", destination.Name)
 		}
 	}

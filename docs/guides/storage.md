@@ -9,13 +9,22 @@ Coopr builds and consumes images directly in the effective `containers/storage` 
 | Component artifacts | `$XDG_DATA_HOME/coopr/components` |
 | Native runtime state | `$XDG_RUNTIME_DIR/containers` |
 
-Data home defaults to `~/.local/share`. Native `storage.conf` can override these paths, the driver and driver options. Rootful storage normally uses `/var/lib/containers/storage` and `/run/containers/storage`.
+Data home defaults to `~/.local/share`. Native `storage.conf` can override image and runtime storage paths, the driver and driver options. Component storage follows the data home independently. Rootful storage normally uses `/var/lib/containers/storage` and `/run/containers/storage`.
 
 Ordinary output tags are visible to Podman and Buildah using compatible storage settings and the same user identity. Local FROM inputs use those native names; a permitted pull writes registry inputs into the same store. Coopr's activity lease does not exclude external Podman or Buildah processes.
 
+Build and run directly with Podman:
+
+```sh
+coopr build image.coopr --tag app:dev
+podman run --rm localhost/app:dev
+```
+
+Short output names receive the `localhost/` prefix. No copy or load step is needed when both tools use the same native store.
+
 The packaged container persists images, components and caches under `/var/lib`; this internal store does not automatically share the host’s Podman store. Use the volume in the [getting-started command](../getting-started/index.md#run-the-published-container).
 
-## Copy explicitly
+## Tags and transfers
 
 Pull an image before a build, add a name, or publish it independently:
 
@@ -42,20 +51,19 @@ Archives contain layers and image configuration. OCI saves retain the selected m
 ```sh
 coopr copy app:dev local:app:alias
 coopr copy app:dev oci-archive:app.oci.tar
-coopr copy app:dev podman:app:dev
 coopr copy app:dev docker:app:dev
 coopr copy app:dev registry:registry.example.com/team/app:dev
 ```
 
-Copies retain the local result. Import an engine image with the same command:
+Copies retain the local result. Docker images can be imported into native storage:
 
 ```sh
-coopr copy podman:app:dev local:app:imported
+coopr copy docker:app:dev local:app:imported
 ```
 
-`docker:SOURCE` also selects an engine source. Ordinary FROM inputs resolve from native storage or a registry.
+Ordinary FROM inputs resolve from native storage or a registry.
 
-Copy complete indexes to registries, OCI archives, Podman, or Docker’s containerd store. Docker’s classic store needs `--platform` to select one child. Docker imports may convert format and change the digest. Components support local names, OCI archives, and registries, but no engine destinations.
+Copy complete indexes to registries, OCI archives, or Docker’s containerd store. Podman reads locally stored indexes directly. Docker’s classic store needs `--platform` to select one child. Docker imports may convert format and change the digest. Components support local names, OCI archives, and registries, but no engine destinations.
 
 Appending with `coopr build --manifest NAME` updates an existing native manifest list in place, as Podman does. Mutable aliases of that list follow the update; previously returned manifest digests keep selecting their original index. An ordinary pulled image is not a native manifest list.
 

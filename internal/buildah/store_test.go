@@ -150,30 +150,6 @@ func TestStoreOptionsWorkerJSONPreservesEffectiveNativeOptions(t *testing.T) {
 	}
 }
 
-func TestStoreIdentitySeparatesRootsAndEffectiveOptions(t *testing.T) {
-	base := testStoreOptions(t)
-	first, err := StoreIdentity(base)
-	if err != nil {
-		t.Fatal(err)
-	}
-	changedRoot := base
-	changedRoot.GraphRoot += "-other"
-	second, err := StoreIdentity(changedRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	changedOption := base
-	changedOption.Native = NativeStoreOptions(base)
-	changedOption.Native.PullOptions = map[string]string{"enable_partial_images": "true"}
-	third, err := StoreIdentity(changedOption)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first == second || first == third || second == third {
-		t.Fatalf("store identities collided: %q %q %q", first, second, third)
-	}
-}
-
 func TestStoreLeaseForwardsSplitAndTransientStoreOptions(t *testing.T) {
 	options := testStoreOptions(t)
 	options.ImageStore = options.GraphRoot + "-images"

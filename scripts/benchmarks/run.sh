@@ -279,14 +279,9 @@ verify_image() {
   local builder=$1 iteration=$2 name=$3 tag=$4 expected=$5
   local actual runtime_tag=$tag runtime_data_home=''
   if [[ $builder == coopr ]]; then
-    runtime_tag="localhost/coopr-parity-benchmark-$(id -u)-$$-$iteration-$name-runtime:latest"
     runtime_data_home="$bench_root/coopr-data-$iteration"
     runtime_image_tags+=("$runtime_tag")
     runtime_image_data_homes+=("$runtime_data_home")
-    env "XDG_DATA_HOME=$runtime_data_home" \
-      "$bench_root/coopr" copy "$tag" "podman:$runtime_tag" \
-      >"$bench_root/coopr-$iteration-$name-copy.log" 2>&1 || \
-      fail "could not load iteration $iteration Coopr $name result into Podman"
   fi
   if [[ -n $runtime_data_home ]]; then
     actual=$(env "XDG_DATA_HOME=$runtime_data_home" podman run --rm --network=none \
@@ -309,9 +304,9 @@ verify_multi_platform_image() {
       runtime_image_tags+=("$runtime_tag")
       runtime_image_data_homes+=("$runtime_data_home")
       env "XDG_DATA_HOME=$runtime_data_home" \
-        "$bench_root/coopr" copy "$tag" "podman:$runtime_tag" --platform "linux/$arch" \
+        "$bench_root/coopr" copy "$tag" "$runtime_tag" --platform "linux/$arch" \
         >"$bench_root/coopr-$iteration-multi-$arch-copy.log" 2>&1 || \
-        fail "could not load iteration $iteration Coopr linux/$arch result into Podman"
+        fail "could not select iteration $iteration Coopr linux/$arch native image"
       actual_platform=$(env "XDG_DATA_HOME=$runtime_data_home" \
         podman image inspect --format '{{.Os}}/{{.Architecture}}' "$runtime_tag")
       [[ $actual_platform == "linux/$arch" ]] || \

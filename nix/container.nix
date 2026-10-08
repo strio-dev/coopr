@@ -1,9 +1,12 @@
 {
   lib,
+  pkgs,
+  callPackage,
   runCommand,
   buildEnv,
   coopr,
   nix2container,
+  sourceUrl,
   aardvark-dns,
   crun,
   e2fsprogs,
@@ -20,9 +23,10 @@
   cacert,
 }:
 let
+  containerCrun = crun.override { withLibkrun = false; };
   runtimeTools = [
     aardvark-dns
-    crun
+    containerCrun
     e2fsprogs
     fuse-overlayfs
     gitMinimal
@@ -34,6 +38,35 @@ let
     util-linux
     xz
   ];
+  licenses = callPackage ./container-licenses.nix {
+    inherit pkgs coopr;
+    runtimeRoots = runtimeTools ++ [
+      coopr
+      uidmapTools
+      cacert
+      root
+    ];
+    roots = runtimeTools ++ [
+      shadow
+      cacert
+      coopr
+      pkgs.gpgme
+      pkgs.libseccomp
+      pkgs.stdenv.cc.libc
+      pkgs.stdenv.cc.cc.lib
+      pkgs.iproute2
+      pkgs.mailcap
+      pkgs.dns-root-data
+      pkgs.gnutar
+      pkgs.gzip
+      pkgs.gnused
+      pkgs.coreutils
+      pkgs.gnugrep
+      pkgs.glibc.libgcc
+      pkgs.libidn2.out
+      pkgs.iana-etc
+    ];
+  };
   uidmapTools = runCommand "coopr-uidmap-tools" { } ''
     mkdir -p "$out/bin"
     cp ${shadow}/bin/newuidmap "$out/bin/newuidmap"
@@ -69,6 +102,7 @@ let
     name = "coopr-image-root";
     paths = runtimeTools ++ [
       coopr
+      licenses.licenseBundle
       uidmapTools
       cacert
     ];
@@ -113,7 +147,7 @@ let
     }
   ];
 in
-nix2container.buildImage {
+(nix2container.buildImage {
   name = "coopr";
   tag = "nix";
   copyToRoot = [
@@ -143,6 +177,7 @@ nix2container.buildImage {
     WorkingDir = "/work";
     Entrypoint = [ "${coopr}/bin/coopr" ];
     Labels."org.opencontainers.image.version" = coopr.version;
+    Labels."org.opencontainers.image.source" = sourceUrl;
     Env = [
       "PATH=/usr/bin:${lib.makeBinPath runtimeTools}"
       "HOME=/root"
@@ -158,4 +193,18 @@ nix2container.buildImage {
       "/var/lib" = { };
     };
   };
+})
+// {
+  inherit (licenses) licenseBundle licenseSources candidateOutputs;
+  licensePackages = licenses.packages;
+  runtimeRoots = [
+    runtime
+    root
+  ];
+  knownGeneratedOutputs = map (path: builtins.unsafeDiscardStringContext (toString path)) [
+    runtime
+    root
+    uidmapTools
+    licenses.licenseBundle
+  ];
 }

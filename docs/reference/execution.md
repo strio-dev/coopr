@@ -150,9 +150,9 @@ Image `--env` prepends values to every stage; authored ENV wins. Bare names impo
 
 ### Outputs and failure recovery
 
-Repeatable `--tag` applies local names or transfers to one retained immutable result, in requested order. Plain names are local; explicit transports are `local:`, `registry:`, `oci-archive:`, `podman:`, and `docker:`. Components support only the first three. `--push --tag NAME` selects registry publication.
+Repeatable `--tag` applies local names or transfers to one retained immutable result, in requested order. Plain names are local; explicit transports are `local:`, `registry:`, `oci-archive:`, and `docker:`. Components support only the first three. `--push --tag NAME` selects registry publication.
 
-`--metadata-file` records `containerimage.digest`, `containerimage.config.digest`, `containerimage.descriptor`, `coopr.platforms`, `coopr.references`, and per-destination `coopr.outputs`. Image `--iidfile` writes the config image ID for one platform or index digest for several. File-output parents are checked before execution.
+`--metadata-file` records `containerimage.digest`, `containerimage.config.digest`, `containerimage.descriptor`, `coopr.platforms`, `coopr.references`, and per-destination `coopr.outputs`. Image `--iidfile` writes the native image ID for one platform or index digest for several. File-output parents are checked before execution.
 
 Successful execution retains the result/checkpoints before transfers. Destinations commit independently; there is no cross-engine/registry transaction. Transfer failure/cancellation reports the retained digest and completed destinations. Metadata records complete/failed/pending destinations and `coopr.outputError`; result-file finalization failures also report retained outputs. An interrupted transfer may have committed remotely: check its destination, then retry with `coopr copy`. Execution failure publishes neither newly staged portable-cache candidates nor final output names.
 
