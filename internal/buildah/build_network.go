@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 
+	"coopr/internal/definition"
 	"coopr/internal/planner"
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/runtime-spec/specs-go"
@@ -243,15 +244,22 @@ func resolveOperationNetwork(operations []planner.Operation, network string) []p
 
 func buildExecutionOptionsDigest(stages []planner.Stage, addHosts []string) (digest.Digest, error) {
 	type runNetwork struct {
-		Stage     string `json:"stage"`
-		Operation int    `json:"operation"`
-		Network   string `json:"network"`
+		Stage           string                   `json:"stage"`
+		Operation       int                      `json:"operation"`
+		Network         string                   `json:"network"`
+		TransientMounts []definition.Instruction `json:"transient_mounts,omitempty"`
 	}
 	networks := make([]runNetwork, 0)
 	for _, stage := range stages {
 		for operationIndex, operation := range stage.Operations {
 			if operation.Name == "run" {
-				networks = append(networks, runNetwork{stage.ID, operationIndex, operation.Properties["network"]})
+				if operation.TransientMountCount < 0 || operation.TransientMountCount > len(operation.Children) {
+					return "", fmt.Errorf("stage %s operation %d: invalid transient mount count %d for %d children", stage.ID, operationIndex+1, operation.TransientMountCount, len(operation.Children))
+				}
+				networks = append(networks, runNetwork{
+					Stage: stage.ID, Operation: operationIndex, Network: operation.Properties["network"],
+					TransientMounts: operation.Children[len(operation.Children)-operation.TransientMountCount:],
+				})
 			}
 		}
 	}

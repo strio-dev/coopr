@@ -4,16 +4,16 @@ package definition
 import (
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"math/big"
 	"path/filepath"
-	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
-	kdl "github.com/njreid/gokdl2"
-	"github.com/njreid/gokdl2/document"
+	kdl "github.com/calico32/kdl-go"
 )
 
 // Definition is the parsed, unevaluated instruction sequence.
@@ -36,6 +36,9 @@ type Instruction struct {
 	// The planner processes their Docker quoting and expansion together in the
 	// child stage, then clears this internal marker from the normalized result.
 	ProcessQuotes bool `json:"process_quotes,omitempty"`
+	// DeferredOnBuild retains an imported RUN trigger until child-stage scope
+	// exists. It is consumed by planning, never exposed as authored syntax.
+	DeferredOnBuild string `json:"deferred_onbuild,omitempty"`
 }
 
 // InlineFile is a Dockerfile heredoc source retained through planning.
@@ -44,9 +47,6 @@ type InlineFile struct {
 	Data   string `json:"data"`
 	Expand bool   `json:"expand,omitempty"`
 }
-
-var optionName = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
-var mountTypeParameter = regexp.MustCompile(`^\$\{[a-zA-Z_][a-zA-Z0-9_]*\}$`)
 
 // Validate checks an already decoded definition using the same instruction
 // rules as Parse. Publication metadata is decoded from JSON, so it must not
@@ -59,7 +59,7 @@ func Validate(def *Definition) error {
 		if err := rejectLayerBoundaries(inst); err != nil {
 			return fmt.Errorf("instruction %d: %w", i+1, err)
 		}
-		if err := validateInstruction(inst, fmt.Sprintf("instruction %d", i+1), false); err != nil {
+		if err := validateInstruction(inst, fmt.Sprintf("instruction %d", i+1), false, false); err != nil {
 			return err
 		}
 	}
@@ -84,22 +84,14 @@ func rejectLayerBoundaries(inst Instruction) error {
 // on instructions selected for execution; deferred component instructions are
 // checked when their invocation arguments become available.
 func ValidateResolved(inst Instruction) error {
-	if err := validateInstruction(inst, "resolved instruction", false); err != nil {
-		return err
-	}
-	for _, child := range inst.Children {
-		if child.Name == "mount" && !optionName.MatchString(child.Arguments[0]) {
-			return fmt.Errorf("resolved mount type %q is invalid", child.Arguments[0])
-		}
-	}
-	return nil
+	return validateInstruction(inst, "resolved instruction", false, true)
 }
 
-func validateInstruction(inst Instruction, position string, child bool) error {
+func validateInstruction(inst Instruction, position string, child, resolved bool) error {
 	if child && inst.Name != "mount" && inst.Name != "device" && inst.Name != "exclude" {
 		return fmt.Errorf("%s: unsupported child %q", position, inst.Name)
 	}
-	if err := validate(inst, len(inst.Children), child); err != nil {
+	if err := validate(inst, len(inst.Children), child, resolved); err != nil {
 		return fmt.Errorf("%s %q: %w", position, inst.Name, err)
 	}
 	for i, nested := range inst.Children {
@@ -107,7 +99,7 @@ func validateInstruction(inst Instruction, position string, child bool) error {
 			if nested.Name == "from" || nested.Name == "extend" || nested.Name == "package" {
 				return fmt.Errorf("%s: stage declarations are not allowed inside layer", position)
 			}
-			if err := validateInstruction(nested, fmt.Sprintf("%s layer child %d", position, i+1), false); err != nil {
+			if err := validateInstruction(nested, fmt.Sprintf("%s layer child %d", position, i+1), false, resolved); err != nil {
 				return err
 			}
 			continue
@@ -124,7 +116,7 @@ func validateInstruction(inst Instruction, position string, child bool) error {
 		if nested.Name == "exclude" && inst.Name != "copy" && inst.Name != "add" {
 			return fmt.Errorf("%s %q child %d: exclude children require copy or add", position, inst.Name, i+1)
 		}
-		if err := validateInstruction(nested, fmt.Sprintf("%s %q child %d", position, inst.Name, i+1), true); err != nil {
+		if err := validateInstruction(nested, fmt.Sprintf("%s %q child %d", position, inst.Name, i+1), true, resolved); err != nil {
 			return err
 		}
 	}
@@ -134,7 +126,11 @@ func validateInstruction(inst Instruction, position string, child bool) error {
 // Parse reads a KDL v2 Coopr definition and validates individual instructions.
 // References, argument expansion, and phase dependencies are planner concerns.
 func Parse(r io.Reader) (*Definition, error) {
-	doc, err := kdl.ParseWithOptions(r, kdl.ParseOptions{Version: kdl.ParseVersionV2})
+	source, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("read Coopr definition: %w", err)
+	}
+	doc, err := kdl.ParseString(string(source), kdl.WithVersion(kdl.Version2))
 	if err != nil {
 		return nil, fmt.Errorf("parse KDL v2: %w", err)
 	}
@@ -143,7 +139,7 @@ func Parse(r io.Reader) (*Definition, error) {
 	}
 	def := &Definition{Instructions: make([]Instruction, 0, len(doc.Nodes))}
 	for i, node := range doc.Nodes {
-		inst, err := parseNode(node, fmt.Sprintf("instruction %d", i+1), false)
+		inst, err := parseNode(node, source, fmt.Sprintf("instruction %d", i+1), false)
 		if err != nil {
 			return nil, err
 		}
@@ -152,44 +148,50 @@ func Parse(r io.Reader) (*Definition, error) {
 	return def, nil
 }
 
-func parseNode(node *document.Node, position string, child bool) (Instruction, error) {
-	inst := Instruction{Name: node.Name.ValueString()}
-	healthcheckDisabled := false
-	command := inst.Name == "run" || inst.Name == "cmd" || inst.Name == "entrypoint" || inst.Name == "healthcheck"
-	if node.Type != "" || node.Name.Type != "" {
-		return inst, fmt.Errorf("%s %q: annotations are not supported", position, inst.Name)
-	}
+func parseNode(node *kdl.Node, source []byte, position string, child bool) (Instruction, error) {
+	position = fmt.Sprintf("%s at %s", position, node.Location())
+	inst := Instruction{Name: node.Name()}
 	if child && inst.Name != "mount" && inst.Name != "device" && inst.Name != "exclude" {
 		return inst, fmt.Errorf("%s: unsupported child %q", position, inst.Name)
 	}
-	arguments := node.Arguments
-	for i, nested := range node.Children {
-		if nested.Name.ValueString() != "exec" {
+	if err := validateInstructionName(inst.Name); err != nil {
+		return inst, fmt.Errorf("%s: %w", position, err)
+	}
+	healthcheckDisabled := false
+	command := inst.Name == "run" || inst.Name == "cmd" || inst.Name == "entrypoint" || inst.Name == "healthcheck"
+	if _, annotated := node.TypeAnnotation(); annotated {
+		return inst, fmt.Errorf("%s %q: annotations are not supported", position, inst.Name)
+	}
+	arguments := node.Arguments()
+	for i, nested := range node.Children().Nodes {
+		if nested.Name() != "exec" {
 			continue
 		}
 		if !command {
 			return inst, fmt.Errorf("%s %q child %d: exec requires run, cmd, entrypoint, or healthcheck", position, inst.Name, i+1)
 		}
-		if len(node.Arguments) != 0 {
+		if len(node.Arguments()) != 0 {
 			return inst, fmt.Errorf("%s %q: cannot combine shell text and an exec child", position, inst.Name)
 		}
 		if inst.Form == "exec" {
 			return inst, fmt.Errorf("%s %q: expected exactly one exec child", position, inst.Name)
 		}
-		if nested.Type != "" || nested.Name.Type != "" {
+		if _, annotated := nested.TypeAnnotation(); annotated {
 			return inst, fmt.Errorf("%s %q child %d: annotations are not supported", position, inst.Name, i+1)
 		}
-		if len(nested.Properties.Unordered()) != 0 || len(nested.Children) != 0 {
+		if len(nested.Properties()) != 0 || len(nested.Children().Nodes) != 0 {
 			return inst, fmt.Errorf("%s %q child %d: exec accepts arguments only", position, inst.Name, i+1)
 		}
 		inst.Form = "exec"
-		arguments = nested.Arguments
+		arguments = nested.Arguments()
 	}
 	for i, value := range arguments {
-		if value.Type != "" {
+		if _, annotated := value.TypeAnnotation(); annotated {
 			return inst, fmt.Errorf("%s %q: argument %d annotations are not supported", position, inst.Name, i+1)
 		}
-		if inst.Name == "healthcheck" && inst.Form != "exec" && value.Flag.Has(document.FlagBare) && value.ResolvedValueV2() == "NONE" {
+		// Bare NONE disables a healthcheck; quoted NONE remains a command.
+		// The AST retains spans, but Literal omits ordinary quoted strings.
+		if inst.Name == "healthcheck" && inst.Form != "exec" && value.Kind() == kdl.String && value.String() == "NONE" && string(source[value.Location().Offset:value.EndLocation().Offset]) == "NONE" {
 			if len(arguments) != 1 {
 				return inst, fmt.Errorf("%s %q: NONE must be the only argument", position, inst.Name)
 			}
@@ -203,16 +205,19 @@ func parseNode(node *document.Node, position string, child bool) (Instruction, e
 		}
 		inst.Arguments = append(inst.Arguments, s)
 	}
-	for name, value := range node.Properties.Unordered() {
+	nodeProperties := node.Properties()
+	for _, name := range slices.Sorted(maps.Keys(nodeProperties)) {
+		value := nodeProperties[name]
 		if command && (name == "shell" || name == "form") {
 			return inst, fmt.Errorf("%s %q: %s property is not supported; use shell text or an exec child", position, inst.Name, name)
 		}
-		s, err := normalizeScalar(value, name == "chmod" || name == "mode")
+		permission := (inst.Name == "copy" || inst.Name == "add") && name == "chmod" || inst.Name == "mount" && (name == "mode" || name == "tmpfs-mode")
+		s, err := normalizeScalar(value, permission)
 		if err != nil {
 			return inst, fmt.Errorf("%s %q: property %q %w", position, inst.Name, name, err)
 		}
 		if inst.Properties == nil {
-			inst.Properties = make(map[string]string, len(node.Properties.Unordered()))
+			inst.Properties = make(map[string]string, len(nodeProperties))
 		}
 		inst.Properties[name] = s
 	}
@@ -228,19 +233,22 @@ func parseNode(node *document.Node, position string, child bool) (Instruction, e
 		}
 		inst.Form = ""
 	}
-	if inst.Name == "run" && inst.Form == "shell" && len(node.Arguments) == 1 && node.Arguments[0].Flag.Has(document.FlagMultiLine) && strings.HasPrefix(inst.Arguments[0], "#!") {
-		inst.Form = "exec"
-		inst.InlineFiles = []InlineFile{{Path: "script", Data: inst.Arguments[0]}}
-		inst.Arguments = []string{"/run/coopr-heredoc/script"}
+	if inst.Name == "run" && inst.Form == "shell" && len(node.Arguments()) == 1 && strings.HasPrefix(inst.Arguments[0], "#!") {
+		literal, _ := node.Arguments()[0].Literal()
+		if strings.HasPrefix(strings.TrimLeft(literal, "#"), `"""`) {
+			inst.Form = "exec"
+			inst.InlineFiles = []InlineFile{{Path: "script", Data: inst.Arguments[0]}}
+			inst.Arguments = []string{"/run/coopr-heredoc/script"}
+		}
 	}
 	if inst.Name == "onbuild" {
-		if len(node.Arguments) != 0 || len(node.Properties.Unordered()) != 0 {
+		if len(node.Arguments()) != 0 || len(nodeProperties) != 0 {
 			return inst, fmt.Errorf("%s %q: expected no arguments or properties and exactly one child", position, inst.Name)
 		}
-		if len(node.Children) != 1 {
+		if len(node.Children().Nodes) != 1 {
 			return inst, fmt.Errorf("%s %q: expected exactly one child", position, inst.Name)
 		}
-		triggerInstruction, err := parseNode(node.Children[0], position+` "onbuild" child 1`, false)
+		triggerInstruction, err := parseNode(node.Children().Nodes[0], source, position+` "onbuild" child 1`, false)
 		if err != nil {
 			return inst, err
 		}
@@ -249,27 +257,27 @@ func parseNode(node *document.Node, position string, child bool) (Instruction, e
 			return inst, fmt.Errorf("%s %q: %w", position, inst.Name, err)
 		}
 		inst.Arguments = []string{trigger}
-		if err := validate(inst, 0, child); err != nil {
+		if err := validate(inst, 0, child, false); err != nil {
 			return inst, fmt.Errorf("%s %q: %w", position, inst.Name, err)
 		}
 		return inst, nil
 	}
-	if len(node.Children) > 0 && (child || (!command && inst.Name != "copy" && inst.Name != "add" && inst.Name != "extend" && inst.Name != "layer")) {
+	if len(node.Children().Nodes) > 0 && (child || (!command && inst.Name != "copy" && inst.Name != "add" && inst.Name != "extend" && inst.Name != "layer")) {
 		return inst, fmt.Errorf("%s %q: children are only allowed on command, copy, add, extend, layer, or onbuild instructions", position, inst.Name)
 	}
-	for i, childNode := range node.Children {
-		if childNode.Name.ValueString() == "exec" {
+	for i, childNode := range node.Children().Nodes {
+		if childNode.Name() == "exec" {
 			continue
 		}
 		if inst.Name == "extend" {
 			requirement, err := parseExtendRequirement(childNode)
 			if err != nil {
-				return inst, fmt.Errorf("%s %q child %d: %w", position, inst.Name, i+1, err)
+				return inst, fmt.Errorf("%s %q child %d at %s: %w", position, inst.Name, i+1, childNode.Location(), err)
 			}
 			inst.Children = append(inst.Children, requirement)
 			continue
 		}
-		nested, err := parseNode(childNode, fmt.Sprintf("%s %q child %d", position, inst.Name, i+1), inst.Name != "layer")
+		nested, err := parseNode(childNode, source, fmt.Sprintf("%s %q child %d", position, inst.Name, i+1), inst.Name != "layer")
 		if err != nil {
 			return inst, err
 		}
@@ -284,28 +292,27 @@ func parseNode(node *document.Node, position string, child bool) (Instruction, e
 		}
 		inst.Children = append(inst.Children, nested)
 	}
-	if err := validate(inst, len(inst.Children), child); err != nil {
+	if err := validate(inst, len(inst.Children), child, false); err != nil {
 		return inst, fmt.Errorf("%s %q: %w", position, inst.Name, err)
 	}
 	return inst, nil
 }
 
-func parseExtendRequirement(node *document.Node) (Instruction, error) {
-	requirement := Instruction{Name: node.Name.ValueString()}
-	if node.Type != "" || node.Name.Type != "" {
+func parseExtendRequirement(node *kdl.Node) (Instruction, error) {
+	requirement := Instruction{Name: node.Name()}
+	if _, annotated := node.TypeAnnotation(); annotated {
 		return requirement, fmt.Errorf("annotations are not supported")
 	}
-	for i, value := range node.Arguments {
-		if value.Type != "" {
+	for i, value := range node.Arguments() {
+		if _, annotated := value.TypeAnnotation(); annotated {
 			return requirement, fmt.Errorf("argument %d annotations are not supported", i+1)
 		}
-		s, ok := value.ResolvedValueV2().(string)
-		if !ok {
+		if value.Kind() != kdl.String {
 			return requirement, fmt.Errorf("argument %d must be a string", i+1)
 		}
-		requirement.Arguments = append(requirement.Arguments, s)
+		requirement.Arguments = append(requirement.Arguments, value.String())
 	}
-	if len(node.Properties.Unordered()) != 0 || len(node.Children) != 0 {
+	if len(node.Properties()) != 0 || len(node.Children().Nodes) != 0 {
 		return requirement, fmt.Errorf("compatibility requirement must contain only string values")
 	}
 	if err := validateExtendRequirement(requirement); err != nil {
@@ -345,18 +352,13 @@ func applyCommandDefaults(inst *Instruction, healthcheckDisabled bool) {
 	}
 }
 
-func normalizeScalar(value *document.Value, permission bool) (string, error) {
-	if value.Type != "" {
+func normalizeScalar(value kdl.Value, permission bool) (string, error) {
+	if _, annotated := value.TypeAnnotation(); annotated {
 		return "", fmt.Errorf("annotations are not supported")
 	}
-	if permission && value.Flag.Has(document.FlagOctal) {
-		octal := value.ValueString()
-		if !strings.HasPrefix(octal, "0o") || strings.ContainsRune(octal, '-') {
-			return "", fmt.Errorf("permission must be nonnegative")
-		}
-		return "0" + strings.TrimPrefix(octal, "0o"), nil
-	}
-	switch resolved := value.ResolvedValueV2().(type) {
+	literal, _ := value.Literal()
+	octalPermission := permission && strings.HasPrefix(literal, "0o")
+	switch resolved := value.RawValue().(type) {
 	case nil:
 		return "", fmt.Errorf("null is not supported")
 	case string:
@@ -364,36 +366,19 @@ func normalizeScalar(value *document.Value, permission bool) (string, error) {
 	case bool:
 		return strconv.FormatBool(resolved), nil
 	case int:
-		return strconv.Itoa(resolved), nil
-	case int8:
-		return strconv.FormatInt(int64(resolved), 10), nil
-	case int16:
-		return strconv.FormatInt(int64(resolved), 10), nil
-	case int32:
-		return strconv.FormatInt(int64(resolved), 10), nil
-	case int64:
-		return strconv.FormatInt(resolved, 10), nil
-	case uint:
-		return strconv.FormatUint(uint64(resolved), 10), nil
-	case uint8:
-		return strconv.FormatUint(uint64(resolved), 10), nil
-	case uint16:
-		return strconv.FormatUint(uint64(resolved), 10), nil
-	case uint32:
-		return strconv.FormatUint(uint64(resolved), 10), nil
-	case uint64:
-		return strconv.FormatUint(resolved, 10), nil
-	case float32:
-		if math.IsInf(float64(resolved), 0) || math.IsNaN(float64(resolved)) {
-			return "", fmt.Errorf("must be a finite number")
+		if octalPermission {
+			return fmt.Sprintf("%#o", resolved), nil
 		}
-		return strconv.FormatFloat(float64(resolved), 'g', -1, 32), nil
+		return strconv.Itoa(resolved), nil
 	case float64:
 		if math.IsInf(resolved, 0) || math.IsNaN(resolved) {
 			return "", fmt.Errorf("must be a finite number")
 		}
 		return strconv.FormatFloat(resolved, 'g', -1, 64), nil
 	case *big.Int:
+		if octalPermission {
+			return fmt.Sprintf("%#o", resolved), nil
+		}
 		return resolved.String(), nil
 	case *big.Float:
 		if resolved.IsInf() {
@@ -405,7 +390,20 @@ func normalizeScalar(value *document.Value, permission bool) (string, error) {
 	}
 }
 
-func validate(inst Instruction, childCount int, child bool) error {
+func validate(inst Instruction, childCount int, child, resolved bool) error {
+	if err := validateInstructionName(inst.Name); err != nil {
+		return err
+	}
+	if names, fixed := InstructionProperties(inst.Name); fixed {
+		if inst.Name == "run" {
+			if _, hidden := inst.Properties["mount"]; hidden {
+				return fmt.Errorf("use a mount child for mount options")
+			}
+		}
+		if err := ValidateProperties(inst.Properties, names...); err != nil {
+			return err
+		}
+	}
 	n, p, a := inst.Name, inst.Properties, len(inst.Arguments)
 	if len(inst.InlineFiles) != 0 && n != "run" && n != "copy" && n != "add" {
 		return fmt.Errorf("inline files are only allowed on run, copy, or add")
@@ -435,11 +433,11 @@ func validate(inst Instruction, childCount int, child bool) error {
 	case "exec":
 		return fmt.Errorf("exec must be a child of run, cmd, entrypoint, or healthcheck")
 	case "from":
-		if a != 1 || !onlyProps(p, "as", "platform", "after") {
+		if a != 1 {
 			return fmt.Errorf("expected one source and optional as/platform/after properties")
 		}
 	case "extend":
-		if a != 0 || !onlyProps(p, "as", "distro", "distro-version", "package-manager", "architecture") {
+		if a != 0 {
 			return fmt.Errorf("expected no arguments and optional as/distro/distro-version/package-manager/architecture properties")
 		}
 		declared := make(map[string]bool, len(inst.Children))
@@ -459,7 +457,7 @@ func validate(inst Instruction, childCount int, child bool) error {
 			return fmt.Errorf("distro-version requires distro")
 		}
 	case "package":
-		if a != 0 || !onlyProps(p, "as") || strings.TrimSpace(p["as"]) == "" {
+		if a != 0 || strings.TrimSpace(p["as"]) == "" {
 			return fmt.Errorf("expected no arguments and a nonempty as property")
 		}
 	case "arg":
@@ -467,8 +465,8 @@ func validate(inst Instruction, childCount int, child bool) error {
 			return fmt.Errorf("expected a name, optional default, and no properties")
 		}
 	case "run":
-		if _, hidden := p["mount"]; hidden {
-			return fmt.Errorf("use a mount child for mount options")
+		if err := validatePropertyEnum(p, "security", resolved, "sandbox", "insecure"); err != nil {
+			return err
 		}
 		if a < 1 || (inst.Form != "exec" && a != 1) {
 			return fmt.Errorf("expected one shell command or exec arguments")
@@ -502,7 +500,7 @@ func validate(inst Instruction, childCount int, child bool) error {
 		if n == "env" && a == 2 && strings.ContainsRune(inst.Arguments[1], '\x00') {
 			return fmt.Errorf("environment value cannot contain NUL")
 		}
-		for key := range p {
+		for _, key := range slices.Sorted(maps.Keys(p)) {
 			if key == "" || strings.ContainsAny(key, "=\x00") {
 				return fmt.Errorf("expected a nonempty key without equals sign")
 			}
@@ -519,7 +517,7 @@ func validate(inst Instruction, childCount int, child bool) error {
 			return fmt.Errorf("expected exec arguments (empty resets) or one shell command and no properties")
 		}
 	case "healthcheck":
-		if err := validateHealthcheck(inst); err != nil {
+		if err := validateHealthcheck(inst, resolved); err != nil {
 			return err
 		}
 	case "onbuild":
@@ -534,16 +532,14 @@ func validate(inst Instruction, childCount int, child bool) error {
 			return fmt.Errorf("expected one component reference, argument properties, and no children")
 		}
 	case "mount":
-		if !child || a != 1 || (!optionName.MatchString(inst.Arguments[0]) && !mountTypeParameter.MatchString(inst.Arguments[0])) || childCount != 0 {
+		if !child || a != 1 || inst.Arguments[0] == "" || childCount != 0 {
 			return fmt.Errorf("expected a mount type and optional properties, and no children")
 		}
-		for key := range p {
-			if !optionName.MatchString(key) {
-				return fmt.Errorf("invalid mount property name %q", key)
-			}
+		if err := validateMountProperties(inst.Arguments[0], p, resolved); err != nil {
+			return err
 		}
 	case "device":
-		if !child || a < 1 || !onlyProps(p, "required") || childCount != 0 {
+		if !child || a < 1 || childCount != 0 {
 			return fmt.Errorf("expected one or more device selectors, optional required property, and no children")
 		}
 		for _, selector := range inst.Arguments {
@@ -551,22 +547,29 @@ func validate(inst Instruction, childCount int, child bool) error {
 				return fmt.Errorf("device selector cannot be empty")
 			}
 		}
-		if required, ok := p["required"]; ok && required != "true" && required != "false" {
-			return fmt.Errorf("required property must be a boolean")
+		if required, ok := p["required"]; ok && (resolved || !strings.Contains(required, "$")) {
+			if required != "true" && required != "false" {
+				return fmt.Errorf("required property must be a boolean")
+			}
 		}
 	case "exclude":
 		if !child || a < 1 || len(p) != 0 || childCount != 0 {
 			return fmt.Errorf("expected one or more exclude patterns and no properties or children")
 		}
-	default:
-		if n == "" || strings.ToLower(n) != n || strings.ContainsAny(n, " \t\r\n\x00") {
-			return fmt.Errorf("invalid instruction name")
+	case "shell", "expose", "volume":
+		if a == 0 {
+			return fmt.Errorf("expected at least one argument and no properties")
 		}
+	case "stopsignal", "maintainer":
+		if a != 1 || strings.TrimSpace(inst.Arguments[0]) == "" {
+			return fmt.Errorf("expected one nonempty argument and no properties")
+		}
+
 	}
 	return nil
 }
 
-func validateHealthcheck(inst Instruction) error {
+func validateHealthcheck(inst Instruction, resolved bool) error {
 	if len(inst.Arguments) == 0 {
 		return fmt.Errorf("expected CMD, CMD-SHELL, or NONE")
 	}
@@ -595,12 +598,10 @@ func validateHealthcheck(inst Instruction) error {
 	default:
 		return fmt.Errorf("expected CMD, CMD-SHELL, or NONE")
 	}
-	if !onlyProps(inst.Properties, "interval", "timeout", "start-period", "start-interval", "retries") {
-		return fmt.Errorf("expected only supported timing properties interval/timeout/start-period/start-interval/retries")
-	}
+
 	for _, name := range []string{"interval", "timeout", "start-period", "start-interval"} {
 		value, exists := inst.Properties[name]
-		if !exists || strings.Contains(value, "$") {
+		if !exists || (!resolved && strings.Contains(value, "$")) {
 			continue
 		}
 		duration, err := time.ParseDuration(value)
@@ -611,29 +612,13 @@ func validateHealthcheck(inst Instruction) error {
 			return fmt.Errorf("%s property cannot be less than 1ms", name)
 		}
 	}
-	if value, exists := inst.Properties["retries"]; exists && !strings.Contains(value, "$") {
+	if value, exists := inst.Properties["retries"]; exists && (resolved || !strings.Contains(value, "$")) {
 		retries, err := strconv.Atoi(value)
 		if err != nil || retries < 0 {
 			return fmt.Errorf("retries property must be a nonnegative integer")
 		}
 	}
 	return nil
-}
-
-func onlyProps(props map[string]string, allowed ...string) bool {
-	for key := range props {
-		found := false
-		for _, name := range allowed {
-			if key == name {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-	return true
 }
 
 // FlattenLayers exposes group children to the ordinary ordered planner while

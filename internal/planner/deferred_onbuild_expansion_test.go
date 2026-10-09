@@ -197,3 +197,110 @@ func TestDeferredDockerOnBuildReferenceCollectionRespectsQuoting(t *testing.T) {
 		})
 	}
 }
+
+func TestDeferredOnBuildRunKeepsTransientMounts(t *testing.T) {
+	for _, trigger := range []string{
+		`RUN true`,
+		`RUN --mount=type=cache,id=authored,from=assets,target=${target}/authored true`,
+	} {
+		t.Run(trigger, func(t *testing.T) {
+			inherited, err := onbuildparse.ParseDeferred(trigger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			transient := []definition.Instruction{
+				{Name: "mount", Arguments: []string{"bind"}, Properties: map[string]string{"from": "${source}", "source": "/", "target": "${target}/bind"}},
+				{Name: "mount", Arguments: []string{"tmpfs"}, Properties: map[string]string{"target": "${target}/tmpfs"}},
+			}
+			beforeInherited := fmt.Sprintf("%#v", inherited)
+			beforeTransient := fmt.Sprintf("%#v", transient)
+			opts := Options{
+				Mode: Build, TransientRunMounts: transient,
+				StageBinds: map[string]StageBind{"1": {Inherited: inherited}},
+			}
+			source := `arg "source" "assets"
+from "scratch" as="assets"
+from "example.invalid/base:latest"
+arg "target" "/input"
+run "true"
+`
+			// Inherited triggers run before authored ARG declarations, so use the
+			// base environment for their ordinary mount-property expansion.
+			bind := opts.StageBinds["1"]
+			bind.BaseEnvironment = map[string]string{"target": "/input"}
+			opts.StageBinds["1"] = bind
+			for range 2 {
+				plan := makePlan(t, source, opts)
+				stage := plan.Stages[len(plan.Stages)-1]
+				for index, op := range stage.Operations {
+					authoredCount := 0
+					if index == 0 && trigger != "RUN true" {
+						authoredCount = 1
+					}
+					if len(op.Children) != authoredCount+2 || op.TransientMountCount != 2 {
+						t.Fatalf("operation %d mounts = %#v, transient count = %d", index, op.Children, op.TransientMountCount)
+					}
+					if authoredCount != 0 && op.Children[0].Properties["target"] != "/input/authored" {
+						t.Fatalf("authored mount was changed or misordered: %#v", op.Children)
+					}
+					bindMount := op.Children[authoredCount]
+					if bindMount.Properties["from"] != "assets" || bindMount.Properties["target"] != "/input/bind" || op.Children[authoredCount+1].Properties["target"] != "/input/tmpfs" {
+						t.Fatalf("transient mount expansion/order = %#v", op.Children)
+					}
+				}
+				if !reflect.DeepEqual(stage.Dependencies, []string{"0"}) {
+					t.Fatalf("transient source dependency = %v", stage.Dependencies)
+				}
+			}
+			if fmt.Sprintf("%#v", inherited) != beforeInherited || fmt.Sprintf("%#v", transient) != beforeTransient {
+				t.Fatal("planning mutated inherited triggers or transient mount options")
+			}
+		})
+	}
+}
+
+func TestDeferredOnBuildTransientMountsInPackageBuild(t *testing.T) {
+	inherited, err := onbuildparse.ParseDeferred(`RUN --mount=type=bind,from=assets,target=/authored true`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publication, err := CreateDemandDriven(parse(t, `from "scratch" as="assets"
+from "example.invalid/base:latest" as="producer"
+arg "destination" "/transient"
+run "true"
+package as="payload"
+copy "/output" "/output" from="producer"
+extend
+copy "/output" "/output" from="payload"
+`), Options{
+		Mode:               Publish,
+		TransientRunMounts: []definition.Instruction{{Name: "mount", Arguments: []string{"bind"}, Properties: map[string]string{"from": "assets", "target": "${destination:-/transient}"}}},
+	}, func(source FromSource) (StageBind, error) {
+		if source.StageID != "1" {
+			t.Fatalf("unexpected base resolver source: %#v", source)
+		}
+		return StageBind{Inherited: inherited}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stage := range publication.Stages {
+		if stage.Name != "producer" {
+			continue
+		}
+		if len(stage.Operations[0].Children) != 2 || stage.Operations[0].TransientMountCount != 1 {
+			t.Fatalf("package producer lost inherited/transient mount distinction: %#v", stage.Operations[0])
+		}
+	}
+	if got := publication.PackageArguments["destination"]; got != "/transient" {
+		t.Fatalf("transient mount argument not fixed in package: %q", got)
+	}
+	for _, ref := range publication.Component.StageReferences {
+		if ref.MountIndex >= 0 {
+			t.Fatalf("build-only source mount leaked into component metadata: %#v", ref)
+		}
+	}
+	if _, err := ValidatePublished(publication.Component); err != nil {
+		t.Fatal(err)
+	}
+}

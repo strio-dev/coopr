@@ -63,6 +63,65 @@ func TestComponentCacheKeyIncludesStageLabels(t *testing.T) {
 	}
 }
 
+func TestComponentCacheKeyIncludesTransientRunMounts(t *testing.T) {
+	input := validComponentTestKey().Input
+	executor := &graphExecutor{store: componentCacheKeyStore{}}
+	mount := func(target string) definition.Instruction {
+		return definition.Instruction{Name: "mount", Arguments: []string{"tmpfs"}, Properties: map[string]string{"target": target}}
+	}
+	key := func(mounts ...definition.Instruction) digest.Digest {
+		t.Helper()
+		resolved := &ResolvedComponentPlan{
+			Identity: digest.FromString("component"),
+			Plan: &planner.Plan{Stages: []planner.Stage{{ID: "0", Operations: []planner.Operation{{
+				Instruction:         definition.Instruction{Name: "run", Arguments: []string{"true"}, Properties: map[string]string{"network": "default"}, Children: append([]definition.Instruction{mount("/authored")}, mounts...)},
+				TransientMountCount: len(mounts),
+			}}}}},
+		}
+		cacheKey, err := new(componentCache).key(executor, input, resolved, nil, v1.Platform{OS: "linux", Architecture: "amd64"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		identity, err := cacheKey.Digest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return identity
+	}
+	seen := map[digest.Digest]string{}
+	for _, test := range []struct {
+		name   string
+		mounts []definition.Instruction
+	}{
+		{name: "absent"},
+		{name: "present", mounts: []definition.Instruction{mount("/first")}},
+		{name: "changed target", mounts: []definition.Instruction{mount("/second")}},
+		{name: "ordered mounts", mounts: []definition.Instruction{mount("/first"), mount("/second")}},
+		{name: "reversed mounts", mounts: []definition.Instruction{mount("/second"), mount("/first")}},
+	} {
+		identity := key(test.mounts...)
+		if previous, duplicate := seen[identity]; duplicate {
+			t.Fatalf("%s and %s share component cache key %s", previous, test.name, identity)
+		}
+		seen[identity] = test.name
+		if repeated := key(test.mounts...); repeated != identity {
+			t.Fatalf("%s cache key changed without changing mounts: %s != %s", test.name, repeated, identity)
+		}
+	}
+}
+
+func TestBuildExecutionOptionsRejectsInvalidTransientMountCount(t *testing.T) {
+	for _, count := range []int{-1, 2} {
+		stages := []planner.Stage{{ID: "0", Operations: []planner.Operation{{
+			Instruction:         definition.Instruction{Name: "run", Children: []definition.Instruction{{Name: "mount", Arguments: []string{"tmpfs"}}}},
+			TransientMountCount: count,
+		}}}}
+		if _, err := buildExecutionOptionsDigest(stages, nil); err == nil || !strings.Contains(err.Error(), "invalid transient mount count") {
+			t.Fatalf("count %d: expected invalid transient mount count error, got %v", count, err)
+		}
+	}
+}
+
 func TestComponentCacheRelaysDeferredImageCandidate(t *testing.T) {
 	workerRoot := t.TempDir()
 	parentRoot := t.TempDir()

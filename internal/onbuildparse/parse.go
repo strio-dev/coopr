@@ -3,6 +3,7 @@
 package onbuildparse
 
 import (
+	"encoding/csv"
 	"fmt"
 	"path"
 	"slices"
@@ -21,7 +22,7 @@ type Expander func(string) (string, error)
 
 // Parse parses a trigger without expanding child-stage variables.
 func Parse(raw string) ([]definition.Instruction, error) {
-	result, err := ParseDeferred(raw)
+	result, err := parseDeferred(raw, false)
 	if err != nil {
 		return nil, err
 	}
@@ -42,8 +43,12 @@ func Parse(raw string) ([]definition.Instruction, error) {
 // retain their lexical quoting until the child-stage scope is available. COPY
 // and ADD heredoc contents remain raw for the planner's heredoc expansion pass.
 func ParseDeferred(raw string) ([]definition.Instruction, error) {
+	return parseDeferred(raw, true)
+}
+
+func parseDeferred(raw string, deferMounts bool) ([]definition.Instruction, error) {
 	identity := func(word string) (string, error) { return word, nil }
-	result, err := parse(raw, identity, identity, true)
+	result, err := parse(raw, identity, identity, true, deferMounts)
 	if err != nil {
 		return nil, err
 	}
@@ -105,10 +110,10 @@ func ParseExpanded(raw string, expand Expander) ([]definition.Instruction, error
 // Docker uses raw expansion for unquoted COPY and ADD heredoc contents so
 // quotes and other shell syntax in the generated file remain intact.
 func ParseExpandedRaw(raw string, expand, expandRaw Expander) ([]definition.Instruction, error) {
-	return parse(raw, expand, expandRaw, false)
+	return parse(raw, expand, expandRaw, false, false)
 }
 
-func parse(raw string, expand, expandRaw Expander, retainExpansion bool) ([]definition.Instruction, error) {
+func parse(raw string, expand, expandRaw Expander, retainExpansion, deferMounts bool) ([]definition.Instruction, error) {
 	if expand == nil || expandRaw == nil {
 		return nil, fmt.Errorf("ONBUILD expander is nil")
 	}
@@ -127,7 +132,8 @@ func parse(raw string, expand, expandRaw Expander, retainExpansion bool) ([]defi
 		return nil, fmt.Errorf("parse ONBUILD instruction: %w", err)
 	}
 	if _, isArg := command.(*instructions.ArgCommand); !isArg {
-		if expandable, ok := command.(instructions.SupportsSingleWordExpansion); ok {
+		_, isRun := command.(*instructions.RunCommand)
+		if expandable, ok := command.(instructions.SupportsSingleWordExpansion); ok && (!deferMounts || !isRun) {
 			if err := expandable.Expand(instructions.SingleWordExpander(expand)); err != nil {
 				return nil, fmt.Errorf("expand ONBUILD instruction: %w", err)
 			}
@@ -163,12 +169,23 @@ func parse(raw string, expand, expandRaw Expander, retainExpansion bool) ([]defi
 		if network := instructions.GetNetwork(value); network != instructions.NetworkDefault {
 			putProperty(&inst, "network", network)
 		}
-		for _, mount := range instructions.GetMounts(value) {
-			child, err := runMount(mount)
+		if deferMounts {
+			mounts, err := deferredRunMounts(parsed.AST.Children[0].Flags)
 			if err != nil {
 				return nil, err
 			}
-			inst.Children = append(inst.Children, child)
+			inst.Children = append(inst.Children, mounts...)
+			if len(mounts) != 0 {
+				inst.DeferredOnBuild = raw
+			}
+		} else {
+			for _, mount := range instructions.GetMounts(value) {
+				child, err := runMount(mount)
+				if err != nil {
+					return nil, err
+				}
+				inst.Children = append(inst.Children, child)
+			}
 		}
 		for _, device := range instructions.GetDevices(value) {
 			if device.Name == "" {
@@ -278,7 +295,13 @@ func parse(raw string, expand, expandRaw Expander, retainExpansion bool) ([]defi
 		return nil, fmt.Errorf("ONBUILD trigger has no executable instruction")
 	}
 	for _, inst := range result {
-		if err := definition.ValidateResolved(inst); err != nil {
+		var err error
+		if retainExpansion {
+			err = definition.Validate(&definition.Definition{Instructions: []definition.Instruction{inst}})
+		} else {
+			err = definition.ValidateResolved(inst)
+		}
+		if err != nil {
 			return nil, fmt.Errorf("ONBUILD %s: %w", strings.ToUpper(inst.Name), err)
 		}
 	}
@@ -353,6 +376,66 @@ func addExcludes(inst *definition.Instruction, patterns []string) {
 	if len(patterns) != 0 {
 		inst.Children = append(inst.Children, definition.Instruction{Name: "exclude", Arguments: slices.Clone(patterns)})
 	}
+}
+
+// Retain unresolved RUN mount fields for graph dependency discovery. The original
+// trigger is decoded by the upstream typed parser once child-stage scope exists;
+// these provisional fields never supply execution or cache semantics.
+func deferredRunMounts(flags []string) ([]definition.Instruction, error) {
+	var mounts []definition.Instruction
+	for _, flag := range flags {
+		value, ok := strings.CutPrefix(flag, "--mount=")
+		if !ok {
+			continue
+		}
+		fields, err := csv.NewReader(strings.NewReader(value)).Read()
+		if err != nil {
+			return nil, fmt.Errorf("parse deferred ONBUILD RUN mount: %w", err)
+		}
+		mount := definition.Instruction{Name: "mount", Arguments: []string{"bind"}}
+		for _, field := range fields {
+			key, value, hasValue := strings.Cut(field, "=")
+			key = strings.ToLower(key)
+			if !hasValue {
+				switch key {
+				case "readonly", "ro", "readwrite", "rw", "required":
+					value = "true"
+				default:
+					return nil, fmt.Errorf("ONBUILD RUN mount field %q requires a value", key)
+				}
+			}
+			if key == "type" {
+				if !strings.Contains(value, "$") {
+					value = strings.ToLower(value)
+				}
+				mount.Arguments[0] = value
+			} else {
+				if key == "sharing" && !strings.Contains(value, "$") {
+					value = strings.ToLower(value)
+				}
+				// Docker's aliases assign the same field in source order. Keep
+				// the last assignment without evaluating boolean expressions.
+				switch key {
+				case "src":
+					key = "source"
+				case "dst", "destination":
+					key = "target"
+				case "ro", "readonly":
+					key = "readonly"
+					delete(mount.Properties, "rw")
+				case "rw", "readwrite":
+					key = "rw"
+					delete(mount.Properties, "readonly")
+				}
+				if mount.Properties == nil {
+					mount.Properties = make(map[string]string)
+				}
+				mount.Properties[key] = value
+			}
+		}
+		mounts = append(mounts, mount)
+	}
+	return mounts, nil
 }
 
 func runMount(mount *instructions.Mount) (definition.Instruction, error) {

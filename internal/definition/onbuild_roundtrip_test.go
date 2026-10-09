@@ -132,7 +132,7 @@ func TestOnBuildMetadataRejectsUnknownOrInstructionSpecificProperties(t *testing
 		`onbuild { volume "/data" typo="x" }`,
 	} {
 		_, err := definition.Parse(strings.NewReader(source))
-		if err == nil || !strings.Contains(err.Error(), "property") || !strings.Contains(err.Error(), "is not supported") {
+		if err == nil || !strings.Contains(err.Error(), "unsupported property") {
 			t.Errorf("Parse(%q) error = %v, want unsupported property", source, err)
 		}
 	}

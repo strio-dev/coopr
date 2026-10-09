@@ -220,3 +220,97 @@ func TestParseRunPreservesRepeatedDeviceOptions(t *testing.T) {
 		t.Fatalf("ONBUILD RUN devices = %#v, want %#v", instructions, want)
 	}
 }
+
+func TestParseDeferredRetainsTypedMountExpressionsAndCSVFields(t *testing.T) {
+	for _, trigger := range []string{
+		`RUN --mount=type=secret,id=token,target=${target:-/run/token},required=${required:-true},mode=${mode:-0400},uid=${uid:-1000} true`,
+		`RUN --mount=type=secret,id=token,\"target=${target:-/run/a,b}\",required=${required:-true},mode=${mode:-0400},uid=${uid:-1000} true`,
+	} {
+		got, err := ParseDeferred(trigger)
+		if err != nil {
+			t.Fatalf("ParseDeferred(%q): %v", trigger, err)
+		}
+		mount := got[0].Children[0]
+		if mount.Arguments[0] != "secret" || mount.Properties["required"] != "${required:-true}" || mount.Properties["mode"] != "${mode:-0400}" || mount.Properties["uid"] != "${uid:-1000}" {
+			t.Fatalf("deferred mount = %#v", mount)
+		}
+		if !strings.HasPrefix(mount.Properties["target"], "${target:-/run/") {
+			t.Fatalf("deferred mount target = %q", mount.Properties["target"])
+		}
+		// Exercise the upstream typed expansion path with the same CSV flag.
+		// An explicitly supplied target avoids the comma-containing fallback.
+		expanded, err := ParseExpanded(trigger, func(value string) (string, error) {
+			return strings.NewReplacer("${target:-/run/token}", "/run/token", "${target:-/run/a,b}", "/run/token", "${required:-true}", "true", "${mode:-0400}", "0400", "${uid:-1000}", "1000").Replace(value), nil
+		})
+		if err != nil {
+			t.Fatalf("upstream typed mount expansion: %v", err)
+		}
+		if expanded[0].Children[0].Properties["target"] != "/run/token" || expanded[0].Children[0].Properties["mode"] != "400" {
+			t.Fatalf("expanded mount = %#v", expanded[0].Children[0])
+		}
+	}
+}
+
+func TestParseDeferredMountAliasesPreserveLastAssignment(t *testing.T) {
+	for _, test := range []struct {
+		flags string
+		key   string
+	}{
+		{flags: "rw,ro", key: "readonly"},
+		{flags: "ro,rw=${writable}", key: "rw"},
+	} {
+		got, err := ParseDeferred(`RUN --mount=type=bind,from=base,source=/old,src=/source,target=/old,dst=/target,` + test.flags + ` true`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		properties := got[0].Children[0].Properties
+		if properties["from"] != "base" || properties["source"] != "/source" || properties["target"] != "/target" || properties[test.key] == "" {
+			t.Fatalf("mount properties = %#v", properties)
+		}
+		other := "readonly"
+		if test.key == "readonly" {
+			other = "rw"
+		}
+		if _, exists := properties[other]; exists {
+			t.Fatalf("obsolete %s assignment retained: %#v", other, properties)
+		}
+	}
+}
+
+func TestParseDeferredRetainsMountTypeAndSharingExpressions(t *testing.T) {
+	const trigger = `RUN --mount=type=${kind:-cache},target=/cache,sharing=${sharing:-locked} true`
+	got, err := ParseDeferred(trigger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mount := got[0].Children[0]
+	if mount.Arguments[0] != "${kind:-cache}" || mount.Properties["sharing"] != "${sharing:-locked}" {
+		t.Fatalf("deferred mount = %#v", mount)
+	}
+	got, err = ParseExpanded(trigger, func(word string) (string, error) {
+		return strings.NewReplacer("${kind:-cache}", "cache", "${sharing:-locked}", "locked").Replace(word), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mount = got[0].Children[0]
+	if mount.Arguments[0] != "cache" || mount.Properties["sharing"] != "locked" {
+		t.Fatalf("expanded mount = %#v", mount)
+	}
+	if _, err := ParseExpanded(trigger, func(word string) (string, error) {
+		return strings.NewReplacer("${kind:-cache}", "cache", "${sharing:-locked}", "invalid").Replace(word), nil
+	}); err == nil {
+		t.Fatal("accepted invalid resolved mount sharing")
+	}
+}
+
+func TestParseDeferredCanonicalizesImportedLiteralMountCase(t *testing.T) {
+	got, err := ParseDeferred(`RUN --mount=type=CACHE,target=/cache,sharing=LOCKED true`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mount := got[0].Children[0]
+	if mount.Arguments[0] != "cache" || mount.Properties["sharing"] != "locked" {
+		t.Fatalf("deferred mount = %#v", mount)
+	}
+}

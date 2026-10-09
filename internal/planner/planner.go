@@ -1302,7 +1302,7 @@ func validateAndCloneStageBinds(raw []rawStage, binds map[string]StageBind) (map
 			if !inheritedInstruction(inst.Name) {
 				return nil, fmt.Errorf("stage bind %q inherited instruction %d cannot be %q", key, position+1, inst.Name)
 			}
-			if err := definition.ValidateResolved(inst); err != nil {
+			if err := definition.Validate(&definition.Definition{Instructions: []definition.Instruction{inst}}); err != nil {
 				return nil, fmt.Errorf("stage bind %q inherited instruction %d: %w", key, position+1, err)
 			}
 			copy.Inherited = append(copy.Inherited, cloneInstruction(inst))
@@ -1624,12 +1624,14 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 	packageFixed := map[string]bool{}
 	g.collectArgumentReferences(raw.head, g.globals, packageFixed)
 	for instructionIndex, inst := range instructions {
+		var transient definition.Instruction
 		if inst.Name == "run" && len(g.opts.TransientRunMounts) != 0 && (g.opts.Mode != Publish || packagePhase) {
-			inst.Children = append(slices.Clone(inst.Children), g.opts.TransientRunMounts...)
+			transient.Children = g.opts.TransientRunMounts
 		}
 		authoredOnBuild := instructionIndex >= inheritedCount && inst.Name == "onbuild"
 		if !authoredOnBuild {
 			g.collectArgumentReferences(inst, values, packageFixed)
+			g.collectArgumentReferences(transient, values, packageFixed)
 			if inst.Name == "run" {
 				for name, value := range values {
 					if value.present && !shadows[name] {
@@ -1677,6 +1679,18 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 		}
 		if err := expandStructuralReferences(inst, &normalized, g.globals, expansionValues); err != nil {
 			return fmt.Errorf("stage %s %s: %w", stage.ID, inst.Name, err)
+		}
+		if len(transient.Children) != 0 {
+			// Deferred ONBUILD normalization reconstructs the authored RUN from
+			// its raw trigger. Attach build-wide mounts only after that boundary.
+			normalizedTransient, err := normalize(transient, expansionValues)
+			if err != nil {
+				return fmt.Errorf("stage %s %s: %w", stage.ID, inst.Name, err)
+			}
+			if err := expandStructuralReferences(transient, &normalizedTransient, g.globals, expansionValues); err != nil {
+				return fmt.Errorf("stage %s %s: %w", stage.ID, inst.Name, err)
+			}
+			normalized.Children = append(normalized.Children, normalizedTransient.Children...)
 		}
 		dynamicInherited := g.opts.Mode == Invoke && instructionIndex < inheritedCount && !g.packageDerived[i]
 		operationIndex := len(stage.Operations)
@@ -2021,6 +2035,30 @@ func cloneContextSpec(spec buildcontext.Spec) *buildcontext.Spec {
 }
 
 func normalize(inst definition.Instruction, values scope) (definition.Instruction, error) {
+	if inst.DeferredOnBuild != "" {
+		if inst.Name != "run" {
+			return definition.Instruction{}, fmt.Errorf("deferred ONBUILD metadata requires a RUN instruction")
+		}
+		parsed, err := onbuildparse.ParseExpandedRaw(inst.DeferredOnBuild, func(word string) (string, error) {
+			return expandDockerWord(word, values)
+		}, func(word string) (string, error) {
+			return expandHeredoc(word, values)
+		})
+		if err != nil {
+			return definition.Instruction{}, err
+		}
+		if len(parsed) != 1 || parsed[0].Name != "run" {
+			return definition.Instruction{}, fmt.Errorf("deferred ONBUILD metadata must contain exactly one RUN")
+		}
+		out := parsed[0]
+		if _, explicit := out.Properties["network"]; !explicit {
+			if out.Properties == nil {
+				out.Properties = make(map[string]string)
+			}
+			out.Properties["network"] = "default"
+		}
+		return out, nil
+	}
 	out := definition.Instruction{Name: inst.Name, Form: inst.Form, LayerBoundary: inst.LayerBoundary, Properties: map[string]string{}}
 	for _, file := range inst.InlineFiles {
 		data := file.Data
@@ -2079,6 +2117,10 @@ func normalize(inst definition.Instruction, values scope) (definition.Instructio
 
 func expandStructuralReferences(authored definition.Instruction, normalized *definition.Instruction, globals, stage scope) error {
 	if normalized == nil {
+		return nil
+	}
+	if authored.DeferredOnBuild != "" {
+		// The upstream Dockerfile decoder already expanded these fields once.
 		return nil
 	}
 	values := maps.Clone(globals)
