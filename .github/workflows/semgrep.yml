@@ -31,10 +31,10 @@ jobs:
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
       - name: Cache Nix builds
-        uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        uses: Mic92/hestia@dfed9ced335d28978ba74e513939a10db1f71025 # v3.1.0
         with:
-          use-gha-cache: enabled
-          use-flakehub: disabled
+          version: v3.1.0
+          upstream-cache-filter: true
       - name: Scan
         run: |
           # The explicit Python file would otherwise match the default tests ignore.
