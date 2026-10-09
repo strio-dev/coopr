@@ -69,8 +69,8 @@ func TestMaterializePlanContextsReusesPlanningSelection(t *testing.T) {
 }
 
 func TestBuildPlanConsumesLocalNamedContextAsFromCopyAndRunMount(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless named-context graph build")
+	if testing.Short() {
+		t.Skip("skipping a live rootless named-context graph build in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()

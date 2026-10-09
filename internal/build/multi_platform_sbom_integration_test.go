@@ -16,8 +16,8 @@ import (
 )
 
 func TestMultiPlatformHostSBOMOutputsUseLastPlatform(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH for live multi-platform SBOM output")
+	if testing.Short() {
+		t.Skip("requires native build integration")
 	}
 	busybox, err := exec.LookPath("busybox")
 	if err != nil {

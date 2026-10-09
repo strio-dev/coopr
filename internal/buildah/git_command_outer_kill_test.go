@@ -24,14 +24,14 @@ func TestGitOuterKillHelper(t *testing.T) {
 		return
 	case "outer":
 		signalIgnoreTermination()
-		command := gitCommandContext(context.Background(), testWorkerBinary(t), "-test.run=^TestGitOuterKillHelper$")
+		command := gitCommandContext(context.Background(), testWorkerBinary(t), "-test.run=^TestGitOuterKillHelper$", "-test.short="+strconv.FormatBool(testing.Short()))
 		command.Env = replaceEnv(os.Environ(), gitOuterKillHelperMode, "git")
 		if err := command.Run(); err != nil {
 			t.Fatal(err)
 		}
 	case "git":
 		signalIgnoreTermination()
-		grandchild := exec.Command(testWorkerBinary(t), "-test.run=^TestGitOuterKillHelper$")
+		grandchild := exec.Command(testWorkerBinary(t), "-test.run=^TestGitOuterKillHelper$", "-test.short="+strconv.FormatBool(testing.Short()))
 		grandchild.Env = replaceEnv(os.Environ(), gitOuterKillHelperMode, "helper")
 		if err := grandchild.Start(); err != nil {
 			t.Fatal(err)
@@ -53,7 +53,7 @@ func TestGitOuterKillHelper(t *testing.T) {
 func TestOuterWorkerKillIncludesGitProcessTree(t *testing.T) {
 	ready := filepath.Join(t.TempDir(), "ready")
 	ctx, cancel := context.WithCancel(context.Background())
-	command := exec.Command(testWorkerBinary(t), "-test.run=^TestGitOuterKillHelper$")
+	command := exec.Command(testWorkerBinary(t), "-test.run=^TestGitOuterKillHelper$", "-test.short="+strconv.FormatBool(testing.Short()))
 	command.Env = replaceEnv(os.Environ(), gitOuterKillHelperMode, "outer")
 	command.Env = replaceEnv(command.Env, "COOPR_TEST_GIT_OUTER_KILL_READY", ready)
 

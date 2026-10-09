@@ -9,8 +9,8 @@ import (
 )
 
 func TestBuildCopyAndAddParentsPreservePivotSuffix(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah parents build")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah parents build in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -50,8 +50,8 @@ func TestBuildCopyAndAddParentsPreservePivotSuffix(t *testing.T) {
 }
 
 func TestBuildLocalCopyPolicyMatchesContainerfileFrontend(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah COPY policy build")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah COPY policy build in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

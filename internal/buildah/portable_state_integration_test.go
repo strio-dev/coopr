@@ -51,8 +51,8 @@ func setTestPOSIXACL(t *testing.T, path string) {
 }
 
 func TestPackageSnapshotPreservesPortableStateAcrossStores(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live rootless snapshot fidelity")
+	if testing.Short() {
+		t.Skip("skipping live rootless snapshot fidelity in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

@@ -172,8 +172,8 @@ func TestPruneDryRunPreservesCacheAliasesAndImages(t *testing.T) {
 }
 
 func TestPruneRetainsNeededLayersAndContainers(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for native layer and container pruning")
+	if testing.Short() {
+		t.Skip("skipping native layer and container pruning in short mode")
 	}
 	for _, all := range []bool{false, true} {
 		t.Run(fmt.Sprintf("all=%t", all), func(t *testing.T) {
@@ -251,8 +251,8 @@ func TestPruneRetainsNeededLayersAndContainers(t *testing.T) {
 }
 
 func TestSupervisedPruneCleansBuildWorkerMounts(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for supervised cache-mount cleanup")
+	if testing.Short() {
+		t.Skip("skipping supervised cache-mount cleanup in short mode")
 	}
 	root := t.TempDir()
 	t.Setenv("TMPDIR", root)
@@ -341,8 +341,8 @@ func createMaintenanceTestImage(t *testing.T, store storage.Store, topLayer stri
 }
 
 func TestMaintainStoreSupervisedUsesIsolatedStore(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live maintenance worker coverage")
+	if testing.Short() {
+		t.Skip("skipping live maintenance worker coverage in short mode")
 	}
 	root := t.TempDir()
 	result, err := MaintainStoreSupervised(context.Background(), StoreMaintenanceRequest{
@@ -358,8 +358,8 @@ func TestMaintainStoreSupervisedUsesIsolatedStore(t *testing.T) {
 }
 
 func TestMaintainStoreSupervisedWaitsForActiveBuildLease(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live maintenance worker coverage")
+	if testing.Short() {
+		t.Skip("skipping live maintenance worker coverage in short mode")
 	}
 	root := t.TempDir()
 	activity, err := storeactivity.AcquireShared(context.Background(), filepath.Join(root, "graph"), filepath.Join(root, "run"))

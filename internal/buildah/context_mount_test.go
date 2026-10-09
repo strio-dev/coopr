@@ -265,8 +265,8 @@ func TestStageBindRunDoesNotSnapshotContext(t *testing.T) {
 }
 
 func TestBuildPlanContextBindUsesFilteredSnapshot(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless context bind build")
+	if testing.Short() {
+		t.Skip("skipping a live rootless context bind build in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -331,8 +331,8 @@ func (builder *inspectingRunBuilder) run(command []string, options upstream.RunO
 }
 
 func TestBuildPlanWritableContextPersistsAcrossStagesAndCopy(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1")
+	if testing.Short() {
+		t.Skip("skipping native integration in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -367,8 +367,8 @@ copy "generated" "/copied"
 }
 
 func TestPinnedBuildahWritableContextPersistsForBuild(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1")
+	if testing.Short() {
+		t.Skip("skipping native integration in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()

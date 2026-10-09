@@ -66,8 +66,8 @@ func imageIOArgs(options buildah.StoreOptions, args ...string) []string {
 }
 
 func TestImageIOExistsTagAndArchiveRoundTrip(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for supervised native tag and archive operations")
+	if testing.Short() {
+		t.Skip("skipping supervised native tag and archive operations in short mode")
 	}
 	ctx := context.Background()
 	options := maintenanceStoreOptions(t.TempDir())
@@ -100,8 +100,8 @@ func TestImageIOExistsTagAndArchiveRoundTrip(t *testing.T) {
 	}
 	for _, format := range []string{"oci-archive", "docker-archive"} {
 		t.Run(format, func(t *testing.T) {
-			if format == "oci-archive" && os.Getenv("COOPR_TEST_BUILDAH") == "" {
-				t.Skip("set COOPR_TEST_BUILDAH=1 to load OCI archives in the native user namespace")
+			if format == "oci-archive" && testing.Short() {
+				t.Skip("skipping load OCI archives in the native user namespace in short mode")
 			}
 			archive := filepath.Join(t.TempDir(), format+".tar")
 			out.Reset()
@@ -147,8 +147,8 @@ func TestImageIOExistsTagAndArchiveRoundTrip(t *testing.T) {
 }
 
 func TestImageIOPullPushWithNativeRegistry(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for supervised native registry transfer")
+	if testing.Short() {
+		t.Skip("skipping supervised native registry transfer in short mode")
 	}
 	ctx := context.Background()
 	options := maintenanceStoreOptions(t.TempDir())
@@ -234,8 +234,8 @@ func TestImageIOHistoryUsesNativeConfigAndSizes(t *testing.T) {
 }
 
 func TestImageIOLoadRestoresExactMultiPlatformIndex(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for native indexed archive loading")
+	if testing.Short() {
+		t.Skip("skipping native indexed archive loading in short mode")
 	}
 	ctx := context.Background()
 	options := maintenanceStoreOptions(t.TempDir())
@@ -289,8 +289,8 @@ func TestImageIOLoadRestoresExactMultiPlatformIndex(t *testing.T) {
 }
 
 func TestImageIOArchiveStandardStreams(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for native OCI archive loading")
+	if testing.Short() {
+		t.Skip("skipping native OCI archive loading in short mode")
 	}
 	ctx := context.Background()
 	options := maintenanceStoreOptions(t.TempDir())
@@ -335,8 +335,8 @@ func TestImageIOArchiveStandardStreams(t *testing.T) {
 }
 
 func TestImageIOLoadForeignOnlyIndex(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for native archive loading")
+	if testing.Short() {
+		t.Skip("skipping native archive loading in short mode")
 	}
 	ctx := context.Background()
 	foreign := v1.Platform{OS: "linux", Architecture: "arm64"}
@@ -414,8 +414,8 @@ func TestImageIOExistsLocalStatus(t *testing.T) {
 }
 
 func TestImageIODockerSaveDigestAndForeignSinglePlatform(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for native archive operations")
+	if testing.Short() {
+		t.Skip("skipping native archive operations in short mode")
 	}
 	for _, foreign := range []bool{false, true} {
 		t.Run(fmt.Sprint(foreign), func(t *testing.T) {
@@ -470,8 +470,8 @@ func TestImageIODockerSaveDigestAndForeignSinglePlatform(t *testing.T) {
 }
 
 func TestImageIODockerSaveSharedConfigSelections(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for native archive operations")
+	if testing.Short() {
+		t.Skip("skipping native archive operations in short mode")
 	}
 	ctx := context.Background()
 	platform := v1.Platform{OS: "linux", Architecture: runtime.GOARCH}

@@ -16,8 +16,8 @@ import (
 )
 
 func TestSupervisedRawBuildPlansExternalOnBuildBeforeExecution(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah ONBUILD planning test")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah ONBUILD planning test in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -105,8 +105,8 @@ copy "artifact" "/artifact"
 }
 
 func TestSupervisedRawBuildPlansLocalOnBuildBeforeExecution(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah ONBUILD planning test")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah ONBUILD planning test in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()

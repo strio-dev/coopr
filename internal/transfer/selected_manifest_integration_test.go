@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -49,7 +50,8 @@ func TestMain(m *testing.M) {
 	if reexec.Init() {
 		return
 	}
-	if os.Getenv("COOPR_TEST_BUILDAH") != "" || os.Getenv("COOPR_TEST_BUILDAH_REGISTRY") != "" || os.Getenv("COOPR_TEST_CONTAINER_STORAGE") != "" {
+	flag.Parse()
+	if !testing.Short() && flag.Lookup("test.list").Value.String() == "" {
 		unshare.MaybeReexecUsingUserNamespace(false)
 	}
 	os.Exit(m.Run())
@@ -85,8 +87,8 @@ func TestExactManifestLookupPreservesNativePlatform(t *testing.T) {
 }
 
 func TestCopyPinnedManifestExportsExactVariantSharingImageID(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live selected-manifest copy coverage")
+	if testing.Short() {
+		t.Skip("skipping live selected-manifest copy coverage in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -207,8 +209,8 @@ func TestCopyPinnedManifestExportsExactVariantSharingImageID(t *testing.T) {
 }
 
 func TestLocalSigningPreservesSiblingManifestSignaturesSharingImageID(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live sibling-signature coverage")
+	if testing.Short() {
+		t.Skip("skipping live sibling-signature coverage in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()

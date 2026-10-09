@@ -33,8 +33,8 @@ import (
 )
 
 func TestBuildPlanInvokesComponentPreservingCopyLayer(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless component invocation")
+	if testing.Short() {
+		t.Skip("skipping a live rootless component invocation in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -66,8 +66,8 @@ func TestBuildPlanInvokesComponentPreservingCopyLayer(t *testing.T) {
 }
 
 func TestBuildPlanOverlapsIndependentComponentStages(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live parallel component coverage")
+	if testing.Short() {
+		t.Skip("skipping live parallel component coverage in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	var requests atomic.Int32
@@ -115,8 +115,8 @@ copy "/component-proof" "/right" from="right"
 }
 
 func TestBuildPlanOverlapsIndependentBranchesInsideComponent(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live component branch concurrency")
+	if testing.Short() {
+		t.Skip("skipping live component branch concurrency in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -146,8 +146,8 @@ copy "/right" "/right" from="right"
 }
 
 func TestComponentBranchesRespectJobsBound(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live component job-bound coverage")
+	if testing.Short() {
+		t.Skip("skipping live component job-bound coverage in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -204,8 +204,8 @@ copy "/c" "/c" from="c"
 }
 
 func TestComponentParallelBranchesHonorCacheMountSharing(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live component cache-mount locking")
+	if testing.Short() {
+		t.Skip("skipping live component cache-mount locking in short mode")
 	}
 	for _, test := range []struct {
 		sharing, assertion string
@@ -266,8 +266,8 @@ run %q network="none" {
 }
 
 func TestCallerAndComponentCanSequenceSameLockedCacheMount(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live component cache-mount locking")
+	if testing.Short() {
+		t.Skip("skipping live component cache-mount locking in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -299,8 +299,8 @@ run "/bin/busybox test -e /cache/from-component" network="none" {
 }
 
 func TestBuildPlanReplansFromCompletedComponentConfiguration(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live component-stage configuration inheritance")
+	if testing.Short() {
+		t.Skip("skipping live component-stage configuration inheritance in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -374,8 +374,8 @@ env RESULT="$COMPONENT_VALUE"
 }
 
 func TestBuildPlanReusesPortableFilesystemComponentCache(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless component cache")
+	if testing.Short() {
+		t.Skip("skipping a live rootless component cache in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -438,8 +438,8 @@ func TestBuildPlanReusesPortableFilesystemComponentCache(t *testing.T) {
 }
 
 func TestPublishedCompatibilityAllowListsSurviveColdAndWarmComponentCache(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live compatibility allow-list cache coverage")
+	if testing.Short() {
+		t.Skip("skipping live compatibility allow-list cache coverage in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -478,8 +478,8 @@ env COMPATIBILITY_LIST="yes"
 }
 
 func TestComponentCacheReusesNonemptyCaller(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live nonempty caller cache")
+	if testing.Short() {
+		t.Skip("skipping a live nonempty caller cache in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -517,8 +517,8 @@ func TestComponentCacheReusesNonemptyCaller(t *testing.T) {
 }
 
 func TestBuildPlanInvokesComponentWithPackageStageMount(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live package-backed component invocation")
+	if testing.Short() {
+		t.Skip("skipping a live package-backed component invocation in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -550,8 +550,8 @@ run "cat /package/artifact >/proof" network="none" {
 }
 
 func TestBuildPlanInvokesConfigOnlyComponentFromScratch(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless component invocation")
+	if testing.Short() {
+		t.Skip("skipping a live rootless component invocation in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -574,8 +574,8 @@ func TestBuildPlanInvokesConfigOnlyComponentFromScratch(t *testing.T) {
 }
 
 func TestBuildPlanReusesPortableConfigOnlyComponentCache(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless component cache")
+	if testing.Short() {
+		t.Skip("skipping a live rootless component cache in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -663,8 +663,8 @@ func TestBuildPlanReusesPortableConfigOnlyComponentCache(t *testing.T) {
 }
 
 func TestSupervisedBuildReusesComponentCacheAcrossWorkers(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless component cache")
+	if testing.Short() {
+		t.Skip("skipping a live rootless component cache in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -699,8 +699,8 @@ func TestSupervisedBuildReusesComponentCacheAcrossWorkers(t *testing.T) {
 }
 
 func TestBuildPlanReusesRegistryComponentCacheAcrossStores(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless registry cache")
+	if testing.Short() {
+		t.Skip("skipping a live rootless registry cache in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -768,8 +768,8 @@ func TestBuildPlanReusesRegistryComponentCacheAcrossStores(t *testing.T) {
 }
 
 func TestBuildPlanUsesComponentShellForFollowingRun(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live component RUN ordering test")
+	if testing.Short() {
+		t.Skip("skipping a live component RUN ordering test in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -795,8 +795,8 @@ func TestBuildPlanUsesComponentShellForFollowingRun(t *testing.T) {
 }
 
 func TestBuildPlanAppliesNetworkOptionsToComponentRun(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live component network build")
+	if testing.Short() {
+		t.Skip("skipping a live component network build in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -824,8 +824,8 @@ func TestBuildPlanAppliesNetworkOptionsToComponentRun(t *testing.T) {
 }
 
 func TestBuildPlanInvokesNestedComponentsAndRejectsCycles(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live nested component invocation")
+	if testing.Short() {
+		t.Skip("skipping live nested component invocation in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

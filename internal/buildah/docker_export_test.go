@@ -79,8 +79,8 @@ func TestExportRawDockerSourceRejectsChangedBlobAndCleansStaging(t *testing.T) {
 }
 
 func TestExportStoredImageRawHealthcheckSurvivesNativeImport(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live rootless Docker image export")
+	if testing.Short() {
+		t.Skip("skipping live rootless Docker image export in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

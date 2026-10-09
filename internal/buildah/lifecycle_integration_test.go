@@ -18,8 +18,8 @@ import (
 )
 
 func TestLifecycleNoLayersBuildsSingleNewLayerWithoutInstructionCache(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for native lifecycle builds")
+	if testing.Short() {
+		t.Skip("skipping native lifecycle builds in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -58,8 +58,8 @@ func TestLifecycleNoLayersBuildsSingleNewLayerWithoutInstructionCache(t *testing
 }
 
 func TestLifecycleNoLayersPreservesCallerAcrossComponentAsOneLayer(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for native lifecycle builds")
+	if testing.Short() {
+		t.Skip("skipping native lifecycle builds in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -104,8 +104,8 @@ func TestLifecycleNoLayersPreservesCallerAcrossComponentAsOneLayer(t *testing.T)
 }
 
 func TestLifecycleNoLayersAddsOneLayerAcrossComponentBoundaries(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for native lifecycle builds")
+	if testing.Short() {
+		t.Skip("skipping native lifecycle builds in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -154,8 +154,8 @@ func TestLifecycleNoLayersAddsOneLayerAcrossComponentBoundaries(t *testing.T) {
 }
 
 func TestLifecycleRetainsSelectedIntermediateContainers(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for native lifecycle builds")
+	if testing.Short() {
+		t.Skip("skipping native lifecycle builds in short mode")
 	}
 	for _, tc := range []struct {
 		name         string

@@ -16,8 +16,8 @@ import (
 )
 
 func TestBuildDefinitionAppliesProxyDNSShmAndUlimitControls(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live RUN control coverage")
+	if testing.Short() {
+		t.Skip("skipping live RUN control coverage in short mode")
 	}
 	t.Setenv("HTTP_PROXY", "http://host-proxy.example:3128")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -55,8 +55,8 @@ run "set -e; test \"$HTTP_PROXY\" = http://host-proxy.example:3128; /bin/busybox
 }
 
 func TestBuildDefinitionMemoryCPUControlsEnforceOrRejectHost(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live cgroup control coverage")
+	if testing.Short() {
+		t.Skip("skipping live cgroup control coverage in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
@@ -92,8 +92,8 @@ run "set -ex; cat /proc/self/cgroup; cgroup=$( /bin/busybox awk -F: '$1 == 0 { p
 }
 
 func TestBuildDefinitionAppliesBuildWideHostVolume(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live RUN control coverage")
+	if testing.Short() {
+		t.Skip("skipping live RUN control coverage in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -138,8 +138,8 @@ run "set -e; test \"$(cat /host-input/message)\" = mounted; printf ready >/proof
 }
 
 func TestBuildDefinitionDisablesGeneratedHostFiles(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live host-file control coverage")
+	if testing.Short() {
+		t.Skip("skipping live host-file control coverage in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -171,8 +171,8 @@ run "set -e; test ! -e /etc/hostname; test ! -e /etc/hosts; printf ready >/proof
 }
 
 func TestBuildDefinitionUsesContainersConfigRuntimeDefaults(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live containers.conf default coverage")
+	if testing.Short() {
+		t.Skip("skipping live containers.conf default coverage in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -211,8 +211,8 @@ run "set -e; test \"$(ulimit -n)\" = 333; test \"$(/bin/busybox df -k /dev/shm |
 }
 
 func TestBuildDefinitionExecutesNativeBuildNetworkModes(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live build-network coverage")
+	if testing.Short() {
+		t.Skip("skipping live build-network coverage in short mode")
 	}
 	for _, test := range []struct {
 		network          string

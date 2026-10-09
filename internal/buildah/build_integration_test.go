@@ -3,6 +3,7 @@ package buildah
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -13,7 +14,11 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	if os.Getenv("COOPR_TEST_BUILDAH") != "" {
+	if InitReexec() {
+		return
+	}
+	flag.Parse()
+	if !testing.Short() && flag.Lookup("test.list").Value.String() == "" {
 		if InitRootlessReexec() {
 			return
 		}
@@ -22,8 +27,8 @@ func TestMain(m *testing.M) {
 }
 
 func TestBuildRunsAndCommitsOCIImage(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah build")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah build in short mode")
 	}
 	base := os.Getenv("COOPR_TEST_BUILDAH_BASE")
 	graphRoot := os.Getenv("COOPR_TEST_BUILDAH_GRAPHROOT")
@@ -71,8 +76,8 @@ func TestBuildRunsAndCommitsOCIImage(t *testing.T) {
 }
 
 func TestBuildScratchCopiesAndCommitsOCIImage(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah build")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah build in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

@@ -70,8 +70,8 @@ func TestContainerSourcePathForCopyPreservesParentsPivot(t *testing.T) {
 }
 
 func TestCopyFromImageTranslatesMappedNonzeroOwners(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah COPY --from mapping test")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah COPY --from mapping test in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -178,8 +178,8 @@ func mappedContainerID(mappings []specs.LinuxIDMapping, host uint32) uint32 {
 }
 
 func TestCopyFromImagePreservesMetadataExcludesAndUnmounts(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah COPY --from test")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah COPY --from test in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

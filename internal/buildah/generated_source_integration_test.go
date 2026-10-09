@@ -24,8 +24,8 @@ import (
 )
 
 func TestGeneratedOCIBaseAfterProducer(t *testing.T) {
-	if testing.Short() || os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for generated OCI base execution")
+	if testing.Short() {
+		t.Skip("skipping generated OCI base execution in short mode")
 	}
 	for _, explicitAfter := range []bool{true, false} {
 		t.Run(fmt.Sprintf("explicit-after=%v", explicitAfter), func(t *testing.T) { testGeneratedOCIBase(t, explicitAfter, false, false) })
@@ -33,15 +33,15 @@ func TestGeneratedOCIBaseAfterProducer(t *testing.T) {
 }
 
 func TestGeneratedOCIBasePolicyConversion(t *testing.T) {
-	if testing.Short() || os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1")
+	if testing.Short() {
+		t.Skip("skipping native integration in short mode")
 	}
 	testGeneratedOCIBase(t, false, true, false)
 }
 
 func TestGeneratedOCIBaseNamedPolicyConversion(t *testing.T) {
-	if testing.Short() || os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1")
+	if testing.Short() {
+		t.Skip("skipping native integration in short mode")
 	}
 	testGeneratedOCIBase(t, false, true, true)
 }

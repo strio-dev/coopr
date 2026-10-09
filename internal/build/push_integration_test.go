@@ -15,8 +15,8 @@ import (
 )
 
 func TestRunPushPublishesAndReturnsImmutableReference(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH_REGISTRY") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH_REGISTRY for live Buildah registry tests")
+	if testing.Short() {
+		t.Skip("requires native build integration")
 	}
 	server := httptest.NewServer(registry.New())
 	defer server.Close()

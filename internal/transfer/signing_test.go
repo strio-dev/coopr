@@ -221,8 +221,8 @@ func TestCopyRootSignsRegistryImageWithGPGKey(t *testing.T) {
 }
 
 func TestSignStoredImageWithGPGKey(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live native-store signing coverage")
+	if testing.Short() {
+		t.Skip("live native-store signing coverage")
 	}
 	ctx := context.Background()
 	layoutPath := filepath.Join(t.TempDir(), "layout")
@@ -364,8 +364,8 @@ func TestGPGVerificationHelper(t *testing.T) {
 	verifyGPGSignedReference(t, ctx, os.Getenv("COOPR_TEST_GPG_REFERENCE"), os.Getenv("COOPR_TEST_GPG_PUBLIC_KEY"), os.Getenv("COOPR_TEST_GPG_WANT_ALLOWED") == "1")
 }
 
-func TestCopyRootSignsRegistryImageWithSigstoreKey(t *testing.T) {
-	ctx := context.Background()
+func signedRegistryImageFixture(t *testing.T, ctx context.Context) (registryName, result, publicKey string, root v1.Descriptor) {
+	t.Helper()
 	storeDir := filepath.Join(t.TempDir(), "images")
 	source, root := imageFixture(t, ctx)
 	if err := localstore.Put(ctx, storeDir, source, root, "signed:latest"); err != nil {
@@ -378,7 +378,7 @@ func TestCopyRootSignsRegistryImageWithSigstoreKey(t *testing.T) {
 	}
 	keyDir := t.TempDir()
 	privateKey := filepath.Join(keyDir, "cosign.key")
-	publicKey := filepath.Join(keyDir, "cosign.pub")
+	publicKey = filepath.Join(keyDir, "cosign.pub")
 	passphraseFile := filepath.Join(keyDir, "password")
 	for path, data := range map[string][]byte{privateKey: keys.PrivateKey, publicKey: keys.PublicKey, passphraseFile: append(passphrase, '\n')} {
 		if err := os.WriteFile(path, data, 0600); err != nil {
@@ -386,9 +386,9 @@ func TestCopyRootSignsRegistryImageWithSigstoreKey(t *testing.T) {
 		}
 	}
 	server := httptest.NewServer(registry.New())
-	defer server.Close()
-	registryName := strings.TrimPrefix(server.URL, "http://") + "/coopr/signed:test"
-	result, err := CopyRoot(ctx, oci.Image, storeDir, root, Destination{Transport: "registry", Name: registryName}, Options{
+	t.Cleanup(server.Close)
+	registryName = strings.TrimPrefix(server.URL, "http://") + "/coopr/signed:test"
+	result, err = CopyRoot(ctx, oci.Image, storeDir, root, Destination{Transport: "registry", Name: registryName}, Options{
 		TLSVerify: new(false),
 		Signing: SigningOptions{
 			SigstorePrivateKeyFile: privateKey,
@@ -401,13 +401,12 @@ func TestCopyRootSignsRegistryImageWithSigstoreKey(t *testing.T) {
 	if want := strings.TrimSuffix(registryName, ":test") + "@" + root.Digest.String(); result != want {
 		t.Fatalf("signed result = %q, want %q", result, want)
 	}
-	if os.Getenv("COOPR_TEST_COSIGN") != "" {
-		command := exec.CommandContext(ctx, "cosign", "verify", "--key", publicKey, "--insecure-ignore-tlog", "--allow-http-registry", result)
-		output, err := command.CombinedOutput()
-		if err != nil {
-			t.Fatalf("cosign verify %s: %v\n%s", result, err, output)
-		}
-	}
+	return registryName, result, publicKey, root
+}
+
+func TestCopyRootSignsRegistryImageWithSigstoreKey(t *testing.T) {
+	ctx := context.Background()
+	registryName, _, publicKey, root := signedRegistryImageFixture(t, ctx)
 	verifySignedReference(t, ctx, registryName, publicKey, imagecopy.CopyAllImages, true)
 	assertRemoteManifestDigests(t, ctx, registryName, root, nil)
 
@@ -542,7 +541,7 @@ func verifyGPGSignedReference(t *testing.T, ctx context.Context, registryName, p
 
 func verifyGPGSignedReferenceInSubprocess(t *testing.T, ctx context.Context, registryName, publicKey string, wantAllowed bool) {
 	t.Helper()
-	command := exec.CommandContext(ctx, reexec.Self(), "-test.run=^TestGPGVerificationHelper$")
+	command := exec.CommandContext(ctx, reexec.Self(), "-test.run=^TestGPGVerificationHelper$", fmt.Sprintf("-test.short=%t", testing.Short()))
 	wantAllowedValue := "0"
 	if wantAllowed {
 		wantAllowedValue = "1"

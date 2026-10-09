@@ -9,13 +9,13 @@ import (
 	"time"
 
 	"coopr/internal/planner"
-	"github.com/opencontainers/image-spec/specs-go/v1"
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/image/v5/types"
 )
 
 func TestBuildDefinitionCopiesFromSelectedExternalImage(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah external-image COPY test")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah external-image COPY test in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -47,8 +47,8 @@ func TestBuildDefinitionCopiesFromSelectedExternalImage(t *testing.T) {
 }
 
 func TestBuildDefinitionMountsSelectedExternalImageForRun(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah external-image RUN mount test")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah external-image RUN mount test in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -126,8 +126,8 @@ copy "/right" "/right" from="right"
 }
 
 func TestComponentInvocationCopiesFromSelectedExternalImage(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless component external-image COPY test")
+	if testing.Short() {
+		t.Skip("skipping a live rootless component external-image COPY test in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

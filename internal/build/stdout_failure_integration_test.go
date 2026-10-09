@@ -16,8 +16,8 @@ import (
 )
 
 func TestCompletedStdoutTarSurvivesLaterPublicationFailure(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for output failure behavior")
+	if testing.Short() {
+		t.Skip("requires native build integration")
 	}
 	root := dockerEngineWorkspace(t)
 	file := filepath.Join(root, "image.coopr")

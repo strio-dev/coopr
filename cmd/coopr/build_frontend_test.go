@@ -3,11 +3,12 @@ package main
 import (
 	"archive/tar"
 	"bytes"
-	"github.com/spf13/cobra"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 func TestResolveBuildInput(t *testing.T) {

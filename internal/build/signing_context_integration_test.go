@@ -15,8 +15,8 @@ import (
 )
 
 func TestBuildLocalSigningReusesExclusiveStoreLease(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH for native local signing build")
+	if testing.Short() {
+		t.Skip("requires native build integration")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -31,8 +31,8 @@ func TestBuildLocalSigningReusesExclusiveStoreLease(t *testing.T) {
 }
 
 func TestBuildExcludesAmbientGPGKeyringFromCopyDot(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH for native signing context test")
+	if testing.Short() {
+		t.Skip("requires native build integration")
 	}
 	contextDir := t.TempDir()
 	home := filepath.Join(contextDir, ".gnupg")

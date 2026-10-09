@@ -57,7 +57,7 @@ let
     buildPhase = ''
       runHook preBuild
       mkdir -p "$out/bin"
-      for package in cmd/coopr internal/build internal/buildah internal/transfer; do
+      for package in cmd/coopr internal/build internal/buildah internal/transfer internal/acceptance; do
         go test -trimpath -c -o "$out/bin/$(basename "$package").test" "./$package"
       done
       go build -trimpath -o "$out/bin/test2json" cmd/test2json
@@ -107,16 +107,13 @@ let
           GOSUMDB = "off";
           CGO_ENABLED = "0";
           GOFLAGS = "-mod=vendor -tags=${lib.concatStringsSep "," coopr.tags}";
-          COOPR_TEST_BUILDAH = "1";
-          COOPR_TEST_BUILDAH_REGISTRY = "1";
-          COOPR_TEST_CONTAINER_STORAGE = "1";
           COOPR_TEST_CLI = "${coopr}/bin/coopr";
           COOPR_TEST_BINFMT_HANDLER = foreignSystem;
           COOPR_TEST_FIXTURES = fixtures;
         }
         // lib.optionalAttrs (acceptance != null) {
           COOPR_ACCEPTANCE_IMAGE_COPY = "${container.copyTo}/bin/copy-to";
-          COOPR_ACCEPTANCE_TEST_BINARY = "${integrationTests}/bin/build.test";
+          COOPR_ACCEPTANCE_TEST_BINARY = "${integrationTests}/bin/acceptance.test";
         }
         // lib.optionalAttrs (acceptance == "static") {
           COOPR_ACCEPTANCE_CLI = "${coopr-static}/bin/coopr";

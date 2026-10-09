@@ -132,8 +132,8 @@ func TestComponentPackageImporterConfigDigestSeparatesMemoEntries(t *testing.T) 
 }
 
 func TestComponentPackageImporterLiveRootless(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless package importer")
+	if testing.Short() {
+		t.Skip("skipping a live rootless package importer in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

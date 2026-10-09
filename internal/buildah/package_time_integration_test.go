@@ -14,8 +14,8 @@ import (
 )
 
 func TestPublicationTimestampAndTTLAcrossFreshBuildStores(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH for native package cache controls")
+	if testing.Short() {
+		t.Skip("skipping native package cache controls in short mode")
 	}
 	ctx := context.Background()
 	root := t.TempDir()

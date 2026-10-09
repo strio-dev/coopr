@@ -13,8 +13,8 @@ import (
 )
 
 func TestDockerAnnotationControlsAreIgnored(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH for live Docker annotation controls")
+	if testing.Short() {
+		t.Skip("requires native build integration")
 	}
 	root := dockerEngineWorkspace(t)
 	t.Setenv("XDG_RUNTIME_DIR", root)
@@ -53,8 +53,8 @@ func TestDockerAnnotationControlsAreIgnored(t *testing.T) {
 }
 
 func TestMultiPlatformTarFilesystemOutputUsesLastPlatform(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH for live rootfs exports")
+	if testing.Short() {
+		t.Skip("requires native build integration")
 	}
 	root := dockerEngineWorkspace(t)
 	definition := filepath.Join(root, "image.coopr")
@@ -98,8 +98,8 @@ func TestMultiPlatformTarFilesystemOutputUsesLastPlatform(t *testing.T) {
 }
 
 func TestMultiPlatformLocalFilesystemExports(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH for live rootfs exports")
+	if testing.Short() {
+		t.Skip("requires native build integration")
 	}
 	root := dockerEngineWorkspace(t)
 	definition := filepath.Join(root, "image.coopr")

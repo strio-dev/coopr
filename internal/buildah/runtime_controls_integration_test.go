@@ -29,8 +29,8 @@ type liveRuntimeControlsFixture struct {
 
 func newLiveRuntimeControlsFixture(t *testing.T) liveRuntimeControlsFixture {
 	t.Helper()
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live build-wide runtime control coverage")
+	if testing.Short() {
+		t.Skip("skipping live build-wide runtime control coverage in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	t.Cleanup(cancel)

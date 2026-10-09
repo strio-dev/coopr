@@ -8,8 +8,8 @@ import (
 )
 
 func TestBuildConsumesLocalBaseOnBuildARGAndStageDependency(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah ONBUILD build")
+	if testing.Short() {
+		t.Skip("requires native build integration")
 	}
 	root := t.TempDir()
 	for name, contents := range map[string]string{

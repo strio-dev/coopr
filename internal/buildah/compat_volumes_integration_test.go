@@ -19,8 +19,8 @@ import (
 )
 
 func TestBuildDefinitionCompatVolumesPreservesRunBoundaryButAllowsCopy(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live compatibility-volume coverage")
+	if testing.Short() {
+		t.Skip("skipping live compatibility-volume coverage in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -107,8 +107,8 @@ RUN --network=none printf '%%s:%%s' "$(/bin/busybox cat /vol/value)" "$(/bin/bus
 }
 
 func TestFinalVolumeCreatesDirectoryInFilesystemExport(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1")
+	if testing.Short() {
+		t.Skip("skipping native integration in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()

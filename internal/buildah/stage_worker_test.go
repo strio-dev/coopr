@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -21,8 +22,8 @@ import (
 )
 
 func TestStageWorkerResultPreservesCommittedImageOnCancellation(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for committed worker response")
+	if testing.Short() {
+		t.Skip("skipping committed worker response in short mode")
 	}
 	root := t.TempDir()
 	options := PlanOptions{Store: cacheTestStore(filepath.Join(root, "store")), ContextDir: root, Isolation: "rootless", Lifecycle: LifecycleControls{NoLayers: true}, Output: Output{Path: filepath.Join(root, "output"), DisableCompression: true}}
@@ -166,7 +167,7 @@ func TestExecuteStageWorkerRejectsMalformedJobIDWithoutOpeningStore(t *testing.T
 }
 
 func TestStageWorkerRecognizesReapedSignalExit(t *testing.T) {
-	command := exec.Command(testWorkerBinary(t), "-test.run=^TestWorkerProcessHelper$")
+	command := exec.Command(testWorkerBinary(t), "-test.run=^TestWorkerProcessHelper$", "-test.short="+strconv.FormatBool(testing.Short()))
 	command.Env = replaceEnv(os.Environ(), workerProcessHelperMode, "self-kill")
 	err := command.Run()
 	if err == nil || command.ProcessState == nil {

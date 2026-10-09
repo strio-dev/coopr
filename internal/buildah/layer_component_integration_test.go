@@ -5,14 +5,15 @@ import (
 	"coopr/internal/buildcontext"
 	"errors"
 	"fmt"
-	v1 "github.com/opencontainers/image-spec/specs-go/v1"
-	storagearchive "go.podman.io/storage/pkg/archive"
 	"io"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	storagearchive "go.podman.io/storage/pkg/archive"
 )
 
 func TestComponentPreservesInstructionLayers(t *testing.T) {

@@ -136,8 +136,8 @@ func TestNormalizeZeroLayerExecutorConfigOnlyRepairsEmptyRootFS(t *testing.T) {
 }
 
 func TestBuildDefinitionRecordsInstructionHistory(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live instruction-history coverage")
+	if testing.Short() {
+		t.Skip("skipping live instruction-history coverage in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -386,8 +386,8 @@ cmd { exec "/bin/cat" "/payload" }
 }
 
 func TestBuildPlanOrdersMetadataAfterNonCacheableRun(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live non-cacheable RUN history coverage")
+	if testing.Short() {
+		t.Skip("skipping live non-cacheable RUN history coverage in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -420,8 +420,8 @@ label after="run"
 }
 
 func TestBuildPlanLinkedCopyUsesPlannedHistory(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live linked COPY history coverage")
+	if testing.Short() {
+		t.Skip("skipping live linked COPY history coverage in short mode")
 	}
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "payload"), []byte("linked\n"), 0o600); err != nil {
@@ -446,8 +446,8 @@ copy "payload" "/payload" link="true"
 }
 
 func TestBuildPlanComponentMetadataTailKeepsLayerHistory(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live component history coverage")
+	if testing.Short() {
+		t.Skip("skipping live component history coverage in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()

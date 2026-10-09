@@ -17,8 +17,8 @@ import (
 )
 
 func TestPublishPlanPublishesInstructionCandidatesOnlyAfterSuccess(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live component publication cache")
+	if testing.Short() {
+		t.Skip("skipping a live component publication cache in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()

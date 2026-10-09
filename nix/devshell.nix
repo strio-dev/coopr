@@ -4,6 +4,11 @@
   coopr,
   zensical ? null,
   withDevelopmentTools ? true,
+  testTags ? lib.optionals withDevelopmentTools [
+    "dockerintegration"
+    "cosignintegration"
+    "examplesintegration"
+  ],
 }:
 pkgs.mkShell {
   inputsFrom = [ coopr ];
@@ -41,5 +46,5 @@ pkgs.mkShell {
       zensical
     ];
   inherit (coopr) CGO_ENABLED;
-  GOFLAGS = "-tags=${lib.concatStringsSep "," coopr.tags}";
+  GOFLAGS = "-tags=${lib.concatStringsSep "," (coopr.tags ++ testTags)}";
 }

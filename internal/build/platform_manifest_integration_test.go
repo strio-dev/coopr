@@ -12,8 +12,8 @@ import (
 )
 
 func TestAllPlatformsDiscoversLocalBasesAndIntersectsPlatforms(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH for native platform discovery")
+	if testing.Short() {
+		t.Skip("requires native build integration")
 	}
 	ctx := context.Background()
 	workspace := dockerEngineWorkspace(t)
@@ -65,8 +65,8 @@ func TestAllPlatformsDiscoversLocalBasesAndIntersectsPlatforms(t *testing.T) {
 }
 
 func TestManifestAppendsConcurrentPlatformsAndReplacesExistingPlatform(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH for native manifest assembly")
+	if testing.Short() {
+		t.Skip("requires native build integration")
 	}
 	ctx := context.Background()
 	workspace := dockerEngineWorkspace(t)

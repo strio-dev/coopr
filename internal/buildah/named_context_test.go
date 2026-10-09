@@ -426,8 +426,8 @@ func TestExtractRemoteNamedContextValidatesGzipFooter(t *testing.T) {
 }
 
 func TestMaterializeHTTPNamedContextDoesNotForwardURLTokenOnRedirect(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless named-context import")
+	if testing.Short() {
+		t.Skip("skipping a live rootless named-context import in short mode")
 	}
 	archive := tarBytes(t, "proof", "redirected context\n")
 	var refererMu sync.Mutex
@@ -505,8 +505,8 @@ func TestMaterializeHTTPNamedContextRejectsRedirectCredentials(t *testing.T) {
 }
 
 func TestMaterializeLocalNamedContextFreezesFilteredFilesystem(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless named-context import")
+	if testing.Short() {
+		t.Skip("skipping a live rootless named-context import in short mode")
 	}
 	for _, test := range []struct {
 		ignoreFile    string
@@ -610,8 +610,8 @@ func TestMaterializeLocalNamedContextFreezesFilteredFilesystem(t *testing.T) {
 }
 
 func TestMaterializeRemoteNamedContexts(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live rootless remote named-context imports")
+	if testing.Short() {
+		t.Skip("skipping live rootless remote named-context imports in short mode")
 	}
 	archive := tarBytes(t, "proof", "http context\n")
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
@@ -690,8 +690,8 @@ func TestMaterializeRemoteNamedContexts(t *testing.T) {
 }
 
 func TestBuildPlanConsumesRemoteNamedContexts(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live supervised remote named-context builds")
+	if testing.Short() {
+		t.Skip("skipping live supervised remote named-context builds in short mode")
 	}
 	archive := tarBytes(t, "proof", "http context\n")
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
@@ -750,8 +750,8 @@ func TestBuildPlanConsumesRemoteNamedContexts(t *testing.T) {
 }
 
 func TestBuildPlanConsumesAuthenticatedGitNamedContext(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live supervised private Git named-context build")
+	if testing.Short() {
+		t.Skip("skipping a live supervised private Git named-context build in short mode")
 	}
 	const token = "supervised-named-context-token"
 	source, commit := gitHTTPFixture(t, "basic eC1hY2Nlc3MtdG9rZW46c3VwZXJ2aXNlZC1uYW1lZC1jb250ZXh0LXRva2Vu")
@@ -793,8 +793,8 @@ func TestBuildPlanConsumesAuthenticatedGitNamedContext(t *testing.T) {
 }
 
 func TestBuildPlanConsumesSSHGitNamedContext(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live supervised SSH Git named-context build")
+	if testing.Short() {
+		t.Skip("skipping a live supervised SSH Git named-context build in short mode")
 	}
 	source, privateKey, knownHosts := gitSSHFixture(t)
 	root := t.TempDir()
@@ -829,8 +829,8 @@ func TestBuildPlanConsumesSSHGitNamedContext(t *testing.T) {
 }
 
 func TestMaterializeOCILayoutNamedContextImportsSelectedPlatform(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless named-context import")
+	if testing.Short() {
+		t.Skip("skipping a live rootless named-context import in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

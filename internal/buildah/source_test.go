@@ -210,8 +210,8 @@ func TestResolveImageSourceRefreshesAuthoritativeSharedStoreName(t *testing.T) {
 }
 
 func TestResolveImageSourceEnforcesRegistryScopedPolicy(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for the live registry policy test")
+	if testing.Short() {
+		t.Skip("skipping the live registry policy test in short mode")
 	}
 	ctx := context.Background()
 	reference, authority := newLiveBusyBoxRegistry(t, ctx)
@@ -251,8 +251,8 @@ func TestResolveImageSourceEnforcesRegistryScopedPolicy(t *testing.T) {
 }
 
 func TestResolveImageSourcePullsRegistryDirectlyIntoBuildahStore(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for the live registry pull test")
+	if testing.Short() {
+		t.Skip("skipping the live registry pull test in short mode")
 	}
 	ctx := context.Background()
 	reference, _ := newLiveBusyBoxRegistry(t, ctx)

@@ -15,8 +15,8 @@ import (
 )
 
 func TestBuildArchiveAndDefinitionStdinWithMultipleDestinations(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH for live input/output tests")
+	if testing.Short() {
+		t.Skip("requires native build integration")
 	}
 	root := t.TempDir()
 	definition := filepath.Join(root, "image.coopr")
@@ -96,8 +96,8 @@ func TestBuildArchiveAndDefinitionStdinWithMultipleDestinations(t *testing.T) {
 }
 
 func TestBuildCooprIgnoreOverridesDefaultsAndIgnoresLegacy(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH for live ignore tests")
+	if testing.Short() {
+		t.Skip("requires native build integration")
 	}
 	root := t.TempDir()
 	file := filepath.Join(root, "image.coopr")
@@ -117,8 +117,8 @@ func TestBuildCooprIgnoreOverridesDefaultsAndIgnoresLegacy(t *testing.T) {
 }
 
 func TestBuildCombinesDefinitionsAndWritesRawIID(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH for live combined definition input")
+	if testing.Short() {
+		t.Skip("requires native build integration")
 	}
 	for _, secondFrom := range []bool{false, true} {
 		t.Run(map[bool]string{false: "append", true: "new-stage"}[secondFrom], func(t *testing.T) {

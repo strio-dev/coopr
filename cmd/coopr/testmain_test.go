@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"testing"
@@ -9,12 +10,14 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	if os.Getenv("COOPR_TEST_BUILDAH") != "" {
+	if buildah.InitReexec() {
+		return
+	}
+	flag.Parse()
+	if !testing.Short() && flag.Lookup("test.list").Value.String() == "" {
 		if buildah.InitRootlessReexec() {
 			return
 		}
-	} else if buildah.InitReexec() {
-		return
 	}
 	dataDir, err := os.MkdirTemp("", "coopr-cli-test-data-*")
 	if err != nil {

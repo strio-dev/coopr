@@ -11,8 +11,8 @@ import (
 )
 
 func TestConfiguredPodmanStoreInvokesCompatibilityListsColdAndWarm(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for configured Podman-store compatibility coverage")
+	if testing.Short() {
+		t.Skip("skipping configured Podman-store compatibility coverage in short mode")
 	}
 	root := t.TempDir()
 	configHome := filepath.Join(root, "config")

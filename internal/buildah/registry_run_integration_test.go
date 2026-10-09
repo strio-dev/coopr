@@ -19,8 +19,8 @@ import (
 )
 
 func TestBuildPlanRunsWithAndWithoutNetworkFromRegistryBase(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live registry and runtime build")
+	if testing.Short() {
+		t.Skip("skipping a live registry and runtime build in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -59,8 +59,8 @@ run "printf isolated >/isolated" network="none"
 }
 
 func TestBuildPlanAddsCustomHostToRun(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live custom host build")
+	if testing.Short() {
+		t.Skip("skipping a live custom host build in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -90,8 +90,8 @@ func TestBuildPlanAddsCustomHostToRun(t *testing.T) {
 }
 
 func TestBuildPlanSupervisedKeepsCacheMountAcrossBuilds(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live registry and runtime build")
+	if testing.Short() {
+		t.Skip("skipping a live registry and runtime build in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -129,8 +129,8 @@ run "if test -e /cache/proof; then printf hit >/result; else printf miss >/resul
 }
 
 func TestBuildPlanSupervisedRunsIndependentJobsConcurrently(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live concurrent RUN builds")
+	if testing.Short() {
+		t.Skip("skipping live concurrent RUN builds in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

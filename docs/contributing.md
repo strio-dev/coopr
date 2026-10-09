@@ -21,7 +21,7 @@ Read the [architecture](concepts/architecture.md) and [execution reference](refe
 
 | Command | Checks |
 | --- | --- |
-| `just test` | Go tests; live tests skip unless configured. |
+| `just test` | Unit tests using Go's `-short` mode. |
 | `just vet` / `just lint` | Go static analysis. |
 | `just scan` | Semgrep security checks for Go, Python, and GitHub Actions. |
 | `just fmt` | Go, Nix, and Justfile formatting. |
@@ -56,6 +56,13 @@ foreign-architecture execution test passes.
 Other integration packages and each packaged CLI variant have separate checks.
 Packaged acceptance uses the same Go test suite in the VM and on a configured host.
 
+The runners select live tests without test-enablement environment variables.
+`just test` uses `go test -short`; the rootless runners omit `-short` and supply
+their fixture paths. Host acceptance lives in `internal/acceptance`, outside the
+native tests' user namespace setup. External suites use Go build tags; unit checks
+compile and analyze those tagged tests in short mode. A selected live suite fails
+on missing prerequisites.
+
 The raw `packaged-acceptance`, `docker-acceptance`, and `benchmark` commands need a configured Linux host with working rootless containers:
 
 | Command | Scope |
@@ -64,6 +71,8 @@ The raw `packaged-acceptance`, `docker-acceptance`, and `benchmark` commands nee
 | `just packaged-acceptance` | Packaged image, store reuse, multi-platform components, and Podman comparison. |
 | `just release-acceptance` | The same complete AMD64 NixOS VM checks as `just integration`. |
 | `just docker-acceptance` | Docker transfers using a disposable daemon. |
+| `just examples-acceptance` | Online publication and execution of the repository examples; requires rootless Podman and registry access. |
+| `just cosign-acceptance` | External Cosign signature verification; requires `cosign` on PATH. |
 | `just benchmark` | Coopr/Podman timing measurements. |
 
 See [security](guides/security.md) for namespace/runtime requirements. Skipped integration tests do not establish runtime support.

@@ -16,6 +16,8 @@ import (
 	"coopr/internal/oci"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+
+	"coopr/internal/testutil"
 )
 
 // Opt-in because it writes to the selected containers-storage image store.
@@ -144,18 +146,15 @@ func TestDefaultNativeStoreRetagRunsWithoutContext(t *testing.T) {
 
 func loadTestBackend(t *testing.T) {
 	t.Helper()
-	if os.Getenv("COOPR_TEST_CONTAINER_STORAGE") != "1" {
-		t.Skip("set COOPR_TEST_CONTAINER_STORAGE=1 for live native storage acceptance")
-	}
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH for live native storage acceptance")
+	if testing.Short() {
+		t.Skip("requires native build integration")
 	}
 }
 
 func storageTestCLI(t *testing.T, ctx context.Context) string {
 	t.Helper()
 	if path, supplied := os.LookupEnv("COOPR_TEST_CLI"); supplied {
-		if err := validateStorageTestCLI(path); err != nil {
+		if err := testutil.ValidateExecutable(path); err != nil {
 			t.Fatalf("COOPR_TEST_CLI: %v", err)
 		}
 		return path
@@ -168,20 +167,6 @@ func storageTestCLI(t *testing.T, ctx context.Context) string {
 		t.Fatalf("build Coopr CLI for native storage test: %v: %s", err, output)
 	}
 	return path
-}
-
-func validateStorageTestCLI(path string) error {
-	if !filepath.IsAbs(path) {
-		return fmt.Errorf("must be an absolute path to an executable file")
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return err
-	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
-		return fmt.Errorf("must be an executable file: %s", path)
-	}
-	return nil
 }
 
 func runStorageCLI(ctx context.Context, binary, definition, tag string, extraEnv []string) (string, error) {
@@ -249,7 +234,7 @@ func storageRunnerFixture() (string, error) {
 		return "", fmt.Errorf("COOPR_TEST_FIXTURES must be a directory: %s", root)
 	}
 	path := filepath.Join(root, "storage-runner")
-	if err := validateStorageTestCLI(path); err != nil {
+	if err := testutil.ValidateExecutable(path); err != nil {
 		return "", fmt.Errorf("COOPR_TEST_FIXTURES: %w", err)
 	}
 	return path, nil
