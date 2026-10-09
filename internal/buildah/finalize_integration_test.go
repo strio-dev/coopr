@@ -295,6 +295,32 @@ func TestSBOMScannerImageUsesFilteredContextAndEmbedsOutput(t *testing.T) {
 	}
 }
 
+func TestSBOMScannerPreparedContextKeepsExclusions(t *testing.T) {
+	f := newLocalComponentFixture(t)
+	base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
+	f.write(t, "marker", "scan me")
+	f.write(t, "ignored", "must not reach scanner")
+	f.write(t, ".dockerignore", "ignored\n")
+	options := f.options
+	options.ContextPrepared = true
+	// Original artifact locations can cover the disposable context after
+	// remapping. Its retained policy remains authoritative for recreated files.
+	options.ContextArtifacts = []string{f.root}
+	options.IgnoreFile = filepath.Join(f.contextDir, ".dockerignore")
+	options.Output = Output{Path: filepath.Join(f.root, "prepared-sbom"), SBOM: []define.SBOMScanOptions{{
+		Image:         base.reference,
+		Commands:      []string{`/bin/busybox sh -c 'test -f {CONTEXT}/marker && test ! -e {CONTEXT}/ignored && printf "{\"bomFormat\":\"CycloneDX\",\"components\":[]}" > {OUTPUT}'`},
+		MergeStrategy: define.SBOMMergeStrategyCycloneDXByComponentNameAndVersion,
+		SBOMOutput:    filepath.Join(f.root, "prepared.json"),
+	}}}
+	if _, err := BuildPlan(f.ctx, testPlan(t, "from \"scratch\"\ncopy \"marker\" \"/marker\"\n"), options); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(options.Output.SBOM[0].SBOMOutput); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func readFlatTar(t *testing.T, path string) (map[string]string, map[string]string) {
 	t.Helper()
 	file, err := os.Open(path)

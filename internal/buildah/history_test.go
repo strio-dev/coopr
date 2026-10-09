@@ -474,8 +474,15 @@ label final="yes"
 	if nonempty != len(manifest.Layers) || nonempty != 1 {
 		t.Fatalf("component history has %d filesystem entries for %d layers: %+v", nonempty, len(manifest.Layers), image.History)
 	}
-	tail := image.History[len(image.History)-2:]
-	if !strings.HasPrefix(tail[0].CreatedBy, "COMPONENT ") || tail[0].EmptyLayer || tail[1].CreatedBy != "LABEL final=yes" || !tail[1].EmptyLayer {
-		t.Fatalf("component/LABEL history order = %+v", tail)
+	copyIndex := -1
+	for i, entry := range image.History {
+		if !entry.EmptyLayer && strings.HasPrefix(entry.CreatedBy, "COPY ") {
+			copyIndex = i
+		}
 	}
+	last := image.History[len(image.History)-1]
+	if copyIndex < 0 || copyIndex >= len(image.History)-1 || last.CreatedBy != "LABEL final=yes" || !last.EmptyLayer {
+		t.Fatalf("selected COPY/final LABEL history order=%+v", image.History)
+	}
+
 }

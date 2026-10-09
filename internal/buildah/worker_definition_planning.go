@@ -20,8 +20,18 @@ func planDefinitionInWorker(ctx context.Context, request planWorkerRequest) (*pl
 	if request.Definition == nil || request.PlannerOptions == nil {
 		return nil, nil, nil, errors.New("raw worker request lacks definition or planner options")
 	}
+	sourcePolicy := request.SourcePolicy
+	var err error
+	if sourcePolicy == nil {
+		sourcePolicy, err = loadSourcePolicy(request.SourcePolicyFile)
+	}
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	var resolver *oci.Resolver
 	planning := *request.PlannerOptions
+	planning.DeferImageSource = deferredPolicySource(sourcePolicy)
+	planning.TransientRunMounts = TransientMountInstructions(request.TransientRunMounts)
 	planning.SourceDateEpochResolver = sourceDateEpochResolver(ctx, buildCredentialSource{secretSpecs: request.Secrets, sshSpecs: request.SSH})
 	system := &types.SystemContext{
 		SignaturePolicyPath:  request.SignaturePolicyPath,
@@ -60,9 +70,20 @@ func planDefinitionInWorker(ctx context.Context, request planWorkerRequest) (*pl
 			// Publication checks package results before materializing bases. Keep
 			// newer eager so a failed pull binds the cached config before planning.
 			if request.Mode == "publish" && resolver.PullPolicy() != oci.PullNewer {
-				return selectImageSource(ctx, resolver, reference, platform, store)
+				converted, err := policyImageSource(reference, sourcePolicy)
+				if err != nil {
+					return ResolvedImageSource{}, err
+				}
+				normalized, transport, err := normalizeBaseSource(converted, request.ContextDir)
+				if err != nil {
+					return ResolvedImageSource{}, err
+				}
+				if !transport {
+					return selectImageSource(ctx, resolver, normalized, platform, store)
+				}
+				return resolveBaseSourceWithPolicy(ctx, resolver, converted, platform, store, platformSystemContext(system, platform), request.ContextDir, nil)
 			}
-			return ResolveImageSource(ctx, resolver, reference, platform, store, platformSystemContext(system, platform))
+			return resolveBaseSourceWithPolicy(ctx, resolver, reference, platform, store, platformSystemContext(system, platform), request.ContextDir, sourcePolicy)
 		})
 	}, func(ctx context.Context, spec buildcontext.Spec, platform v1.Platform) (ResolvedImageSource, error) {
 		if spec.Kind == buildcontext.DockerImage {
@@ -71,11 +92,24 @@ func planDefinitionInWorker(ctx context.Context, request planWorkerRequest) (*pl
 			}
 		}
 		return withStore(func(store storage.Store) (ResolvedImageSource, error) {
+			if spec.Kind == buildcontext.DockerImage {
+				return resolveBaseSourceWithPolicy(ctx, resolver, spec.Reference, platform, store, platformSystemContext(system, platform), request.ContextDir, sourcePolicy)
+			}
 			return MaterializeNamedContext(ctx, spec, platform, store, platformSystemContext(system, platform), resolver, request.Secrets, request.SSH, request.ContextArtifacts...)
 		})
 	})
 	if planErr != nil {
 		return nil, nil, nil, planErr
+	}
+	if resolver == nil {
+		for _, input := range plan.Inputs {
+			if input.Kind == "image" {
+				if err := ensureResolver(); err != nil {
+					return nil, nil, nil, err
+				}
+				break
+			}
+		}
 	}
 	return plan, resolver, selected, nil
 }

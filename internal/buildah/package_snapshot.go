@@ -302,6 +302,10 @@ func (writer *countingWriter) Write(data []byte) (int, error) {
 }
 
 func packageImageConfig(ctx context.Context, store storage.Store, imageID string, system *types.SystemContext) ([]byte, error) {
+	return packageImageConfigSelected(ctx, store, imageID, system, "")
+}
+
+func packageImageConfigSelected(ctx context.Context, store storage.Store, imageID string, system *types.SystemContext, selected digest.Digest) ([]byte, error) {
 	reference, err := imagestorage.Transport.NewStoreReference(store, nil, imageID)
 	if err != nil {
 		return nil, fmt.Errorf("open package image %q: %w", imageID, err)
@@ -311,7 +315,7 @@ func packageImageConfig(ctx context.Context, store storage.Store, imageID string
 		return nil, fmt.Errorf("open package image source %q: %w", imageID, err)
 	}
 	defer func() { _ = source.Close() }()
-	manifestData, mediaType, err := source.GetManifest(ctx, nil)
+	manifestData, mediaType, err := source.GetManifest(ctx, optionalDigest(selected))
 	if err != nil {
 		return nil, fmt.Errorf("read package image manifest %q: %w", imageID, err)
 	}

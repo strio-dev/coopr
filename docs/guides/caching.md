@@ -17,7 +17,7 @@ coopr build image.coopr --cache-from registry:registry.example.com/team/cache --
 
 ## Local and portable results
 
-Coopr caches instruction snapshots, component invocation results, and package results. Local snapshots and cache mounts use the selected [image store](storage.md). Portable results can be stored in OCI layouts or registry repositories.
+Coopr caches instruction snapshots, component invocation results, and package results. Local snapshots and cache mounts use the selected [image store](storage.md). Portable results can be stored in OCI layouts or registry repositories. Cached component outputs retain their complete image layers and configuration, rather than restoring a flattened filesystem onto the caller. Their keys include the input image chain; a cache hit preserves the same output chain as execution. Explicit layer groups compact only when their outer boundary closes.
 
 Reuse depends on the selected inputs and execution controls. Device-backed RUNs cannot use portable instruction results. Unpinned remote ADD, nested component operations, and elevated operations can prevent whole-package reuse. See the [execution reference](../reference/execution.md) for eligibility and key contents.
 
@@ -33,6 +33,10 @@ coopr build image.coopr --cache-from oci-layout:.coopr-cache --cache-ttl 24h
 `--no-cache` bypasses result reads and saves fresh results. It does not clear cache mounts. `--cache-ttl` limits reads by publication age; `--cache-ttl 0` disables reads while saving fresh results. Image timestamps do not determine cache age.
 
 Network responses, credential values, cache-mount contents, and mutable host-volume/device contents do not invalidate cached results. Secret and SSH declarations do enter cache identity. Use `--no-cache` or change an authored argument when these inputs must force a rebuild. Required entitlements are checked even on a cache hit.
+
+Writable primary-context bind mounts always execute because their side effects are outside the cached image. Later COPY/ADD and read-only mounts measure the changed context. This shared context is disposable; the source checkout remains unchanged. Component calls using caller-context bind mounts also bypass whole-component result reuse.
+
+Image output compression also applies to portable instruction-cache layers. Changing `--compression-format` changes exported representation without invalidating instruction results. Native instruction snapshots keep the image store's usual representation.
 
 ## Cache mounts
 

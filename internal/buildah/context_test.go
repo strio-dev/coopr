@@ -34,6 +34,21 @@ func TestContextExplicitIgnoreReplacesDefault(t *testing.T) {
 	}
 }
 
+func TestPreparedContextMissingExcludedSourceKeepsPolicyDiagnostic(t *testing.T) {
+	root := t.TempDir()
+	policy := contextPolicy{directory: root, authoredExcludes: []string{"protected", "ignored", "!ignored/keep"}}
+	for _, source := range []string{"protected", "./protected", "/protected", "../protected", "ignored/hidden"} {
+		if _, _, err := policy.applyLocalCopy(upstream.AddAndCopyOptions{}, []string{source}); err == nil || !strings.Contains(err.Error(), "filtered out") {
+			t.Errorf("source %q error=%v", source, err)
+		}
+	}
+	for _, source := range []string{"missing", "ignored/keep"} {
+		if _, _, err := policy.applyLocalCopy(upstream.AddAndCopyOptions{}, []string{source}); err != nil {
+			t.Errorf("source %q was incorrectly classified as excluded: %v", source, err)
+		}
+	}
+}
+
 func TestPrepareContextPolicyMergesDockerignoreInstructionAndArtifacts(t *testing.T) {
 	contextDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(contextDir, ".dockerignore"), []byte("\ufeff# comment\n /ignored \n*.log\n!keep.log\n!coopr-cache\n"), 0o600); err != nil {

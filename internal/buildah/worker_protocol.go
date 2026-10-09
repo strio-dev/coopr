@@ -23,6 +23,7 @@ import (
 	"coopr/internal/planner"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"go.podman.io/buildah/pkg/sourcepolicy"
 	imagestorage "go.podman.io/image/v5/storage"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/storage/pkg/reexec"
@@ -58,7 +59,9 @@ type SupervisedPlanOptions struct {
 	ImageID             string
 	ManifestDigest      digest.Digest
 	ManifestDescriptor  v1.Descriptor
+	TransientRunMounts  []RunMount
 	ContextDir          string
+	SourcePolicyFile    string
 	IgnoreFile          string
 	ContextArtifacts    []string
 	Isolation           string
@@ -115,7 +118,10 @@ type planWorkerRequest struct {
 	Definition          *definition.Definition `json:"definition,omitempty"`
 	PlannerOptions      *planner.Options       `json:"planner_options,omitempty"`
 	Store               StoreOptions           `json:"store"`
+	TransientRunMounts  []RunMount             `json:"transient_run_mounts,omitempty"`
 	ContextDir          string                 `json:"context_dir,omitempty"`
+	SourcePolicyFile    string                 `json:"source_policy_file,omitempty"`
+	SourcePolicy        *sourcepolicy.Policy   `json:"source_policy,omitempty"`
 	IgnoreFile          string                 `json:"ignore_file,omitempty"`
 	ContextArtifacts    []string               `json:"context_artifacts,omitempty"`
 	Isolation           string                 `json:"isolation,omitempty"`
@@ -346,7 +352,10 @@ func runDefinitionSupervised(ctx context.Context, def *definition.Definition, pl
 }
 
 func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition.Definition, planning *planner.Options, options SupervisedPlanOptions, mode string) (_ planWorkerResponse, retErr error) {
-	var err error
+	sourcePolicy, err := loadSourcePolicy(options.SourcePolicyFile)
+	if err != nil {
+		return planWorkerResponse{}, err
+	}
 	options.Network, options.AddHosts, err = NormalizeBuildNetworkOptions(options.Network, options.AddHosts)
 	if err != nil {
 		return planWorkerResponse{}, err
@@ -416,18 +425,19 @@ func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition
 	workerOutput.Path = filepath.Join(jobDir, "layout")
 	request := planWorkerRequest{
 		Mode: mode, ImageID: options.ImageID, ManifestDigest: options.ManifestDigest, ManifestDescriptor: options.ManifestDescriptor, JobID: jobID, Plan: plan, Definition: def, PlannerOptions: planning,
-		Store: options.Store, ContextDir: options.ContextDir, IgnoreFile: options.IgnoreFile,
+		Store: options.Store, ContextDir: options.ContextDir, SourcePolicyFile: options.SourcePolicyFile, SourcePolicy: sourcePolicy, IgnoreFile: options.IgnoreFile,
 		ContextArtifacts: append(append([]string(nil), options.ContextArtifacts...), jobDir, options.Store.ImageStore, options.ComponentStoreDir, options.CacheLocalDir, workerTemp, options.AuthFile, options.CertDir, options.RusageLogFile),
 		Isolation:        options.Isolation, Runtime: options.Runtime,
 		Output:            workerOutput,
 		ComponentStoreDir: options.ComponentStoreDir, CacheLocalDir: options.CacheLocalDir,
-		CacheRepository: options.CacheRepository,
-		CacheFrom:       slices.Clone(options.CacheFrom),
-		CacheTo:         slices.Clone(options.CacheTo),
-		NoCache:         options.NoCache,
-		Network:         options.Network,
-		AddHosts:        append([]string(nil), options.AddHosts...),
-		RunControls:     options.RunControls, Lifecycle: options.Lifecycle,
+		CacheRepository:    options.CacheRepository,
+		CacheFrom:          slices.Clone(options.CacheFrom),
+		CacheTo:            slices.Clone(options.CacheTo),
+		NoCache:            options.NoCache,
+		Network:            options.Network,
+		AddHosts:           append([]string(nil), options.AddHosts...),
+		TransientRunMounts: options.TransientRunMounts,
+		RunControls:        options.RunControls, Lifecycle: options.Lifecycle,
 		ImageControls:     options.ImageControls,
 		Timestamp:         options.Timestamp,
 		SourceDateEpoch:   options.SourceDateEpoch,
@@ -724,16 +734,18 @@ func executePlanWorker(requestPath string) error {
 		}
 	}
 	planOptions := PlanOptions{
-		Store: request.Store, ContextDir: request.ContextDir, IgnoreFile: request.IgnoreFile, ContextArtifacts: request.ContextArtifacts, Isolation: request.Isolation,
+		Store: request.Store, ContextDir: request.ContextDir, SourcePolicyFile: request.SourcePolicyFile, SourcePolicy: request.SourcePolicy, IgnoreFile: request.IgnoreFile, ContextArtifacts: request.ContextArtifacts, Isolation: request.Isolation,
 		Runtime: request.Runtime, Output: request.Output, Resolver: resolver, ResolvedBases: resolvedBases, ReplannedBaseDelta: replannedBaseDelta,
-		CacheLocalDir:   request.CacheLocalDir,
-		CacheRepository: request.CacheRepository,
-		CacheFrom:       request.CacheFrom,
-		CacheTo:         request.CacheTo,
-		NoCache:         request.NoCache,
-		Network:         request.Network,
-		AddHosts:        request.AddHosts,
-		RunControls:     request.RunControls, Lifecycle: request.Lifecycle,
+		CacheLocalDir:      request.CacheLocalDir,
+		CacheRepository:    request.CacheRepository,
+		CacheFrom:          request.CacheFrom,
+		CacheTo:            request.CacheTo,
+		NoCache:            request.NoCache,
+		Network:            request.Network,
+		AddHosts:           request.AddHosts,
+		TransientRunMounts: request.TransientRunMounts,
+		BuildContexts:      request.BuildContexts,
+		RunControls:        request.RunControls, Lifecycle: request.Lifecycle,
 		ImageControls:           request.ImageControls,
 		Timestamp:               request.Timestamp,
 		SourceDateEpochOverride: request.SourceDateEpoch,

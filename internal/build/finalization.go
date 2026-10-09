@@ -14,6 +14,9 @@ import (
 )
 
 func validateFinalization(opts *Options, platforms []string, destinations []transfer.Destination) error {
+	if opts.IIDFileRaw != "" && len(platforms) > 1 {
+		return errors.New("--iidfile-raw can only store one image ID; select a single platform")
+	}
 	outputs := filesystemOutputs(opts.Output, opts.Outputs)
 	stdout := false
 	for i := range outputs {

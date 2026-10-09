@@ -135,6 +135,14 @@ func normalizeAddHosts(values []string) ([]string, error) {
 }
 
 func normalizePlanOptions(options PlanOptions) (PlanOptions, error) {
+	if options.Lifecycle.StageLabels && !options.Lifecycle.SaveStages {
+		return PlanOptions{}, fmt.Errorf("--stage-labels requires --save-stages")
+	}
+	var compressionErr error
+	options.Output, compressionErr = normalizeOutputCompressionForControls(options.Output, options.RunControls)
+	if compressionErr != nil {
+		return PlanOptions{}, compressionErr
+	}
 	if options.Lifecycle.NoLayers {
 		options.NoCache = true
 	}

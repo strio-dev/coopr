@@ -68,9 +68,46 @@ Packages start empty. `from "package-name"` inherits their filesystem and config
 
 ## Select outputs and arguments
 
-`--target NAME` selects an output descended from `extend` through FROM links. Publication fixes it; invocation has no target selector. Publish other outputs under separate references.
+`--target NAME` selects the component’s output stage. `extend` remains mandatory, but a later output can have an independent FROM base. A package cannot itself be the output. Publication fixes it; invocation has no target selector. Publish other outputs under separate references.
 
 Properties on a component call are string arguments, including a property named `target`. Arguments in package-producer scope become fixed during component build. For local references, different property values can package another variant. Declare invocation arguments after `extend`. The [two-component tutorial](../tutorials/reusable-components.md) demonstrates this boundary.
+
+## Preserve layers or group changes
+
+A component returns its selected image’s layers and configuration. It does not automatically compact its instructions. Group steps inside the component when intermediate files should disappear from the published layer:
+
+```kdl
+extend
+layer {
+    run "dnf install -y jq"
+    run "dnf clean all"
+}
+```
+
+You can also group a call with instructions in its consumer. With the shared component from the repository example above:
+
+```kdl
+from "docker.io/redhat/ubi9:latest"
+layer {
+    component "./components/shared.coopr" channel="api"
+    run "dnf install -y jq"
+    run "dnf clean all"
+}
+```
+
+The group publishes one net filesystem layer above the starting image. Nested groups are absorbed by the outer group. A component that returns an independent base cannot run inside a group: replacing the image would break the group’s starting lineage.
+
+## Replace the caller image
+
+A component may select an independently based output after its mandatory `extend`:
+
+```kdl
+extend distro="rhel"
+from "docker.io/redhat/ubi9:latest" as="runtime"
+run "dnf install -y jq && dnf clean all"
+```
+
+Invoking this output replaces the caller with the selected UBI image and the authored changes. UBI’s normal configuration is inherited; caller-only files and settings are discarded. The `extend` requirement is checked against the caller even though that stage is not used as the output’s filesystem base.
 
 ## Declare compatibility
 
@@ -82,7 +119,7 @@ extend as="configured" {
 }
 ```
 
-Coopr checks the caller before execution. Any listed value may match within a field; every declared field and retained extend root must match. `distro-version` requires exact versions and `distro`. Ranges and inferred family matches are unsupported.
+Coopr checks the caller before execution. Any listed value may match within a field; every declared field on a selected extend root must match. An independently based output with no selected extend root checks the nearest preceding extend’s contract. `distro-version` requires exact versions and `distro`. Ranges and inferred family matches are unsupported.
 
 ## Share across platforms
 

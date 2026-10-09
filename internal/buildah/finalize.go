@@ -77,7 +77,11 @@ func (executor *graphExecutor) finalizeOutput(ctx context.Context, result Result
 		scans := slices.Clone(output.SBOM)
 		var cleanup func() error
 		if len(scans) != 0 {
-			policy, err := prepareContextPolicyWithIgnore(executor.options.ContextDir, executor.options.ContextArtifacts, executor.options.IgnoreFile)
+			artifacts := executor.options.ContextArtifacts
+			if executor.options.ContextPrepared {
+				artifacts = nil
+			}
+			policy, err := prepareContextPolicyWithIgnore(executor.options.ContextDir, artifacts, executor.options.IgnoreFile)
 			if err != nil {
 				return Result{}, err
 			}
@@ -115,7 +119,9 @@ func (executor *graphExecutor) finalizeOutput(ctx context.Context, result Result
 		// layer already contains that instruction's diff. Coopr scans from the
 		// committed instruction image, so omit this empty writable layer while
 		// retaining Buildah's synthesized embedded-SBOM layer.
-		applyFinalCommitOptions(&commitOptions, output)
+		if err := applyFinalCommitOptions(&commitOptions, output); err != nil {
+			return Result{}, err
+		}
 		commitOptions.ConfidentialWorkloadOptions = output.ConfidentialWorkload
 		if len(scans) != 0 {
 			// Scanner programs run on the host while inspecting the target's
@@ -233,6 +239,17 @@ func (executor *graphExecutor) finalizeOutput(ctx context.Context, result Result
 			}
 		}
 	}
+	// VOLUME is a metadata instruction in imagebuildah, but its working
+	// filesystem includes the declared directories. Recreate them in this
+	// export-only builder after reopening the committed image.
+	if len(filesystems) != 0 {
+		adapter := executor.nativeBuilder(builder, finalOptions)
+		for _, volume := range builder.Volumes() {
+			if err := adapter.ensureContainerPathIsDirectory(volume, "0"); err != nil {
+				return Result{}, err
+			}
+		}
+	}
 	for _, filesystem := range filesystems {
 		if err := exportFilesystem(ctx, builder, filesystem, timestampPolicyFromOptions(executor.options)); err != nil {
 			return Result{}, err
@@ -250,14 +267,6 @@ func (executor *graphExecutor) retainResultLayers(result Result) error {
 		return fmt.Errorf("parse final manifest digest: %w", err)
 	}
 	return retainStoredLayoutLayers(executor.store, result.ImageID, result.Layout, manifestDigest)
-}
-
-func applyFinalCommitOptions(options *upstream.CommitOptions, output Output) {
-	if output.DisableCompression {
-		options.Compression = define.Uncompressed
-	} else {
-		options.Compression = define.Gzip
-	}
 }
 
 func preserveSquashedHistory(builder *upstream.Builder, logical *imageconfig.Config) error {

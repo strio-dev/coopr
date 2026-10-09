@@ -2,8 +2,10 @@ package buildah
 
 import (
 	"context"
+	"coopr/internal/imageconfig"
 	"encoding/json"
 	"errors"
+	"fmt"
 	registryserver "github.com/google/go-containerregistry/pkg/registry"
 	"net/http"
 	"net/http/httptest"
@@ -20,30 +22,32 @@ import (
 	"coopr/internal/planner"
 	"coopr/internal/stateidentity"
 	"github.com/opencontainers/go-digest"
+	"github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
-	"go.podman.io/storage"
 )
 
-func TestComponentCacheRelaysDeferredCandidate(t *testing.T) {
+func TestComponentCacheRelaysDeferredImageCandidate(t *testing.T) {
 	workerRoot := t.TempDir()
 	parentRoot := t.TempDir()
-	payload := []byte("portable component snapshot")
-	snapshot := filepath.Join(workerRoot, "snapshot.tar")
-	if err := os.WriteFile(snapshot, payload, 0o600); err != nil {
+	layout := filepath.Join(workerRoot, "candidate", "layout")
+	if err := os.MkdirAll(layout, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	identity := stateidentity.Identity{
-		Filesystem: digest.FromString("filesystem"), Configuration: digest.FromString("configuration"), State: digest.FromString("state"),
+	manifest := v1.Descriptor{MediaType: v1.MediaTypeImageManifest, Digest: digest.FromString("manifest"), Size: 123}
+	index, err := json.Marshal(v1.Index{Versioned: specs.Versioned{SchemaVersion: 2}, Manifests: []v1.Descriptor{manifest}})
+	if err != nil {
+		t.Fatal(err)
 	}
-	key := cache.Key{
-		Input: identity, Component: digest.FromString("component"), Platform: v1.Platform{OS: "linux", Architecture: "amd64"},
-		Executor: "executor", Frontend: "frontend", Lowering: "lowering",
+	if err := os.WriteFile(filepath.Join(layout, "index.json"), index, 0o600); err != nil {
+		t.Fatal(err)
 	}
-	record := cache.Record{
-		Version: cache.RecordVersion, Key: key, Output: identity, ChangedFS: true,
-		Snapshot: &oci.Package{Stage: "output", Descriptor: v1.Descriptor{MediaType: cache.SnapshotMediaType, Digest: digest.FromBytes(payload), Size: int64(len(payload))}},
+	key := cache.ImageKey{
+		Instruction: digest.FromString("instruction"), Parent: digest.FromString("parent"),
+		Platform: v1.Platform{OS: "linux", Architecture: "amd64"}, Executor: "executor", Format: "oci",
 	}
-	worker := &componentCache{stagingDir: workerRoot, candidates: []componentCacheCandidate{{key: key, record: record, path: snapshot}}}
+	worker := &componentCache{stagingDir: workerRoot, images: &portableInstructionCache{stagingDir: workerRoot, candidates: []portableInstructionCandidate{{
+		key: key, record: cache.ImageRecord{Version: cache.ImageRecordVersion, Key: key, Image: manifest}, layout: layout,
+	}}}}
 	relays, err := worker.relayCandidates(parentRoot)
 	if err != nil {
 		t.Fatal(err)
@@ -55,11 +59,11 @@ func TestComponentCacheRelaysDeferredCandidate(t *testing.T) {
 	if err := parent.acceptRelayedCandidates(relays); err != nil {
 		t.Fatal(err)
 	}
-	if len(parent.candidates) != 1 {
-		t.Fatalf("accepted %d candidates, want 1", len(parent.candidates))
+	if len(parent.images.candidates) != 1 {
+		t.Fatalf("accepted %d candidates, want 1", len(parent.images.candidates))
 	}
-	if got, err := os.ReadFile(parent.candidates[0].path); err != nil || string(got) != string(payload) {
-		t.Fatalf("relayed snapshot = %q, %v", got, err)
+	if _, err := os.Stat(filepath.Join(parent.images.candidates[0].layout, "index.json")); err != nil {
+		t.Fatalf("relayed layout did not survive worker cleanup: %v", err)
 	}
 }
 
@@ -207,115 +211,81 @@ func TestRunControlsChangePortableCacheIdentity(t *testing.T) {
 	}
 }
 
-type cancelCacheStore struct {
-	lookup func(context.Context) (*cache.Record, string, error)
-	put    func(context.Context) (v1.Descriptor, error)
-}
-
-func (s cancelCacheStore) Lookup(ctx context.Context, _ cache.Key) (*cache.Record, string, error) {
-	return s.lookup(ctx)
-}
-
-func (s cancelCacheStore) Put(ctx context.Context, _ cache.Key, _ cache.Record, _ string) (v1.Descriptor, error) {
-	return s.put(ctx)
+func validComponentTestKey() cache.Key {
+	return cache.Key{Input: stateidentity.Identity{Filesystem: digest.FromString("fs"), Configuration: digest.FromString("config"), State: digest.FromString("state")}, Component: digest.FromString("component"), Platform: v1.Platform{OS: "linux", Architecture: "amd64"}, Executor: "executor", Frontend: "frontend", Lowering: portableCacheLoweringVersion}
 }
 
 func TestComponentCacheLookupPropagatesCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	store := cancelCacheStore{lookup: func(context.Context) (*cache.Record, string, error) {
-		cancel()
-		return nil, "", cache.ErrMiss
-	}}
-	c := &componentCache{readStores: []cache.Store{store}}
-	_, _, hit, err := c.lookup(ctx, nil, cache.Key{}, "", nil, nil, v1.Platform{OS: "linux", Architecture: "amd64"}, nil)
-	if hit || !errors.Is(err, context.Canceled) || c.stats.Misses != 0 {
-		t.Fatalf("cancelled lookup: hit=%v err=%v stats=%+v", hit, err, c.stats)
+	cancel()
+	c := &componentCache{}
+	entry, _, err := c.lookup(ctx, nil, validComponentTestKey(), nil, componentCacheCaller{})
+	if entry.ImageID != "" || !errors.Is(err, context.Canceled) || c.stats.Misses != 0 {
+		t.Fatalf("cancelled lookup: entry=%+v err=%v stats=%+v", entry, err, c.stats)
 	}
 }
 
 func TestComponentCachePublishPropagatesCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	store := cancelCacheStore{put: func(context.Context) (v1.Descriptor, error) {
-		cancel()
-		return v1.Descriptor{}, errors.New("optional transport failure")
-	}}
-	c := &componentCache{writeStores: []cache.Store{store}, candidates: []componentCacheCandidate{{}}}
-	if err := c.publish(ctx); !errors.Is(err, context.Canceled) || c.stats.Errors != 0 {
-		t.Fatalf("cancelled publish: err=%v stats=%+v", err, c.stats)
+	cancel()
+	c := &componentCache{images: &portableInstructionCache{}}
+	if err := c.publish(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
 	}
 }
 
 func TestComponentCacheExportReturnsAllFailuresAfterCleanup(t *testing.T) {
-	first := cancelCacheStore{put: func(context.Context) (v1.Descriptor, error) {
-		return v1.Descriptor{}, errors.New("first export failed")
-	}}
-	second := cancelCacheStore{put: func(context.Context) (v1.Descriptor, error) {
-		return v1.Descriptor{}, errors.New("second export failed")
-	}}
-	path := filepath.Join(t.TempDir(), "snapshot.tar")
-	if err := os.WriteFile(path, []byte("snapshot"), 0o600); err != nil {
+	layout := filepath.Join(t.TempDir(), "candidate", "layout")
+	if err := os.MkdirAll(layout, 0700); err != nil {
 		t.Fatal(err)
 	}
-	c := &componentCache{writeStores: []cache.Store{first, second}, candidates: []componentCacheCandidate{{path: path}}}
+	c := &componentCache{images: &portableInstructionCache{writeStores: []instructionCacheStore{failingInstructionCacheStore{err: errors.New("first export failed")}, failingInstructionCacheStore{err: errors.New("second export failed")}}, candidates: []portableInstructionCandidate{{layout: layout}}}}
 	err := c.publish(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "first export failed") || !strings.Contains(err.Error(), "second export failed") {
-		t.Fatalf("component cache export error = %v", err)
+		t.Fatal(err)
 	}
-	if len(c.candidates) != 0 || c.stats.Errors != 2 || c.stats.Stored != 0 {
-		t.Fatalf("component cache after failed export = candidates %d stats %+v", len(c.candidates), c.stats)
+	if len(c.images.candidates) != 0 || c.stats.Errors != 2 || c.stats.Stored != 0 {
+		t.Fatalf("stats %+v", c.stats)
 	}
-	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("staged component cache remains: %v", err)
+	if _, err := os.Stat(filepath.Dir(layout)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
 	}
 }
 
 func TestComponentCacheOptionalReadWarnsWithCause(t *testing.T) {
 	failure := errors.New("injected cache read permission failure")
-	store := cancelCacheStore{lookup: func(context.Context) (*cache.Record, string, error) { return nil, "", failure }}
-	c := &componentCache{readStores: []cache.Store{store}}
+	c := &componentCache{images: &portableInstructionCache{readStores: []instructionCacheStore{unavailableInstructionCacheStore{err: failure}}}}
 	warning := packageWarningOutput(t, func() {
-		_, _, hit, err := c.lookup(context.Background(), nil, cache.Key{}, "", nil, nil, v1.Platform{}, nil)
-		if hit || err != nil || c.stats.Errors != 1 || c.stats.Misses != 1 {
-			t.Fatalf("optional read changed result: hit=%v err=%v stats=%+v", hit, err, c.stats)
+		entry, _, err := c.lookup(context.Background(), &graphExecutor{}, validComponentTestKey(), nil, componentCacheCaller{})
+		if entry.ImageID != "" || err != nil || c.stats.Errors != 1 || c.stats.Misses != 1 {
+			t.Fatalf("entry %+v err %v stats %+v", entry, err, c.stats)
 		}
 	})
-	if !strings.Contains(warning, failure.Error()) || !strings.Contains(warning, "read component cache") {
-		t.Fatalf("causal warning missing: %q", warning)
+	if !strings.Contains(warning, failure.Error()) {
+		t.Fatal(warning)
 	}
 }
 
-func TestComponentCacheSeedFailurePreservesCause(t *testing.T) {
-	ctx := context.Background()
-	native := newInstructionCacheTestStore(t)
-	imageID := createInstructionCacheTestImage(t, native)
-	config := []byte(`{"os":"linux","architecture":"amd64","rootfs":{"type":"layers","diff_ids":[]}}`)
-	configDescriptor := oci.Descriptor(v1.MediaTypeImageConfig, config)
-	manifestData, _ := json.Marshal(oci.VersionedManifest(configDescriptor, nil, ""))
-	for name, data := range map[string][]byte{storage.ImageDigestBigDataKey: manifestData, configDescriptor.Digest.String(): config, "config": config} {
-		if err := native.SetImageBigData(imageID, name, data, func(data []byte) (digest.Digest, error) { return digest.FromBytes(data), nil }); err != nil {
-			t.Fatal(err)
-		}
+func TestComponentImageCacheKeyRejectsOldLoweringAndCallerGraphChanges(t *testing.T) {
+	original := validComponentTestKey()
+	original.Inputs = map[string]digest.Digest{"caller-image": digest.FromString("caller-one")}
+	a, err := componentImageCacheKey(original, "oci")
+	if err != nil {
+		t.Fatal(err)
 	}
-	root := &PackageRootMetadata{Mode: 0755}
-	platform := v1.Platform{OS: "linux", Architecture: "amd64"}
-	staging := t.TempDir()
-	identity, _, path, eligible, err := snapshotPortableState(ctx, native, nil, imageID, config, config, root, platform, staging)
-	if path != "" {
-		_ = os.Remove(path)
+	original.Lowering = "coopr-buildah-component-v2"
+	b, err := componentImageCacheKey(original, "oci")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err != nil || !eligible {
-		t.Fatalf("empty-image fixture not cacheable: eligible=%v err=%v", eligible, err)
+	original.Lowering = portableCacheLoweringVersion
+	original.Inputs["caller-image"] = digest.FromString("caller-two")
+	c, err := componentImageCacheKey(original, "oci")
+	if err != nil {
+		t.Fatal(err)
 	}
-	record := cache.Record{Output: identity, Config: config}
-	failure := errors.New("injected explicit cache seed write failure")
-	source := cancelCacheStore{lookup: func(context.Context) (*cache.Record, string, error) { return &record, "", nil }}
-	destination := cancelCacheStore{put: func(context.Context) (v1.Descriptor, error) { return v1.Descriptor{}, failure }}
-	c := &componentCache{stagingDir: staging, readStores: []cache.Store{source}, writeStores: []cache.Store{destination}}
-	_, _, hit, err := c.lookup(ctx, &graphExecutor{store: native}, cache.Key{}, imageID, config, root, platform, nil)
-	if hit || !errors.Is(err, failure) || !strings.Contains(err.Error(), "seed component cache") || c.stats.Errors != 1 {
-		t.Fatalf("seed failure lost: hit=%v err=%v stats=%+v", hit, err, c.stats)
+	if a.Instruction == b.Instruction || a.Instruction == c.Instruction {
+		t.Fatal("old snapshot semantics or alternate caller graph reused image key")
 	}
 }
 
@@ -361,10 +331,162 @@ func TestComponentCacheSeedFailureReachesBuildCaller(t *testing.T) {
 	options.CacheTo = []CacheSpec{{Transport: "oci-layout", Reference: destination}}
 	inject.Store(true)
 	_, err = BuildPlan(ctx, plan, options)
-	if !injected.Load() || err == nil || !strings.Contains(err.Error(), "component cache lookup") || !strings.Contains(err.Error(), "seed component cache") || !strings.Contains(err.Error(), "is a directory") {
+	if !injected.Load() || err == nil || !strings.Contains(err.Error(), "component cache lookup") || !strings.Contains(err.Error(), "seed instruction cache") || !strings.Contains(err.Error(), "is a directory") {
 		t.Fatalf("seed cause did not reach graph caller: injected=%v err=%v", injected.Load(), err)
 	}
 	if _, err := os.Stat(options.Output.Path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("seed failure published required output: %v", err)
+	}
+}
+
+func TestComponentCachedConfigMatchesNativeFieldsButRetainsExtensions(t *testing.T) {
+	native := []byte(`{"author":"author","config":{"Env":["name=value"],"User":"1","Cmd":["hello"],"Labels":{"name":"value"}}}`)
+	for _, test := range []struct {
+		name, logical string
+		valid         bool
+	}{
+		{"extensions", `{"author":"author","config":{"Env":["name=value"],"User":"1","Cmd":["hello"],"Labels":{"name":"value"},"Shell":["custom-shell"],"OnBuild":["ENV inherited=yes"]}}`, true},
+		{"runtime-conflict", `{"author":"author","config":{"Env":["name=wrong"],"User":"1","Cmd":["hello"],"Labels":{"name":"value"}}}`, false},
+		{"author-conflict", `{"author":"other","config":{"Env":["name=value"],"User":"1","Cmd":["hello"],"Labels":{"name":"value"}}}`, false},
+		{"malformed", `{`, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := componentCachedConfigMatchesImage([]byte(test.logical), native)
+			if (err == nil) != test.valid {
+				t.Fatalf("err=%v valid=%v", err, test.valid)
+			}
+		})
+	}
+}
+
+type mutatingComponentImageCacheStore struct {
+	instructionCacheStore
+	mutate func(*cache.ImageRecord)
+}
+
+func (s mutatingComponentImageCacheStore) LookupImage(ctx context.Context, key cache.ImageKey) (*cache.ImageRecord, string, error) {
+	record, path, err := s.instructionCacheStore.LookupImage(ctx, key)
+	if err == nil {
+		s.mutate(record)
+	}
+	return record, path, err
+}
+
+func TestComponentImageCacheInvalidMetadataMissesBeforeSeed(t *testing.T) {
+	f := newLocalComponentFixture(t)
+	base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
+	f.write(t, "one", "one")
+	result, _ := f.build(t, "image", fmt.Sprintf("from %q\ncopy \"one\" \"/one\"\n", base.reference))
+	lease, err := acquireStore(f.options.Store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Close() //nolint:errcheck
+	sourceBase, err := lease.store.Image(base.reference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staging := t.TempDir()
+	store, err := cache.NewLocalStore(f.ctx, filepath.Join(f.root, "metadata-cache"), staging, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nativeRaw, err := packageImageConfig(f.ctx, lease.store, result.ImageID, f.options.SystemContext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logical, err := imageconfig.Parse(nativeRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := &graphExecutor{store: lease.store, options: f.options}
+	key := validComponentTestKey()
+	producer := &componentCache{stagingDir: staging, writeStores: []cache.Store{store}}
+	producer.record(f.ctx, executor, key, result.ImageID, digest.Digest(result.ManifestDigest), logical, &PackageRootMetadata{Mode: 0755}, f.options.SystemContext, sourceBase.ID, true)
+	if err := producer.publish(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	imageStore := store
+	for _, test := range []struct {
+		name       string
+		mutate     func(*cache.ImageRecord)
+		denyCaller bool
+	}{
+		{"missing-root", func(r *cache.ImageRecord) { r.RootMetadata = nil }, false},
+		{"missing-config", func(r *cache.ImageRecord) { r.LogicalConfig = nil }, false},
+		{"missing-lineage", func(r *cache.ImageRecord) { r.RetainsCaller = nil }, false},
+		{"missing-base", func(r *cache.ImageRecord) { r.BaseImage = nil }, false},
+		{"malformed-config", func(r *cache.ImageRecord) { r.LogicalConfig = json.RawMessage(`{`) }, false},
+		{"conflicting-config", func(r *cache.ImageRecord) {
+			var doc map[string]json.RawMessage
+			if err := json.Unmarshal(r.LogicalConfig, &doc); err != nil {
+				t.Fatal(err)
+			}
+			var config map[string]json.RawMessage
+			if err := json.Unmarshal(doc["config"], &config); err != nil {
+				t.Fatal(err)
+			}
+			config["User"] = json.RawMessage(`"999"`)
+			raw, err := json.Marshal(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			doc["config"] = raw
+			r.LogicalConfig, err = json.Marshal(doc)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"false-caller-ancestry", func(r *cache.ImageRecord) { retained := true; r.RetainsCaller = &retained }, true},
+		{"caller-chain-conflict", func(*cache.ImageRecord) {}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			consumer := &componentCache{stagingDir: t.TempDir(), readStores: []cache.Store{}, images: &portableInstructionCache{stagingDir: t.TempDir(), validateHit: validateComponentImageCacheHit, readStores: []instructionCacheStore{mutatingComponentImageCacheStore{instructionCacheStore: imageStore, mutate: test.mutate}}, writeStores: []instructionCacheStore{failingInstructionCacheStore{err: errors.New("invalid metadata must not be seeded")}}}}
+			warning := packageWarningOutput(t, func() {
+				callerID := sourceBase.ID
+				if test.name == "caller-chain-conflict" {
+					callerID = result.ImageID
+				}
+				entry, _, err := consumer.lookup(f.ctx, executor, key, f.options.SystemContext, componentCacheCaller{ImageID: callerID, RetainsCallerAllowed: !test.denyCaller})
+				if err != nil || entry.ImageID != "" || consumer.stats.Errors != 1 || consumer.stats.Misses != 1 || consumer.stats.Hits != 0 || consumer.stats.Stored != 0 {
+					t.Fatalf("invalid cache promoted: entry=%+v err=%v stats=%+v", entry, err, consumer.stats)
+				}
+			})
+			if !strings.Contains(warning, "cache") {
+				t.Fatalf("invalid metadata failure was hidden: %s", warning)
+			}
+		})
+	}
+}
+
+func TestComponentCachedExtensionsAgreeWhenNativeDockerRepresentsThem(t *testing.T) {
+	for _, name := range []string{"Shell", "OnBuild", "Healthcheck"} {
+		t.Run(name, func(t *testing.T) {
+			value := json.RawMessage(`["native"]`)
+			other := json.RawMessage(`["other"]`)
+			if name == "Hostname" {
+				value = json.RawMessage(`"native"`)
+				other = json.RawMessage(`"other"`)
+			}
+			if name == "Healthcheck" {
+				value = json.RawMessage(`{"Test":["CMD","native"],"Interval":1000000000}`)
+				other = json.RawMessage(`{"Test":["CMD","other"],"Interval":1000000000}`)
+			}
+			native, err := json.Marshal(map[string]any{"config": map[string]json.RawMessage{name: value}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			matching := append([]byte(nil), native...)
+			conflicting, err := json.Marshal(map[string]any{"config": map[string]json.RawMessage{name: other}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := componentCachedConfigMatchesImage(matching, native); err != nil {
+				t.Fatal(err)
+			}
+			if err := componentCachedConfigMatchesImage(conflicting, native); err == nil {
+				t.Fatal("accepted conflicting native extension")
+			}
+		})
 	}
 }

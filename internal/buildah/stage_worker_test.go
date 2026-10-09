@@ -59,6 +59,7 @@ func TestStageWorkerMessagePreservesExecutionInputs(t *testing.T) {
 	request := stageWorkerRequest{
 		ProgressPrefix:    "[linux/amd64] [2/3] [component shared] ",
 		ProgressReference: "app:latest",
+		BaseRoot:          &PackageRootMetadata{Mode: 0711, UID: 1, GID: 2, PAXRecords: map[string]string{"SCHILY.xattr.user.coopr": "root"}},
 		Mode:              planner.Build,
 		Stage:             planner.Stage{ID: "1", Name: "build", Kind: "from", Source: "base", Platform: "linux/amd64"},
 		Base:              "storage-base", BaseManifest: digest.FromString("selected base manifest"), Logical: config,

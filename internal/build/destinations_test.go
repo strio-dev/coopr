@@ -59,7 +59,7 @@ func TestDestinationFailureReportsCommittedAndPendingResults(t *testing.T) {
 				t.Fatalf("destination states = %+v", report.Destinations)
 			}
 			metadata := filepath.Join(t.TempDir(), "result.json")
-			_, err := finishOutputs(metadata, "", root, nil, nil, report, publicationErr)
+			_, err := finishOutputs(metadata, "", root, nil, nil, report, publicationErr, "")
 			if err == nil {
 				t.Fatal("partial publication returned success")
 			}
@@ -96,7 +96,7 @@ func TestResultOutputPreflightAndFinalizationFailures(t *testing.T) {
 	}
 	descriptor := v1.Descriptor{Digest: digest.FromString("retained")}
 	report := outputReport{References: []string{"app:latest"}}
-	if _, err := finishOutputs(metadata, iid, descriptor, nil, nil, report, nil); err == nil || !strings.Contains(err.Error(), descriptor.Digest.String()) || !strings.Contains(err.Error(), "app:latest") {
+	if _, err := finishOutputs(metadata, iid, descriptor, nil, nil, report, nil, ""); err == nil || !strings.Contains(err.Error(), descriptor.Digest.String()) || !strings.Contains(err.Error(), "app:latest") {
 		t.Fatalf("metadata finalization failure = %v", err)
 	}
 	if data, err := os.ReadFile(iid); err != nil || strings.TrimSpace(string(data)) != descriptor.Digest.String() {
@@ -111,7 +111,7 @@ func TestResultOutputPreflightAndFinalizationFailures(t *testing.T) {
 	if err := os.Mkdir(iid, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := finishOutputs(metadata, iid, descriptor, nil, nil, report, nil); err == nil || !strings.Contains(err.Error(), descriptor.Digest.String()) {
+	if _, err := finishOutputs(metadata, iid, descriptor, nil, nil, report, nil, ""); err == nil || !strings.Contains(err.Error(), descriptor.Digest.String()) {
 		t.Fatalf("IID finalization failure = %v", err)
 	}
 }
@@ -162,7 +162,7 @@ func TestMetadataIncludesIndexAndPlatformConfigurationDigests(t *testing.T) {
 	selections := map[string]oci.StoredSelection{"linux/amd64": {Manifest: manifest, ImageID: nativeID, ConfigData: configData}}
 	directory := t.TempDir()
 	metadata, iid := filepath.Join(directory, "result.json"), filepath.Join(directory, "iid")
-	if err := writeOutputMetadata(metadata, iid, root, variants, selections, outputReport{References: []string{"app:latest"}}, nil); err != nil {
+	if err := writeOutputMetadata(metadata, iid, root, variants, selections, outputReport{References: []string{"app:latest"}}, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(metadata)
@@ -201,7 +201,7 @@ func TestMetadataMultiPlatformIIDUsesIndexDigest(t *testing.T) {
 	}
 	directory := t.TempDir()
 	metadata, iid := filepath.Join(directory, "metadata.json"), filepath.Join(directory, "iid")
-	if err := writeOutputMetadata(metadata, iid, root, variants, selections, outputReport{}, nil); err != nil {
+	if err := writeOutputMetadata(metadata, iid, root, variants, selections, outputReport{}, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(metadata)
@@ -229,5 +229,48 @@ func TestMetadataMultiPlatformIIDUsesIndexDigest(t *testing.T) {
 	data, err = os.ReadFile(iid)
 	if err != nil || strings.TrimSpace(string(data)) != root.Digest.String() {
 		t.Fatalf("index iid = %s, %v", data, err)
+	}
+}
+
+func TestOutputMetadataWritesRawNativeID(t *testing.T) {
+	root := v1.Descriptor{Digest: digest.FromString("manifest")}
+	rawPath := filepath.Join(t.TempDir(), "raw-iid")
+	platform := v1.Platform{OS: "linux", Architecture: "amd64"}
+	variants := []oci.IndexVariant{{Platform: platform, Manifest: root}}
+	selections := map[string]oci.StoredSelection{"linux/amd64": {ImageID: strings.Repeat("a", 64)}}
+	if err := writeOutputMetadata("", "", root, variants, selections, outputReport{}, nil, rawPath); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(rawPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != strings.Repeat("a", 64) {
+		t.Fatalf("raw ID: %q", data)
+	}
+}
+
+func TestRawIIDFailurePreservesMetadata(t *testing.T) {
+	root := v1.Descriptor{Digest: digest.FromString("retained")}
+	directory := t.TempDir()
+	metadata := filepath.Join(directory, "metadata.json")
+	rawIID := filepath.Join(directory, "raw-iid")
+	if err := os.Mkdir(rawIID, 0700); err != nil {
+		t.Fatal(err)
+	}
+	err := writeOutputMetadata(metadata, "", root, nil, nil, outputReport{}, nil, rawIID)
+	if err == nil || !strings.Contains(err.Error(), "write raw image ID") {
+		t.Fatalf("raw IID failure = %v", err)
+	}
+	data, err := os.ReadFile(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if diagnostic, ok := result["coopr.outputError"].(string); !ok || !strings.Contains(diagnostic, "write raw image ID") {
+		t.Fatalf("metadata diagnostic = %s", data)
 	}
 }

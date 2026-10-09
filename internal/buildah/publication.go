@@ -101,6 +101,11 @@ func PublishPlan(ctx context.Context, plan *planner.Plan, options PublicationOpt
 	// ONBUILD) for later FROM stages in the invocation graph.
 	planOptions.Output = Output{Path: validationOutput, Format: outputFormatDocker}
 	planOptions.ContextArtifacts = append(slices.Clone(planOptions.ContextArtifacts), paths...)
+	planOptions, cleanupContext, err := prepareBuildContext(plan, planOptions)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { retErr = errors.Join(retErr, cleanupContext()) }()
 	for _, output := range outputs {
 		cacheCheck := planOptions
 		cacheCheck.Output.Path = output.path
@@ -128,6 +133,11 @@ func PublishPlan(ctx context.Context, plan *planner.Plan, options PublicationOpt
 		}
 	}()
 	cacheArtifacts := append(slices.Clone(planOptions.ContextArtifacts), planOptions.Store.RunRoot, planOptions.Store.GraphRoot, planOptions.Output.Path, planOptions.CacheLocalDir)
+	if planOptions.ContextPrepared {
+		// Original artifacts were already filtered from the disposable context.
+		// Its retained ignore policy governs both cache identity and later COPY.
+		cacheArtifacts = nil
+	}
 	var packageKeys map[string]cache.PackageKey
 	if packageCache != nil && len(outputs) != 0 {
 		var eligible bool
@@ -237,6 +247,14 @@ func PublishPlan(ctx context.Context, plan *planner.Plan, options PublicationOpt
 }
 
 func selectPublicationBases(ctx context.Context, options PlanOptions, stages []planner.Stage) (map[ResolvedBaseKey]ResolvedImageSource, error) {
+	policy := options.SourcePolicy
+	if policy == nil {
+		var err error
+		policy, err = loadSourcePolicy(options.SourcePolicyFile)
+		if err != nil {
+			return nil, err
+		}
+	}
 	selected := make(map[ResolvedBaseKey]ResolvedImageSource, len(options.ResolvedBases))
 	for key, source := range options.ResolvedBases {
 		selected[key] = source
@@ -273,7 +291,19 @@ func selectPublicationBases(ctx context.Context, options PlanOptions, stages []p
 		if err != nil {
 			return err
 		}
-		source, selectErr := selectImageSource(ctx, options.Resolver, reference, platform, lease.store)
+		converted, selectErr := policyImageSource(reference, policy)
+		var source ResolvedImageSource
+		if selectErr == nil {
+			normalized, transport, normalizeErr := normalizeBaseSource(converted, options.ContextDir)
+			selectErr = normalizeErr
+			if selectErr == nil {
+				if transport {
+					source, selectErr = resolveBaseSourceWithPolicy(ctx, options.Resolver, converted, platform, lease.store, options.SystemContext, options.ContextDir, nil)
+				} else {
+					source, selectErr = selectImageSource(ctx, options.Resolver, normalized, platform, lease.store)
+				}
+			}
+		}
 		err = errors.Join(selectErr, lease.Close())
 		if err != nil {
 			return err
@@ -282,7 +312,7 @@ func selectPublicationBases(ctx context.Context, options PlanOptions, stages []p
 		return nil
 	}
 	for _, stage := range stages {
-		if stage.SourceContext == "" {
+		if stage.SourceContext == "" && !stage.DeferredImageSource {
 			if err := resolve(stage.Source, stage.Platform); err != nil {
 				return nil, fmt.Errorf("select package stage %s base: %w", stage.ID, err)
 			}
@@ -385,6 +415,14 @@ func validatePublicationGraph(plan *planner.Plan, paths map[string]string) ([]pl
 		wantDependencies := []string{}
 		if baseID != "" {
 			wantDependencies = append(wantDependencies, baseID)
+		}
+		if stage.AfterStage != "" {
+			if aliases[stage.AfterStage] == "" {
+				return nil, nil, fmt.Errorf("stage %s after dependency %q is unavailable", stage.ID, stage.AfterStage)
+			}
+			if !slices.Contains(wantDependencies, stage.AfterStage) {
+				wantDependencies = append(wantDependencies, stage.AfterStage)
+			}
 		}
 		for operationIndex, operation := range stage.Operations {
 			for _, reference := range operationStageReferences(operation) {

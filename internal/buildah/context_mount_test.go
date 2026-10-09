@@ -15,6 +15,8 @@ import (
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	upstream "go.podman.io/buildah"
+	"go.podman.io/buildah/define"
+	"go.podman.io/buildah/imagebuildah"
 )
 
 func TestRootFSIdentity(t *testing.T) {
@@ -158,6 +160,34 @@ func TestContextBindSnapshotIsRemovedAfterRunFailure(t *testing.T) {
 	}
 }
 
+func TestPreparedReadonlyContextBindUsesSharedRelabel(t *testing.T) {
+	contextDir := t.TempDir()
+	called := false
+	builder := &inspectingRunBuilder{inspect: func(options upstream.RunOptions) error {
+		called = true
+		if len(options.RunMounts) != 1 || !strings.Contains(options.RunMounts[0], "relabel=shared") || !strings.Contains(options.RunMounts[0], "readonly") {
+			t.Fatalf("prepared readonly mounts=%v", options.RunMounts)
+		}
+		return nil
+	}}
+	if err := applyOperationWithContext(builder, contextDir, nil, Run{contextPrepared: true, Command: []string{"/bin/true"}, Mounts: []RunMount{{Type: "bind", Properties: map[string]string{"target": "/src", "readonly": "true"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("RUN was not applied")
+	}
+	for _, shared := range []bool{false, true} {
+		mount := RunMount{Type: "bind", SharedRelabel: shared, PrivateRelabel: !shared, Properties: map[string]string{"target": "/src", "relabel": "private"}}
+		serialized, err := serializeRunMount(mount, contextDir)
+		if err != nil || strings.Contains(serialized, "relabel=shared") || strings.Count(serialized, "relabel=private") != 1 {
+			t.Fatalf("authored relabel precedence=%q error=%v", serialized, err)
+		}
+	}
+	if _, err := serializeRunMount(RunMount{Type: "bind", SharedRelabel: true, PrivateRelabel: true, Properties: map[string]string{"target": "/src"}}, contextDir); err == nil {
+		t.Fatal("accepted contradictory executor relabel modes")
+	}
+}
+
 func TestRunWithoutContextBindUsesOriginalContext(t *testing.T) {
 	contextDir := t.TempDir()
 	builder := &inspectingRunBuilder{inspect: func(options upstream.RunOptions) error {
@@ -298,4 +328,154 @@ func (builder *inspectingRunBuilder) run(command []string, options upstream.RunO
 		return builder.inspect(options)
 	}
 	return builder.recordingBuilder.run(command, options)
+}
+
+func TestBuildPlanWritableContextPersistsAcrossStagesAndCopy(t *testing.T) {
+	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
+		t.Skip("set COOPR_TEST_BUILDAH=1")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	root := t.TempDir()
+	contextDir := filepath.Join(root, "context")
+	if err := os.Mkdir(contextDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
+	base := newLiveBusyBoxStorage(t, ctx, root, store)
+	plan := testPlan(t, fmt.Sprintf(`from %q as="producer"
+run "printf generated >/src/generated" network="none" { mount "bind" target="/src" rw="true" }
+from "producer"
+run "cat /src/generated >/proof" network="none" { mount "bind" target="/src" }
+copy "generated" "/copied"
+`, base.reference))
+	for iteration := 0; iteration < 2; iteration++ {
+		layout := filepath.Join(root, fmt.Sprintf("layout-%d", iteration))
+		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{Store: store, ContextDir: contextDir, Isolation: "rootless", Runtime: "crun", Output: Output{Path: layout}, Stdout: io.Discard, Stderr: os.Stderr})
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifest, _ := readPlanImage(t, layout)
+		last := filepath.Join(layout, "blobs", "sha256", manifest.Layers[len(manifest.Layers)-1].Digest.Encoded())
+		if got := readLayerFile(t, last, "copied"); got != "generated" {
+			t.Fatalf("copy = %q", got)
+		}
+		if _, err := os.Stat(filepath.Join(contextDir, "generated")); !os.IsNotExist(err) {
+			t.Fatalf("host context mutated: %v", err)
+		}
+	}
+}
+
+func TestPinnedBuildahWritableContextPersistsForBuild(t *testing.T) {
+	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
+		t.Skip("set COOPR_TEST_BUILDAH=1")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	root := t.TempDir()
+	contextDir := filepath.Join(root, "context")
+	if err := os.Mkdir(contextDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
+	base := newLiveBusyBoxStorage(t, ctx, root, store)
+	file := filepath.Join(root, "Containerfile")
+	source := fmt.Sprintf(`FROM %s AS producer
+RUN --network=none --mount=type=bind,target=/src,rw printf generated >/src/generated
+FROM producer
+RUN --network=none --mount=type=bind,target=/src cat /src/generated >/proof
+COPY generated /copied
+`, base.reference)
+	if err := os.WriteFile(file, []byte(source), 0600); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := acquireStore(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := lease.Close(); err != nil {
+			t.Errorf("close native store: %v", err)
+		}
+	}()
+	export := filepath.Join(root, "native-rootfs")
+	_, _, err = imagebuildah.BuildDockerfiles(ctx, lease.store, define.BuildOptions{ContextDirectory: contextDir, Layers: true, Isolation: define.IsolationOCIRootless, Runtime: "crun", CommonBuildOpts: &define.CommonBuildOptions{}, Compression: define.Uncompressed, Out: io.Discard, Err: os.Stderr, RemoveIntermediateCtrs: true, ForceRmIntermediateCtrs: true, BuildOutputs: []string{"type=local,dest=" + export}}, file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"proof", "copied"} {
+		got, err := os.ReadFile(filepath.Join(export, name))
+		if err != nil || string(got) != "generated" {
+			t.Fatalf("pinned Buildah %s=%q error=%v", name, got, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(contextDir, "generated")); !os.IsNotExist(err) {
+		t.Fatalf("upstream host context mutated: %v", err)
+	}
+}
+
+func TestDirectBuildWritableContextRetainsProtectedExclusions(t *testing.T) {
+	f := newLocalComponentFixture(t)
+	base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
+	for _, protected := range []bool{false, true} {
+		source := "generated"
+		if protected {
+			source = "protected"
+		}
+		layout := filepath.Join(f.root, fmt.Sprintf("direct-%t", protected))
+		_, err := Build(f.ctx, Request{
+			Base: base.reference, Store: f.options.Store, ContextDir: f.contextDir,
+			ContextArtifacts: []string{filepath.Join(f.contextDir, "protected")},
+			Isolation:        "rootless", Runtime: "crun", Output: Output{Path: layout},
+			Operations: []Operation{
+				Run{Command: []string{"/bin/sh", "-c", "printf generated >/src/generated; /bin/busybox mkdir /src/protected; printf secret >/src/protected/secret"}, Network: "none", Mounts: []RunMount{{Type: "bind", Properties: map[string]string{"target": "/src", "rw": "true"}}}},
+				Copy{Sources: []string{source}, Destination: "/proof"},
+			},
+		})
+		if protected {
+			if err == nil || !strings.Contains(err.Error(), "filtered out") {
+				t.Fatalf("direct build copied recreated protected context: %v", err)
+			}
+		} else {
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := localComponentLastFile(t, layout, "proof"); got != "generated" {
+				t.Fatalf("direct context result=%q", got)
+			}
+		}
+		if _, err := os.Stat(filepath.Join(f.contextDir, "generated")); !os.IsNotExist(err) {
+			t.Fatalf("direct build modified host context: %v", err)
+		}
+	}
+}
+
+func TestDirectBuildWritableContextHonorsExplicitIgnore(t *testing.T) {
+	f := newLocalComponentFixture(t)
+	base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
+	f.write(t, ".dockerignore", "keep\ngenerated\n")
+	f.write(t, "keep", "included by explicit policy")
+	f.write(t, "hidden", "excluded by explicit policy")
+	ignoreFile := filepath.Join(f.root, "custom.ignore")
+	if err := os.WriteFile(ignoreFile, []byte("hidden\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	layout := filepath.Join(f.root, "custom-ignore")
+	_, err := Build(f.ctx, Request{
+		Base: base.reference, Store: f.options.Store, ContextDir: f.contextDir, IgnoreFile: ignoreFile,
+		Isolation: "rootless", Runtime: "crun", Output: Output{Path: layout},
+		Operations: []Operation{
+			Run{Command: []string{"/bin/sh", "-c", "test -f /src/keep && test ! -e /src/hidden && printf explicit >/src/generated"}, Network: "none", Mounts: []RunMount{{Type: "bind", Properties: map[string]string{"target": "/src", "rw": "true"}}}},
+			Copy{Sources: []string{"generated"}, Destination: "/proof"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := localComponentLastFile(t, layout, "proof"); got != "explicit" {
+		t.Fatalf("explicit policy result=%q", got)
+	}
+	if _, err := os.Stat(filepath.Join(f.contextDir, "generated")); !os.IsNotExist(err) {
+		t.Fatalf("explicit-policy build modified host context: %v", err)
+	}
 }

@@ -67,7 +67,8 @@ func TestPortableInstructionCacheRelaysDeferredCandidate(t *testing.T) {
 		t.Fatal(err)
 	}
 	manifest := v1.Descriptor{MediaType: v1.MediaTypeImageManifest, Digest: digest.FromString("manifest"), Size: 123}
-	index, err := json.Marshal(v1.Index{Versioned: specs.Versioned{SchemaVersion: 2}, Manifests: []v1.Descriptor{manifest}})
+	base := v1.Descriptor{MediaType: v1.MediaTypeImageManifest, Digest: digest.FromString("base"), Size: 100}
+	index, err := json.Marshal(v1.Index{Versioned: specs.Versioned{SchemaVersion: 2}, Manifests: []v1.Descriptor{base, manifest}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +80,7 @@ func TestPortableInstructionCacheRelaysDeferredCandidate(t *testing.T) {
 		Platform: v1.Platform{OS: "linux", Architecture: "amd64"}, Executor: "executor", Format: "oci",
 	}
 	worker := &portableInstructionCache{stagingDir: workerRoot, candidates: []portableInstructionCandidate{{
-		key: key, record: cache.ImageRecord{Version: cache.ImageRecordVersion, Key: key, Image: manifest}, layout: layout,
+		key: key, record: cache.ImageRecord{Version: cache.ImageRecordVersion, Key: key, Image: manifest, BaseImage: &base}, layout: layout,
 	}}}
 	relays, err := worker.relayCandidates(parentRoot)
 	if err != nil {
@@ -98,6 +99,20 @@ func TestPortableInstructionCacheRelaysDeferredCandidate(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(parent.candidates[0].layout, "index.json")); err != nil {
 		t.Fatalf("relayed layout did not survive worker cleanup: %v", err)
 	}
+	invalid := relays[0]
+	invalid.Record.BaseImage = &v1.Descriptor{MediaType: base.MediaType, Digest: digest.FromString("wrong-base"), Size: base.Size}
+	if err := parent.acceptRelayedCandidates([]portableInstructionCacheRelay{invalid}); err == nil {
+		t.Fatal("accepted unrelated base descriptor in component relay")
+	}
+	invalid = relays[0]
+	invalid.Record.Image.Digest = digest.FromString("wrong-output")
+	if err := parent.acceptRelayedCandidates([]portableInstructionCacheRelay{invalid}); err == nil {
+		t.Fatal("accepted unrelated selected output descriptor in component relay")
+	}
+	if len(parent.candidates) != 1 {
+		t.Fatal("invalid relay was enqueued")
+	}
+
 }
 
 func instructionCacheTestInput(operation planner.Operation) instructionCacheInput {

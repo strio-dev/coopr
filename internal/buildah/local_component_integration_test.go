@@ -3,12 +3,14 @@ package buildah
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"coopr/internal/buildcontext"
 	"coopr/internal/oci"
 	"coopr/internal/planner"
 	"go.podman.io/image/v5/types"
@@ -304,5 +306,99 @@ func TestLocalComponentPackageProducerConsumesNestedComponent(t *testing.T) {
 	_, layout := f.build(t, "nested-producer", "from \"scratch\"\ncomponent \"./outer.coopr\"\n")
 	if got := localComponentLastFile(t, layout, "payload"); got != "nested package producer" {
 		t.Fatalf("nested package producer output = %q", got)
+	}
+}
+
+func TestLocalComponentWritableContextIsReplayedOnWarmBuild(t *testing.T) {
+	f := newLocalComponentFixture(t)
+	base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
+	f.write(t, "components/generate.coopr", `extend
+run "printf component >/src/generated" network="none" { mount "bind" target="/src" rw="true" }
+`)
+	source := fmt.Sprintf("from %q\ncomponent \"./components/generate.coopr\"\ncopy \"generated\" \"/proof\"\n", base.reference)
+	for _, name := range []string{"cold", "warm"} {
+		_, layout := f.build(t, name, source)
+		if got := localComponentLastFile(t, layout, "proof"); got != "component" {
+			t.Fatalf("proof=%q", got)
+		}
+		if _, err := os.Stat(filepath.Join(f.contextDir, "generated")); !os.IsNotExist(err) {
+			t.Fatalf("host context mutated: %v", err)
+		}
+	}
+}
+
+func TestLocalComponentPackageWritableContextIsReplayedOnWarmBuild(t *testing.T) {
+	f := newLocalComponentFixture(t)
+	base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
+	f.write(t, "generate.coopr", fmt.Sprintf(`from %q as="producer"
+run "printf package-generated >/src/generated" network="none" { mount "bind" target="/src" rw="true" }
+package as="assets"
+copy "/bin/busybox" "/tool" from="producer"
+extend
+copy "/tool" "/tool" from="assets"
+`, base.reference))
+	for _, name := range []string{"cold", "warm"} {
+		_, layout := f.build(t, name, "from \"scratch\"\ncomponent \"./generate.coopr\"\ncopy \"generated\" \"/proof\"\n")
+		if got := localComponentLastFile(t, layout, "proof"); got != "package-generated" {
+			t.Fatalf("%s package context output=%q", name, got)
+		}
+		if _, err := os.Stat(filepath.Join(f.contextDir, "generated")); !os.IsNotExist(err) {
+			t.Fatalf("%s modified host context: %v", name, err)
+		}
+	}
+}
+
+func TestStandaloneComponentPackageWritableContextPersists(t *testing.T) {
+	f := newLocalComponentFixture(t)
+	base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
+	def := parseWorkerDefinition(t, fmt.Sprintf(`from %q as="producer"
+run "printf standalone >/src/generated" network="none" { mount "bind" target="/src" rw="true" }
+run "cat /src/generated >/proof" network="none" { mount "bind" target="/src" }
+package as="assets"
+copy "/proof" "/proof" from="producer"
+copy "generated" "/generated"
+extend
+copy "/generated" "/generated" from="assets"
+`, base.reference))
+	layout := filepath.Join(f.root, "standalone")
+	result, err := PublishDefinitionSupervised(f.ctx, def, planner.Options{Mode: planner.Publish}, SupervisedPlanOptions{
+		Store: f.options.Store, ContextDir: f.contextDir, Isolation: "rootless", Runtime: "crun",
+		ComponentStoreDir: f.options.Resolver.ComponentStoreDir(), CacheLocalDir: f.options.CacheLocalDir,
+		SignaturePolicyPath: f.options.SystemContext.SignaturePolicyPath,
+		Output:              Output{Path: layout}, Stdout: io.Discard, Stderr: os.Stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := readComponentMetadata(t, f.ctx, layout, result.Root)
+	if len(metadata.Packages) != 1 {
+		t.Fatalf("packages=%v", metadata.Packages)
+	}
+	assertPackageTarFile(t, filepath.Join(layout, "blobs", "sha256", metadata.Packages[0].Descriptor.Digest.Encoded()), "generated", "standalone")
+	if _, err := os.Stat(filepath.Join(f.contextDir, "generated")); !os.IsNotExist(err) {
+		t.Fatalf("standalone publication modified host context: %v", err)
+	}
+}
+
+func TestLocalComponentGlobalNamedContextMountTracksChanges(t *testing.T) {
+	f := newLocalComponentFixture(t)
+	base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
+	f.write(t, "components/read.coopr", `extend
+run "cat /src/value >/proof" network="none"
+`)
+	f.write(t, "assets/value", "original")
+	var err error
+	f.options.TransientRunMounts, err = ParseTransientRunMounts([]string{"type=bind,from=assets,target=/src"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.options.BuildContexts = []buildcontext.Spec{{Name: "assets", Kind: buildcontext.Local, Path: filepath.Join(f.contextDir, "assets")}}
+	source := fmt.Sprintf("from %q\ncomponent \"./components/read.coopr\"\n", base.reference)
+	for _, test := range []struct{ name, want string }{{"cold", "original"}, {"warm", "original"}, {"changed", "changed"}} {
+		f.write(t, "assets/value", test.want)
+		_, layout := f.build(t, test.name, source)
+		if got := localComponentLastFile(t, layout, "proof"); got != test.want {
+			t.Fatalf("proof=%q want=%q", got, test.want)
+		}
 	}
 }

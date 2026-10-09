@@ -47,6 +47,10 @@ type Options struct {
 	Manifest             string
 	IgnoreFile           string
 	File, Context, From  string
+	Files                []string
+	DefinitionsInContext []bool
+	SourcePolicyFile     string
+	TransientRunMounts   []buildah.RunMount
 	DefinitionInContext  bool
 	Platform, Target     string
 	Platforms            []string
@@ -57,6 +61,11 @@ type Options struct {
 	Tags                 []string
 	MetadataFile         string
 	IIDFile              string
+	IIDFileRaw           string
+	BlobDirectory        string
+	CompressionFormat    string
+	CompressionLevel     *int
+	ForceCompression     *bool
 	Push                 bool
 	Pull                 bool
 	PullPolicy           string
@@ -128,6 +137,12 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 	if err != nil {
 		return "", err
 	}
+	if opts.BlobDirectory != "" {
+		opts.BlobDirectory, err = filepath.Abs(opts.BlobDirectory)
+		if err != nil {
+			return "", err
+		}
+	}
 	if opts.RusageLogFile != "" {
 		opts.RusageLogFile, err = filepath.Abs(opts.RusageLogFile)
 		if err != nil {
@@ -164,10 +179,23 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 	if err != nil {
 		return "", err
 	}
+	if len(opts.Files) != 0 {
+		opts.File = opts.Files[0]
+	}
 	if opts.File == "" {
 		return "", errors.New("definition is required")
 	}
-	if opts.File == "-" && opts.Context == "-" {
+	files, contained := definitionFiles(opts.File, opts.Files, opts.DefinitionInContext, opts.DefinitionsInContext)
+	stdinFiles := 0
+	for _, file := range files {
+		if file == "-" {
+			stdinFiles++
+		}
+	}
+	if stdinFiles > 1 {
+		return "", errors.New("definition stdin can only be read once")
+	}
+	if stdinFiles != 0 && opts.Context == "-" {
 		return "", errors.New("definition and context cannot both use stdin")
 	}
 	destinations, err := outputDestinations(oci.Image, opts.Tag, opts.Tags, opts.Push)
@@ -177,7 +205,7 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 	if err := validateFinalization(&opts, targets, destinations); err != nil {
 		return "", err
 	}
-	outputArtifacts, err := validateOutputArtifacts(destinations, opts.File, opts.MetadataFile, opts.IIDFile)
+	outputArtifacts, err := validateOutputArtifacts(destinations, opts.File, opts.MetadataFile, opts.IIDFile, opts.IIDFileRaw)
 	if err != nil {
 		return "", err
 	}
@@ -198,12 +226,26 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 		return "", err
 	}
 	outputArtifacts = append(outputArtifacts, finalArtifacts...)
-	def, primary, definitionFile, cleanupPrimary, err := prepareDefinitionContext(ctx, opts.File, opts.Context, opts.DefinitionInContext, opts.Secrets, opts.SSH, opts.Stdin)
+	def, primary, definitionFile, cleanupPrimary, err := prepareDefinitionsContext(ctx, files, opts.Context, contained, opts.Secrets, opts.SSH, opts.Stdin)
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", definitionDisplayName(opts.File), err)
 	}
 	defer func() { _ = cleanupPrimary() }()
 	opts.File, opts.Context = definitionFile, primary.Path
+	resolvedFiles := make([]string, 0, len(files))
+	for i, file := range files {
+		if i < len(contained) && contained[i] {
+			file, err = contextDefinitionPath(primary.Path, file)
+			if err != nil {
+				return "", err
+			}
+		}
+		resolvedFiles = append(resolvedFiles, file)
+	}
+	if err := validateArtifactOverlaps(outputArtifacts, resolvedFiles); err != nil {
+		return "", err
+	}
+
 	applyFromOverride(def, opts.From)
 	for _, inst := range def.Instructions {
 		if inst.Name == "extend" {
@@ -287,6 +329,9 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 		return "", err
 	}
 	contextArtifacts := append(slices.Clone(storeRoots), signingArtifacts...)
+	if opts.BlobDirectory != "" {
+		contextArtifacts = append(contextArtifacts, opts.BlobDirectory)
+	}
 	contextArtifacts = append(contextArtifacts, outputArtifacts...)
 	stagingAnchor := opts.File
 	if isHTTPDefinition(stagingAnchor) {
@@ -370,8 +415,8 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 			ProgressPrefix:    progressPrefix,
 			ProgressReference: progressReference,
 			Store:             buildStore, ContextDir: opts.Context, IgnoreFile: opts.IgnoreFile, ContextArtifacts: contextArtifacts,
-			Output: buildah.Output{Path: output, Format: opts.Format, Squash: opts.Squash, SquashAll: opts.SquashAll, DisableCompression: opts.DisableCompression, ConfidentialWorkload: opts.ConfidentialWorkload, SBOM: opts.SBOM, Filesystems: platformFilesystemOutputs(outputs, targetPlatform, len(targets))}, ComponentStoreDir: componentStoreDir,
-			Pull: opts.Pull, PullPolicy: opts.PullPolicy,
+			Output: buildah.Output{Path: output, Format: opts.Format, Squash: opts.Squash, SquashAll: opts.SquashAll, DisableCompression: opts.DisableCompression, BlobDirectory: opts.BlobDirectory, CompressionFormat: opts.CompressionFormat, CompressionLevel: opts.CompressionLevel, ForceCompression: opts.ForceCompression, ConfidentialWorkload: opts.ConfidentialWorkload, SBOM: opts.SBOM, Filesystems: platformFilesystemOutputs(outputs, targetPlatform, len(targets))}, ComponentStoreDir: componentStoreDir,
+			Pull: opts.Pull, PullPolicy: opts.PullPolicy, SourcePolicyFile: opts.SourcePolicyFile, TransientRunMounts: opts.TransientRunMounts,
 			NoCache:     opts.NoCache,
 			Network:     opts.Network,
 			AddHosts:    opts.AddHosts,
@@ -528,7 +573,7 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 			publicationErr = errors.Join(publicationErr, copyErr, stream.Close())
 		}
 	}
-	return finishOutputs(opts.MetadataFile, opts.IIDFile, root, variants, selections, report, publicationErr)
+	return finishOutputs(opts.MetadataFile, opts.IIDFile, root, variants, selections, report, publicationErr, opts.IIDFileRaw)
 }
 
 // runPlatformBuildsWithLimit bounds platform workers, preserves request order,

@@ -34,7 +34,10 @@ func readLocalComponent(ctx context.Context, options PlanOptions, reference stri
 		return nil, "", errors.New("local component requires a build context")
 	}
 	artifacts := append(slices.Clone(options.ContextArtifacts), options.Store.RunRoot, options.Store.GraphRoot, options.Output.Path, options.CacheLocalDir)
-	if options.Resolver != nil {
+	if options.ContextPrepared {
+		artifacts = nil
+	}
+	if options.Resolver != nil && !options.ContextPrepared {
 		artifacts = append(artifacts, options.Resolver.ComponentStoreDir())
 	}
 	policy, err := prepareContextPolicyWithIgnore(options.ContextDir, artifacts, options.IgnoreFile)
@@ -131,9 +134,11 @@ func (executor *graphExecutor) materializeLocalComponent(ctx context.Context, re
 	}
 	plan, selected, err := planDefinitionWithExternalBaseState(ctx, def, planner.Options{
 		Mode: planner.Publish, Platform: platform, Arguments: maps.Clone(parameters),
+		BuildContexts: executor.options.BuildContexts, DeferImageSource: deferredPolicySource(executor.sourcePolicy),
+		TransientRunMounts:      TransientMountInstructions(executor.options.TransientRunMounts),
 		SourceDateEpochResolver: sourceDateEpochResolver(ctx, buildCredentialSource{secretSpecs: executor.options.Secrets, sshSpecs: executor.options.SSH}),
 	}, executor.resolveBaseImage, func(ctx context.Context, spec buildcontext.Spec, target v1.Platform) (ResolvedImageSource, error) {
-		return MaterializeNamedContext(ctx, spec, target, executor.store, platformSystemContext(executor.system, target), executor.options.Resolver, executor.options.Secrets, executor.options.SSH, executor.options.ContextArtifacts...)
+		return executor.materializeNamedContext(ctx, spec, target)
 	})
 	if err != nil {
 		return "", "", fmt.Errorf("plan local component %q: %w", reference, err)

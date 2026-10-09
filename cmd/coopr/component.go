@@ -5,6 +5,7 @@ import (
 	"runtime"
 
 	"coopr/internal/build"
+	"coopr/internal/buildah"
 	"coopr/internal/buildcontext"
 	"coopr/internal/oci"
 	"github.com/spf13/cobra"
@@ -38,7 +39,9 @@ func newComponentBuildCommand() *cobra.Command {
 
 func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
 	var ignoreFile string
-	var definitionFile, from, target, network, pullPolicy string
+	var definitionFiles []string
+	var sourcePolicyFile string
+	var from, target, network, pullPolicy string
 	var osName, arch, variant string
 	var tags []string
 	var metadataFile string
@@ -70,7 +73,7 @@ func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
 			if len(paths) != 0 {
 				argument = paths[0]
 			}
-			file, resolvedContext, definitionInContext, err := resolveBuildInput(argument, definitionFile)
+			files, resolvedContext, definitionsInContext, err := resolveBuildInputs(argument, definitionFiles)
 			if err != nil {
 				return err
 			}
@@ -82,7 +85,8 @@ func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if _, err := oci.NormalizePullPolicy(pullPolicy, pull); err != nil {
+			pullPolicy, err = resolveBuildPullPolicy(cmd)
+			if err != nil {
 				return err
 			}
 			timestamp, epoch, ttl, err := times.values(cmd)
@@ -90,6 +94,10 @@ func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
 				return err
 			}
 			runControls, err := controls.controls()
+			if err != nil {
+				return err
+			}
+			transientRunMounts, err := buildah.ParseTransientRunMounts(controls.mounts)
 			if err != nil {
 				return err
 			}
@@ -122,7 +130,7 @@ func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
 				executionStdin = cmd.InOrStdin()
 			}
 			ref, err := build.BuildComponent(cmd.Context(), build.ComponentOptions{
-				File: file, Context: resolvedContext, DefinitionInContext: definitionInContext, From: from, IgnoreFile: ignoreFile, Tags: tags, MetadataFile: metadataFile, Push: push, Pull: pull, PullPolicy: pullPolicy, NoCache: noCache, Network: network, AddHosts: addHosts,
+				File: files[0], Files: files, Context: resolvedContext, DefinitionsInContext: definitionsInContext, SourcePolicyFile: sourcePolicyFile, TransientRunMounts: transientRunMounts, From: from, IgnoreFile: ignoreFile, Tags: tags, MetadataFile: metadataFile, Push: push, Pull: pull, PullPolicy: pullPolicy, NoCache: noCache, Network: network, AddHosts: addHosts,
 				Lifecycle: controls.lifecycle(), Quiet: quiet, LogFile: logFile, LogSplit: logSplit, LogRusage: logRusage && !quiet, RusageLogFile: rusageLogFile,
 				BuildStore:  store,
 				RunControls: runControls, Jobs: controls.jobs,
@@ -145,7 +153,8 @@ func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
-	f.StringVarP(&definitionFile, "file", "f", "", "definition file path (required when supplying a build context)")
+	f.StringArrayVarP(&definitionFiles, "file", "f", nil, "definition file path (repeatable, combined in order; required with a build context)")
+	f.StringVar(&sourcePolicyFile, "source-policy-file", "", "BuildKit-format policy file for base image sources")
 	f.StringVar(&from, "from", "", "replace the image in the first FROM instruction")
 	f.StringVar(&metadataFile, "metadata-file", "", "write component index and per-platform digests as JSON")
 	f.StringVar(&ignoreFile, "ignorefile", "", "context ignore file (default: first of .cooprignore, .containerignore, .dockerignore at the context root)")

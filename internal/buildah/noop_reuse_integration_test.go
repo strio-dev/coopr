@@ -20,6 +20,7 @@ import (
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/buildah/define"
 	buildahdocker "go.podman.io/buildah/docker"
+	"go.podman.io/buildah/imagebuildah"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/storage"
 	orasoci "oras.land/oras-go/v2/content/oci"
@@ -68,6 +69,39 @@ func TestFromOnlyBuildReusesExactBaseUnlessOutputPolicyChanges(t *testing.T) {
 	exact := build("exact", "", nil, false)
 	if exact.ImageID != selected.ImageID || exact.ManifestDigest != selected.Manifest.Digest.String() {
 		t.Fatalf("FROM-only output = image %s manifest %s, want exact base %s/%s", exact.ImageID, exact.ManifestDigest, selected.ImageID, selected.Manifest.Digest)
+	}
+
+	// Pinned native Buildah tags FROM-only images without recompressing their
+	// manifest or layer descriptors. Compare the actual native result as well.
+	nativeFile := filepath.Join(root, "Containerfile")
+	if err := os.WriteFile(nativeFile, []byte("FROM "+base.reference+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := acquireStore(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nativeID, _, nativeErr := imagebuildah.BuildDockerfiles(ctx, lease.store, define.BuildOptions{
+		ContextDirectory: root, PullPolicy: define.PullNever, Compression: define.Gzip,
+		CommonBuildOpts: &define.CommonBuildOptions{}, Out: io.Discard, Err: io.Discard,
+		SignaturePolicyPath: policy, RemoveIntermediateCtrs: true, ForceRmIntermediateCtrs: true,
+	}, nativeFile)
+	nativeResult, exportErr := exportStoredImageVariantRaw(ctx, lease.store, nativeID, Output{Path: filepath.Join(root, "native-layout")}, nil, nil)
+	closeErr := lease.Close()
+	if nativeErr != nil || exportErr != nil || closeErr != nil {
+		t.Fatalf("native FROM-only build: %v / %v / %v", nativeErr, exportErr, closeErr)
+	}
+	if nativeID != exact.ImageID {
+		t.Fatalf("native/Coopr FROM-only image IDs: %s/%s", nativeID, exact.ImageID)
+	}
+	actualManifest, actualConfig := readPlanImage(t, exact.Layout)
+	nativeManifest, nativeConfig := readPlanImage(t, nativeResult.Layout)
+	actualBytes, _ := json.Marshal(actualManifest)
+	nativeBytes, _ := json.Marshal(nativeManifest)
+	actualConfigBytes, _ := json.Marshal(actualConfig)
+	nativeConfigBytes, _ := json.Marshal(nativeConfig)
+	if exact.ManifestDigest != nativeResult.ManifestDigest || !bytes.Equal(actualBytes, nativeBytes) || !bytes.Equal(actualConfigBytes, nativeConfigBytes) {
+		t.Fatalf("Coopr FROM-only manifest/layers/config differ from native image %s", nativeID)
 	}
 
 	docker := build("docker", "docker", nil, false)

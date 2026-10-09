@@ -39,7 +39,7 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 	}
 	var stages []stage
 	aliases := map[string]int{}
-	for _, inst := range component.Definition.Instructions {
+	for _, inst := range definition.FlattenLayers(component.Definition.Instructions) {
 		switch inst.Name {
 		case "from", "extend", "package":
 			if name := inst.Properties["as"]; name != "" {
@@ -73,6 +73,23 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 			binding, ok := component.FromBindings[strconv.Itoa(id)]
 			if !ok {
 				return nil, fmt.Errorf("published FROM binding missing for stage %d", id)
+			}
+			after, hasAfter := s.head.Properties["after"]
+			if hasAfter {
+				target, err := strconv.Atoi(binding.AfterStage)
+				if err != nil || target < 0 || target >= id || strconv.Itoa(target) != binding.AfterStage {
+					return nil, fmt.Errorf("invalid FROM after binding for stage %d", id)
+				}
+				if binding.AfterIndex != "" {
+					if !canonicalSourceIndex(binding.AfterIndex) || !strings.Contains(after, "$") && after != binding.AfterIndex {
+						return nil, fmt.Errorf("FROM after binding conflicts with numeric source %q", after)
+					}
+				} else if name := stages[target].head.Properties["as"]; name == "" || !strings.Contains(after, "$") && canonicalStageName(after) != canonicalStageName(name) {
+					return nil, fmt.Errorf("FROM after binding conflicts with source %q", after)
+				}
+				deps[id] = append(deps[id], target)
+			} else if binding.AfterStage != "" || binding.AfterIndex != "" {
+				return nil, fmt.Errorf("unexpected FROM after binding for stage %d", id)
 			}
 			source := s.head.Arguments[0]
 			switch binding.Kind {
@@ -235,7 +252,7 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 		if selected[id] {
 			return nil, fmt.Errorf("dormant root %d is already in selected output closure", id)
 		}
-		eligible := false
+		eligible := stages[id].head.Name == "extend"
 		for source := range stages {
 			binding, ok := component.FromBindings[strconv.Itoa(source)]
 			if selected[source] && ok && binding.Kind == "image" {
@@ -255,16 +272,12 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 			return nil, fmt.Errorf("retained stage %d is outside selected output closure", id)
 		}
 	}
-	ancestor := output
-	for stages[ancestor].head.Name == "from" {
-		binding := component.FromBindings[strconv.Itoa(ancestor)]
-		if binding.Kind != "stage" {
-			break
-		}
-		ancestor, _ = strconv.Atoi(binding.Stage)
+	hasExtend := false
+	for id, s := range stages {
+		hasExtend = hasExtend || id <= output && s.head.Name == "extend"
 	}
-	if stages[ancestor].head.Name != "extend" {
-		return nil, fmt.Errorf("published output does not descend from extend")
+	if !hasExtend {
+		return nil, fmt.Errorf("published component output requires a preceding extend")
 	}
 	var packages []string
 	for id, s := range stages {

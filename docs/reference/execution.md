@@ -14,9 +14,9 @@ A stage has a Linux filesystem, image configuration, platform, and argument scop
 | `package as="NAME"` | Empty filesystem and configuration; produces a stored package snapshot. |
 | `extend` | Consumer's current filesystem and configuration. Multiple roots start independently from that same state. |
 
-The final stage is the image output unless `--target` selects another. A component output must descend from `extend` through FROM links. Component build fixes that output; an invocation property named `target` is an ordinary argument.
+The final stage is the image output unless `--target` selects another. Components require `extend`, but may select an independently based FROM output declared after it. A package stage cannot itself be the output. Component build fixes that output; an invocation property named `target` is an ordinary argument.
 
-A component call replaces the caller's filesystem and configuration, then the caller continues. Caller arguments remain in scope; component-private arguments do not. Returned ENV values win collisions with caller arguments. A later caller ARG declaration still uses the original caller CLI override. Like FROM, a component call makes a later ENTRYPOINT clear inherited CMD unless a subsequent CMD supplies one.
+A component call adopts the selected output’s complete image chain, filesystem and configuration, then the caller continues. A FROM output uses its selected base’s normal configuration inheritance and authored overrides; an independent output discards caller-only state. Caller arguments remain in scope; component-private arguments do not. Returned ENV values win collisions with caller arguments. A later caller ARG declaration still uses the original caller CLI override. Like FROM, a component call makes a later ENTRYPOINT clear inherited CMD unless a subsequent CMD supplies one.
 
 COPY/ADD and RUN mounts with `from=` create input dependencies without changing base lineage. Sources can be named stages, packages, named contexts, or external images. External images resolve by platform to immutable descriptors. Graphs must be acyclic and stage aliases unambiguous; graph-affecting arguments must resolve before execution.
 
@@ -67,7 +67,7 @@ extend as="base" {
 
 Each field may appear once; lists require nonempty strings. Values support global ARG expansion, and architecture aliases are accepted.
 
-Any value within a field may match. Every declared field on every retained EXTEND root must match before body execution or component-cache reuse.
+Any value within a field may match. Every declared field on each selected EXTEND root must match before body execution or component-cache reuse. An output with no selected EXTEND root checks the nearest preceding EXTEND’s contract instead. Unrelated dormant targets do not add requirements to an already selected caller root.
 
 | Requirement | Match rule |
 | --- | --- |
@@ -146,13 +146,13 @@ RUN resource, namespace, and runtime settings affect cache reuse; host volume/de
 
 Image `--env` prepends values to every stage; authored ENV wins. Bare names import present host values, `PREFIX*` imports matching names, and `*` imports all. Repeated context names and secret/SSH IDs use the last value. Label/environment unsets, inheritance, and history omission apply to final outputs, including cache hits. OCI annotations are dropped with Docker format.
 
-`--all-platforms` discovers common runnable Linux platforms across non-scratch bases and conflicts with explicit `--platform`. `--manifest NAME` serializes updates to a named local index, preserves other platforms, and replaces newly built instances.
+`--all-platforms` discovers common runnable Linux platforms across registry/native-store non-scratch bases and conflicts with explicit `--platform`. Discovery does not apply source-policy conversions; use explicit platforms for local transports or generated image sources. `--manifest NAME` serializes updates to a named local index, preserves other platforms, and replaces newly built instances.
 
 ### Outputs and failure recovery
 
 Repeatable `--tag` applies local names or transfers to one retained immutable result, in requested order. Plain names are local; explicit transports are `local:`, `registry:`, `oci-archive:`, and `docker:`. Components support only the first three. `--push --tag NAME` selects registry publication.
 
-`--metadata-file` records `containerimage.digest`, `containerimage.config.digest`, `containerimage.descriptor`, `coopr.platforms`, `coopr.references`, and per-destination `coopr.outputs`. Image `--iidfile` writes the native image ID for one platform or index digest for several. File-output parents are checked before execution.
+`--metadata-file` records `containerimage.digest`, `containerimage.config.digest`, `containerimage.descriptor`, `coopr.platforms`, `coopr.references`, and per-destination `coopr.outputs`. Image `--iidfile` writes the algorithm-prefixed native image ID for one platform or index digest for several. `--iidfile-raw` (alias `--raw-iidfile`) writes the unprefixed ID and requires one platform. Both files omit a trailing newline. File-output parents are checked before execution.
 
 Successful execution retains the result/checkpoints before transfers. Destinations commit independently; there is no cross-engine/registry transaction. Transfer failure/cancellation reports the retained digest and completed destinations. Metadata records complete/failed/pending destinations and `coopr.outputError`; result-file finalization failures also report retained outputs. An interrupted transfer may have committed remotely: check its destination, then retry with `coopr copy`. Execution failure publishes neither newly staged portable-cache candidates nor final output names.
 
@@ -163,6 +163,22 @@ Registry resolution, caches, and publication share the request's [authentication
 ### Image selection
 
 Registry component tags resolve on each build. Image tags default to local cached selection. `--pull` accepts `missing` (default), `always`, `newer`, and `never`; bare `--pull` means always. `newer` compares selected digests and can reuse a local image on registry failure. `never` fails missing inputs before registry access. Digest references select exact objects and can reuse local copies offline. Reproducibility requires pinning every selected OCI reference, including nested ones.
+
+FROM accepts plain image names, `docker://`, `containers-storage:`, `oci:`, `oci-archive:`, `docker-archive:`, `dir:`, `docker-daemon:`, and the native `atomic:` OpenShift transport. Filesystem transports read paths inside the selected build context, including through symlinks; they cannot read arbitrary host paths. Native transport selection preserves the selected image's configuration and layers.
+
+`--source-policy-file` loads Buildah's BuildKit-format image policy once for the build. ALLOW permits a matching source, DENY rejects it, and CONVERT substitutes its reference. Evaluation follows named image-context substitution and precedes image resolution. This policy is distinct from the native signature policy. Invalid policy files fail before execution.
+
+For generated image sources, FROM `after` names one earlier stage by alias or numeric index. The dependency delays source selection and inherited-trigger planning until that producer finishes. Use it when a producer writes an OCI layout or archive into the writable primary context. Ordinary source order alone does not establish this dependency for parallel or unused-stage-skipping builds.
+
+### RUN mounts
+
+Authored mount children apply to their RUN. Repeatable `--mount` adds mounts to every executed RUN, including component and inherited RUNs, after the authored mounts. Mount `from` references participate in dependency planning and input identity; a self-dependency or cycle fails before execution.
+
+A writable bind of the primary context uses one filtered, disposable copy for the build. Changes persist across RUNs, stages, and component calls, so later file operations and generated image sources see them. The original context is unchanged. Writes to image or named-context bind mounts use disposable per-RUN overlays and do not persist to subsequent RUNs.
+
+RUNs that write the primary context execute rather than reusing instruction results: an image snapshot cannot restore their context side effects. Later COPY/ADD and read-only context mounts measure the resulting files. Components using caller-context bind mounts do not reuse whole-component results.
+
+Image VOLUME paths exist in final filesystem exports. With `--compat-volumes`, each RUN's changes under declared volumes are discarded at that RUN's boundary, even with `--layers=false`; COPY/ADD changes remain.
 
 ### Cache scopes
 
@@ -188,13 +204,15 @@ Network responses, credentials/SSH-agent state, cache-mount contents, clock, ran
 
 ### State identity and metadata limits
 
-Portable cache identity follows effective filesystem and image-configuration changes, independently of layer history. It ignores the root directory’s modification time. Metadata that the exporter cannot preserve can prevent portable reuse.
+Portable instruction cache identity follows effective filesystem and image-configuration changes, independently of layer history. Component-result cache identity also includes the input image chain, and restoration retains the selected output’s image graph, configuration and root metadata. It ignores the root directory’s modification time. Metadata that the exporter cannot preserve can prevent portable reuse.
 
 Ordinary image commits have a Buildah/Podman limitation: changes to root-directory mode, owner, or portable xattrs may be discarded at layer commit. Coopr accepts such builds even when committed images cannot represent them. Package snapshots and cache checkpoints capture/restore these root attributes. Portable state snapshots cannot reuse outputs whose metadata the exporter cannot preserve, including subsecond file mtimes and nonportable xattrs.
 
 ### Layers, storage, and copying
 
-Default `--format oci` preserves original base layers/configuration; Docker format selects schema 2 config/manifests and manifest lists. Ordinary filesystem changes produce one layer per instruction; component invocation produces one net change layer. Configuration-only/empty changes add none. `--layers=false` combines newly executed filesystem instructions into one layer. Packages are invocation inputs, not appended consumer layers.
+Default `--format oci` preserves original base layers/configuration; Docker format selects schema 2 config/manifests and manifest lists. Ordinary filesystem changes produce one layer per instruction, including instructions within components. Component invocation preserves the selected output’s layers. Explicit `layer { ... }` groups publish their ordered net change as one layer; nested groups are absorbed by the outer group. Configuration-only/empty changes add none. `--layers=false` takes precedence and combines newly executed filesystem instructions into one layer. Groups reject independently based replacement component outputs to preserve the starting image lineage. Packages are invocation inputs, not appended consumer layers.
+
+`--save-stages` retains completed intermediate stage images; instruction-cache snapshots follow their separate cache lifecycle. `--stage-labels` requires saved stages and adds `io.buildah.stage.name` and `io.buildah.stage.base` to stages with instructions. FROM-only stages reuse their base without adding labels.
 
 Without a tag, builds return a manifest/index digest; local tags return their name. See [storage](../guides/storage.md) for stores and transfers.
 
@@ -203,3 +221,9 @@ Without a tag, builds return a manifest/index digest; local tags return their na
 Partially imported registry indexes default to native Linux selection. Single-platform local tags select their stored platform; bare manifest digests select that exact manifest regardless of host.
 
 Local component invocation accepts `local:TAG` or a bare immutable digest; registry failure does not search local storage. Components are not engine-loadable images. Pruning follows [storage lifecycle rules](../guides/storage.md#inspect-and-maintain); external Podman access uses native storage locking.
+
+### Output compression
+
+Image builds accept `--compression-format gzip|zstd|zstd:chunked`, `--compression-level`, and `--force-compression`. A specified format defaults force-compression to true unless explicitly disabled. Otherwise native `containers.conf` defaults apply. Docker-format manifests require compatible layer compression.
+
+These controls apply when exporting final image layers and portable instruction-cache images, including after cache hits and when the final stage is unchanged. They do not change instruction cache keys or force RUNs to execute. The native image store retains its normal filesystem/layer representation; filesystem and tar exports are not compressed image manifests. `--blob-cache PATH` optionally reuses native compressed blobs during output copying.

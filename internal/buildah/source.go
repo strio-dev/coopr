@@ -64,6 +64,14 @@ func SelectImageSource(ctx context.Context, resolver *oci.Resolver, reference st
 }
 
 func selectImageSource(ctx context.Context, resolver *oci.Resolver, reference string, platform v1.Platform, store storage.Store) (ResolvedImageSource, error) {
+	normalized, transport, err := normalizeBaseSource(reference, "")
+	if err != nil {
+		return ResolvedImageSource{}, err
+	}
+	if transport {
+		return resolveBaseSource(ctx, resolver, normalized, platform, store, nil, "", "")
+	}
+	reference = normalized
 	canonical, err := oci.ParseReference(reference)
 	if err != nil {
 		return ResolvedImageSource{}, err

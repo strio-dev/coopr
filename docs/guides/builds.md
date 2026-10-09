@@ -15,6 +15,8 @@ coopr build image.coopr --target runtime --build-arg VERSION=1.2
 
 Local COPY/ADD sources stay inside the context, including through symlinks. Ignore-file precedence is `.cooprignore`, `.containerignore`, then `.dockerignore` at the context root; `--ignorefile PATH` overrides it. Docker/Podman patterns and `!` negation apply. Selected stores and temporary artifacts are excluded.
 
+Repeat `--file` to compose definitions. Coopr appends every file's instructions in command-line order, including FROM declarations, and uses one shared context. A file without a new stage declaration continues the preceding stage. Paths remain explicit; Coopr does not search for default definitions.
+
 ## Stages and inputs
 
 ```kdl
@@ -40,6 +42,10 @@ coopr build image.coopr --build-context shared=../shared
 
 Use `copy "file" "/file" from="shared"` to read that context. Image and OCI-layout contexts use `docker-image://REFERENCE` and `oci-layout://PATH:TAG`; Git and HTTP tar inputs are also supported. Context names can replace named stages. Numeric stage references still select stages.
 
+FROM also accepts native [image transports](../reference/execution.md#image-selection), including an OCI layout within the context. If an earlier stage generates that layout, add `after="producer"` to its consuming FROM, where `producer` is the earlier stage's name. This dependency keeps the producer reachable and delays image selection until it finishes, including with parallel builds. It does not inherit the producer's filesystem.
+
+Writable bind mounts of the primary context share a disposable copy across RUNs, stages, and component calls. Generated files can feed later COPY/ADD or FROM inputs without modifying the source checkout. Writable mounts of named contexts and images remain disposable per RUN. Use `--mount SPEC` to apply a RUN mount across the build.
+
 ## Platforms and outputs
 
 ```sh
@@ -53,6 +59,8 @@ Multiple platforms produce an OCI index, or a Docker manifest list with `--forma
 Image format and destination are separate choices. `--format docker` changes the stored manifest/config format; `docker:` selects an Engine destination. See [security and limitations](security.md#supported-limitations) for runtime compatibility.
 
 `--output type=local,dest=PATH` exports the final filesystem, and `--output type=tar,dest=PATH` exports a tar archive. Run `coopr build --help` for the full option list.
+
+`--compression-format` selects gzip, zstd, or zstd:chunked for exported image layers and portable instruction caches. Docker-format output requires compatible compression. Compression changes apply even when instructions hit cache; the native image store keeps its usual filesystem representation.
 
 ## Refresh inputs
 

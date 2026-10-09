@@ -21,6 +21,8 @@ import (
 	"go.podman.io/buildah/util"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/storage"
+	"oras.land/oras-go/v2"
+	orasoci "oras.land/oras-go/v2/content/oci"
 )
 
 const (
@@ -102,12 +104,16 @@ type instructionCacheRecord struct {
 }
 
 type instructionCacheEntry struct {
+	LogicalConfig  json.RawMessage
+	BaseImageID    string
+	RetainsCaller  *bool
 	ImageID        string
 	ManifestDigest digest.Digest
 	RootMetadata   *PackageRootMetadata
 }
 
 type portableInstructionCache struct {
+	validateHit func(context.Context, *graphExecutor, *cache.ImageRecord, instructionCacheEntry, *types.SystemContext) error
 	readStores  []instructionCacheStore
 	writeStores []instructionCacheStore
 	stagingDir  string
@@ -242,13 +248,39 @@ func (c *portableInstructionCache) acceptRelayedCandidates(relays []portableInst
 		if err != nil {
 			return err
 		}
-		root, err := oci.LayoutRoot(layout)
+		data, err := os.ReadFile(filepath.Join(layout, "index.json"))
 		if err != nil {
-			return fmt.Errorf("read relayed instruction cache layout: %w", err)
+			return fmt.Errorf("read relayed instruction cache index: %w", err)
 		}
-		if root.MediaType != relay.Record.Image.MediaType || root.Digest != relay.Record.Image.Digest || root.Size != relay.Record.Image.Size {
-			return errors.New("relayed instruction cache layout differs from record")
+		var index v1.Index
+		if err := json.Unmarshal(data, &index); err != nil {
+			return fmt.Errorf("decode relayed instruction cache index: %w", err)
 		}
+		if index.SchemaVersion != 2 {
+			return errors.New("relayed instruction cache index has unsupported schema")
+		}
+		found := false
+		foundBase := relay.Record.BaseImage == nil
+		for _, root := range index.Manifests {
+			same := func(expected v1.Descriptor) bool {
+				return root.MediaType == expected.MediaType && root.Digest == expected.Digest && root.Size == expected.Size
+			}
+			if same(relay.Record.Image) {
+				found = true
+				if relay.Record.BaseImage != nil && same(*relay.Record.BaseImage) {
+					foundBase = true
+				}
+				continue
+			}
+			if relay.Record.BaseImage == nil || !same(*relay.Record.BaseImage) {
+				return errors.New("relayed instruction cache layout differs from selected image graphs")
+			}
+			foundBase = true
+		}
+		if !found || !foundBase {
+			return errors.New("relayed instruction cache layout omits selected image")
+		}
+
 		c.candidates = append(c.candidates, portableInstructionCandidate{key: relay.Key, record: relay.Record, layout: layout})
 	}
 	return nil
@@ -329,6 +361,10 @@ func portableInstructionDigest(input instructionCacheInput, parent digest.Digest
 }
 
 func (c *portableInstructionCache) lookup(ctx context.Context, executor *graphExecutor, key cache.ImageKey, localKey digest.Digest, system *types.SystemContext) (instructionCacheEntry, error) {
+	return c.lookupValidated(ctx, executor, key, localKey, system, c.validateHit)
+}
+
+func (c *portableInstructionCache) lookupValidated(ctx context.Context, executor *graphExecutor, key cache.ImageKey, localKey digest.Digest, system *types.SystemContext, validateHit func(context.Context, *graphExecutor, *cache.ImageRecord, instructionCacheEntry, *types.SystemContext) error) (instructionCacheEntry, error) {
 	for _, store := range c.readStores {
 		if err := ctx.Err(); err != nil {
 			return instructionCacheEntry{}, err
@@ -353,6 +389,16 @@ func (c *portableInstructionCache) lookup(ctx context.Context, executor *graphEx
 			_ = os.RemoveAll(layout)
 			continue
 		}
+		baseImageID := ""
+		if record.BaseImage != nil {
+			baseImageID, err = ImportSelectedImage(ctx, executor.store, system, layout, *record.BaseImage)
+			if err != nil {
+				packageCacheWarning("import cached base image", err)
+				_ = os.RemoveAll(layout)
+				c.stats.Errors++
+				continue
+			}
+		}
 		imageID, err := ImportSelectedImage(ctx, executor.store, system, layout, record.Image)
 		if err != nil {
 			packageCacheWarning("import instruction cache image", err)
@@ -373,6 +419,19 @@ func (c *portableInstructionCache) lookup(ctx context.Context, executor *graphEx
 			root, ok = cacheablePackageRootMetadata(root)
 			if !ok {
 				packageCacheWarning("read instruction cache", errors.New("cached root metadata is not portable"))
+				_ = os.RemoveAll(layout)
+				c.stats.Errors++
+				continue
+			}
+		}
+		entry := instructionCacheEntry{ImageID: imageID, ManifestDigest: record.Image.Digest, RootMetadata: root, LogicalConfig: record.LogicalConfig, BaseImageID: baseImageID, RetainsCaller: record.RetainsCaller}
+		if validateHit != nil {
+			if err := validateHit(ctx, executor, record, entry, system); err != nil {
+				if ctx.Err() != nil {
+					_ = os.RemoveAll(layout)
+					return instructionCacheEntry{}, ctx.Err()
+				}
+				packageCacheWarning("validate component image cache", err)
 				_ = os.RemoveAll(layout)
 				c.stats.Errors++
 				continue
@@ -403,7 +462,7 @@ func (c *portableInstructionCache) lookup(ctx context.Context, executor *graphEx
 			return instructionCacheEntry{}, seedErr
 		}
 		c.stats.Hits++
-		return instructionCacheEntry{ImageID: imageID, ManifestDigest: record.Image.Digest, RootMetadata: root}, nil
+		return entry, nil
 	}
 	if err := ctx.Err(); err != nil {
 		return instructionCacheEntry{}, err
@@ -413,6 +472,10 @@ func (c *portableInstructionCache) lookup(ctx context.Context, executor *graphEx
 }
 
 func (c *portableInstructionCache) record(ctx context.Context, executor *graphExecutor, key cache.ImageKey, imageID string, manifest digest.Digest, root *PackageRootMetadata, system *types.SystemContext) {
+	c.recordImage(ctx, executor, key, imageID, manifest, root, system, nil, "", nil)
+}
+
+func (c *portableInstructionCache) recordImage(ctx context.Context, executor *graphExecutor, key cache.ImageKey, imageID string, manifest digest.Digest, root *PackageRootMetadata, system *types.SystemContext, logical json.RawMessage, baseImageID string, retainsCaller *bool) {
 	if c == nil || len(c.writeStores) == 0 {
 		return
 	}
@@ -423,7 +486,9 @@ func (c *portableInstructionCache) record(ctx context.Context, executor *graphEx
 		return
 	}
 	layout := filepath.Join(dir, "layout")
-	result, err := exportStoredImageVariantRaw(ctx, executor.store, imageID, Output{Path: layout, Format: key.Format}, system, optionalDigest(manifest))
+	output := executor.options.Output
+	output.Path, output.Reference, output.Format = layout, "", key.Format
+	result, err := copyStoredOutputSelected(ctx, executor.store, imageID, output, system, optionalDigest(manifest))
 	if err != nil {
 		packageCacheWarning("export instruction cache candidate", err)
 		_ = os.RemoveAll(dir)
@@ -431,7 +496,7 @@ func (c *portableInstructionCache) record(ctx context.Context, executor *graphEx
 		return
 	}
 	descriptor, err := oci.LayoutRoot(result.Layout)
-	if err != nil || descriptor.Digest != manifest {
+	if err != nil || descriptor.Digest.String() != result.ManifestDigest {
 		if err == nil {
 			err = errors.New("exported manifest differs from instruction cache candidate")
 		}
@@ -450,7 +515,40 @@ func (c *portableInstructionCache) record(ctx context.Context, executor *graphEx
 			return
 		}
 	}
-	c.candidates = append(c.candidates, portableInstructionCandidate{key: key, record: cache.ImageRecord{Version: cache.ImageRecordVersion, CreatedAt: time.Now().UTC(), Key: key, Image: descriptor, RootMetadata: metadata}, layout: layout})
+	var baseImage *v1.Descriptor
+	if baseImageID != "" {
+		baseOutput := output
+		baseOutput.Path = filepath.Join(dir, "base-layout")
+		baseResult, err := copyStoredOutputSelected(ctx, executor.store, baseImageID, baseOutput, system, nil)
+		if err != nil {
+			packageCacheWarning("export cached base image", err)
+			_ = os.RemoveAll(dir)
+			c.stats.Errors++
+			return
+		}
+		descriptor, err := oci.LayoutRoot(baseResult.Layout)
+		if err == nil {
+			source, openErr := orasoci.New(baseResult.Layout)
+			if openErr != nil {
+				err = openErr
+			} else {
+				destination, openErr := orasoci.New(layout)
+				if openErr != nil {
+					err = openErr
+				} else {
+					err = oras.CopyGraph(ctx, source, destination, descriptor, oras.DefaultCopyGraphOptions)
+				}
+			}
+		}
+		if err != nil {
+			packageCacheWarning("stage cached base image", err)
+			_ = os.RemoveAll(dir)
+			c.stats.Errors++
+			return
+		}
+		baseImage = &descriptor
+	}
+	c.candidates = append(c.candidates, portableInstructionCandidate{key: key, record: cache.ImageRecord{Version: cache.ImageRecordVersion, CreatedAt: time.Now().UTC(), Key: key, Image: descriptor, RootMetadata: metadata, LogicalConfig: logical, BaseImage: baseImage, RetainsCaller: retainsCaller}, layout: layout})
 }
 
 func (c *portableInstructionCache) publish(ctx context.Context) error {

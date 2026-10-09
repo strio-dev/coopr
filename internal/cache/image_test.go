@@ -50,6 +50,7 @@ func TestInstructionImageStorePreservesExactGraph(t *testing.T) {
 	}
 	layerData := []byte("exact layer")
 	layer := oci.Descriptor(v1.MediaTypeImageLayer, layerData)
+	layer.Annotations = map[string]string{"io.github.containers.zstd-chunked.manifest-checksum": digest.FromString("chunk table").String()}
 	configData, _ := json.Marshal(v1.Image{Platform: v1.Platform{OS: "linux", Architecture: "amd64"}, RootFS: v1.RootFS{Type: "layers", DiffIDs: []digest.Digest{layer.Digest}}})
 	config := oci.Descriptor(v1.MediaTypeImageConfig, configData)
 	manifestData, _ := json.Marshal(oci.VersionedManifest(config, []v1.Descriptor{layer}, ""))
@@ -124,5 +125,46 @@ func TestInstructionImageStorePreservesExactGraph(t *testing.T) {
 	}
 	if _, err := broken.PutImage(ctx, key, record, sourcePath); err == nil {
 		t.Fatal("PutImage accepted an incomplete image graph")
+	}
+}
+
+func TestInstructionImageLayerAnnotationsKeepLocalBlobRestrictions(t *testing.T) {
+	ctx := context.Background()
+	for _, test := range []struct {
+		name      string
+		change    func(*v1.Descriptor)
+		wantError bool
+	}{
+		{name: "compression annotations", change: func(*v1.Descriptor) {}},
+		{name: "external URLs", change: func(d *v1.Descriptor) { d.URLs = []string{"https://example.invalid/layer"} }, wantError: true},
+		{name: "inline data", change: func(d *v1.Descriptor) { d.Data = []byte("inline") }, wantError: true},
+		{name: "platform", change: func(d *v1.Descriptor) { d.Platform = &v1.Platform{OS: "linux", Architecture: "amd64"} }, wantError: true},
+		{name: "artifact type", change: func(d *v1.Descriptor) { d.ArtifactType = "application/example" }, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			target, err := orasoci.New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			layer := oci.Descriptor(v1.MediaTypeImageLayerZstd, []byte("layer"))
+			layer.Annotations = map[string]string{"io.github.containers.zstd-chunked.manifest-position": "0:1:1:1"}
+			test.change(&layer)
+			config := oci.Descriptor(v1.MediaTypeImageConfig, []byte("{}"))
+			data, err := json.Marshal(oci.VersionedManifest(config, []v1.Descriptor{layer}, ""))
+			if err != nil {
+				t.Fatal(err)
+			}
+			root := oci.Descriptor(v1.MediaTypeImageManifest, data)
+			if err := target.Push(ctx, root, bytes.NewReader(data)); err != nil {
+				t.Fatal(err)
+			}
+			descriptors, err := imageGraphDescriptors(ctx, target, root)
+			if (err != nil) != test.wantError {
+				t.Fatalf("graph validation error=%v wantError=%v", err, test.wantError)
+			}
+			if !test.wantError && descriptors[1].Annotations["io.github.containers.zstd-chunked.manifest-position"] != "0:1:1:1" {
+				t.Fatal("layer annotations dropped")
+			}
+		})
 	}
 }

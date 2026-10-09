@@ -247,3 +247,40 @@ func TestBuildArgFilesReportReadAndArgumentErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveBuildInputsKeepsRepeatedExplicitFiles(t *testing.T) {
+	root := t.TempDir()
+	files := []string{filepath.Join(root, "first.coopr"), filepath.Join(root, "second.coopr")}
+	for _, file := range files {
+		if err := os.WriteFile(file, []byte("from \"scratch\"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, context, inContext, err := resolveBuildInputs(root, files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, ",") != strings.Join(files, ",") || context != root || len(inContext) != 2 {
+		t.Fatalf("inputs: %v %s %v", got, context, inContext)
+	}
+	command := newBuildCommand()
+	if err := command.ParseFlags([]string{"-f", files[0], "-f", files[1]}); err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := command.Flags().GetStringArray("file")
+	if err != nil || strings.Join(parsed, ",") != strings.Join(files, ",") {
+		t.Fatalf("repeated files: %v %v", parsed, err)
+	}
+}
+
+func TestResolveBuildInputsReadsContextRelativeFiles(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile(filepath.Join(root, "custom.coopr"), []byte("from \"scratch\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	files, _, contained, err := resolveBuildInputs(root, []string{"custom.coopr"})
+	if err != nil || len(files) != 1 || files[0] != "custom.coopr" || !contained[0] {
+		t.Fatalf("context-relative definition: %v %v %v", files, contained, err)
+	}
+}

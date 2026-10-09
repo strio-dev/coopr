@@ -158,3 +158,32 @@ copy "/payload" "/payload" from="bundle"
 		t.Fatalf("contexts = %+v, want %+v", got, want)
 	}
 }
+
+func TestPublishedFromHonorsExplicitNamedContextOverrideOfCallerAlias(t *testing.T) {
+	source := `extend as="caller"
+from "caller" as="selected"
+env "named" "replacement"
+`
+	publication := makePlan(t, source, Options{Mode: Publish})
+	context := buildcontext.Spec{Name: "caller", Kind: buildcontext.DockerImage, Reference: "registry.example/replacement:latest"}
+	calls := 0
+	invocation, err := InstantiateDemandDriven(publication.Component, Options{BuildContexts: []buildcontext.Spec{context}}, nil, func(source FromSource) (StageBind, error) {
+		calls++
+		if source.Kind != FromSourceContext || source.Source != "caller" || source.Context == nil || !reflect.DeepEqual(*source.Context, context) {
+			t.Fatalf("explicit caller context not selected: %+v", source)
+		}
+		return StageBind{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || len(invocation.Stages) != 1 || invocation.Stages[0].SourceContext != "caller" || len(invocation.CompatibilityRoots) != 1 {
+		t.Fatalf("context override changed invocation contract: %+v", invocation)
+	}
+	if invocation.Stages[0].Operations[0].Name != "env" {
+		t.Fatal("source override lost selected stage body")
+	}
+	if _, err := ValidatePublished(publication.Component); err != nil {
+		t.Fatalf("context invocation mutated immutable publication: %v", err)
+	}
+}

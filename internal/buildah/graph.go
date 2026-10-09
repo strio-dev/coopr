@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"coopr/internal/buildcontext"
 	"coopr/internal/cache"
 	"coopr/internal/definition"
 	"coopr/internal/imageconfig"
@@ -32,6 +33,7 @@ import (
 	"go.podman.io/buildah/define"
 	buildahdocker "go.podman.io/buildah/docker"
 	"go.podman.io/buildah/pkg/parse"
+	"go.podman.io/buildah/pkg/sourcepolicy"
 	nettypes "go.podman.io/common/libnetwork/types"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/storage"
@@ -63,6 +65,9 @@ func BuildPlan(ctx context.Context, plan *planner.Plan, options PlanOptions) (re
 	}
 	for _, input := range plan.Inputs {
 		if input.Kind != "image" || options.Resolver != nil {
+			continue
+		}
+		if prefix, _, _ := strings.Cut(input.Reference, ":"); prefix == "oci" || prefix == "oci-archive" || prefix == "docker-archive" || prefix == "dir" || prefix == "containers-storage" || prefix == "docker-daemon" || prefix == "atomic" {
 			continue
 		}
 		selected := false
@@ -102,6 +107,9 @@ func BuildPlan(ctx context.Context, plan *planner.Plan, options PlanOptions) (re
 type stageObserver func(storage.Store, planner.Stage, string, *imageconfig.Config, *PackageRootMetadata) error
 
 type stageState struct {
+	retainsCaller  bool
+	baseImageID    string
+	root           *PackageRootMetadata
 	storageImageID string
 	manifestDigest digest.Digest
 	config         *imageconfig.Config
@@ -112,6 +120,7 @@ type stageState struct {
 // aliases remain graph-local because stage IDs are only unique within a plan.
 type graphExecutor struct {
 	options                  PlanOptions
+	sourcePolicy             *sourcepolicy.Policy
 	progress                 io.Writer
 	isolation                define.Isolation
 	capabilities             []string
@@ -147,12 +156,22 @@ func (executor *graphExecutor) nativeBuilder(builder *upstream.Builder, options 
 		secretSpecs: executor.options.Secrets, sshSpecs: executor.options.SSH,
 		cgroupManager: controls.CgroupManager, cgroupManagerSet: controls.CgroupManagerSet,
 		compatVolumes: executor.options.Lifecycle.CompatVolumes,
+		noLayers:      executor.options.Lifecycle.NoLayers,
 		runControls:   controls,
 	}
 }
 
 func newGraphExecutor(ctx context.Context, options PlanOptions) (*graphExecutor, error) {
-	options, err := normalizePlanOptions(options)
+	sourcePolicy := options.SourcePolicy
+	var err error
+	if sourcePolicy == nil {
+		sourcePolicy, err = loadSourcePolicy(options.SourcePolicyFile)
+	}
+	if err != nil {
+		return nil, err
+	}
+	options.SourcePolicy = sourcePolicy
+	options, err = normalizePlanOptions(options)
 	if err != nil {
 		return nil, err
 	}
@@ -190,7 +209,7 @@ func newGraphExecutor(ctx context.Context, options PlanOptions) (*graphExecutor,
 		resolvedBases[key] = resolved
 	}
 	executor := &graphExecutor{
-		options: options, isolation: isolation, capabilities: rootCapabilities(),
+		options: options, sourcePolicy: sourcePolicy, isolation: isolation, capabilities: rootCapabilities(),
 		progress:   os.Stderr,
 		storeLease: lease, store: lease.store, network: network, system: system,
 		resolvedBases:         resolvedBases,
@@ -255,6 +274,11 @@ func (executor *graphExecutor) builderContainerName(stageID string) string {
 // builds and component package publication. Stages must already be validated
 // and ordered by the planner.
 func executePlanGraph(ctx context.Context, plan *planner.Plan, options PlanOptions, stages []planner.Stage, imageOutputID string, observed map[string]bool, observe stageObserver) (result Result, retErr error) {
+	options, cleanup, err := prepareBuildContext(plan, options)
+	if err != nil {
+		return Result{}, err
+	}
+	defer func() { retErr = errors.Join(retErr, cleanup()) }()
 	executor, err := newGraphExecutor(ctx, options)
 	if err != nil {
 		return Result{}, err
@@ -283,6 +307,7 @@ func executePlanGraph(ctx context.Context, plan *planner.Plan, options PlanOptio
 }
 
 type graphBindings struct {
+	observeManifest    func(string, digest.Digest, string, bool)
 	caller             stageState
 	packages           map[string]stageState
 	cacheScope         CacheMountScope
@@ -292,16 +317,20 @@ type graphBindings struct {
 }
 
 type preparedGraphStage struct {
-	stage          planner.Stage
-	base           string
-	baseManifest   digest.Digest
-	logical        *imageconfig.Config
-	operations     []planner.Operation
-	cacheMountID   CacheMountIDResolver
-	cacheScope     *CacheMountScope
-	bound          *stageState
-	componentPins  map[string]string
-	progressPrefix string
+	retainsCaller                bool
+	baseRoot                     *PackageRootMetadata
+	preserveBaseImageAnnotations bool
+	stage                        planner.Stage
+	base                         string
+	baseName                     string
+	baseManifest                 digest.Digest
+	logical                      *imageconfig.Config
+	operations                   []planner.Operation
+	cacheMountID                 CacheMountIDResolver
+	cacheScope                   *CacheMountScope
+	bound                        *stageState
+	componentPins                map[string]string
+	progressPrefix               string
 }
 
 type executedGraphStage struct {
@@ -312,7 +341,7 @@ type executedGraphStage struct {
 
 // executePlanGraph executes one graph while retaining executor-wide resources
 // and resolved external bases for recursive component invocation.
-func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *planner.Plan, stages []planner.Stage, imageOutputID string, observed map[string]bool, observe stageObserver, bindings *graphBindings) (Result, error) {
+func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *planner.Plan, stages []planner.Stage, imageOutputID string, observed map[string]bool, observe stageObserver, bindings *graphBindings) (result Result, retErr error) {
 	stages, err := resolveAndValidateBuildNetwork(stages, executor.options.Network, executor.options.RunControls, executor.options.Isolation)
 	if err != nil {
 		return Result{}, err
@@ -328,6 +357,53 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 		}
 	}()
 	images := make(map[string]stageState, len(stages))
+	if executor.options.Lifecycle.NoLayers && !executor.options.Lifecycle.SaveStages {
+		existing, err := executor.store.Images()
+		if err != nil {
+			return Result{}, err
+		}
+		original := make(map[string]bool, len(existing))
+		for _, image := range existing {
+			original[image.ID] = true
+		}
+		defer func() {
+			if retErr != nil {
+				return
+			}
+
+			borrowed := map[string]bool{}
+			for _, base := range executor.resolvedBases {
+				borrowed[base.ImageID] = true
+			}
+			if bindings != nil {
+				borrowed[bindings.caller.storageImageID] = true
+				for _, base := range bindings.packages {
+					borrowed[base.storageImageID] = true
+				}
+			}
+			removed := map[string]bool{}
+			for stageID, image := range images {
+				id := image.storageImageID
+				if id == "" || id == result.ImageID || observed[stageID] || original[id] || borrowed[id] || removed[id] {
+					continue
+				}
+				current, err := executor.store.Image(id)
+				if err != nil {
+					retErr = errors.Join(retErr, err)
+					continue
+				}
+				if len(current.Names) != 0 {
+					continue
+				}
+				removed[id] = true
+				_, err = executor.store.DeleteImage(id, true)
+				if err != nil {
+					retErr = errors.Join(retErr, fmt.Errorf("remove intermediate stage image %s: %w", id, err))
+				}
+			}
+		}()
+	}
+
 	completed := make(map[string]bool, len(stages))
 	running := make(map[string]bool, len(stages))
 	finishedStages := make(map[string]executedGraphStage, len(stages))
@@ -381,6 +457,9 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 				continue
 			}
 			finished := finishedStages[stage.ID]
+			if bindings != nil && bindings.observeManifest != nil {
+				bindings.observeManifest(stage.ID, finished.state.manifestDigest, finished.state.baseImageID, finished.state.retainsCaller)
+			}
 			if observe != nil && stage.Kind != "package-input" {
 				if err := observe(executor.store, stage, finished.state.storageImageID, finished.state.config, finished.root); err != nil {
 					return Result{}, false, fmt.Errorf("stage %s output: %w", stage.ID, err)
@@ -407,14 +486,49 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 		aliasesByStage := graphStageAliases(stages)
 		for _, index := range ready {
 			stage := stages[index]
-			if stage.DynamicBaseStage != "" {
-				base, ok := images[stage.DynamicBaseStage]
-				if !ok || base.config == nil || base.storageImageID == "" {
-					return Result{}, drain(stage.ID, fmt.Errorf("stage %s dynamic base stage %s is unavailable", stage.ID, stage.DynamicBaseStage))
+			if stage.DynamicBaseStage != "" || stage.DeferredImageSource {
+				var bind planner.StageBind
+				var err error
+				if stage.DeferredImageSource {
+					platform, parseErr := executionPlatform(stage.Platform)
+					if parseErr != nil {
+						return Result{}, drain(stage.ID, parseErr)
+					}
+					var selected ResolvedImageSource
+					var resolveErr error
+					if stage.SourceContext == "" {
+						selected, resolveErr = executor.resolveBaseImage(graphCtx, stage.Source, platform)
+					} else {
+						for _, input := range plan.Contexts {
+							if input.Name == stage.SourceContext {
+								selected, resolveErr = executor.materializeNamedContext(graphCtx, input.Spec, platform)
+								if resolveErr == nil {
+									executor.resolvedBases[graphNamedContextKey(stage.SourceContext, stage.Platform)] = selected
+								}
+								break
+							}
+						}
+						if selected.ImageID == "" && resolveErr == nil {
+							resolveErr = fmt.Errorf("stage %s deferred context %q is unavailable", stage.ID, stage.SourceContext)
+						}
+					}
+					if resolveErr != nil {
+						return Result{}, drain(stage.ID, resolveErr)
+					}
+					config, configErr := imageconfig.Parse(selected.ConfigData)
+					if configErr != nil {
+						return Result{}, drain(stage.ID, configErr)
+					}
+					bind, err = stageBindFromImageConfig(config)
+				} else {
+					base, ok := images[stage.DynamicBaseStage]
+					if !ok || base.config == nil || base.storageImageID == "" {
+						return Result{}, drain(stage.ID, fmt.Errorf("stage %s dynamic base stage %s is unavailable", stage.ID, stage.DynamicBaseStage))
+					}
+					bind, err = stageBindFromImageConfig(base.config)
 				}
-				bind, err := stageBindFromImageConfig(base.config)
 				if err != nil {
-					return Result{}, drain(stage.ID, fmt.Errorf("stage %s dynamic base configuration: %w", stage.ID, err))
+					return Result{}, drain(stage.ID, err)
 				}
 				nextPlan, err := plan.ReplanDynamicStage(stage.ID, bind)
 				if err != nil {
@@ -612,8 +726,11 @@ func (executor *graphExecutor) prepareGraphStage(ctx context.Context, plan *plan
 		if bindings == nil || bindings.caller.storageImageID == "" || bindings.caller.config == nil {
 			return preparedGraphStage{}, fmt.Errorf("stage %s extend caller is unavailable", stage.ID)
 		}
+		prepared.preserveBaseImageAnnotations = true
 		prepared.base = bindings.caller.storageImageID
 		prepared.baseManifest = bindings.caller.manifestDigest
+		prepared.baseRoot = bindings.caller.root
+		prepared.retainsCaller = true
 		prepared.logical = bindings.caller.config.Clone()
 	} else if stage.SourceContext != "" {
 		resolved, ok := executor.namedContext(stage.SourceContext, stage.Platform)
@@ -623,6 +740,15 @@ func (executor *graphExecutor) prepareGraphStage(ctx context.Context, plan *plan
 		prepared.base = resolved.ImageID
 		prepared.baseManifest = resolved.Selected.Digest
 		var err error
+		for _, input := range plan.Contexts {
+			if input.Name == stage.SourceContext && input.Kind == buildcontext.DockerImage {
+				prepared.baseName, err = sourceBaseName(executor.store, resolved)
+				if err != nil {
+					return preparedGraphStage{}, fmt.Errorf("stage %s base name: %w", stage.ID, err)
+				}
+				break
+			}
+		}
 		prepared.logical, err = imageconfig.Parse(resolved.ConfigData)
 		if err != nil {
 			return preparedGraphStage{}, fmt.Errorf("stage %s named context config: %w", stage.ID, err)
@@ -632,8 +758,11 @@ func (executor *graphExecutor) prepareGraphStage(ctx context.Context, plan *plan
 		if previous.storageImageID == "" || previous.config == nil {
 			return preparedGraphStage{}, fmt.Errorf("stage %s depends on unavailable stage %s", stage.ID, baseStageID)
 		}
+		prepared.preserveBaseImageAnnotations = true
 		prepared.base = previous.storageImageID
 		prepared.baseManifest = previous.manifestDigest
+		prepared.baseRoot = previous.root
+		prepared.retainsCaller = previous.retainsCaller
 		prepared.logical = previous.config.Clone()
 	} else if stage.Source != "" && !strings.EqualFold(stage.Source, "scratch") {
 		key := ResolvedBaseKey{Reference: stage.Source, Platform: stage.Platform}
@@ -655,6 +784,10 @@ func (executor *graphExecutor) prepareGraphStage(ctx context.Context, plan *plan
 		prepared.base = resolved.ImageID
 		prepared.baseManifest = resolved.Selected.Digest
 		var err error
+		prepared.baseName, err = sourceBaseName(executor.store, resolved)
+		if err != nil {
+			return preparedGraphStage{}, fmt.Errorf("stage %s base name: %w", stage.ID, err)
+		}
 		prepared.logical, err = imageconfig.Parse(resolved.ConfigData)
 		if err != nil {
 			return preparedGraphStage{}, fmt.Errorf("stage %s base config: %w", stage.ID, err)
@@ -757,7 +890,7 @@ func (executor *graphExecutor) resolveBaseImage(ctx context.Context, reference s
 	if parent := executor.options.componentParent; parent != nil {
 		resolved, err = parent.resolveBaseImage(ctx, reference, platform)
 	} else {
-		resolved, err = ResolveImageSource(ctx, executor.options.Resolver, reference, platform, executor.store, platformSystemContext(executor.system, platform))
+		resolved, err = resolveBaseSourceWithPolicy(ctx, executor.options.Resolver, reference, platform, executor.store, platformSystemContext(executor.system, platform), executor.options.ContextDir, executor.sourcePolicy)
 	}
 	if err != nil {
 		return ResolvedImageSource{}, err
@@ -771,6 +904,21 @@ func (executor *graphExecutor) resolveBaseImage(ctx context.Context, reference s
 
 func (executor *graphExecutor) executeGraphStage(ctx context.Context, plan *planner.Plan, prepared preparedGraphStage, aliases map[string]string, images map[string]stageState, imageOutputID string, observed map[string]bool, allowInstructionCache bool) (executedGraphStage, error) {
 	stage := prepared.stage
+	if executor.options.Lifecycle.StageLabels && len(prepared.operations) != 0 {
+		name := stage.Name
+		if name == "" {
+			name = stage.ID
+		}
+		base := stage.Source
+		if id, ok := aliases[strings.ToLower(base)]; ok {
+			if selected, found := images[id]; found {
+				base = selected.storageImageID
+			}
+		}
+		label := definition.Instruction{Name: "label", Properties: map[string]string{"io.buildah.stage.name": name, "io.buildah.stage.base": base}}
+		prepared.operations = append([]planner.Operation{{Instruction: label}}, prepared.operations...)
+	}
+
 	if prepared.bound != nil {
 		return executedGraphStage{state: *prepared.bound}, nil
 	}
@@ -802,9 +950,13 @@ func (executor *graphExecutor) executeGraphStage(ctx context.Context, plan *plan
 	}
 	selectedBuilderOptions := builderOptions
 	selectedBuilderOptions.FromImage = builderBase
+	selectedBuilderOptions.PreserveBaseImageAnns = prepared.preserveBaseImageAnnotations
 	builder, err := upstream.NewBuilder(ctx, executor.store, selectedBuilderOptions)
 	if err != nil {
 		return executedGraphStage{}, fmt.Errorf("create Buildah builder for stage %s from %q: %w", stage.ID, prepared.base, err)
+	}
+	if !prepared.preserveBaseImageAnnotations && prepared.baseName != "" {
+		builder.SetAnnotation(v1.AnnotationBaseImageName, prepared.baseName)
 	}
 	if prepared.baseManifest != "" {
 		builder.FromImage = prepared.base
@@ -813,12 +965,20 @@ func (executor *graphExecutor) executeGraphStage(ctx context.Context, plan *plan
 	builder.SetOS(stagePlatform.OS)
 	builder.SetArchitecture(stagePlatform.Architecture)
 	builder.SetVariant(stagePlatform.Variant)
+	if prepared.baseRoot != nil {
+		if err := restorePackageRootMetadata(executor.store, builder, prepared.baseRoot); err != nil {
+			_ = builder.Delete()
+			return executedGraphStage{}, err
+		}
+	}
 	rootBaseline, err := capturePackageRootMetadata(executor.store, builder)
 	if err != nil {
 		_ = builder.Delete()
 		return executedGraphStage{}, fmt.Errorf("stage %s root metadata baseline: %w", stage.ID, err)
 	}
-	imageID, stageResult, rootMetadata, err := executor.executePlanStage(ctx, builder, builderOptions, prepared.operations, aliases, images, stagePlatform, prepared.cacheMountID, prepared.logical, prepared.baseManifest, rootBaseline, stage.ID == imageOutputID, observed[stage.ID], allowInstructionCache, progress)
+	var effectiveBase string
+	retainsCaller := prepared.retainsCaller
+	imageID, stageResult, rootMetadata, err := executor.executePlanStage(ctx, builder, builderOptions, prepared.operations, aliases, images, stagePlatform, prepared.cacheMountID, prepared.logical, prepared.baseManifest, rootBaseline, stage.ID == imageOutputID, graphStageNeedsRootMetadata(plan, stage.ID, observed), allowInstructionCache, progress, &effectiveBase, &retainsCaller)
 	if err != nil {
 		return executedGraphStage{}, fmt.Errorf("stage %s: %w", stage.ID, err)
 	}
@@ -827,7 +987,7 @@ func (executor *graphExecutor) executeGraphStage(ctx context.Context, plan *plan
 	}
 	progress.image(imageID)
 	manifestDigest := digest.Digest(stageResult.ManifestDigest)
-	return executedGraphStage{state: stageState{storageImageID: imageID, manifestDigest: manifestDigest, config: prepared.logical}, result: stageResult, root: rootMetadata}, nil
+	return executedGraphStage{state: stageState{storageImageID: imageID, manifestDigest: manifestDigest, config: prepared.logical, root: rootMetadata, baseImageID: effectiveBase, retainsCaller: retainsCaller}, result: stageResult, root: rootMetadata}, nil
 }
 
 func normalizeGraphOperationContexts(mode planner.Mode, operations []planner.Operation) []planner.Operation {
@@ -978,6 +1138,14 @@ func validateStandaloneGraph(plan *planner.Plan) ([]planner.Stage, string, error
 		wantDependencies := []string{}
 		if baseID != "" {
 			wantDependencies = append(wantDependencies, baseID)
+		}
+		if stage.AfterStage != "" {
+			if aliases[stage.AfterStage] == "" {
+				return nil, "", fmt.Errorf("stage %s after dependency %q is unavailable", stage.ID, stage.AfterStage)
+			}
+			if !slices.Contains(wantDependencies, stage.AfterStage) {
+				wantDependencies = append(wantDependencies, stage.AfterStage)
+			}
 		}
 		for operationIndex, operation := range stage.Operations {
 			for _, reference := range operationStageReferences(operation) {
@@ -1219,7 +1387,7 @@ func linkedCopyOrAdd(operation Operation) bool {
 	}
 }
 
-func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *upstream.Builder, builderOptions upstream.BuilderOptions, planned []planner.Operation, aliases map[string]string, images map[string]stageState, platform v1.Platform, cacheMountID CacheMountIDResolver, logical *imageconfig.Config, baseManifest digest.Digest, rootBaseline *PackageRootMetadata, output, captureRoot, allowInstructionCache bool, progress stageProgress) (imageID string, result Result, root *PackageRootMetadata, retErr error) {
+func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *upstream.Builder, builderOptions upstream.BuilderOptions, planned []planner.Operation, aliases map[string]string, images map[string]stageState, platform v1.Platform, cacheMountID CacheMountIDResolver, logical *imageconfig.Config, baseManifest digest.Digest, rootBaseline *PackageRootMetadata, output, captureRoot, allowInstructionCache bool, progress stageProgress, effectiveBase *string, retainsCaller *bool) (imageID string, result Result, root *PackageRootMetadata, retErr error) {
 	store := executor.store
 	options := executor.options
 	current := builder
@@ -1237,6 +1405,11 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 		}
 	}()
 	originalBaseID := builder.FromImageID
+	defer func() {
+		if effectiveBase != nil {
+			*effectiveBase = originalBaseID
+		}
+	}()
 	if output && options.Output.Squash && !options.Output.SquashAll && originalBaseID == "" {
 		var err error
 		originalBaseID, _, err = commitStoredSnapshotSelected(ctx, builder, builderOptions.SystemContext, builderOptions.Format, true, timestampPolicyFromOptions(options))
@@ -1264,10 +1437,56 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 	cachedAnnotationsChanged := false
 	historyOnlyTail := len(planned) == 0
 	artifacts := append(slices.Clone(options.ContextArtifacts), options.Store.RunRoot, options.Store.GraphRoot, options.Output.Path, options.CacheLocalDir)
+	if options.ContextPrepared {
+		artifacts = nil
+	}
 	if executor.componentCache != nil {
 		artifacts = append(artifacts, executor.componentCache.stagingDir)
 	}
+	var group *layerGroupState
+	groupDepth := 0
 	for index, plannedOperation := range planned {
+		if plannedOperation.Name == "layer" {
+			switch plannedOperation.LayerBoundary {
+			case "begin":
+				if groupDepth == 0 && !options.Lifecycle.NoLayers {
+					var err error
+					current, builderOptions, currentManifest, group, err = executor.startLayerGroup(ctx, current, builderOptions, logical)
+					if err != nil {
+						return "", Result{}, nil, err
+					}
+					if captureRoot {
+						currentRoot = group.root
+					}
+					pendingLinked = false
+					historyOnlyTail = true
+					finalCachedImageID, finalCachedManifest = "", ""
+					finalCacheEligible, finalPortableCacheEligible = false, false
+				}
+				groupDepth++
+			case "end":
+				if groupDepth == 0 {
+					return "", Result{}, nil, errors.New("unmatched layer group end")
+				}
+				groupDepth--
+				if groupDepth == 0 && !options.Lifecycle.NoLayers {
+					var err error
+					current, builderOptions, currentManifest, currentRoot, err = executor.finishLayerGroup(ctx, current, builderOptions, logical, group)
+					if err != nil {
+						return "", Result{}, nil, err
+					}
+					group = nil
+					pendingLinked = false
+					historyOnlyTail = true
+					cachedAnnotationsChanged = false
+					finalCachedImageID, finalCachedManifest = "", ""
+					finalCacheEligible, finalPortableCacheEligible = false, false
+				}
+			default:
+				return "", Result{}, nil, errors.New("invalid layer group boundary")
+			}
+			continue
+		}
 		progress.step(index+2, plannedOperation.Instruction)
 		componentFilesystemChanged := true
 		if err := rusageLogger.log(); err != nil {
@@ -1298,6 +1517,8 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 		for operationIndex, lowered := range operations {
 			if run, ok := lowered.(Run); ok {
 				run.ContextIgnoreFile = options.IgnoreFile
+				run.contextPrepared = options.ContextPrepared
+
 				run.cacheLockRoot = store.GraphRoot()
 				run.Devices, _ = applyRunDeviceEntitlementAliases(run.Devices, executor.allowedEntitlements)
 				run.SecretSpecs = slices.Clone(options.Secrets)
@@ -1328,7 +1549,7 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 		if cacheable {
 			switch operation := operations[0].(type) {
 			case Run:
-				if operation.Stdin != nil {
+				if operation.Stdin != nil || hasWritableContextBindMount(operation.Mounts) {
 					cacheable = false
 					break
 				}
@@ -1620,7 +1841,7 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 			}
 			if !cacheHit && !inputApplied {
 				if component, ok := operation.(componentGraphOperation); ok {
-					replacement, err := executor.applyComponentOperation(ctx, current, &builderOptions, logical, rootBaseline, platform, component.planned, progress)
+					replacement, err := executor.applyComponentOperation(ctx, current, &builderOptions, logical, platform, component.planned, progress, componentAdoptionContext{grouped: groupDepth > 0, manifest: &currentManifest, effectiveBase: &originalBaseID, lineage: retainsCaller})
 					if err != nil {
 						return "", Result{}, nil, fmt.Errorf("operation %d: %w", index+1, err)
 					}
@@ -1628,6 +1849,17 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 						return "", Result{}, nil, fmt.Errorf("operation %d: component returned a nil builder", index+1)
 					}
 					current = replacement
+					{
+						// The continuation is already committed; do not retain
+						// the caller's manifest or root metadata after adoption.
+						rootBaseline, err = capturePackageRootMetadata(store, current)
+						if err != nil {
+							return "", Result{}, nil, err
+						}
+						if captureRoot {
+							currentRoot = rootBaseline
+						}
+					}
 				} else {
 					adapter := executor.nativeBuilder(current, builderOptions)
 					if preparedRun != nil {
@@ -1745,6 +1977,9 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 			}
 		}
 	}
+	if groupDepth != 0 {
+		return "", Result{}, nil, errors.New("unclosed layer group")
+	}
 	var err error
 	if captureRoot {
 		root, retErr = capturePackageRootMetadata(store, current)
@@ -1768,7 +2003,11 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 				return "", Result{}, nil, fmt.Errorf("inspect unchanged base image format: %w", compatibilityErr)
 			}
 			if compatible {
-				committed, err = exportStoredImageVariantRaw(ctx, store, current.FromImageID, options.Output, builderOptions.SystemContext, selected)
+				if options.Output.BlobDirectory == "" && (options.Output.DisableCompression || (options.Output.CompressionFormat == "" && options.Output.CompressionLevel == nil && options.Output.ForceCompression == nil)) {
+					committed, err = exportStoredImageVariantRaw(ctx, store, current.FromImageID, options.Output, builderOptions.SystemContext, selected)
+				} else {
+					committed, err = copyStoredOutputSelected(ctx, store, current.FromImageID, options.Output, builderOptions.SystemContext, selected)
+				}
 				if errors.Is(err, errRetainedStorageBlobUnavailable) {
 					committed, err = copyStoredOutputSelected(ctx, store, current.FromImageID, options.Output, builderOptions.SystemContext, selected)
 				}
@@ -2128,6 +2367,7 @@ func replaceCachedMetadata(builder *upstream.Builder, replacement cachedMetadata
 		historyChanged = !slices.Equal(builder.Docker.History, wantDocker)
 	}
 	changed := historyChanged || !maps.Equal(builder.Annotations(), replacement.Annotations)
+
 	if !changed {
 		return false, nil
 	}
@@ -2291,4 +2531,47 @@ func isPlannedFilesystemOperation(operation planner.Operation) bool {
 	default:
 		return false
 	}
+}
+
+// Retain root metadata where a component or explicit group can observe it,
+// including previous-stage FROM ancestry. Unrelated ordinary stages keep their
+// existing portability and checkpoint policy.
+func graphStageNeedsRootMetadata(plan *planner.Plan, id string, observed map[string]bool) bool {
+	if observed[id] || (plan != nil && plan.Mode == planner.Invoke) {
+		return true
+	}
+	if plan == nil {
+		return false
+	}
+	stages := map[string]planner.Stage{}
+	required := map[string]bool{}
+	for _, stage := range plan.Stages {
+		stages[stage.ID] = stage
+		if stage.Name != "" {
+			stages[strings.ToLower(stage.Name)] = stage
+		}
+		for _, op := range stage.Operations {
+			if op.Name == "component" || op.Name == "layer" {
+				required[stage.ID] = true
+			}
+		}
+	}
+	for current := range required {
+		seen := map[string]bool{}
+		for !seen[current] {
+			seen[current] = true
+			stage, ok := stages[current]
+			if !ok {
+				break
+			}
+			if stage.ID == id {
+				return true
+			}
+			if stage.Kind != "from" || stage.SourceContext != "" {
+				break
+			}
+			current = strings.ToLower(stage.Source)
+		}
+	}
+	return false
 }

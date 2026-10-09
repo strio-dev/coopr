@@ -9,12 +9,14 @@ import (
 	"strings"
 	"time"
 
+	"coopr/internal/buildcontext"
 	"coopr/internal/definition"
 	"coopr/internal/imageconfig"
 	"coopr/internal/oci"
 	"coopr/internal/planner"
 	"github.com/docker/go-connections/nat"
 	buildkitinstructions "github.com/moby/buildkit/frontend/dockerfile/instructions"
+	"go.podman.io/buildah/pkg/sourcepolicy"
 	"go.podman.io/common/pkg/signal"
 	"go.podman.io/image/v5/types"
 )
@@ -31,15 +33,22 @@ type PlanOptions struct {
 	// Execution options and caches remain owned by each executor.
 	componentParent *graphExecutor
 
-	Lifecycle        LifecycleControls
-	Store            StoreOptions
-	ContextDir       string
-	IgnoreFile       string
-	ContextArtifacts []string
-	Isolation        string
-	Runtime          string
-	Output           Output
-	Resolver         *oci.Resolver
+	Lifecycle       LifecycleControls
+	Store           StoreOptions
+	ContextPrepared bool // The caller owns the disposable build context.
+	// TransientRunMounts must also be supplied to planner.Options during planning
+	// so stage/image dependencies enter the selected graph before execution.
+	TransientRunMounts []RunMount
+	BuildContexts      []buildcontext.Spec
+	ContextDir         string
+	SourcePolicyFile   string
+	SourcePolicy       *sourcepolicy.Policy
+	IgnoreFile         string
+	ContextArtifacts   []string
+	Isolation          string
+	Runtime            string
+	Output             Output
+	Resolver           *oci.Resolver
 	// ResolvedBases pins image inputs already selected while binding inherited
 	// base metadata. Execution must use those exact storage images rather than
 	// resolving a mutable tag a second time.
@@ -145,8 +154,10 @@ func RequestFromPlan(plan *planner.Plan, options PlanOptions) (Request, error) {
 		}
 	}
 	return Request{
-		Store: options.Store, Base: "scratch", ContextDir: options.ContextDir,
+		Store: options.Store, Base: "scratch", ContextDir: options.ContextDir, ContextArtifacts: slices.Clone(options.ContextArtifacts), IgnoreFile: options.IgnoreFile,
 		Isolation: options.Isolation, Runtime: options.Runtime,
+		// Planner globals are already present in lowered RUN operations. Direct
+		// Request globals are appended only for callers that bypass planning.
 		Operations: operations, Secrets: slices.Clone(options.Secrets), SSH: slices.Clone(options.SSH), Allow: slices.Clone(options.Allow), AddHosts: slices.Clone(options.AddHosts), RunControls: options.RunControls, Lifecycle: options.Lifecycle, ImageControls: options.ImageControls, Output: options.Output,
 		Timestamp: options.Timestamp, SourceDateEpoch: sourceDateEpoch, RewriteTimestamp: options.RewriteTimestamp, CacheTTL: options.CacheTTL,
 	}, nil
