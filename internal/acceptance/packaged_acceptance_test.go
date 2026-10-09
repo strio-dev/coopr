@@ -258,7 +258,7 @@ cmd { exec "/component-proof" }
 		}
 		a.coopr(true, "none", "build", "/work/base.coopr", "--isolation=rootless", "--network=none", "--tag", base, "--platform", a.platform)
 		a.coopr(true, "none", "component", "build", "/work/component.coopr", "--isolation=rootless", "--network=none", "--tag", component, "--platform", a.platform)
-		a.coopr(true, "none", "build", "/work/component-child.coopr", "--isolation=rootless", "--network=none", "--tag", "oci-archive:/work/component-child.oci.tar", "--cache-from", "oci-layout:/var/lib/coopr/component-cache", "--cache-to", "oci-layout:/var/lib/coopr/component-cache", "--platform", a.platform)
+		a.coopr(true, "none", "build", "/work/component-child.coopr", "--isolation=rootless", "--network=none", "--tag", "oci-archive:/work/component-child.oci.tar", "--cache-from", "type=local,src=/var/lib/coopr/component-cache", "--cache-to", "type=local,dest=/var/lib/coopr/component-cache", "--platform", a.platform)
 		info, err := os.Stat(filepath.Join(a.state, "coopr/component-cache/index.json"))
 		if err != nil || info.Size() == 0 {
 			t.Fatalf("component cache not populated: %v", err)

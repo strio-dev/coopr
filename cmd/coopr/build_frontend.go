@@ -68,6 +68,12 @@ func resolveBuildInput(argument, explicitFile string) (file, context string, def
 func resolveBuildInputs(argument string, explicit []string) ([]string, string, []bool, error) {
 	if len(explicit) == 0 {
 		explicit = []string{""}
+	} else {
+		for _, name := range explicit {
+			if name == "" {
+				return nil, "", nil, fmt.Errorf("--file must not be empty")
+			}
+		}
 	}
 	files := make([]string, 0, len(explicit))
 	inContext := make([]bool, 0, len(explicit))

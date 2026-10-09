@@ -690,7 +690,10 @@ func executePlanWorker(requestPath string) error {
 			break
 		}
 	}
-	if resolver == nil && len(request.Output.SBOM) > 0 {
+	hasRegistryCache := request.CacheRepository != "" || slices.ContainsFunc(slices.Concat(request.CacheFrom, request.CacheTo), func(spec CacheSpec) bool {
+		return spec.Transport == "registry"
+	})
+	if resolver == nil && (len(request.Output.SBOM) > 0 || hasRegistryCache) {
 		var err error
 		resolver, err = oci.NewResolver(oci.Options{
 			AuthFile: request.AuthFile, CertDir: request.CertDir, TLSVerify: request.TLSVerify,
@@ -698,7 +701,7 @@ func executePlanWorker(requestPath string) error {
 			Pull: request.Pull, PullPolicy: request.PullPolicy, ComponentStoreDir: request.ComponentStoreDir, NativeStore: NativeStoreOptions(request.Store),
 		})
 		if err != nil {
-			return fmt.Errorf("create SBOM image resolver: %w", err)
+			return fmt.Errorf("create build worker resolver: %w", err)
 		}
 	}
 	if resolver == nil {

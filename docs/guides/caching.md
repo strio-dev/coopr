@@ -1,19 +1,25 @@
 # Caching
 
-Use a local OCI layout to share cached results across builds:
+Share cached results through a registry repository:
 
 ```sh
 coopr build image.coopr \
-  --cache-from oci-layout:.coopr-cache --cache-to oci-layout:.coopr-cache
+  --cache-from ghcr.io/team/cache --cache-to ghcr.io/team/cache
 coopr component build ./components/settings/component.coopr \
-  --cache-from oci-layout:.coopr-cache --cache-to oci-layout:.coopr-cache
+  --cache-from ghcr.io/team/cache --cache-to ghcr.io/team/cache
 ```
 
-`--cache-from` reads cached results and `--cache-to` writes them. Both are repeatable; use the same location for both or choose separate sources and destinations:
+`--cache-from` reads cached results and `--cache-to` writes them. Both are repeatable. Registry values name repositories, without tags or digests.
+
+For a portable local cache, use `type=local,src=PATH` when reading and `type=local,dest=PATH` when writing:
 
 ```sh
-coopr build image.coopr --cache-from registry:registry.example.com/team/cache --cache-to oci-layout:.coopr-cache
+coopr build image.coopr \
+  --cache-from type=local,src=.coopr-cache \
+  --cache-to type=local,dest=.coopr-cache
 ```
+
+Sources and destinations can differ; for example, read a registry cache and write a local cache. The local option syntax follows Docker's convention; Coopr's cache contents are not interchangeable with BuildKit caches.
 
 ## Local and portable results
 
@@ -27,7 +33,7 @@ Rebuild when changed external data or credentials must affect the result:
 
 ```sh
 coopr build image.coopr --no-cache
-coopr build image.coopr --cache-from oci-layout:.coopr-cache --cache-ttl 24h
+coopr build image.coopr --cache-from ghcr.io/team/cache --cache-ttl 24h
 ```
 
 `--no-cache` bypasses result reads and saves fresh results. It does not clear cache mounts. `--cache-ttl` limits reads by publication age; `--cache-ttl 0` disables reads while saving fresh results. Image timestamps do not determine cache age.

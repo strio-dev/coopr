@@ -271,7 +271,7 @@ func TestComponentBuildLocalThenInvokeCommandLive(t *testing.T) {
 	cacheDir := filepath.Join(dataDir, "component-cache")
 	output.Reset()
 	stderr.Reset()
-	if code := run([]string{"build", app, "--tag", "oci-archive:" + archive, "--cache-from", "oci-layout:" + cacheDir, "--cache-to", "oci-layout:" + cacheDir, "--platform", "linux/amd64"}, &output, &stderr); code != 0 {
+	if code := run([]string{"build", app, "--tag", "oci-archive:" + archive, "--cache-from", "type=local,src=" + cacheDir, "--cache-to", "type=local,dest=" + cacheDir, "--platform", "linux/amd64"}, &output, &stderr); code != 0 {
 		t.Fatalf("local component invocation failed: %s", stderr.String())
 	}
 	if info, err := os.Stat(archive); err != nil || info.Size() == 0 {
@@ -283,7 +283,7 @@ func TestComponentBuildLocalThenInvokeCommandLive(t *testing.T) {
 	secondArchive := filepath.Join(t.TempDir(), "cached-app.oci.tar")
 	output.Reset()
 	stderr.Reset()
-	if code := run([]string{"build", app, "--tag", "oci-archive:" + secondArchive, "--cache-from", "oci-layout:" + cacheDir, "--cache-to", "oci-layout:" + cacheDir, "--platform", "linux/amd64"}, &output, &stderr); code != 0 {
+	if code := run([]string{"build", app, "--tag", "oci-archive:" + secondArchive, "--cache-from", "type=local,src=" + cacheDir, "--cache-to", "type=local,dest=" + cacheDir, "--platform", "linux/amd64"}, &output, &stderr); code != 0 {
 		t.Fatalf("second component invocation with CLI cache failed: %s", stderr.String())
 	}
 	if info, err := os.Stat(secondArchive); err != nil || info.Size() == 0 {

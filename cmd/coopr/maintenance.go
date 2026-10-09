@@ -205,7 +205,9 @@ func newImageRemoveCommand() *cobra.Command {
 					if !removed {
 						return fmt.Errorf("local image %q not found", arg)
 					}
-					_, _ = fmt.Fprintln(cmd.OutOrStdout(), name)
+					if _, err := fmt.Fprintln(cmd.OutOrStdout(), name); err != nil {
+						return err
+					}
 				}
 				return nil
 			})
@@ -277,7 +279,9 @@ func newComponentRemoveCommand() *cobra.Command {
 					if !removed {
 						return fmt.Errorf("local component %q not found", name)
 					}
-					_, _ = fmt.Fprintln(cmd.OutOrStdout(), name)
+					if _, err := fmt.Fprintln(cmd.OutOrStdout(), name); err != nil {
+						return err
+					}
 				}
 				return nil
 			})
@@ -312,9 +316,11 @@ func newSystemDFCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "TYPE\tCOUNT\tBYTES")
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "images\t%d\t%d\ncomponents\t%d\t%d\nbuild-cache\t%d\t%d\n", usage.Images, usage.Bytes, components.Roots, components.Bytes, usage.CacheImages, usage.CacheBytes)
-			return nil
+			if _, err := fmt.Fprintln(cmd.OutOrStdout(), "TYPE\tCOUNT\tBYTES"); err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "images\t%d\t%d\ncomponents\t%d\t%d\nbuild-cache\t%d\t%d\n", usage.Images, usage.Bytes, components.Roots, components.Bytes, usage.CacheImages, usage.CacheBytes)
+			return err
 		},
 	}
 }
@@ -357,12 +363,16 @@ func newPruneCommand(pruneComponents bool) *cobra.Command {
 				if request.DryRun {
 					label, count = "image-candidates", result.PrunableImages
 				}
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s=%d", label, count)
-				if pruneComponents {
-					_, _ = fmt.Fprintf(cmd.OutOrStdout(), " component-roots=%d", componentRoots)
+				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%s=%d", label, count); err != nil {
+					return err
 				}
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), " build-cache=%t dry-run=%t\n", request.All || request.BuildCache, request.DryRun)
-				return nil
+				if pruneComponents {
+					if _, err := fmt.Fprintf(cmd.OutOrStdout(), " component-roots=%d", componentRoots); err != nil {
+						return err
+					}
+				}
+				_, err = fmt.Fprintf(cmd.OutOrStdout(), " build-cache=%t dry-run=%t\n", request.All || request.BuildCache, request.DryRun)
+				return err
 			})
 		},
 	}

@@ -577,3 +577,117 @@ func TestNativeImageEntriesWaitsForNativeMaintenance(t *testing.T) {
 		}
 	}
 }
+
+// maintenanceFailingWriter also exercises failures after earlier writes succeed.
+type maintenanceFailingWriter struct {
+	remaining int
+	err       error
+}
+
+func (w *maintenanceFailingWriter) Write(data []byte) (int, error) {
+	if w.remaining == 0 {
+		return 0, w.err
+	}
+	w.remaining--
+	return len(data), nil
+}
+
+func TestMaintenanceCommandsPropagateOutputErrors(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		args   []string
+		writes int
+	}{
+		{"df header", []string{"system", "df"}, 0},
+		{"df body", []string{"system", "df"}, 1},
+		{"image prune count", []string{"image", "prune", "--dry-run"}, 0},
+		{"image prune summary", []string{"image", "prune", "--dry-run"}, 1},
+		{"system prune count", []string{"system", "prune", "--dry-run"}, 0},
+		{"system prune components", []string{"system", "prune", "--dry-run"}, 1},
+		{"system prune summary", []string{"system", "prune", "--dry-run"}, 2},
+		{"image rm", []string{"image", "rm", "output-error"}, 0},
+		{"component rm", []string{"component", "rm", "output-error"}, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if testing.Short() && test.args[1] != "rm" {
+				t.Skip("supervised df/prune workers require the rootless test runtime")
+			}
+			t.Setenv("XDG_DATA_HOME", t.TempDir())
+			options := maintenanceStoreOptions(t.TempDir())
+			componentDir, err := componentstore.DefaultDir()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.args[1] == "rm" {
+				layout, descriptor, _ := maintenanceImageLayout(t, v1.Platform{OS: "linux", Architecture: "amd64"}, "output-error")
+				if test.args[0] == "image" {
+					store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(options))
+					if err != nil {
+						t.Fatal(err)
+					}
+					_, writeErr := store.WriteLayout(context.Background(), layout, descriptor, "output-error")
+					if err := errors.Join(writeErr, store.Close()); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					source, err := orasoci.New(layout)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := localstore.Put(context.Background(), componentDir, source, descriptor, "output-error"); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			want := errors.New("maintenance output failed")
+			command := newRootCommand()
+			command.SetOut(&maintenanceFailingWriter{remaining: test.writes, err: want})
+			command.SetErr(&bytes.Buffer{})
+			command.SetArgs(append([]string{"--root", options.GraphRoot, "--runroot", options.RunRoot, "--storage-driver", "vfs"}, test.args...))
+			if err := command.Execute(); !errors.Is(err, want) {
+				t.Errorf("got %v, want output error", err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			lease, err := storeactivity.AcquireExclusive(ctx, buildah.ActivityRoots(options, componentDir)...)
+			if err != nil {
+				t.Fatalf("output failure retained activity lease: %v", err)
+			}
+			if err := lease.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if test.args[1] == "rm" && test.args[0] == "component" {
+				if _, found, err := localstore.Inspect(context.Background(), componentDir, "output-error"); err != nil || found {
+					t.Fatalf("component removal did not complete: found=%t err=%v", found, err)
+				}
+			}
+			if test.args[1] == "rm" && test.args[0] == "image" {
+				if err := buildah.WithStore(options, func(backend storage.Store) error {
+					if _, err := imagestore.FromStore(backend).MatchedName("output-error"); err == nil {
+						t.Error("image name remains after removal")
+					}
+					return nil
+				}); err != nil {
+					t.Fatalf("reopen store after output error: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestSystemDFPropagatesDevFullError(t *testing.T) {
+	if testing.Short() {
+		t.Skip("supervised df workers require the rootless test runtime")
+	}
+	output, err := os.OpenFile("/dev/full", os.O_WRONLY, 0)
+	if err != nil {
+		t.Skipf("/dev/full unavailable: %v", err)
+	}
+	defer func() { _ = output.Close() }()
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	options := maintenanceStoreOptions(t.TempDir())
+	var stderr bytes.Buffer
+	if status := run([]string{"--root", options.GraphRoot, "--runroot", options.RunRoot, "--storage-driver", "vfs", "system", "df"}, output, &stderr); status == 0 || !strings.Contains(stderr.String(), "no space left on device") {
+		t.Fatalf("df /dev/full: status=%d stderr=%q", status, stderr.String())
+	}
+}

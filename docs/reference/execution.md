@@ -200,7 +200,7 @@ Package-result caching supports networked RUN, bind/cache/tmpfs/secret/SSH mount
 
 Network responses, credentials/SSH-agent state, cache-mount contents, clock, randomness, and undeclared host inputs do not invalidate conventional cache results. A cache hit is not a reproducibility guarantee. Required reusable files belong in packages. Cache repositories are trusted inputs and may contain intermediate files absent from final images; protect them accordingly.
 
-`--no-cache` bypasses instruction, component-state, and package-result reads, writes fresh results, and leaves cache mounts intact. Repeatable `--cache-from` reads results; `--cache-to` writes them. Supply both for a cache used in both directions. Transports are `oci-layout:PATH` and `registry:HOST/REPOSITORY`. Validated hits can seed another writable destination; read-only sources are never updated and write-only destinations are never queried.
+`--no-cache` bypasses instruction, component-state, and package-result reads, writes fresh results, and leaves cache mounts intact. Repeatable `--cache-from` reads results; `--cache-to` writes them. Supply both for a cache used in both directions. Registry values are repository names without tags or digests, such as `ghcr.io/team/cache`. Local caches use `type=local,src=PATH` for reads and `type=local,dest=PATH` for writes. Validated hits can seed another writable destination; read-only sources are never updated and write-only destinations are never queried.
 
 ### State identity and metadata limits
 
@@ -226,4 +226,4 @@ Local component invocation accepts `local:TAG` or a bare immutable digest; regis
 
 Image builds accept `--compression-format gzip|zstd|zstd:chunked`, `--compression-level`, and `--force-compression`. A specified format defaults force-compression to true unless explicitly disabled. Otherwise native `containers.conf` defaults apply. Docker-format manifests require compatible layer compression.
 
-These controls apply when exporting final image layers and portable instruction-cache images, including after cache hits and when the final stage is unchanged. They do not change instruction cache keys or force RUNs to execute. The native image store retains its normal filesystem/layer representation; filesystem and tar exports are not compressed image manifests. `--blob-cache PATH` optionally reuses native compressed blobs during output copying.
+These controls apply when exporting final image layers and portable instruction-cache images, including after cache hits and when the final stage is unchanged. They do not change instruction cache keys or force RUNs to execute. The native image store retains its normal filesystem/layer representation; filesystem and tar exports are not compressed image manifests.

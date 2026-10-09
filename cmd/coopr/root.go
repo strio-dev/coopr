@@ -40,6 +40,7 @@ func newRootCommandWithStorageNamespace(prepareNamespace func() error) *cobra.Co
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
+	root.SetUsageTemplate(usageTemplate)
 	root.AddCommand(newBuildCommandWithGlobals(false))
 	root.AddCommand(newCopyCommand(oci.Image))
 	root.AddCommand(newImageCommand())
@@ -67,6 +68,14 @@ func runContextWithStorageNamespace(ctx context.Context, args []string, stdout, 
 	root.SetArgs(args)
 	root.SetOut(stdout)
 	root.SetErr(stderr)
+	root.InitDefaultCompletionCmd()
+	for _, command := range root.Commands() {
+		if command.Name() == "completion" {
+			// Make the shell group validate Cobra's NoArgs contract before showing help.
+			command.RunE = helpOnNoArgs
+			break
+		}
+	}
 	command, err := root.ExecuteContextC(ctx)
 	if err != nil {
 		if err.Error() != "" {

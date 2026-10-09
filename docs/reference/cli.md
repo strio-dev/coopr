@@ -1,6 +1,6 @@
 # CLI
 
-Use `coopr --help` or `coopr COMMAND --help` for all flags in the installed binary. `coopr --version` prints its version. Image commands use the [native image store](configuration.md); components use their separate OCI store.
+Use `coopr --help` or `coopr COMMAND --help` for available options in the installed binary. Command options appear under **Options**; inherited settings appear under **Global Options**. `coopr --version` prints its version. Image commands use the [native image store](configuration.md); components use their separate OCI store.
 
 | Command | Purpose |
 | --- | --- |
@@ -36,7 +36,7 @@ These controls apply to both build commands unless noted. Refer to the [executio
 
 | Option | Behavior |
 | --- | --- |
-| `--file`, `--from` | Read explicit definition files in the order supplied, or replace the first FROM image. Positional FILE uses its directory as context; `--file FILE [CONTEXT]` defaults to the current directory. |
+| `--file`, `--from` | Read explicit definition files in the order supplied, or replace the first FROM image. Positional FILE uses its directory as context; `--file FILE [CONTEXT]` defaults to the current directory. Empty `--file` values are errors. |
 | `--target` | Select a named output; default is the final stage. Component invocation cannot change the published target. |
 | `--build-arg NAME[=VALUE]`, `--build-arg-file PATH` | Repeatable arguments/files; explicit arguments override files. Bare names import host values when set. |
 | `--build-context NAME=VALUE`, `--ignorefile PATH` | Supply named inputs or override automatic ignore-file selection. |
@@ -46,7 +46,7 @@ These controls apply to both build commands unless noted. Refer to the [executio
 | `--pull` | Image inputs: `missing` (default), `always`, `newer`, `never`. Bare `--pull` means always. |
 | `--source-policy-file PATH` | Apply a BuildKit-format image source policy using Buildah's ALLOW, DENY, and CONVERT rules. |
 | `--no-cache`, `--cache-ttl` | Bypass result reads or limit wall-clock publication age. Fresh results are still written. |
-| `--cache-from`, `--cache-to` | Read or write caches; repeatable `oci-layout:PATH` or `registry:HOST/REPOSITORY`. Supply both to read and write the same cache. |
+| `--cache-from`, `--cache-to` | Read or write caches; repeatable repository names without tags/digests, or `type=local,src=PATH` for reads and `type=local,dest=PATH` for writes. Supply both to read and write the same cache. |
 | `--network`, `--add-host` | Default RUN network and repeatable host mappings. Authored RUN network values override the default. `--network=host` also authorizes host-network requests. |
 | `--secret`, `--ssh`, `--allow` | Supply credentials or authorize elevated RUN behavior; see [security](../guides/security.md). |
 | `--mount SPEC` | Add a comma-separated RUN mount specification to every RUN, after its authored mounts. Repeatable; stage sources create graph dependencies. |
@@ -81,7 +81,11 @@ Image and component `save` write archive bytes to stdout unless `--output FILE` 
 
 Image loading imports runnable platforms. Descriptors with missing or `unknown` platforms, such as BuildKit attestations, are omitted from the stored index; its digest changes when descriptors are removed. Runnable-only indexes retain their original manifest bytes.
 
-The `exists` commands are silent and return 0 when present, 1 when absent, and 125 for storage errors. `manifest remove LIST DIGEST` removes one member; `manifest rm LIST...` deletes lists. `manifest push` defaults to `--all=true`; false publishes the index alone. `manifest create` and `add` use `--all` to include every member of an input index. Registry flags use the same authentication, TLS configuration, and retry settings as builds and copy.
+The `exists` commands are silent and return 0 when present, 1 when absent, and 125 for storage errors. `manifest remove LIST DIGEST` removes one member; `manifest rm LIST...` deletes lists. `manifest push` defaults to `--all=true`; false publishes the index alone. `manifest create` and `add` use `--all` to include every member of an input index. Registry options use the same authentication, TLS configuration, and retry settings as builds and copy.
+
+## Shell completion
+
+Generate a completion script with `coopr completion bash`, `zsh`, `fish`, or `powershell`. Each shell's `--help` explains installation. Completion omits hidden options and avoids filename suggestions for registry usernames and passwords.
 
 ## Configuration and lifecycle
 

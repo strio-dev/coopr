@@ -3,6 +3,7 @@ package main
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -283,5 +284,38 @@ func TestResolveBuildInputsReadsContextRelativeFiles(t *testing.T) {
 	files, _, contained, err := resolveBuildInputs(root, []string{"custom.coopr"})
 	if err != nil || len(files) != 1 || files[0] != "custom.coopr" || !contained[0] {
 		t.Fatalf("context-relative definition: %v %v %v", files, contained, err)
+	}
+}
+
+func TestResolveBuildInputsRejectsEmptyExplicitFiles(t *testing.T) {
+	definition := filepath.Join(t.TempDir(), "definition")
+	if err := os.WriteFile(definition, []byte("FROM scratch\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, files := range [][]string{{""}, {"", definition}, {definition, ""}, {"", ""}} {
+		if _, _, _, err := resolveBuildInputs(definition, files); err == nil || !strings.Contains(err.Error(), "--file must not be empty") {
+			t.Errorf("explicit files %q: got %v", files, err)
+		}
+	}
+}
+
+func TestBuildCommandsRejectEmptyExplicitFilesBeforeExecution(t *testing.T) {
+	definition := filepath.Join(t.TempDir(), "definition")
+	if err := os.WriteFile(definition, []byte("FROM scratch\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, newCommand := range []func() *cobra.Command{newBuildCommand, newComponentBuildCommand} {
+		for _, flags := range [][]string{{"--file="}, {"--file=", "--file=" + definition}, {"--file=" + definition, "--file="}} {
+			command := newCommand()
+			command.SetContext(context.WithValue(context.Background(), storageSelectionKey{}, storageSelection{store: maintenanceStoreOptions(t.TempDir())}))
+			flags = append(append([]string{}, flags...), "--build-arg-file="+filepath.Join(t.TempDir(), "missing"))
+			if err := command.ParseFlags(flags); err != nil {
+				t.Fatal(err)
+			}
+			// The missing argument file bounds execution if input validation regresses.
+			if err := command.RunE(command, []string{definition}); err == nil || !strings.Contains(err.Error(), "--file must not be empty") {
+				t.Errorf("%s %q: got %v", command.Short, flags, err)
+			}
+		}
 	}
 }

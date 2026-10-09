@@ -105,11 +105,11 @@ func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			cacheSources, err := parseCacheSpecs(cacheFrom)
+			cacheSources, err := parseCacheSpecs(cacheFrom, "src")
 			if err != nil {
 				return fmt.Errorf("cache-from: %w", err)
 			}
-			cacheDestinations, err := parseCacheSpecs(cacheTo)
+			cacheDestinations, err := parseCacheSpecs(cacheTo, "dest")
 			if err != nil {
 				return fmt.Errorf("cache-to: %w", err)
 			}
@@ -184,8 +184,8 @@ func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
 	f.StringArrayVar(&secrets, "secret", nil, "secret source for RUN mounts: id=ID[,src=PATH|env=NAME] (repeatable)")
 	f.StringArrayVar(&ssh, "ssh", nil, "SSH agent or key source for RUN mounts: ID[=PATH] (repeatable)")
 	f.StringArrayVar(&allow, "allow", nil, "allow an elevated build entitlement (repeatable: network.host, security.insecure, device, or device=SELECTOR)")
-	f.StringArrayVar(&cacheFrom, "cache-from", nil, "read cached results from oci-layout:PATH or registry:HOST/REPOSITORY (repeatable)")
-	f.StringArrayVar(&cacheTo, "cache-to", nil, "write cached results to oci-layout:PATH or registry:HOST/REPOSITORY (repeatable)")
+	f.StringArrayVar(&cacheFrom, "cache-from", nil, "read cached results from a repository or type=local,src=PATH (repeatable)")
+	f.StringArrayVar(&cacheTo, "cache-to", nil, "write cached results to a repository or type=local,dest=PATH (repeatable)")
 	times.addTo(cmd)
 	if standalone {
 		addGlobalRunFlags(cmd.Flags())

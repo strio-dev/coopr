@@ -230,10 +230,10 @@ func newManifestAnnotateCommand() *cobra.Command {
 		}
 
 		options.Annotations = map[string]string{}
-		for _, value := range annotations {
-			key, value, ok := strings.Cut(value, "=")
+		for _, annotation := range annotations {
+			key, value, ok := strings.Cut(annotation, "=")
 			if !ok || key == "" {
-				return fmt.Errorf("invalid annotation %q (expected KEY=VALUE)", value)
+				return fmt.Errorf("invalid annotation %q (expected KEY=VALUE)", annotation)
 			}
 			options.Annotations[key] = value
 		}

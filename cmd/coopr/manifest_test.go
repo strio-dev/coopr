@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -46,6 +47,19 @@ func TestManifestCommandsRejectMissingArguments(t *testing.T) {
 		var out, errs bytes.Buffer
 		if code := run([]string{"manifest", name}, &out, &errs); code == 0 {
 			t.Errorf("manifest %s accepted no arguments", name)
+		}
+	}
+}
+
+func TestManifestAnnotationErrorIdentifiesInvalidInput(t *testing.T) {
+	for _, value := range []string{"BAD", "=value", ""} {
+		command := newManifestAnnotateCommand()
+		if err := command.ParseFlags([]string{"--index", "--annotation", value}); err != nil {
+			t.Fatal(err)
+		}
+		want := fmt.Sprintf("invalid annotation %q (expected KEY=VALUE)", value)
+		if err := command.RunE(command, []string{"example"}); err == nil || err.Error() != want {
+			t.Errorf("annotation %q: got %v, want %q", value, err, want)
 		}
 	}
 }
