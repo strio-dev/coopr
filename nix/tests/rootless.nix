@@ -16,7 +16,39 @@ let
     fileset = ../../scripts/acceptance;
   };
   fixtures = pkgs.callPackage ./fixtures.nix { inherit coopr; };
-  buildahShards = 8;
+  # Ordered ownership keeps component/cache/source interactions in one group.
+  # Core receives every test not matched here, including newly added tests.
+  buildahGroups = [
+    {
+      name = "packages";
+      pattern = "Package|Publish|Publication";
+    }
+    {
+      name = "components";
+      pattern = "Component";
+    }
+    {
+      name = "cache";
+      pattern = "Cache";
+    }
+    {
+      name = "sources";
+      pattern = "Copy|Copies|Add|Context|Source|Git|Transport";
+    }
+    {
+      name = "runtime";
+      pattern = "Run|Network|Mount|Security|Secret|SSH|Device|Binfmt";
+    }
+    {
+      name = "workers";
+      pattern = "Worker|Lifecycle|Cancel|Prune|Store|GraphExecutor|ReadyGraph";
+    }
+    {
+      name = "image-metadata";
+      pattern = "Image|Config|Metadata|History|Output|Manifest|Layer|Timestamp|Epoch|Checkpoint";
+    }
+  ];
+  buildahGroupNames = map (group: group.name) buildahGroups ++ [ "core" ];
   integrationTests = coopr.overrideAttrs {
     pname = "coopr-rootless-tests";
     src = coopr.testSource;
@@ -29,18 +61,23 @@ let
         go test -trimpath -c -o "$out/bin/$(basename "$package").test" "./$package"
       done
       go build -trimpath -o "$out/bin/test2json" cmd/test2json
-      mkdir -p "$out/shards"
+      mkdir -p "$out/groups"
       "$out/bin/buildah.test" -test.list '^(Test|Example|Fuzz)' > "$out/buildah.inventory"
       test -s "$out/buildah.inventory"
-      split -d -n r/${toString buildahShards} --additional-suffix=.txt \
-        "$out/buildah.inventory" "$out/shards/buildah-"
-      for shard in "$out"/shards/*.txt; do
-        test -s "$shard"
+      cp "$out/buildah.inventory" remaining
+      ${lib.concatMapStringsSep "\n" (group: ''
+        grep -E ${lib.escapeShellArg group.pattern} remaining > "$out/groups/${group.name}.txt"
+        grep -Ev ${lib.escapeShellArg group.pattern} remaining > next
+        mv next remaining
+      '') buildahGroups}
+      mv remaining "$out/groups/core.txt"
+      for group in "$out"/groups/*.txt; do
+        test -s "$group"
       done
       sort "$out/buildah.inventory" > expected
       sort -u "$out/buildah.inventory" > unique
       diff -u expected unique
-      sort "$out"/shards/*.txt > actual
+      sort "$out"/groups/*.txt > actual
       diff -u expected actual
       runHook postBuild
     '';
@@ -55,11 +92,11 @@ let
     name:
     {
       packages ? [ ],
-      shard ? null,
+      group ? null,
       acceptance ? null,
     }:
     let
-      testPackages = if shard != null then [ "internal/buildah" ] else packages;
+      testPackages = if group != null then [ "internal/buildah" ] else packages;
       runTests = pkgs.writeShellApplication {
         inherit name;
         runtimeEnv = {
@@ -96,10 +133,10 @@ let
           cp -r ${coopr.goModules} "$HOME/work/vendor"
           chmod -R u+w "$HOME/work"
           cd "$HOME/work"
-          ${lib.optionalString (shard != null) ''
-            selected=${integrationTests}/shards/buildah-${lib.fixedWidthNumber 2 shard}.txt
-            printf 'Running Buildah shard %s/${toString buildahShards}: %s tests\n' \
-              '${toString (shard + 1)}' "$(wc -l < "$selected")"
+          ${lib.optionalString (group != null) ''
+            selected=${integrationTests}/groups/${group}.txt
+            printf 'Running Buildah group %s: %s tests\n' \
+              '${group}' "$(wc -l < "$selected")"
             selector="^($(paste -sd '|' "$selected"))$"
           ''}
           ${lib.optionalString (testPackages != [ ]) ''
@@ -111,11 +148,11 @@ let
                 ${integrationTests}/bin/test2json -t -p "./$package" \
                 ${integrationTests}/bin/"$(basename "$package")".test \
                 -test.v=test2json -test.count=1 -test.timeout=30m ${
-                  lib.optionalString (shard != null) ''-test.run "$selector"''
+                  lib.optionalString (group != null) ''-test.run "$selector"''
                 })
             done
           ''}
-          ${lib.optionalString (shard != null) ''
+          ${lib.optionalString (group != null) ''
             ${pkgs.jq}/bin/jq -r '
               select(.Action == "pass" or .Action == "skip" or .Action == "fail")
               | select(.Test != null and (.Test | contains("/") | not))
@@ -193,8 +230,8 @@ in
   rootless-static = makeTest "coopr-rootless-static" { acceptance = "static"; };
 }
 // lib.listToAttrs (
-  lib.genList (shard: {
-    name = "rootless-buildah-${toString (shard + 1)}";
-    value = makeTest "coopr-rootless-buildah-${toString (shard + 1)}" { inherit shard; };
-  }) buildahShards
+  map (group: {
+    name = "rootless-buildah-${group}";
+    value = makeTest "coopr-rootless-buildah-${group}" { inherit group; };
+  }) buildahGroupNames
 )

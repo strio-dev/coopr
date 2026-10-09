@@ -47,9 +47,12 @@ Add pages to `zensical.toml`. Keep tutorials runnable from a fresh checkout and 
 
 `just integration` and `just release-acceptance` require an AMD64 host with KVM. Isolated NixOS VMs run live integration tests and both dynamic and static packaged CLI acceptance as a normal user, including foreign-architecture execution.
 
-Nix compiles the integration tests once. The Buildah tests run in eight VMs,
-assigned round-robin from the discovered test list. The runner checks that every
-selected test finishes and that the foreign-architecture execution test passes.
+Nix compiles the integration tests once. The Buildah tests run in named VM groups:
+package building, component invocation, cache, sources, runtime, workers, image
+metadata, and core. Selectors in `nix/tests/rootless.nix` assign tests in that
+order; core includes all unmatched tests. The runner checks that every discovered
+test belongs to exactly one group, every selected test finishes, and the
+foreign-architecture execution test passes.
 Other integration packages and each packaged CLI variant have separate checks.
 Packaged acceptance uses the same Go test suite in the VM and on a configured host.
 
