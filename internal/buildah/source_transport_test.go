@@ -3,6 +3,7 @@ package buildah
 import (
 	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -373,6 +374,85 @@ func TestFilterImageArchiveCancellationDuringEntry(t *testing.T) {
 	}
 	if input.bytesRead >= 512+len(body) {
 		t.Fatalf("cancellation consumed the entire entry: read %d bytes", input.bytesRead)
+	}
+}
+
+func TestSanitizeTransportSourceValidatesGzipFooter(t *testing.T) {
+	for _, padding := range []struct {
+		name string
+		size int
+	}{
+		{name: "buffered", size: 64 * 1024},
+		{name: "read ahead", size: 4 * 1024 * 1024},
+	} {
+		var compressed bytes.Buffer
+		writer := gzip.NewWriter(&compressed)
+		if _, err := writer.Write(tarBytes(t, "proof", "image\n")); err != nil {
+			t.Fatal(err)
+		}
+		// Leave compressed data after tar EOF, including beyond the decoder's
+		// first block for the larger fixture.
+		if _, err := writer.Write(make([]byte, padding.size)); err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		corrupt := bytes.Clone(compressed.Bytes())
+		corrupt[len(corrupt)-8] ^= 1
+		for _, transport := range []string{"oci-archive", "docker-archive"} {
+			for _, test := range []struct {
+				name string
+				data []byte
+				fail bool
+			}{
+				{name: "valid", data: compressed.Bytes()},
+				{name: "bad checksum", data: corrupt, fail: true},
+				{name: "truncated footer", data: compressed.Bytes()[:compressed.Len()-4], fail: true},
+			} {
+				t.Run(padding.name+"/"+transport+"/"+test.name, func(t *testing.T) {
+					staging := t.TempDir()
+					t.Setenv("TMPDIR", staging)
+					root := t.TempDir()
+					source := filepath.Join(root, "image.tar.gz")
+					if err := os.WriteFile(source, test.data, 0600); err != nil {
+						t.Fatal(err)
+					}
+					ref, cleanup, err := sanitizeTransportSource(context.Background(), transport+":"+source, root)
+					if cleanup != nil {
+						defer cleanup()
+					}
+					if (err != nil) != test.fail {
+						t.Errorf("sanitization error = %v, want failure %t", err, test.fail)
+					}
+					if test.fail && (ref != "" || cleanup != nil) {
+						t.Errorf("failed archive returned reference %q or cleanup function", ref)
+					}
+					if !test.fail && err == nil {
+						_, filename, _ := strings.Cut(ref, ":")
+						data, err := os.ReadFile(filename)
+						if err != nil {
+							t.Fatal(err)
+						}
+						reader := tar.NewReader(bytes.NewReader(data))
+						header, err := reader.Next()
+						if err != nil || header.Name != "proof" {
+							t.Fatalf("sanitized archive header = %v, %v", header, err)
+						}
+						body, err := io.ReadAll(reader)
+						if err != nil || string(body) != "image\n" {
+							t.Fatalf("sanitized archive body = %q, %v", body, err)
+						}
+					}
+					if cleanup != nil {
+						cleanup()
+					}
+					if entries, err := os.ReadDir(staging); err != nil || len(entries) != 0 {
+						t.Fatalf("staging cleanup = %v, %v", entries, err)
+					}
+				})
+			}
+		}
 	}
 }
 

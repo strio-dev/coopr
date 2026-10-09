@@ -55,8 +55,12 @@ func sanitizeTransportSource(ctx context.Context, reference, contextDir string) 
 		result <- err
 	}()
 	finished := false
+	var decompressed io.ReadCloser
 	defer func() {
 		_ = stream.Close()
+		if decompressed != nil {
+			retErr = errors.Join(retErr, decompressed.Close())
+		}
 		if !finished {
 			<-result
 		}
@@ -72,11 +76,10 @@ func sanitizeTransportSource(ctx context.Context, reference, contextDir string) 
 		if header.Typeflag != tar.TypeReg {
 			return fail(fmt.Errorf("image archive %q is not a regular file", source))
 		}
-		decompressed, _, err := compression.AutoDecompress(outer)
+		decompressed, _, err = compression.AutoDecompress(outer)
 		if err != nil {
 			return fail(err)
 		}
-		defer func() { retErr = errors.Join(retErr, decompressed.Close()) }()
 		input = decompressed
 	}
 	sanitized, err := os.Create(filepath.Join(root, "image.tar"))
@@ -86,6 +89,19 @@ func sanitizeTransportSource(ctx context.Context, reference, contextDir string) 
 	defer func() { retErr = errors.Join(retErr, sanitized.Close()) }()
 	if err := filterImageArchive(ctx, input, sanitized); err != nil {
 		return fail(err)
+	}
+	if decompressed != nil {
+		// Tar EOF precedes the compression footer. Finish decoding before
+		// reading the enclosing stream so footer errors cannot be skipped
+		// and decoder read-ahead cannot race the raw stream drain.
+		if _, err := io.Copy(io.Discard, contextReader{ctx: ctx, reader: decompressed}); err != nil {
+			return fail(err)
+		}
+		err := decompressed.Close()
+		decompressed = nil
+		if err != nil {
+			return fail(err)
+		}
 	}
 	// Archives may leave the enclosing copier tar padding unread. Drain that
 	// stream before joining the producer so a valid inner tar cannot hide a
