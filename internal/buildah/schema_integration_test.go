@@ -64,27 +64,75 @@ func TestOnBuildMountTypedOptionsExecuteInChildScope(t *testing.T) {
 	f := newLocalComponentFixture(t)
 	base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
 	f.write(t, "token", "child-secret\n")
+	f.write(t, "global-input", "build-wide\n")
 	f.options.Secrets = []string{"id=token,src=" + filepath.Join(f.contextDir, "token")}
+	mounts, err := ParseTransientRunMounts([]string{"type=bind,source=global-input,target=/run/global-input"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	def := parseWorkerDefinition(t, fmt.Sprintf(`from %q as="parent"
 onbuild { arg "required" #true }
 onbuild { arg "permissions" "0400" }
 onbuild {
-    run "test \"$(/bin/busybox stat -c %%a /run/token)\" = 400; cat /run/token >/proof" {
+    run "test \"$(/bin/busybox stat -c %%a /run/token)\" = 400; cat /run/token /run/global-input >/proof" {
         mount "secret" id="token" target="/run/token" required="${required}" mode="${permissions}"
     }
 }
+
 from "parent"
 `, base.reference))
 	layout := filepath.Join(f.root, "inherited")
-	_, err := BuildDefinitionSupervised(f.ctx, def, planner.Options{Mode: planner.Build, Platform: "linux/" + runtime.GOARCH}, SupervisedPlanOptions{
+	_, err = BuildDefinitionSupervised(f.ctx, def, planner.Options{Mode: planner.Build, Platform: "linux/" + runtime.GOARCH}, SupervisedPlanOptions{
 		Store: f.options.Store, ContextDir: f.contextDir, Isolation: "rootless", Runtime: "crun",
-		Output: Output{Path: layout, Format: outputFormatDocker}, Secrets: f.options.Secrets,
+		Output: Output{Path: layout, Format: outputFormatDocker}, Secrets: f.options.Secrets, TransientRunMounts: mounts,
 		SignaturePolicyPath: f.options.SystemContext.SignaturePolicyPath, Stdout: io.Discard, Stderr: io.Discard,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := localComponentLastFile(t, layout, "proof"); got != "child-secret\n" {
+	if got := localComponentLastFile(t, layout, "proof"); got != "child-secret\nbuild-wide\n" {
 		t.Fatalf("inherited secret result = %q", got)
+	}
+}
+
+func TestLocalComponentCacheTracksBuildWideMountOptions(t *testing.T) {
+	f := newLocalComponentFixture(t)
+	base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
+	f.write(t, "components/mounted.coopr", `extend
+run "if test -d /first; then printf first >/proof; else test -d /second && printf second >/proof; fi"
+`)
+	plan := testPlan(t, fmt.Sprintf("from %q\ncomponent \"./components/mounted.coopr\"\n", base.reference))
+	for _, test := range []struct {
+		name, target, proof string
+		cacheHit            bool
+	}{
+		{name: "first cold", target: "/first", proof: "first"},
+		{name: "first warm", target: "/first", proof: "first", cacheHit: true},
+		{name: "changed cold", target: "/second", proof: "second"},
+		{name: "changed warm", target: "/second", proof: "second", cacheHit: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			mounts, err := ParseTransientRunMounts([]string{"type=tmpfs,target=" + test.target})
+			if err != nil {
+				t.Fatal(err)
+			}
+			layout := filepath.Join(f.root, test.name)
+			var logs strings.Builder
+			_, err = BuildPlanSupervised(f.ctx, plan, SupervisedPlanOptions{
+				Store: f.options.Store, ContextDir: f.contextDir, Isolation: "rootless", Runtime: "crun",
+				Output: Output{Path: layout}, ComponentStoreDir: filepath.Join(f.root, "components"),
+				CacheLocalDir: f.options.CacheLocalDir, SignaturePolicyPath: f.options.SystemContext.SignaturePolicyPath,
+				TransientRunMounts: mounts, Stdout: io.Discard, Stderr: &logs,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := localComponentLastFile(t, layout, "proof"); got != test.proof {
+				t.Fatalf("mounted RUN proof = %q, want %q", got, test.proof)
+			}
+			if got := strings.Contains(logs.String(), "--> Using component cache "); got != test.cacheHit {
+				t.Fatalf("component cache hit = %t, want %t:\n%s", got, test.cacheHit, logs.String())
+			}
+		})
 	}
 }

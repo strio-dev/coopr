@@ -1624,12 +1624,14 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 	packageFixed := map[string]bool{}
 	g.collectArgumentReferences(raw.head, g.globals, packageFixed)
 	for instructionIndex, inst := range instructions {
+		var transient definition.Instruction
 		if inst.Name == "run" && len(g.opts.TransientRunMounts) != 0 && (g.opts.Mode != Publish || packagePhase) {
-			inst.Children = append(slices.Clone(inst.Children), g.opts.TransientRunMounts...)
+			transient.Children = g.opts.TransientRunMounts
 		}
 		authoredOnBuild := instructionIndex >= inheritedCount && inst.Name == "onbuild"
 		if !authoredOnBuild {
 			g.collectArgumentReferences(inst, values, packageFixed)
+			g.collectArgumentReferences(transient, values, packageFixed)
 			if inst.Name == "run" {
 				for name, value := range values {
 					if value.present && !shadows[name] {
@@ -1677,6 +1679,18 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 		}
 		if err := expandStructuralReferences(inst, &normalized, g.globals, expansionValues); err != nil {
 			return fmt.Errorf("stage %s %s: %w", stage.ID, inst.Name, err)
+		}
+		if len(transient.Children) != 0 {
+			// Deferred ONBUILD normalization reconstructs the authored RUN from
+			// its raw trigger. Attach build-wide mounts only after that boundary.
+			normalizedTransient, err := normalize(transient, expansionValues)
+			if err != nil {
+				return fmt.Errorf("stage %s %s: %w", stage.ID, inst.Name, err)
+			}
+			if err := expandStructuralReferences(transient, &normalizedTransient, g.globals, expansionValues); err != nil {
+				return fmt.Errorf("stage %s %s: %w", stage.ID, inst.Name, err)
+			}
+			normalized.Children = append(normalized.Children, normalizedTransient.Children...)
 		}
 		dynamicInherited := g.opts.Mode == Invoke && instructionIndex < inheritedCount && !g.packageDerived[i]
 		operationIndex := len(stage.Operations)
