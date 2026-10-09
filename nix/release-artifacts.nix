@@ -33,13 +33,13 @@ let
       {
         nativeBuildInputs = [
           pkgs.gnutar
-          pkgs.gzip
+          pkgs.pigz
         ];
       }
       ''
         mkdir "$out"
         # Nix outputs are read-only; extracted corresponding source must be editable.
-        tar ${tarFlags} --mode=u+w -C ${release-sources} -cf - . | gzip -n > "$out/coopr-sources.tar.gz"
+        tar ${tarFlags} --mode=u+w -C ${release-sources} -cf - . | pigz -p"$NIX_BUILD_CORES" -nTR > "$out/coopr-sources.tar.gz"
       '';
   sourceImage = nix2container.buildImage {
     name = "coopr";

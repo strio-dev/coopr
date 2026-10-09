@@ -14,6 +14,7 @@ let
     name: command: inputs:
     coopr.overrideAttrs {
       name = "coopr-${name}";
+      src = coopr.testSource;
       goModules = coopr.goModules;
       doCheck = true;
       nativeCheckInputs = [
@@ -51,6 +52,17 @@ let
     go vet ./...
     golangci-lint run --build-tags=${lib.concatStringsSep "," coopr.tags}
   '' [ pkgs.golangci-lint ];
+  rootlessChecks = lib.optionalAttrs pkgs.stdenv.hostPlatform.isx86_64 (
+    import ./tests/rootless.nix {
+      inherit
+        lib
+        pkgs
+        coopr
+        coopr-static
+        container
+        ;
+    }
+  );
 in
 {
   build = coopr;
@@ -147,7 +159,7 @@ in
   formatting =
     pkgs.runCommand "coopr-formatting"
       {
-        src = coopr.src;
+        src = coopr.testSource;
         nativeBuildInputs = [
           pkgs.go_1_27
           pkgs.nixfmt
@@ -156,7 +168,7 @@ in
       ''
         cp -r "$src" source
         chmod -R u+w source
-        unformatted="$(gofmt -l source)"
+        unformatted="$(gofmt -l source ${../scripts})"
         if [ -n "$unformatted" ]; then
           echo "Go files need gofmt:" >&2
           echo "$unformatted" >&2
@@ -166,6 +178,9 @@ in
         touch "$out"
       '';
 }
+// rootlessChecks
 // lib.optionalAttrs pkgs.stdenv.hostPlatform.isx86_64 {
-  rootless = pkgs.callPackage ./tests/rootless.nix { inherit coopr coopr-static container; };
+  rootless = pkgs.linkFarm "coopr-rootless" (
+    lib.mapAttrsToList (name: path: { inherit name path; }) rootlessChecks
+  );
 }

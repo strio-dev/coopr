@@ -89,40 +89,10 @@ trap 'exit 143' TERM
 if [[ $multiplatform == 1 ]]; then
   proof_context="$bench_root/multi-platform-proof"
   mkdir -p "$proof_context"
-  cat >"$proof_context/proof.go" <<'EOF'
-package main
-
-import (
-	"fmt"
-	"os"
-	"runtime"
-)
-
-func main() {
-	if len(os.Args) == 3 {
-		marker, err := os.ReadFile(os.Args[1])
-		if err != nil {
-			panic(err)
-		}
-		if err := os.WriteFile(os.Args[2], []byte(runtime.GOARCH+":"+string(marker)), 0o644); err != nil {
-			panic(err)
-		}
-		return
-	}
-	if len(os.Args) == 2 {
-		proof, err := os.ReadFile(os.Args[1])
-		if err != nil {
-			panic(err)
-		}
-		fmt.Print(string(proof))
-		return
-	}
-	fmt.Print(runtime.GOARCH)
-}
-EOF
   for arch in amd64 arm64; do
     GOOS=linux GOARCH=$arch CGO_ENABLED=0 \
-      go build -trimpath -ldflags='-s -w' -o "$proof_context/proof-$arch" "$proof_context/proof.go"
+      go build -trimpath -ldflags='-s -w' -o "$proof_context/proof-$arch" \
+        "$repo_root/scripts/benchmarks/fixtures/platform-proof/main.go"
   done
 fi
 printf 'builder,iteration,phase,seconds\n'

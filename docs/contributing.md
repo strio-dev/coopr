@@ -23,11 +23,14 @@ Read the [architecture](concepts/architecture.md) and [execution reference](refe
 | --- | --- |
 | `just test` | Go tests; live tests skip unless configured. |
 | `just vet` / `just lint` | Go static analysis. |
+| `just scan` | Semgrep security checks for Go, Python, and GitHub Actions. |
 | `just fmt` | Go, Nix, and Justfile formatting. |
 | `just check` | Local flake checks, including untracked files. |
 | `just release-check` | Flake checks using the tracked Git source. |
 
-GitHub Actions runs quality and documentation checks once on amd64, and native builds/tests on amd64 and arm64. `nix/ci.nix` assigns checks to these categories and generates their matrices through `nix-github-actions`. Register new checks in the relevant category.
+GitHub Actions runs quality and documentation checks once on amd64, native build checks on amd64 and arm64, and rootless tests in isolated amd64 VMs. `nix/ci.nix` assigns checks to these categories and generates their matrices through `nix-github-actions`. Register new checks in the relevant category.
+
+Semgrep runs separately with a small Nix shell and pinned upstream security rules. Findings appear in GitHub code scanning for review; configuration and scanner errors fail the job. CodeQL also runs because Semgrep CE provides different analysis coverage.
 
 ## Edit documentation
 
@@ -42,15 +45,24 @@ Add pages to `zensical.toml`. Keep tutorials runnable from a fresh checkout and 
 
 ## Run integration checks
 
-`just integration` and `just release-acceptance` require an AMD64 host with KVM. One NixOS VM runs live integration tests and both dynamic and static packaged CLI acceptance as a normal user, including foreign-architecture execution.
+`just integration` and `just release-acceptance` require an AMD64 host with KVM. Isolated NixOS VMs run live integration tests and both dynamic and static packaged CLI acceptance as a normal user, including foreign-architecture execution.
+
+Nix compiles the integration tests once. The Buildah tests run in named VM groups:
+package building, component invocation, cache, sources, runtime, workers, image
+metadata, and core. Selectors in `nix/tests/rootless.nix` assign tests in that
+order; core includes all unmatched tests. The runner checks that every discovered
+test belongs to exactly one group, every selected test finishes, and the
+foreign-architecture execution test passes.
+Other integration packages and each packaged CLI variant have separate checks.
+Packaged acceptance uses the same Go test suite in the VM and on a configured host.
 
 The raw `packaged-acceptance`, `docker-acceptance`, and `benchmark` commands need a configured Linux host with working rootless containers:
 
 | Command | Scope |
 | --- | --- |
-| `just integration` | AMD64 NixOS VM: live Buildah, registry, native-storage tests, and dynamic/static packaged acceptance. |
+| `just integration` | AMD64 NixOS VMs: live Buildah, registry, native-storage tests, and dynamic/static packaged acceptance. |
 | `just packaged-acceptance` | Packaged image, store reuse, multi-platform components, and Podman comparison. |
-| `just release-acceptance` | The same complete AMD64 NixOS VM check as `just integration`. |
+| `just release-acceptance` | The same complete AMD64 NixOS VM checks as `just integration`. |
 | `just docker-acceptance` | Docker transfers using a disposable daemon. |
 | `just benchmark` | Coopr/Podman timing measurements. |
 

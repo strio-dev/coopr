@@ -103,6 +103,7 @@
             withDevelopmentTools = false;
           };
           devShells.release = pkgs.callPackage ./nix/release.nix { };
+          devShells.security = pkgs.callPackage ./nix/security.nix { };
         };
     };
 }

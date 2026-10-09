@@ -8,10 +8,8 @@
   libseccomp,
   version ? "dev",
 }:
-(buildGoModule.override { go = go_1_27; }) (finalAttrs: {
-  pname = "coopr";
-  inherit version;
-  src = lib.fileset.toSource {
+let
+  testSource = lib.fileset.toSource {
     root = ../.;
     fileset = lib.fileset.unions [
       ../cmd
@@ -22,6 +20,31 @@
       ../examples
     ];
   };
+in
+(buildGoModule.override { go = go_1_27; }) (finalAttrs: {
+  pname = "coopr";
+  inherit version;
+  src = lib.cleanSourceWith {
+    src = testSource;
+    filter =
+      path: type:
+      let
+        name = builtins.baseNameOf path;
+      in
+      !(
+        lib.hasSuffix "_test.go" name
+        || (
+          type == "directory"
+          && builtins.elem name [
+            "testdata"
+            "examples"
+          ]
+        )
+      );
+  };
+  passthru.testSource = testSource;
+  # Vendor test imports too, preserving the complete pinned dependency tree.
+  overrideModAttrs = _: _: { src = testSource; };
   vendorHash = "sha256-P6E5VjQ/41JN0bH/lfLJa8Hqc3OVfoP014GUhsamRLw=";
   subPackages = [ "./cmd/coopr" ];
   ldflags = [ "-X main.version=${version}" ];

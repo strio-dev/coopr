@@ -378,18 +378,45 @@ func binfmtFixBinaryEnabled(registration string) bool {
 
 func buildForeignProofBinary(t *testing.T, contextDir, architecture string) string {
 	t.Helper()
-	source := filepath.Join(contextDir, "main.go")
-	program := fmt.Sprintf("package main\nimport \"os\"\nfunc main() { if err := os.WriteFile(\"/executed\", []byte(%q), 0644); err != nil { panic(err) } }\n", architecture+"\n")
-	if err := os.WriteFile(source, []byte(program), 0o600); err != nil {
+	fixture, err := runtimeFixtureBinary("foreign-proof-" + architecture)
+	if err != nil {
 		t.Fatal(err)
 	}
 	output := filepath.Join(contextDir, "foreign-proof")
-	command := exec.Command("go", "build", "-trimpath", "-o", output, source)
+	if fixture != "" {
+		data, err := os.ReadFile(fixture)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(output, data, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return output
+	}
+	command := exec.Command("go", "build", "-trimpath", "-o", output, "./testdata/foreign-proof/main.go")
 	command.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH="+architecture)
 	if data, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("cross-compile foreign RUN fixture: %v\n%s", err, data)
 	}
 	return output
+}
+
+func TestBuildForeignProofBinaryUsesFixture(t *testing.T) {
+	root := t.TempDir()
+	fixture := filepath.Join(root, "foreign-proof-"+runtime.GOARCH)
+	if err := os.WriteFile(fixture, []byte("prebuilt foreign proof"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("COOPR_TEST_FIXTURES", root)
+	path := buildForeignProofBinary(t, t.TempDir(), runtime.GOARCH)
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "prebuilt foreign proof" {
+		t.Fatalf("fixture was not copied: data=%q error=%v", data, err)
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm()&0o111 == 0 {
+		t.Fatalf("copied fixture is not executable: error=%v", err)
+	}
 }
 
 func assertELFArchitecture(t *testing.T, path, architecture string) {

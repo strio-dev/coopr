@@ -274,6 +274,9 @@ func TestPublishPlanOverlapsIndependentPackageProducers(t *testing.T) {
 	if err := os.Mkdir(contextDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Mkdir(filepath.Join(contextDir, "rendezvous"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	data, err := os.ReadFile(busybox)
 	if err != nil {
 		t.Fatal(err)
@@ -284,32 +287,42 @@ func TestPublishPlanOverlapsIndependentPackageProducers(t *testing.T) {
 	plan := testPublicationPlan(t, `
 package as="left"
 copy "busybox" "/busybox"
-run network="none" { exec "/busybox" "sleep" "10" }
-run network="none" { exec "/busybox" "touch" "/left" }
+run network="none" {
+  exec "/busybox" "sh" "-ec" "/busybox timeout -s KILL 120 /busybox sh -ec \"$1\"; :" "rendezvous" "/busybox touch /rendezvous/left; until [ -f /rendezvous/right ]; do /busybox sleep 0.01; done; printf 'left\n' >/left"
+  mount "bind" source="rendezvous" target="/rendezvous" rw="true"
+}
 package as="right"
 copy "busybox" "/busybox"
-run network="none" { exec "/busybox" "sleep" "10" }
-run network="none" { exec "/busybox" "touch" "/right" }
+run network="none" {
+  exec "/busybox" "sh" "-ec" "/busybox timeout -s KILL 120 /busybox sh -ec \"$1\"; :" "rendezvous" "/busybox touch /rendezvous/right; until [ -f /rendezvous/left ]; do /busybox sleep 0.01; done; printf 'right\n' >/right"
+  mount "bind" source="rendezvous" target="/rendezvous" rw="true"
+}
 extend
 copy "/left" "/left" from="left"
 copy "/right" "/right" from="right"
 `)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	started := time.Now()
-	_, err = PublishPlan(ctx, plan, PublicationOptions{
+	// Each producer waits for the other to enter its RUN before finishing.
+	// Serial scheduling cannot publish either output; timeout bounds each RUN
+	// because context cancellation does not interrupt an in-flight Buildah RUN.
+	// Keep the outer shell as namespace init so timeout can kill its child.
+	leftPath, rightPath := filepath.Join(root, "left.tar"), filepath.Join(root, "right.tar")
+	packages, err := PublishPlan(ctx, plan, PublicationOptions{
 		PlanOptions: PlanOptions{
 			Store:      StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"},
 			ContextDir: contextDir, Isolation: "rootless", Jobs: 2,
 		},
-		PackagePaths: map[string]string{"left": filepath.Join(root, "left.tar"), "right": filepath.Join(root, "right.tar")},
+		PackagePaths: map[string]string{"left": leftPath, "right": rightPath},
 	})
 	if err != nil {
 		t.Fatalf("parallel package publication: %v", err)
 	}
-	if elapsed := time.Since(started); elapsed >= 19*time.Second {
-		t.Fatalf("independent package producers ran serially: %s", elapsed)
+	if len(packages) != 2 || packages["left"].Stage != "left" || packages["right"].Stage != "right" {
+		t.Fatalf("published packages = %+v", packages)
 	}
+	assertPackageTarFile(t, leftPath, "left", "left\n")
+	assertPackageTarFile(t, rightPath, "right", "right\n")
 }
 
 func TestPackageCacheEligibilityRejectsUndeclaredInputs(t *testing.T) {
