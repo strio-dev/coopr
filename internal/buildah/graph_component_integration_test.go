@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"coopr/internal/cache"
 	"coopr/internal/componentstore"
 	"coopr/internal/definition"
 	"coopr/internal/oci"
@@ -31,7 +32,7 @@ import (
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
 
-func TestBuildPlanInvokesComponentAsOneLayer(t *testing.T) {
+func TestBuildPlanInvokesComponentPreservingCopyLayer(t *testing.T) {
 	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
 		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless component invocation")
 	}
@@ -57,7 +58,7 @@ func TestBuildPlanInvokesComponentAsOneLayer(t *testing.T) {
 	}
 	manifest, image := readPlanImage(t, layout)
 	if len(manifest.Layers) != 1 || len(image.RootFS.DiffIDs) != 1 {
-		t.Fatalf("component output layers=%d diffIDs=%d, want one compacted layer", len(manifest.Layers), len(image.RootFS.DiffIDs))
+		t.Fatalf("component output layers=%d diffIDs=%d, want the component COPY layer", len(manifest.Layers), len(image.RootFS.DiffIDs))
 	}
 	if !reflect.DeepEqual(image.Config.Env, []string{"CHANNEL=stable"}) {
 		t.Fatalf("component output env = %#v", image.Config.Env)
@@ -610,10 +611,34 @@ func TestBuildPlanReusesPortableConfigOnlyComponentCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	var index v1.Index
-	if err := json.Unmarshal(indexData, &index); err != nil || len(index.Manifests) != 1 {
-		t.Fatalf("cache index = %+v: %v", index, err)
+	if err := json.Unmarshal(indexData, &index); err != nil {
+		t.Fatal(err)
 	}
-	manifestPath := filepath.Join(cacheDir, "blobs", "sha256", index.Manifests[0].Digest.Encoded())
+	var artifact v1.Descriptor
+	for _, descriptor := range index.Manifests {
+		if strings.HasPrefix(descriptor.Annotations[v1.AnnotationRefName], "instruction-") {
+			if artifact.Digest != "" {
+				t.Fatal("multiple tagged cache records")
+			}
+			artifact = descriptor
+		}
+	}
+	if artifact.Digest == "" {
+		t.Fatal("missing tagged component image cache record")
+	}
+	manifestPath := filepath.Join(cacheDir, "blobs", "sha256", artifact.Digest.Encoded())
+	artifactData, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cacheManifest v1.Manifest
+	if err := json.Unmarshal(artifactData, &cacheManifest); err != nil {
+		t.Fatal(err)
+	}
+	if cacheManifest.ArtifactType != cache.ImageArtifactType || len(cacheManifest.Layers) != 2 {
+		t.Fatalf("component record graphs=%+v", cacheManifest)
+	}
+
 	if err := os.WriteFile(manifestPath, []byte("corrupt"), 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -13,6 +13,9 @@ import (
 
 type buildControlFlags struct {
 	layers, remove, forceRemove, skipUnused, compatVolumes bool
+	saveStages, stageLabels                                bool
+	mounts                                                 []string
+	cdiConfigDir                                           string
 	httpProxy                                              bool
 	dns                                                    []string
 	dnsSearch                                              []string
@@ -65,6 +68,9 @@ func (flags *buildControlFlags) addTo(command *cobra.Command) {
 	set.Uint64VarP(&flags.cpuShares, "cpu-shares", "c", 0, "set relative CPU shares for RUN instructions")
 	set.StringVar(&flags.shmSize, "shm-size", "", "set /dev/shm size for RUN instructions")
 	set.StringArrayVar(&flags.ulimits, "ulimit", nil, "set a ulimit for RUN instructions as NAME=SOFT:HARD (repeatable)")
+	set.StringArrayVar(&flags.mounts, "mount", nil, "mount into every RUN using Containerfile mount options (repeatable)")
+	set.StringVar(&flags.cdiConfigDir, "cdi-config-dir", "", "directory of CDI configuration files")
+	_ = set.MarkHidden("cdi-config-dir")
 	set.StringArrayVarP(&flags.volumes, "volume", "v", nil, "bind mount HOST:CONTAINER[:OPTIONS] into every RUN (repeatable)")
 	set.StringSliceVar(&flags.capAdd, "cap-add", nil, "add Linux capabilities to RUN instructions (repeatable)")
 	set.StringSliceVar(&flags.capDrop, "cap-drop", nil, "drop Linux capabilities from RUN instructions (repeatable)")
@@ -92,6 +98,8 @@ func (flags *buildControlFlags) addTo(command *cobra.Command) {
 	set.BoolVar(&flags.remove, "rm", true, "remove intermediate containers after a successful build")
 	set.BoolVar(&flags.forceRemove, "force-rm", true, "also remove intermediate containers after build failure")
 	set.BoolVar(&flags.skipUnused, "skip-unused-stages", true, "build only stages required by the selected target")
+	set.BoolVar(&flags.saveStages, "save-stages", false, "retain completed intermediate stage images")
+	set.BoolVar(&flags.stageLabels, "stage-labels", false, "label saved stage images with their stage names")
 	set.BoolVar(&flags.compatVolumes, "compat-volumes", false, "discard RUN changes under declared image volumes")
 	set.BoolVar(&flags.noHosts, "no-hosts", false, "preserve the image /etc/hosts during RUN")
 	set.BoolVar(&flags.noHostname, "no-hostname", false, "preserve the image /etc/hostname during RUN")
@@ -107,6 +115,9 @@ func (flags buildControlFlags) controls() (buildah.RunControls, error) {
 		configModules, _ = set.GetStringArray("module")
 		cdiSpecDirs, _ = set.GetStringArray("cdi-spec-dir")
 		networkConfigDir, _ = set.GetString("network-config-dir")
+	}
+	if flags.cdiConfigDir != "" {
+		cdiSpecDirs = []string{flags.cdiConfigDir}
 	}
 	return buildah.ParseRunControls(buildah.RunControlInput{
 		HTTPProxy: flags.httpProxy, DNSServers: flags.dns, DNSSearch: flags.dnsSearch, DNSOptions: flags.dnsOption,
@@ -178,7 +189,7 @@ func parseCacheSpecs(values []string) ([]buildah.CacheSpec, error) {
 }
 
 func (flags buildControlFlags) lifecycle() buildah.LifecycleControls {
-	return buildah.LifecycleControls{NoLayers: !flags.layers, KeepIntermediate: !flags.remove && !flags.forceRemove, KeepFailed: !flags.forceRemove, BuildUnusedStages: !flags.skipUnused, CompatVolumes: flags.compatVolumes}
+	return buildah.LifecycleControls{NoLayers: !flags.layers, KeepIntermediate: !flags.remove && !flags.forceRemove, KeepFailed: !flags.forceRemove, BuildUnusedStages: !flags.skipUnused, CompatVolumes: flags.compatVolumes, SaveStages: flags.saveStages, StageLabels: flags.stageLabels}
 }
 
 func commandSignaturePolicy(cmd *cobra.Command) string {

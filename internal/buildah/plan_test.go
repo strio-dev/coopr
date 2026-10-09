@@ -64,6 +64,36 @@ stopsignal "SIGTERM"
 	}
 }
 
+func TestRequestFromPlanDoesNotDuplicateGlobalMounts(t *testing.T) {
+	mounts, err := ParseTransientRunMounts([]string{"type=bind,target=/global"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	def, err := definition.Parse(strings.NewReader("from \"scratch\"\nrun \"true\" { mount \"bind\" target=\"/authored\" }\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := planner.Create(def, planner.Options{Mode: planner.Build, Platform: runtime.GOOS + "/" + runtime.GOARCH, TransientRunMounts: TransientMountInstructions(mounts)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := RequestFromPlan(plan, PlanOptions{ContextDir: "/context", IgnoreFile: "/custom.ignore", TransientRunMounts: mounts})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := request.Operations[0].(Run)
+	counts := map[string]int{}
+	for _, mount := range append(run.Mounts, request.TransientRunMounts...) {
+		counts[mount.Properties["target"]]++
+	}
+	if counts["/global"] != 1 || counts["/authored"] != 1 || len(counts) != 2 {
+		t.Fatalf("effective mount counts=%v", counts)
+	}
+	if request.IgnoreFile != "/custom.ignore" || run.ContextIgnoreFile != request.IgnoreFile {
+		t.Fatalf("adapter lost explicit context policy: %+v", request)
+	}
+}
+
 func TestRequestFromPlanPreservesAddGitAndUnpackOptions(t *testing.T) {
 	plan := testPlan(t, `
 from "scratch"

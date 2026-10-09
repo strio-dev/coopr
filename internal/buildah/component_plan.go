@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"coopr/internal/buildcontext"
 	"coopr/internal/imageconfig"
 	"coopr/internal/oci"
 	"coopr/internal/planner"
@@ -29,7 +30,11 @@ type ComponentPlanRequest struct {
 	Platform        v1.Platform
 	// ResolveBase selects an invocation-only external FROM in the same image
 	// store used by graph execution. The selected image is pinned for this build.
-	ResolveBase imageBaseResolver
+	DeferImageSource   func(string) (bool, error)
+	ResolveBase        imageBaseResolver
+	TransientRunMounts []RunMount
+	BuildContexts      []buildcontext.Spec
+	ResolveContext     namedContextResolver
 }
 
 // ResolvedComponentPlan contains the immutable artifact identity, its verified
@@ -126,19 +131,31 @@ func ResolveComponentPlan(ctx context.Context, request ComponentPlanRequest) (*R
 	selectedBases := newSelectedBaseState()
 	resolvedBinds := make(map[ResolvedBaseKey]planner.StageBind)
 	plan, err := planner.InstantiateDemandDriven(&resolved.Component.Component, planner.Options{
-		Mode: planner.Invoke, Arguments: parameters, Platform: platform,
+		DeferImageSource: request.DeferImageSource, Mode: planner.Invoke, Arguments: parameters, Platform: platform,
+		TransientRunMounts: TransientMountInstructions(request.TransientRunMounts),
+		BuildContexts:      request.BuildContexts,
 	}, packageBinds, func(source planner.FromSource) (planner.StageBind, error) {
 		if request.ResolveBase == nil {
 			return planner.StageBind{}, fmt.Errorf("external invocation base %q requires an image resolver", source.Source)
 		}
 		key := ResolvedBaseKey{Reference: source.Source, Platform: source.Platform}
+		if source.Kind == planner.FromSourceContext {
+			key = graphNamedContextKey(source.Source, source.Platform)
+		}
 		base, found := selectedBases.all[key]
 		if !found {
 			basePlatform, err := componentPlatformFromString(source.Platform)
 			if err != nil {
 				return planner.StageBind{}, fmt.Errorf("stage %s platform: %w", source.StageID, err)
 			}
-			base, err = request.ResolveBase(ctx, source.Source, basePlatform)
+			if source.Kind == planner.FromSourceContext {
+				if request.ResolveContext == nil || source.Context == nil {
+					return planner.StageBind{}, fmt.Errorf("named context %q requires a resolver", source.Source)
+				}
+				base, err = request.ResolveContext(ctx, *source.Context, basePlatform)
+			} else {
+				base, err = request.ResolveBase(ctx, source.Source, basePlatform)
+			}
 			if err != nil {
 				return planner.StageBind{}, fmt.Errorf("stage %s image %q: %w", source.StageID, source.Source, err)
 			}

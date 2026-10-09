@@ -27,9 +27,11 @@ const (
 )
 
 type Options struct {
-	Mode      Mode
-	Target    string
-	Arguments map[string]string
+	// DeferImageSource identifies external inputs produced during execution.
+	DeferImageSource func(string) (bool, error) `json:"-"`
+	Mode             Mode
+	Target           string
+	Arguments        map[string]string
 	// ContextSourceDateEpoch is the timestamp resolved from a remote primary
 	// context. It is used only when SOURCE_DATE_EPOCH has the value "context".
 	ContextSourceDateEpoch  *int64
@@ -44,6 +46,8 @@ type Options struct {
 	// BuildContexts are normalized named inputs. Planning retains only contexts
 	// used by the selected closure and records every binding in Plan.Contexts.
 	BuildContexts []buildcontext.Spec
+	// TransientRunMounts are execution inputs, never published component instructions.
+	TransientRunMounts []definition.Instruction
 	// BuildUnusedStages includes standalone stages or component package producers
 	// up to the selected target.
 	BuildUnusedStages bool
@@ -72,8 +76,9 @@ type Operation struct {
 	// InputContext identifies the root for copy/add without from. MountContexts
 	// uses the child index for bind mounts without from. Stage-backed inputs keep
 	// their from reference and have no context annotation.
-	InputContext  string         `json:"input_context,omitempty"`
-	MountContexts map[int]string `json:"mount_contexts,omitempty"`
+	InputContext        string         `json:"input_context,omitempty"`
+	MountContexts       map[int]string `json:"mount_contexts,omitempty"`
+	TransientMountCount int            `json:"transient_mount_count,omitempty"`
 }
 
 func hasProperty(properties map[string]string, name string) bool {
@@ -99,10 +104,12 @@ type ContextInput struct {
 }
 
 type Stage struct {
-	ID     string `json:"id"`
-	Name   string `json:"name,omitempty"`
-	Kind   string `json:"kind"`
-	Source string `json:"source,omitempty"`
+	AfterStage          string `json:"after_stage,omitempty"`
+	DeferredImageSource bool   `json:"deferred_image_source,omitempty"`
+	ID                  string `json:"id"`
+	Name                string `json:"name,omitempty"`
+	Kind                string `json:"kind"`
+	Source              string `json:"source,omitempty"`
 	// SourceContext names the context supplying this stage's root filesystem.
 	SourceContext string `json:"source_context,omitempty"`
 	Platform      string `json:"platform"`
@@ -140,10 +147,12 @@ type Plan struct {
 	Platform       string `json:"platform"`
 	// SourceDateEpoch is the canonical numeric SOURCE_DATE_EPOCH selected for
 	// image metadata. It remains separate from stage ARG visibility.
-	SourceDateEpoch *int64     `json:"source_date_epoch,omitempty"`
-	Stages          []Stage    `json:"stages"`
-	Outputs         []string   `json:"outputs"`
-	Arguments       []Argument `json:"arguments,omitempty"`
+	SourceDateEpoch *int64  `json:"source_date_epoch,omitempty"`
+	Stages          []Stage `json:"stages"`
+	// CompatibilityRoots constrain the caller without scheduling dormant bodies.
+	CompatibilityRoots []Stage    `json:"compatibility_roots,omitempty"`
+	Outputs            []string   `json:"outputs"`
+	Arguments          []Argument `json:"arguments,omitempty"`
 	// PackageArguments must accompany the published component, independently of
 	// its filesystem snapshots, so invocation cannot silently reinterpret them.
 	PackageArguments map[string]string `json:"package_arguments,omitempty"`
@@ -161,7 +170,7 @@ type Plan struct {
 type dynamicStageReplanner func(string, StageBind) (*Plan, error)
 
 // ReplanDynamicStage binds the completed configuration of a deferred local
-// base and reruns normal demand-driven planning. Any inherited ONBUILD
+// or filesystem base and reruns normal demand-driven planning. Any inherited ONBUILD
 // dependencies are therefore selected and verified before the child executes.
 func (plan *Plan) ReplanDynamicStage(stageID string, bind StageBind) (*Plan, error) {
 	if plan == nil || plan.replan == nil {
@@ -169,7 +178,7 @@ func (plan *Plan) ReplanDynamicStage(stageID string, bind StageBind) (*Plan, err
 	}
 	deferred := false
 	for _, stage := range plan.Stages {
-		if stage.ID == stageID && stage.DynamicBaseStage != "" {
+		if stage.ID == stageID && (stage.DynamicBaseStage != "" || stage.DeferredImageSource) {
 			deferred = true
 			break
 		}
@@ -203,6 +212,8 @@ type PublishedComponent struct {
 // binding intentionally does not pin the reference here; OCI resolution does so
 // later, while invocation arguments may select another external image.
 type FromBinding struct {
+	AfterStage  string `json:"after_stage,omitempty"`
+	AfterIndex  string `json:"after_index,omitempty"`
 	Kind        string `json:"kind"` // stage, image, or scratch
 	Stage       string `json:"stage,omitempty"`
 	SourceIndex string `json:"source_index,omitempty"`
@@ -284,6 +295,7 @@ type graph struct {
 	bases               []int
 	packages            []int
 	extended            []int
+	compatibilityOnly   map[int]bool
 	declared            map[string]bool
 	bindResolver        StageBindResolver
 	reservedStageNames  map[string]bool
@@ -614,7 +626,9 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 		if resolvedOnly {
 			expectedReferences = slices.DeleteFunc(slices.Clone(expectedReferences), func(ref StageReferenceBinding) bool {
 				id, _ := strconv.Atoi(ref.Stage) // ValidatePublished checked every stage ID.
-				return g.states[id] != 2
+				// Deferred bodies have no operations until their executed base is
+				// rebound. Their immutable references are checked during that replan.
+				return g.states[id] != 2 || g.stages[id].DynamicBaseStage != "" || g.stages[id].DeferredImageSource
 			})
 		}
 		if !slices.Equal(g.stageReferences(nil), expectedReferences) {
@@ -639,13 +653,18 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 			}
 		}
 	}
+	if component && g.raw[output].head.Name == "package" {
+		return nil, fmt.Errorf("selected output cannot be a package stage")
+	}
+	componentStart := -1
 	if component {
-		ancestor := output
-		for ancestor != -1 && g.stages[ancestor].Kind != "extend" {
-			ancestor = g.bases[ancestor]
+		for _, id := range g.extended {
+			if id <= output {
+				componentStart = id
+			}
 		}
-		if ancestor == -1 {
-			return nil, fmt.Errorf("selected output stage must descend from extend through from, not only copy or mounts")
+		if componentStart < 0 {
+			return nil, fmt.Errorf("selected component output must follow extend; preceding FROM stages are producers")
 		}
 	}
 	reachable, err := g.walk([]int{output}, false)
@@ -688,6 +707,30 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 			}
 		}
 	}
+	if opts.Mode == Publish {
+		hasExtend := false
+		for _, id := range reachable {
+			hasExtend = hasExtend || g.raw[id].head.Name == "extend"
+		}
+		if !hasExtend {
+			// The selected image may be independent of the caller. Preserve its
+			// mandatory compatibility contract without retaining unused body edges.
+			g.compatibilityOnly = map[int]bool{}
+			contract, err := g.extendContract(componentStart)
+			if err != nil {
+				return nil, err
+			}
+			g.stages[componentStart] = contract
+			g.deps[componentStart] = nil
+			g.compatibilityOnly[componentStart] = true
+			retentionRoots = append(retentionRoots, componentStart)
+		}
+		reachable, err = g.walk(retentionRoots, false)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	requiredPackages := []int{}
 	for _, id := range reachable {
 		if g.stages[id].Kind == "package" {
@@ -830,6 +873,20 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 		}
 		plan.Stages = append(plan.Stages, stage)
 	}
+	hasSelectedExtend := false
+	for _, id := range order {
+		hasSelectedExtend = hasSelectedExtend || g.raw[id].head.Name == "extend"
+	}
+	if component && opts.Mode == Invoke && !hasSelectedExtend {
+		// Independent targets must not acquire unrelated dormant target contracts.
+		// Only an output with no selected caller root needs a separate contract.
+		contract, err := g.extendContract(componentStart)
+		if err != nil {
+			return nil, err
+		}
+		plan.CompatibilityRoots = append(plan.CompatibilityRoots, contract)
+	}
+
 	for _, name := range sortedKeys(usedContexts) {
 		bindings := slices.DeleteFunc(slices.Clone(g.contextBindings[name]), func(binding ContextBinding) bool {
 			return !selectedStages[binding.StageID]
@@ -884,7 +941,7 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 		plan.Component = g.component(output, invocation, retentionRoots[1:], plan.PackageArguments)
 	}
 	for _, stage := range plan.Stages {
-		if stage.DynamicBaseStage == "" {
+		if stage.DynamicBaseStage == "" && !stage.DeferredImageSource {
 			continue
 		}
 		replanOptions := g.opts
@@ -952,6 +1009,14 @@ func (g *graph) component(output int, reachable, dormant []int, args map[string]
 			case strings.EqualFold(g.stages[id].Source, "scratch"):
 				binding.Kind = "scratch"
 			}
+			if after := g.stages[id].AfterStage; after != "" {
+				target, _ := strconv.Atoi(after)
+				binding.AfterStage = newIDs[target]
+				expanded, _ := expand(raw.head.Properties["after"], g.expansionScope(g.globals))
+				if canonicalSourceIndex(expanded) {
+					binding.AfterIndex = expanded
+				}
+			}
 			bindings[newIDs[id]] = binding
 		}
 		head := raw.head
@@ -972,8 +1037,8 @@ func (g *graph) component(output int, reachable, dormant []int, args map[string]
 					Name: "arg", Arguments: []string{name, args[name]},
 				})
 			}
-		} else {
-			def.Instructions = append(def.Instructions, raw.body...)
+		} else if !g.compatibilityOnly[id] {
+			def.Instructions = append(def.Instructions, foldLayerInstructions(raw.body)...)
 		}
 	}
 	dormantRoots := make([]string, 0, len(dormant))
@@ -985,6 +1050,28 @@ func (g *graph) component(output int, reachable, dormant []int, args map[string]
 	return &PublishedComponent{Definition: def, Output: selected, DormantRoots: dormantRoots, Platform: g.opts.Platform, PackageArguments: maps.Clone(args), FromBindings: bindings, ReservedStageNames: sortedKeys(g.aliases), StageReferences: g.stageReferences(newIDs)}
 }
 
+// Bodies originate from validated nested definitions, so their generated
+// boundaries are balanced and cannot contain stage declarations.
+func foldLayerInstructions(body []definition.Instruction) []definition.Instruction {
+	var result []definition.Instruction
+	var stack []*[]definition.Instruction
+	target := &result
+	for _, inst := range body {
+		switch inst.LayerBoundary {
+		case "begin":
+			*target = append(*target, definition.Instruction{Name: "layer"})
+			stack = append(stack, target)
+			target = &(*target)[len(*target)-1].Children
+		case "end":
+			target = stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+		default:
+			*target = append(*target, inst)
+		}
+	}
+	return result
+}
+
 func (g *graph) stageReferences(newIDs map[int]string) []StageReferenceBinding {
 	refs := []StageReferenceBinding{}
 	index := func(id int) string {
@@ -994,6 +1081,9 @@ func (g *graph) stageReferences(newIDs map[int]string) []StageReferenceBinding {
 		return newIDs[id]
 	}
 	for id, stage := range g.stages {
+		if g.compatibilityOnly[id] {
+			continue
+		}
 		if newIDs != nil {
 			if _, kept := newIDs[id]; !kept {
 				continue
@@ -1026,6 +1116,9 @@ func (g *graph) stageReferences(newIDs map[int]string) []StageReferenceBinding {
 				refs = append(refs, ref)
 			}
 			for childIndex, mount := range op.Children {
+				if childIndex >= len(op.Children)-op.TransientMountCount {
+					continue
+				}
 				if mount.Properties["from"] != "" {
 					ref := StageReferenceBinding{Stage: index(id), Origin: origin, Operation: sourceIndex, MountIndex: childIndex}
 					if target, local := g.resolveStageReference(mount.Properties["from"]); local {
@@ -1073,10 +1166,19 @@ func (g *graph) checkFromBindings(bindings map[string]FromBinding, reserved []st
 		case strings.EqualFold(g.stages[id].Source, "scratch"):
 			actual.Kind = "scratch"
 		}
+		contextOverride := g.stages[id].SourceContext != ""
+		if contextOverride {
+			// Explicit build contexts override both image references and stage aliases.
+			// They are caller inputs, not a reinterpretation of the published binding.
+			// Keep checking the immutable authored ordering edge below.
+			actual.Kind, actual.Stage, actual.SourceIndex = expected.Kind, expected.Stage, expected.SourceIndex
+		}
+		actual.AfterStage = g.stages[id].AfterStage
+		actual.AfterIndex = expected.AfterIndex
 		if expected != actual {
 			return fmt.Errorf("stage %s FROM binding changed from %+v to %+v at invocation", key, expected, actual)
 		}
-		if actual.Kind == "image" && containsStageName(reserved, g.stages[id].Source) {
+		if actual.Kind == "image" && !contextOverride && containsStageName(reserved, g.stages[id].Source) {
 			return fmt.Errorf("stage %s FROM source %q was a stage name at publication", key, g.stages[id].Source)
 		}
 	}
@@ -1087,7 +1189,7 @@ func (g *graph) checkFromBindings(bindings map[string]FromBinding, reserved []st
 }
 
 func (g *graph) split(def *definition.Definition) error {
-	for pos, inst := range def.Instructions {
+	for pos, inst := range definition.FlattenLayers(def.Instructions) {
 		switch inst.Name {
 		case "from", "extend", "package":
 			i := len(g.raw)
@@ -1223,6 +1325,56 @@ func (g *graph) resolve(i int) error {
 	return g.resolvePhase(i, false)
 }
 
+// extendContract resolves compatibility separately from execution. A dormant
+// caller root still constrains invocation without replaying its unused body.
+func (g *graph) extendContract(i int) (Stage, error) {
+	raw := g.raw[i]
+	stage := Stage{ID: strconv.Itoa(i), Name: raw.head.Properties["as"], Kind: "extend", Platform: g.opts.Platform}
+	for _, key := range []string{"architecture", "distro", "distro-version", "package-manager"} {
+		var authored []string
+		if scalar, present := raw.head.Properties[key]; present {
+			authored = []string{scalar}
+		} else {
+			for _, requirement := range raw.head.Children {
+				if requirement.Name == key {
+					authored = requirement.Arguments
+					break
+				}
+			}
+		}
+		if len(authored) == 0 {
+			continue
+		}
+		if stage.Requirements == nil {
+			stage.Requirements = make(map[string][]string)
+		}
+		for _, expression := range authored {
+			value, err := expand(expression, g.expansionScope(g.globals))
+			if err != nil {
+				return Stage{}, fmt.Errorf("stage %s extend %s: %w", stage.ID, key, err)
+			}
+			value = strings.TrimSpace(value)
+			if value == "" || strings.ContainsRune(value, '\x00') {
+				return Stage{}, fmt.Errorf("stage %s extend %s must resolve to a nonempty value without NUL", stage.ID, key)
+			}
+			if key == "architecture" {
+				if strings.Contains(value, "/") {
+					return Stage{}, fmt.Errorf("stage %s extend architecture must be a single OCI architecture, got %q", stage.ID, value)
+				}
+				parsed, err := platforms.Parse("linux/" + value)
+				if err != nil {
+					return Stage{}, fmt.Errorf("stage %s extend invalid architecture %q: %w", stage.ID, value, err)
+				}
+				value = platforms.Normalize(parsed).Architecture
+			}
+			stage.Requirements[key] = append(stage.Requirements[key], value)
+		}
+		slices.Sort(stage.Requirements[key])
+		stage.Requirements[key] = slices.Compact(stage.Requirements[key])
+	}
+	return stage, nil
+}
+
 func (g *graph) resolvePhase(i int, packagePhase bool) error {
 	// Some focused planner tests construct graph state directly. Keep this
 	// derived scope storage lazy so those graphs follow the same invariant.
@@ -1274,48 +1426,11 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 	declaredProxy := map[string]bool{}
 	var baseEpoch uint64
 	if stage.Kind == "extend" {
-		for _, key := range []string{"architecture", "distro", "distro-version", "package-manager"} {
-			var authored []string
-			if scalar, present := raw.head.Properties[key]; present {
-				authored = []string{scalar}
-			} else {
-				for _, requirement := range raw.head.Children {
-					if requirement.Name == key {
-						authored = requirement.Arguments
-						break
-					}
-				}
-			}
-			if len(authored) == 0 {
-				continue
-			}
-			if stage.Requirements == nil {
-				stage.Requirements = make(map[string][]string)
-			}
-			for _, expression := range authored {
-				value, err := expand(expression, g.expansionScope(g.globals))
-				if err != nil {
-					return fmt.Errorf("stage %s extend %s: %w", stage.ID, key, err)
-				}
-				value = strings.TrimSpace(value)
-				if value == "" || strings.ContainsRune(value, '\x00') {
-					return fmt.Errorf("stage %s extend %s must resolve to a nonempty value without NUL", stage.ID, key)
-				}
-				if key == "architecture" {
-					if strings.Contains(value, "/") {
-						return fmt.Errorf("stage %s extend architecture must be a single OCI architecture, got %q", stage.ID, value)
-					}
-					parsed, err := platforms.Parse("linux/" + value)
-					if err != nil {
-						return fmt.Errorf("stage %s extend invalid architecture %q: %w", stage.ID, value, err)
-					}
-					value = platforms.Normalize(parsed).Architecture
-				}
-				stage.Requirements[key] = append(stage.Requirements[key], value)
-			}
-			slices.Sort(stage.Requirements[key])
-			stage.Requirements[key] = slices.Compact(stage.Requirements[key])
+		contract, err := g.extendContract(i)
+		if err != nil {
+			return err
 		}
+		stage.Requirements = contract.Requirements
 	}
 	if stage.Kind == "from" && stageOverridden {
 		stage.Source = override.Name
@@ -1370,10 +1485,54 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 		}
 		stage.Platform = platform
 	}
+	if authored, ok := raw.head.Properties["after"]; ok {
+		after, err := expand(authored, g.expansionScope(g.globals))
+		if err != nil {
+			return fmt.Errorf("stage %s after: %w", stage.ID, err)
+		}
+		if g.published != nil {
+			binding := g.published.FromBindings[stage.ID]
+			if binding.AfterIndex != "" {
+				after, err = bindPublishedNumericSource(after, binding.AfterIndex, binding.AfterStage)
+				if err != nil {
+					return err
+				}
+			}
+		}
+		dependency, ok := g.resolveStageReference(after)
+		if !ok || dependency >= i {
+			return fmt.Errorf("stage %s after requires an earlier stage, got %q", stage.ID, after)
+		}
+		if err := g.resolvePhase(dependency, packagePhase); err != nil {
+			return err
+		}
+		stage.AfterStage = strconv.Itoa(dependency)
+		g.deps[i] = append(g.deps[i], dependency)
+	}
 	bind, bound := g.opts.StageBinds[stage.ID]
 	localBind := g.bindResolver != nil && (g.opts.Mode == Publish && (packagePhase || g.packageDerived[i] || g.bases[i] >= 0 && g.packageResolved[g.bases[i]]) ||
-		g.opts.Mode == Build || g.opts.Mode == Invoke && g.bases[i] >= 0 && (bound || g.verifiedConfig[g.bases[i]]))
-	deferredConfig := false
+		g.opts.Mode == Build || g.opts.Mode == Invoke && g.bases[i] >= 0 && (bound || g.verifiedConfig[g.bases[i]] || g.dynamicConfig[g.bases[i]]))
+	deferredSource := stage.AfterStage != ""
+	deferReference := stage.Source
+	deferContext := false
+	if stage.SourceContext != "" {
+		context := g.contexts[stage.SourceContext]
+		deferContext = context.Kind == buildcontext.DockerImage
+		deferReference = context.Reference
+	}
+	if g.opts.DeferImageSource != nil && g.bases[i] == -1 && (stage.SourceContext == "" || deferContext) && !strings.EqualFold(stage.Source, "scratch") {
+		deferSource, err := g.opts.DeferImageSource(deferReference)
+		if err != nil {
+			return fmt.Errorf("stage %s source: %w", stage.ID, err)
+		}
+		deferredSource = deferredSource || deferSource
+	}
+	switch prefix, _, _ := strings.Cut(stage.Source, ":"); prefix {
+	case "oci", "oci-archive", "docker-archive", "dir":
+		deferredSource = true
+	}
+	deferredConfig := deferredSource && g.bases[i] == -1 && (stage.SourceContext == "" || deferContext) && !strings.EqualFold(stage.Source, "scratch") && !bound
+	stage.DeferredImageSource = deferredConfig
 	if stage.Kind == "from" && g.bases[i] >= 0 && (localBind || g.opts.Mode == Invoke && len(g.opts.StageBinds) != 0 && g.packageDerived[i]) {
 		dynamicBase := g.dynamicConfig[g.bases[i]]
 		if dynamicBase && !bound {
@@ -1399,7 +1558,7 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 			bound = true
 		}
 	}
-	if g.bindResolver != nil && (g.opts.Mode != Publish || packagePhase) && stage.Kind == "from" && g.bases[i] == -1 && !strings.EqualFold(stage.Source, "scratch") && !bound {
+	if g.bindResolver != nil && (g.opts.Mode != Publish || packagePhase) && stage.Kind == "from" && g.bases[i] == -1 && !strings.EqualFold(stage.Source, "scratch") && !bound && !deferredConfig {
 		kind := FromSourceImage
 		var contextSpec *buildcontext.Spec
 		if stage.SourceContext != "" {
@@ -1465,6 +1624,9 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 	packageFixed := map[string]bool{}
 	g.collectArgumentReferences(raw.head, g.globals, packageFixed)
 	for instructionIndex, inst := range instructions {
+		if inst.Name == "run" && len(g.opts.TransientRunMounts) != 0 && (g.opts.Mode != Publish || packagePhase) {
+			inst.Children = append(slices.Clone(inst.Children), g.opts.TransientRunMounts...)
+		}
 		authoredOnBuild := instructionIndex >= inheritedCount && inst.Name == "onbuild"
 		if !authoredOnBuild {
 			g.collectArgumentReferences(inst, values, packageFixed)
@@ -1568,6 +1730,9 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 		op := Operation{
 			Instruction: normalized, NetworkExplicit: inst.Name == "run" && hasProperty(inst.Properties, "network"), ArgumentsInScope: effective,
 			DeclaredProxyArguments: sortedTrueKeys(declaredProxy), ShadowedProxyArguments: sortedTrueKeys(shadowedProxy),
+		}
+		if inst.Name == "run" && (g.opts.Mode != Publish || packagePhase) {
+			op.TransientMountCount = len(g.opts.TransientRunMounts)
 		}
 		if inputContext != "" {
 			op.InputContext = inputContext
@@ -1856,7 +2021,7 @@ func cloneContextSpec(spec buildcontext.Spec) *buildcontext.Spec {
 }
 
 func normalize(inst definition.Instruction, values scope) (definition.Instruction, error) {
-	out := definition.Instruction{Name: inst.Name, Form: inst.Form, Properties: map[string]string{}}
+	out := definition.Instruction{Name: inst.Name, Form: inst.Form, LayerBoundary: inst.LayerBoundary, Properties: map[string]string{}}
 	for _, file := range inst.InlineFiles {
 		data := file.Data
 		if file.Expand {

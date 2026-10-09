@@ -28,6 +28,10 @@ type ComponentOptions struct {
 	MetadataFile                   string
 	IgnoreFile                     string
 	File, Context, Tag, From       string
+	Files                          []string
+	DefinitionsInContext           []bool
+	SourcePolicyFile               string
+	TransientRunMounts             []buildah.RunMount
 	DefinitionInContext            bool
 	Platform, Target               string
 	Platforms                      []string
@@ -100,10 +104,23 @@ func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retEr
 	if err != nil {
 		return "", err
 	}
+	if len(opts.Files) != 0 {
+		opts.File = opts.Files[0]
+	}
 	if opts.File == "" {
 		return "", errors.New("component definition is required")
 	}
-	if opts.File == "-" && opts.Context == "-" {
+	files, contained := definitionFiles(opts.File, opts.Files, opts.DefinitionInContext, opts.DefinitionsInContext)
+	stdinFiles := 0
+	for _, file := range files {
+		if file == "-" {
+			stdinFiles++
+		}
+	}
+	if stdinFiles > 1 {
+		return "", errors.New("definition stdin can only be read once")
+	}
+	if stdinFiles != 0 && opts.Context == "-" {
 		return "", errors.New("definition and context cannot both use stdin")
 	}
 	opts.Network, opts.AddHosts, err = buildah.NormalizeBuildNetworkOptions(opts.Network, opts.AddHosts)
@@ -140,13 +157,23 @@ func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retEr
 			return "", err
 		}
 	}
-	def, primary, definitionFile, cleanupPrimary, err := prepareDefinitionContext(ctx, opts.File, opts.Context, opts.DefinitionInContext, opts.Secrets, opts.SSH, opts.Stdin)
+	def, primary, definitionFile, cleanupPrimary, err := prepareDefinitionsContext(ctx, files, opts.Context, contained, opts.Secrets, opts.SSH, opts.Stdin)
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", definitionDisplayName(opts.File), err)
 	}
 	defer func() { _ = cleanupPrimary() }()
 	opts.File, opts.Context = definitionFile, primary.Path
-	if err := validateArtifactOverlaps(outputArtifacts, []string{opts.File}); err != nil {
+	resolvedFiles := make([]string, 0, len(files))
+	for i, file := range files {
+		if i < len(contained) && contained[i] {
+			file, err = contextDefinitionPath(primary.Path, file)
+			if err != nil {
+				return "", err
+			}
+		}
+		resolvedFiles = append(resolvedFiles, file)
+	}
+	if err := validateArtifactOverlaps(outputArtifacts, resolvedFiles); err != nil {
 		return "", err
 	}
 	applyFromOverride(def, opts.From)
@@ -231,7 +258,7 @@ func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retEr
 		result, buildErr := buildah.PublishDefinitionSupervised(buildCtx, def, platformPlanning, buildah.SupervisedPlanOptions{
 			Store: buildStore, ContextDir: opts.Context, IgnoreFile: opts.IgnoreFile, ContextArtifacts: artifacts,
 			Output: buildah.Output{Path: output}, ComponentStoreDir: opts.StoreDir,
-			Pull: opts.Pull, PullPolicy: opts.PullPolicy,
+			Pull: opts.Pull, PullPolicy: opts.PullPolicy, SourcePolicyFile: opts.SourcePolicyFile, TransientRunMounts: opts.TransientRunMounts,
 			NoCache:     opts.NoCache,
 			Network:     opts.Network,
 			AddHosts:    opts.AddHosts,
@@ -290,7 +317,7 @@ func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retEr
 	for i := range builds {
 		variants[i] = builds[i].variant
 	}
-	return finishOutputs(opts.MetadataFile, "", root, variants, nil, report, publicationErr)
+	return finishOutputs(opts.MetadataFile, "", root, variants, nil, report, publicationErr, "")
 }
 
 type PublishOptions struct {

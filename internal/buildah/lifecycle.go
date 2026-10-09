@@ -3,6 +3,8 @@ package buildah
 // LifecycleControls selects execution and intermediate-container behavior.
 // Runtime helpers always stop; confirmed failed build containers may be retained.
 type LifecycleControls struct {
+	SaveStages        bool `json:"save_stages,omitempty"`
+	StageLabels       bool `json:"stage_labels,omitempty"`
 	NoLayers          bool `json:"no_layers,omitempty"`
 	KeepIntermediate  bool `json:"keep_intermediate,omitempty"`
 	KeepFailed        bool `json:"keep_failed,omitempty"`

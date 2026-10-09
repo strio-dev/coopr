@@ -152,11 +152,13 @@ copy "/bin/busybox" "/tool" from="fixture.local/coopr/busybox:latest"
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifest, _ := readPlanImage(t, layout)
-	if len(manifest.Layers) != 1 {
-		t.Fatalf("component external-image COPY layers = %d, want compact component layer", len(manifest.Layers))
+	manifest, image := readPlanImage(t, layout)
+	if len(manifest.Layers) != 2 || len(image.RootFS.DiffIDs) != 2 {
+		t.Fatalf("component external COPY layers=%d diffIDs=%d, want 2 native instructions", len(manifest.Layers), len(image.RootFS.DiffIDs))
 	}
-	if copied := readLayerFile(t, filepath.Join(layout, "blobs", "sha256", manifest.Layers[0].Digest.Encoded()), "tool"); copied == "" {
-		t.Fatal("component external-image COPY produced an empty tool")
+	for i, name := range []string{"artifact", "tool"} {
+		if copied := readLayerFile(t, filepath.Join(layout, "blobs", "sha256", manifest.Layers[i].Digest.Encoded()), name); copied == "" {
+			t.Fatalf("component COPY layer %d omitted %s", i, name)
+		}
 	}
 }

@@ -263,3 +263,75 @@ func TestContextIgnoreFileSelection(t *testing.T) {
 		t.Fatal("missing explicit ignore accepted")
 	}
 }
+
+func TestPrepareDefinitionsPreservesFileAndStageOrder(t *testing.T) {
+	root := t.TempDir()
+	files := []string{filepath.Join(root, "first.coopr"), filepath.Join(root, "second.coopr")}
+	for i, source := range []string{"from \"scratch\" as=\"first\"\nrun \"echo first\"\n", "run \"echo appended\"\nfrom \"scratch\" as=\"second\"\n"} {
+		if err := os.WriteFile(files[i], []byte(source), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	def, _, _, cleanup, err := prepareDefinitionsContext(context.Background(), files, root, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := cleanup(); err != nil {
+			t.Errorf("cleanup definition context: %v", err)
+		}
+	}()
+	names := []string{}
+	for _, inst := range def.Instructions {
+		names = append(names, inst.Name)
+	}
+	if strings.Join(names, ",") != "from,run,run,from" {
+		t.Fatalf("combined order: %v", names)
+	}
+}
+
+func TestPrepareDefinitionsExtractsContextOnce(t *testing.T) {
+	var data bytes.Buffer
+	writer := tar.NewWriter(&data)
+	for _, file := range []struct{ name, source string }{{"first.coopr", "from \"scratch\"\n"}, {"second.coopr", "run \"echo second\"\n"}} {
+		if err := writer.WriteHeader(&tar.Header{Name: file.name, Mode: 0600, Size: int64(len(file.source))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(writer, file.source); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	def, _, _, cleanup, err := prepareDefinitionsContext(context.Background(), []string{"first.coopr", "second.coopr"}, "-", []bool{true, true}, nil, nil, &data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := cleanup(); err != nil {
+			t.Errorf("cleanup definition context: %v", err)
+		}
+	}()
+	if len(def.Instructions) != 2 {
+		t.Fatalf("instructions: %v", def.Instructions)
+	}
+}
+
+func TestMultipleDefinitionsCannotOverwriteLaterInput(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, "first.coopr")
+	second := filepath.Join(root, "second.coopr")
+	for _, file := range []string{first, second} {
+		if err := os.WriteFile(file, []byte("from \"scratch\"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := Run(context.Background(), Options{Files: []string{first, second}, Context: root, IIDFileRaw: second}); err == nil || !strings.Contains(err.Error(), "overlaps input") {
+		t.Fatalf("later definition overwrite: %v", err)
+	}
+	data, err := os.ReadFile(second)
+	if err != nil || string(data) != "from \"scratch\"\n" {
+		t.Fatalf("definition changed: %q %v", data, err)
+	}
+}

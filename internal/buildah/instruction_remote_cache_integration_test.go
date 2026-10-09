@@ -24,13 +24,20 @@ func TestBuildPlanReusesExactInstructionImageFromRegistryAcrossStores(t *testing
 	for _, format := range []string{"oci", "docker"} {
 		for _, stages := range []int{1, 2} {
 			t.Run(fmt.Sprintf("%s/%d-stages", format, stages), func(t *testing.T) {
-				testExactInstructionImageFromRegistryAcrossStores(t, format, stages)
+				testExactInstructionImageFromRegistryAcrossStores(t, format, stages, "")
 			})
 		}
 	}
 }
 
-func testExactInstructionImageFromRegistryAcrossStores(t *testing.T, format string, stages int) {
+func TestRegistryInstructionCacheKeepsStageProvenanceWithSelectedCompression(t *testing.T) {
+	requireLiveInstructionCache(t)
+	for _, algorithm := range []string{"zstd", "zstd:chunked"} {
+		t.Run(algorithm, func(t *testing.T) { testExactInstructionImageFromRegistryAcrossStores(t, "oci", 2, algorithm) })
+	}
+}
+
+func testExactInstructionImageFromRegistryAcrossStores(t *testing.T, format string, stages int, compressionFormat string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -51,7 +58,7 @@ func testExactInstructionImageFromRegistryAcrossStores(t *testing.T, format stri
 		baseDir := filepath.Join(root, name)
 		result, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store:      StoreOptions{RunRoot: filepath.Join(baseDir, "run"), GraphRoot: filepath.Join(baseDir, "graph"), GraphDriverName: "vfs"},
-			ContextDir: root, Isolation: "rootless", Runtime: "crun", Output: Output{Path: filepath.Join(baseDir, "layout"), Format: format},
+			ContextDir: root, Isolation: "rootless", Runtime: "crun", Output: Output{Path: filepath.Join(baseDir, "layout"), Format: format, CompressionFormat: compressionFormat},
 			CacheLocalDir: cacheLocalDir, CacheRepository: cacheRepository,
 			TLSVerify: new(false), SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		})

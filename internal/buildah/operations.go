@@ -57,6 +57,7 @@ type operationBuilder interface {
 // their desired shell, for example []string{"/bin/sh", "-c", script}.
 type Run struct {
 	ContextIgnoreFile string
+	contextPrepared   bool
 	Command           []string
 	InlineFiles       []definition.InlineFile
 	Network           string
@@ -109,6 +110,15 @@ func (operation Run) apply(builder operationBuilder, contextDir string) (retErr 
 			return fmt.Errorf("resolve RUN devices: %w", err)
 		}
 	}
+	if operation.contextPrepared {
+		operation.Mounts = slices.Clone(operation.Mounts)
+		for index, mount := range operation.Mounts {
+			if mount.Type == "bind" && !mount.BoundFrom {
+				operation.Mounts[index].SharedRelabel = true
+				operation.Mounts[index].PrivateRelabel = false
+			}
+		}
+	}
 	runMounts, err := serializeRunMounts(operation.Mounts, contextDir)
 	if err != nil {
 		return err
@@ -138,6 +148,30 @@ func (operation Run) apply(builder operationBuilder, contextDir string) (retErr 
 		}
 		defer func() { retErr = errors.Join(retErr, cleanup()) }()
 		directMounts = append(directMounts, specs.Mount{Source: directory, Destination: "/run/coopr-heredoc", Type: "bind", Options: []string{"ro", "bind", "exec", "Z"}})
+	}
+	// Builder.Run cannot mark a context as an already-disposable build overlay
+	// (imagebuildah's StageMountDetails is internal). Bind our disposable copy
+	// directly so primary-context writes survive until the build ends.
+	if operation.contextPrepared {
+		for index, mount := range operation.Mounts {
+			if !hasWritableContextBindMount([]RunMount{mount}) {
+				continue
+			}
+			properties, err := normalizeRunMountProperties(mount.Type, mount.Properties)
+			if err != nil {
+				return err
+			}
+			source, err := copier.Eval(contextDir, contextDir+string(filepath.Separator)+properties["source"], copier.EvalOptions{})
+			if err != nil {
+				return fmt.Errorf("resolve writable context bind: %w", err)
+			}
+			target := properties["target"]
+			if !path.IsAbs(target) {
+				target = path.Join("/", builder.WorkDir(), target)
+			}
+			directMounts = append(directMounts, specs.Mount{Source: source, Destination: target, Type: "bind", Options: writableContextBindOptions(properties)})
+			runMounts[index] = ""
+		}
 	}
 	if operation.sourceStore != nil {
 		native, ok := builder.(nativeBuilder)
@@ -177,7 +211,9 @@ func (operation Run) apply(builder operationBuilder, contextDir string) (retErr 
 				return fmt.Errorf("RUN stage bind source %q is neither a directory nor a regular file", mount.Properties["source"])
 			}
 			mountSource := source
-			mountOptions := []string{"ro"}
+			mountOptions := writableContextBindOptions(mount.Properties)
+			mountOptions[0] = "ro"
+			mountOptions = slices.DeleteFunc(mountOptions, func(option string) bool { return option == "z" && mount.Properties["relabel"] == "" })
 			if value := mount.Properties["readonly"]; value != "" {
 				readonly, _ := strconv.ParseBool(value) // serializeRunMounts validated the value.
 				if !readonly {
@@ -187,7 +223,14 @@ func (operation Run) apply(builder operationBuilder, contextDir string) (retErr 
 					}
 					defer func() { retErr = errors.Join(retErr, cleanup()) }()
 					mountSource = snapshot
-					mountOptions = []string{"rw", "Z"}
+					mountOptions = writableContextBindOptions(mount.Properties)
+					if mount.Properties["relabel"] == "" {
+						for index, option := range mountOptions {
+							if option == "z" {
+								mountOptions[index] = "Z"
+							}
+						}
+					}
 				}
 			}
 			target := mount.Properties["target"]
@@ -201,8 +244,8 @@ func (operation Run) apply(builder operationBuilder, contextDir string) (retErr 
 			directMounts = append(directMounts, specs.Mount{Source: mountSource, Destination: target, Type: "bind", Options: mountOptions})
 			runMounts[index] = ""
 		}
-		runMounts = slices.DeleteFunc(runMounts, func(mount string) bool { return mount == "" })
 	}
+	runMounts = slices.DeleteFunc(runMounts, func(mount string) bool { return mount == "" })
 	runOptions := upstream.RunOptions{
 		Env: append([]string(nil), operation.Env...), User: operation.User, WorkingDir: operation.WorkingDir,
 		Stdin: operation.Stdin, Stdout: operation.Stdout, Stderr: operation.Stderr, ConfigureNetwork: network, NamespaceOptions: namespaces,
@@ -507,6 +550,11 @@ func (operation Volume) apply(builder operationBuilder, _ string) error {
 	volume := string(operation)
 	if volume == "" {
 		return errors.New("VOLUME path is empty")
+	}
+	if native, ok := builder.(nativeBuilder); ok {
+		if err := native.ensureContainerPathIsDirectory(volume, "0"); err != nil {
+			return err
+		}
 	}
 	builder.AddVolume(volume)
 	return nil

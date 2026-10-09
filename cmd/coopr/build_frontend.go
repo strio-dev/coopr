@@ -33,6 +33,11 @@ func resolveBuildInput(argument, explicitFile string) (file, context string, def
 		if file != "-" && !filepath.IsAbs(file) {
 			if _, err := os.Stat(file); os.IsNotExist(err) {
 				inContext, err := definitionNeedsContextExtraction(context)
+				if err == nil && !inContext {
+					if info, statErr := os.Stat(filepath.Join(context, file)); statErr == nil && info.Mode().IsRegular() {
+						inContext = true
+					}
+				}
 				return file, context, inContext, err
 			}
 		}
@@ -57,6 +62,26 @@ func resolveBuildInput(argument, explicitFile string) (file, context string, def
 		}
 	}
 	return "", "", false, fmt.Errorf("definition file is required: supply a file path or --file with a build context")
+}
+
+// resolveBuildInputs resolves each explicit definition against the same context.
+func resolveBuildInputs(argument string, explicit []string) ([]string, string, []bool, error) {
+	if len(explicit) == 0 {
+		explicit = []string{""}
+	}
+	files := make([]string, 0, len(explicit))
+	inContext := make([]bool, 0, len(explicit))
+	context := ""
+	for _, name := range explicit {
+		file, resolved, contained, err := resolveBuildInput(argument, name)
+		if err != nil {
+			return nil, "", nil, err
+		}
+		files = append(files, file)
+		inContext = append(inContext, contained)
+		context = resolved
+	}
+	return files, context, inContext, nil
 }
 
 func isHTTPDefinitionURL(value string) (bool, error) {
@@ -132,4 +157,17 @@ func defaultBuildFormat() string {
 		return format
 	}
 	return "oci"
+}
+
+func compressionLevelValue(cmd *cobra.Command, value int) *int {
+	if cmd.Flags().Changed("compression-level") {
+		return &value
+	}
+	return nil
+}
+func forceCompressionValue(cmd *cobra.Command, value bool) *bool {
+	if cmd.Flags().Changed("force-compression") {
+		return &value
+	}
+	return nil
 }

@@ -94,6 +94,29 @@ func (policy contextPolicy) applyLocalCopy(options upstream.AddAndCopyOptions, s
 	if err != nil {
 		return upstream.AddAndCopyOptions{}, nil, err
 	}
+	// A disposable context physically omits excluded files. Preserve the
+	// exclusion diagnostic when a later instruction names one explicitly,
+	// rather than reporting that protected build output simply went missing.
+	matcher, err := fileutils.NewPatternMatcher(append(slices.Clone(policy.authoredExcludes), policy.protectedExcludes...))
+	if err != nil {
+		return upstream.AddAndCopyOptions{}, nil, err
+	}
+	for _, source := range sources {
+		if strings.ContainsAny(source, "*?[") {
+			continue
+		}
+		relative := strings.TrimPrefix(filepath.Clean("/"+source), "/")
+		if _, err := os.Lstat(filepath.Join(policy.directory, relative)); !errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		excluded, err := matcher.IsMatch(filepath.ToSlash(relative))
+		if err != nil {
+			return upstream.AddAndCopyOptions{}, nil, err
+		}
+		if excluded {
+			return upstream.AddAndCopyOptions{}, nil, fmt.Errorf("COPY/ADD source %q was filtered out by context policy: %w", source, os.ErrNotExist)
+		}
+	}
 	return applied, preserveParentsPivot(policy.directory, options.Parents, sources), nil
 }
 

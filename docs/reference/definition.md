@@ -38,6 +38,7 @@ A multiline RUN starting with a `#!` interpreter line executes as a script with 
 | Instruction | Meaning |
 | --- | --- |
 | `from`, `extend`, `package` | Start an image, consuming, or package stage. |
+| `layer` | Group ordered instructions into one net filesystem layer. |
 | `component` | Invoke an explicit context path (`./`, `../`, or `/`) or an OCI component reference, with string properties as arguments. |
 | `run` | Execute a shell command or an exec argument list. |
 | `copy`, `add` | Add context/stage/image files; ADD also supports remote inputs and archive extraction. |
@@ -49,6 +50,24 @@ A multiline RUN starting with a `#!` interpreter line executes as a script with 
 | `healthcheck`, `onbuild` | Preserve healthcheck or inherited build-trigger configuration. |
 
 Unknown instructions or unsupported options fail explicitly. See the [execution reference](execution.md) for stage, input, and runtime rules.
+
+FROM accepts `as`, `platform`, and `after`. `after="NAME"` names one earlier stage (or its numeric index) that must finish before the external image is resolved. Use it for an image layout or archive generated through a writable primary-context mount. It adds a dependency without inheriting that stage's state. See [image selection](execution.md#image-selection) for accepted transports and context confinement.
+
+## Layer groups
+
+```kdl
+from "docker.io/redhat/ubi9:latest"
+layer {
+    run "dnf install -y jq"
+    run "dnf clean all"
+}
+```
+
+`layer` accepts no arguments or properties. Its children are ordinary stage instructions, including component calls and nested groups, executed in source order. ARG declarations and configuration changes have the same scope as instructions outside the block. FROM, EXTEND and PACKAGE declarations are forbidden inside it.
+
+Closing the outermost group keeps only the net filesystem change above its starting image. Inner groups are absorbed by the outer one. Empty and configuration-only groups add no filesystem layer. Groups preserve preceding layers and resulting image configuration.
+
+A group requires one image lineage. A component output with an independent FROM base is rejected inside the group, even if its filesystem happens to match the starting image. Use that component outside the group. `--layers=false` takes precedence and retains the existing whole-build no-layer behavior; the lineage rule still applies.
 
 ## Arguments
 
@@ -93,6 +112,8 @@ COPY accepts local or declared stage/image inputs; HTTP/Git sources fail before 
 Healthcheck and ONBUILD configuration extensions survive OCI and Docker outputs, though receiving runtimes may ignore them. Imported Docker ONBUILD heredocs retain their Dockerfile semantics, including executable/empty RUN scripts and COPY/ADD filenames. This does not add authored inline COPY/ADD syntax.
 
 RUN supports bind, cache, tmpfs, secret, and SSH mounts. Mount types/properties may use arguments and are validated after resolution. Mount children retain source order. Secret/SSH mounts accept `id`, `target`, `required`, `uid`, `gid`, and `mode`; secrets also accept `env`.
+
+Bind mounts support `source`/`src`, `target`/`dst`/`destination`, `from`, and `rw`/`readwrite` or `ro`/`readonly`. Native ownership, relabeling, propagation, recursion, and `nosuid`/`nodev`/`noexec` options remain subject to the selected runtime's permissions. Build-wide `--mount` specifications use the same mount handling and append after authored mounts. See [RUN mounts](execution.md#run-mounts) for writable-context lifetime.
 
 Both build commands accept `--secret id=NAME,src=PATH`, `--secret id=NAME,env=VARIABLE`, and `--ssh ID[=PATH]`. Credential bytes are read when needed and do not enter definitions or cache keys. Changed credentials require `--no-cache` or another measured input change when they must change the output.
 

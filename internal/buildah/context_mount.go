@@ -8,8 +8,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"syscall"
 
+	"coopr/internal/planner"
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/identity"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -32,6 +35,37 @@ type preparedRunInput struct {
 	cleanup    func() error
 }
 
+func prepareBuildContext(plan *planner.Plan, options PlanOptions) (PlanOptions, func() error, error) {
+	if options.ContextDir == "" || options.ContextPrepared || !planUsesWritableContext(plan, options.TransientRunMounts) {
+		return options, func() error { return nil }, nil
+	}
+	return snapshotBuildContext(options)
+}
+
+func snapshotBuildContext(options PlanOptions) (PlanOptions, func() error, error) {
+	artifacts := append(slices.Clone(options.ContextArtifacts), options.Store.RunRoot, options.Store.GraphRoot, options.Store.ImageStore, options.Output.Path, options.CacheLocalDir)
+	policy, err := prepareContextPolicyWithIgnore(options.ContextDir, artifacts, options.IgnoreFile)
+	if err != nil {
+		return options, nil, err
+	}
+	contextOptions, err := policy.apply(upstream.AddAndCopyOptions{})
+	if err != nil {
+		return options, nil, err
+	}
+	snapshot, cleanup, err := snapshotContext(contextOptions.ContextDir, contextOptions.Excludes, nil, nil)
+	if err != nil {
+		return options, nil, err
+	}
+	// Retain the effective policy independently of filtered context files,
+	// including protected output paths that RUN must not recreate for COPY.
+	options.IgnoreFile = filepath.Join(filepath.Dir(snapshot), "ignore")
+	if err := os.WriteFile(options.IgnoreFile, []byte(strings.Join(contextOptions.Excludes, "\n")+"\n"), 0600); err != nil {
+		return options, nil, errors.Join(err, cleanup())
+	}
+	options.ContextDir, options.ContextPrepared = snapshot, true
+	return options, cleanup, nil
+}
+
 func prepareRunInput(ctx context.Context, builder operationBuilder, contextDir string, artifacts []string, operation Run) (_ preparedRunInput, retErr error) {
 	operation.executionContext = ctx
 	result := preparedRunInput{operation: operation, contextDir: contextDir, complete: true}
@@ -46,6 +80,9 @@ func prepareRunInput(ctx context.Context, builder operationBuilder, contextDir s
 	}
 	var contextIdentity string
 	if hasContextBindMount(operation.Mounts) {
+		if operation.contextPrepared {
+			artifacts = nil
+		}
 		policy, err := prepareContextPolicyWithIgnore(contextDir, artifacts, operation.ContextIgnoreFile)
 		if err != nil {
 			return preparedRunInput{}, err
@@ -55,7 +92,10 @@ func prepareRunInput(ctx context.Context, builder operationBuilder, contextDir s
 			return preparedRunInput{}, err
 		}
 		uidMap, gidMap := contextSnapshotIDMaps(builder)
-		snapshot, cleanup, err := snapshotContext(options.ContextDir, options.Excludes, uidMap, gidMap)
+		snapshot, cleanup := options.ContextDir, func() error { return nil }
+		if !operation.contextPrepared {
+			snapshot, cleanup, err = snapshotContext(options.ContextDir, options.Excludes, uidMap, gidMap)
+		}
 		if err != nil {
 			return preparedRunInput{}, err
 		}
@@ -73,7 +113,8 @@ func prepareRunInput(ctx context.Context, builder operationBuilder, contextDir s
 		result.operation.Mounts = append([]RunMount(nil), operation.Mounts...)
 		for index := range result.operation.Mounts {
 			if result.operation.Mounts[index].Type == "bind" && !result.operation.Mounts[index].BoundFrom {
-				result.operation.Mounts[index].PrivateRelabel = true
+				result.operation.Mounts[index].PrivateRelabel = !operation.contextPrepared
+				result.operation.Mounts[index].SharedRelabel = operation.contextPrepared
 			}
 		}
 	}
@@ -173,7 +214,7 @@ func (writer cacheContextWriter) Write(data []byte) (int, error) {
 }
 
 func applyRunWithFilteredContext(builder operationBuilder, contextDir string, artifacts []string, operation Run) (retErr error) {
-	if !hasContextBindMount(operation.Mounts) {
+	if !hasContextBindMount(operation.Mounts) || operation.contextPrepared {
 		return operation.apply(builder, contextDir)
 	}
 	// Validate before touching the filesystem so malformed mount paths fail for
@@ -297,4 +338,69 @@ func contextSnapshotIDMaps(builder operationBuilder) ([]idtools.IDMap, []idtools
 		return result
 	}
 	return convert(native.IDMappingOptions.UIDMap), convert(native.IDMappingOptions.GIDMap)
+}
+
+// Writable binds into the primary context are build-scoped side effects. An
+// instruction image cache cannot replay them, so those RUNs must execute.
+func hasWritableContextBindMount(mounts []RunMount) bool {
+	for _, mount := range mounts {
+		if mount.Type == "bind" && !mount.BoundFrom && mount.Properties["from"] == "" {
+			properties, err := normalizeRunMountProperties(mount.Type, mount.Properties)
+			if err == nil && properties["readonly"] == "false" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func planUsesWritableContext(plan *planner.Plan, mounts []RunMount) bool {
+	if hasWritableContextBindMount(mounts) {
+		return true
+	}
+	for _, stage := range plan.Stages {
+		if stage.DeferredImageSource {
+			return true
+		}
+		for _, operation := range stage.Operations {
+			if operation.Name == "component" {
+				return true
+			}
+			if operation.Name != "run" {
+				continue
+			}
+			for _, child := range operation.Children {
+				if child.Name == "mount" && len(child.Arguments) == 1 && hasWritableContextBindMount([]RunMount{{Type: child.Arguments[0], Properties: child.Properties}}) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func writableContextBindOptions(properties map[string]string) []string {
+	options := []string{"rw"}
+	if properties["bind-nonrecursive"] == "true" {
+		options = append(options, "bind")
+	} else {
+		options = append(options, "rbind")
+	}
+	relabel := "z"
+	if properties["relabel"] == "private" {
+		relabel = "Z"
+	}
+	options = append(options, relabel)
+	for _, name := range []string{"nosuid", "nodev", "noexec", "shared", "rshared", "private", "rprivate", "slave", "rslave", "no-dereference"} {
+		if properties[name] == "true" {
+			options = append(options, name)
+		}
+	}
+	if properties["u"] == "true" {
+		options = append(options, "U")
+	}
+	if propagation := properties["bind-propagation"]; propagation != "" {
+		options = append(options, propagation)
+	}
+	return options
 }

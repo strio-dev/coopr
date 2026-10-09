@@ -371,9 +371,6 @@ func TestRunMountValidation(t *testing.T) {
 	}{
 		{"context required", "", RunMount{Type: "bind", Properties: map[string]string{"target": "/src"}}, "requires a build context"},
 		{"bind source escape", "/context", RunMount{Type: "bind", Properties: map[string]string{"source": "../host", "target": "/src"}}, "escapes the build context"},
-		{"bind root target", "/context", RunMount{Type: "bind", Properties: map[string]string{"source": ".", "target": "/"}}, "target must not be /"},
-		{"cache root target", "", RunMount{Type: "cache", Properties: map[string]string{"id": "x", "target": "/."}}, "target must not be /"},
-		{"tmpfs root target", "", RunMount{Type: "tmpfs", Properties: map[string]string{"target": "//"}}, "target must not be /"},
 		{"cache id", "/context", RunMount{Type: "cache", Properties: map[string]string{"target": "/cache"}}, "requires a resolved id"},
 		{"cache sharing", "/context", RunMount{Type: "cache", Properties: map[string]string{"id": "x", "target": "/cache", "sharing": "global"}}, "sharing"},
 		{"readonly", "/context", RunMount{Type: "tmpfs", Properties: map[string]string{"target": "/tmp", "readonly": "sometimes"}}, "true or false"},

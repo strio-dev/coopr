@@ -1,12 +1,14 @@
 package buildah
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -21,21 +23,15 @@ import (
 	"go.podman.io/image/v5/types"
 )
 
-const portableCacheLoweringVersion = "coopr-buildah-component-v2"
+const portableCacheLoweringVersion = "coopr-buildah-component-image-v3"
 
 type componentCache struct {
+	images      *portableInstructionCache
 	readStores  []cache.Store
 	writeStores []cache.Store
 	stagingDir  string
-	candidates  []componentCacheCandidate
 	stats       CacheStats
 	cacheTTL    *time.Duration
-}
-
-type componentCacheCandidate struct {
-	key    cache.Key
-	record cache.Record
-	path   string
 }
 
 // componentCacheRelay is the process-safe description of one deferred cache
@@ -43,9 +39,7 @@ type componentCacheCandidate struct {
 // directory, so an isolated stage never returns a path owned by its disposable
 // worker directory.
 type componentCacheRelay struct {
-	Key          cache.Key    `json:"key"`
-	Record       cache.Record `json:"record"`
-	RelativePath string       `json:"relative_path,omitempty"`
+	Image portableInstructionCacheRelay `json:"image"`
 }
 
 // CacheStats counts optional portable-cache decisions for one build.
@@ -167,25 +161,17 @@ func (c *componentCache) close() error {
 }
 
 func (c *componentCache) relayCandidates(destination string) ([]componentCacheRelay, error) {
-	if c == nil || len(c.candidates) == 0 {
+	if c == nil {
 		return nil, nil
 	}
-	if err := cacheRelayRoot(destination); err != nil {
+	images, err := c.imageCache().relayCandidates(destination)
+	if err != nil {
 		return nil, err
 	}
-	relays := make([]componentCacheRelay, 0, len(c.candidates))
-	for _, candidate := range c.candidates {
-		relay := componentCacheRelay{Key: candidate.key, Record: candidate.record}
-		if candidate.path != "" {
-			relative, err := moveCacheRelayCandidate(candidate.path, destination, ".component-relay-*", "snapshot.tar")
-			if err != nil {
-				return nil, err
-			}
-			relay.RelativePath = relative
-		}
-		relays = append(relays, relay)
+	relays := make([]componentCacheRelay, len(images))
+	for i := range images {
+		relays[i].Image = images[i]
 	}
-	c.candidates = nil
 	return relays, nil
 }
 
@@ -196,47 +182,11 @@ func (c *componentCache) acceptRelayedCandidates(relays []componentCacheRelay) e
 	if c == nil {
 		return errors.New("component cache is disabled")
 	}
-	for _, relay := range relays {
-		keyDigest, err := relay.Key.Digest()
-		if err != nil {
-			return fmt.Errorf("invalid relayed component cache key: %w", err)
-		}
-		recordDigest, err := relay.Record.Key.Digest()
-		if err != nil || recordDigest != keyDigest {
-			return errors.New("relayed component cache record key differs from candidate")
-		}
-		if relay.Record.Version != cache.RecordVersion {
-			return fmt.Errorf("unsupported relayed component cache record %q", relay.Record.Version)
-		}
-		if relay.Record.ChangedFS != (relay.RelativePath != "") || relay.Record.ChangedFS != (relay.Record.Snapshot != nil) {
-			return errors.New("relayed component cache snapshot differs from record")
-		}
-		path := ""
-		if relay.RelativePath != "" {
-			path, err = relayedCachePath(c.stagingDir, relay.RelativePath, false)
-			if err != nil {
-				return err
-			}
-			file, err := os.Open(path)
-			if err != nil {
-				return err
-			}
-			actual, digestErr := digest.FromReader(file)
-			closeErr := file.Close()
-			if err := errors.Join(digestErr, closeErr); err != nil {
-				return err
-			}
-			info, err := os.Stat(path)
-			if err != nil {
-				return err
-			}
-			if actual != relay.Record.Snapshot.Descriptor.Digest || info.Size() != relay.Record.Snapshot.Descriptor.Size {
-				return errors.New("relayed component cache snapshot differs from descriptor")
-			}
-		}
-		c.candidates = append(c.candidates, componentCacheCandidate{key: relay.Key, record: relay.Record, path: path})
+	images := make([]portableInstructionCacheRelay, len(relays))
+	for i := range relays {
+		images[i] = relays[i].Image
 	}
-	return nil
+	return c.imageCache().acceptRelayedCandidates(images)
 }
 
 func cacheRelayRoot(root string) error {
@@ -308,42 +258,52 @@ func componentCacheEligible(resolved *ResolvedComponentPlan, controls RunControl
 	if resolved == nil || resolved.Plan == nil || len(resolved.Plan.Outputs) != 1 {
 		return false
 	}
-	outputID := resolved.Plan.Outputs[0]
-	var output *planner.Stage
-	packages := make(map[string]bool)
-	for i := range resolved.Plan.Stages {
-		stage := &resolved.Plan.Stages[i]
-		if stage.ID == outputID {
-			output = stage
-			continue
+	inputs := make(map[string]bool)
+	outputFound := false
+	for _, stage := range resolved.Plan.Stages {
+		if stage.ID == resolved.Plan.Outputs[0] {
+			outputFound = true
 		}
-		if stage.Kind != "package-input" || stage.Name == "" {
+		inputs[strings.ToLower(stage.ID)] = true
+		if stage.Name != "" {
+			inputs[strings.ToLower(stage.Name)] = true
+		}
+		if stage.DeferredImageSource || stage.SourceContext != "" || stage.DynamicBaseStage != "" {
 			return false
 		}
-		if _, ok := resolved.PackageInputs[stage.ID]; !ok {
-			return false
+		if stage.Kind == "package-input" {
+			if _, ok := resolved.PackageInputs[stage.ID]; !ok {
+				return false
+			}
 		}
-		packages[strings.ToLower(stage.Name)] = true
 	}
-	if output == nil || output.Kind != "extend" || len(packages) != len(resolved.PackageInputs) {
+	if !outputFound {
 		return false
 	}
-	for _, operation := range output.Operations {
-		switch operation.Name {
-		case "arg", "env", "label", "user", "cmd", "entrypoint", "shell", "stopsignal", "expose", "volume", "maintainer", "workdir":
-			if len(operation.Children) != 0 {
+	for _, stage := range resolved.Plan.Stages {
+		for _, operation := range stage.Operations {
+			switch operation.Name {
+			case "layer":
+				if operation.LayerBoundary != "begin" && operation.LayerBoundary != "end" {
+					return false
+				}
+			case "arg", "env", "label", "user", "cmd", "entrypoint", "shell", "stopsignal", "expose", "volume", "maintainer", "workdir":
+				if len(operation.Children) != 0 {
+					return false
+				}
+			case "onbuild", "healthcheck":
+			// Deferred/image configuration only; body validation belongs to the public parser.
+			case "run":
+				if len(controls.Devices) != 0 || !componentCacheRunEligible(operation, inputs) {
+					return false
+				}
+			case "copy", "add":
+				if len(operation.Children) != 0 || !inputs[strings.ToLower(operation.Properties["from"])] {
+					return false
+				}
+			default:
 				return false
 			}
-		case "run":
-			if len(controls.Devices) != 0 || !componentCacheRunEligible(operation, packages) {
-				return false
-			}
-		case "copy", "add":
-			if len(operation.Children) != 0 || !packages[strings.ToLower(operation.Properties["from"])] {
-				return false
-			}
-		default:
-			return false
 		}
 	}
 	return true
@@ -424,7 +384,8 @@ func (c *componentCache) key(executor *graphExecutor, input stateidentity.Identi
 	mode, err := json.Marshal(struct {
 		NoLayers      bool
 		CompatVolumes bool
-	}{executor.options.Lifecycle.NoLayers, executor.options.Lifecycle.CompatVolumes})
+		StageLabels   bool
+	}{executor.options.Lifecycle.NoLayers, executor.options.Lifecycle.CompatVolumes, executor.options.Lifecycle.StageLabels})
 	if err != nil {
 		return cache.Key{}, err
 	}
@@ -527,203 +488,263 @@ func cacheModuleVersions() (string, error) {
 
 // lookup treats unavailable or corrupt optional cache records as misses. The
 // restored state is re-observed before a hit can replace component execution.
-func (c *componentCache) lookup(ctx context.Context, executor *graphExecutor, key cache.Key, callerImageID string, callerConfig json.RawMessage, callerRoot *PackageRootMetadata, platform v1.Platform, system *types.SystemContext) (string, *imageconfig.Config, bool, error) {
+func (c *componentCache) imageCache() *portableInstructionCache {
+	if c.images != nil {
+		return c.images
+	}
+	c.images = &portableInstructionCache{stagingDir: c.stagingDir, cacheTTL: c.cacheTTL, validateHit: validateComponentImageCacheHit}
 	for _, store := range c.readStores {
-		if err := ctx.Err(); err != nil {
-			return "", nil, false, err
+		if images, ok := store.(instructionCacheStore); ok {
+			c.images.readStores = append(c.images.readStores, images)
 		}
-		record, path, err := store.Lookup(ctx, key)
-		if err := ctx.Err(); err != nil {
-			return "", nil, false, err
-		}
-		if err != nil {
-			if ctx.Err() != nil {
-				return "", nil, false, ctx.Err()
-			}
-			if !errors.Is(err, cache.ErrMiss) {
-				packageCacheWarning("read component cache", err)
-				c.stats.Errors++
-			}
-			continue
-		}
-		if path != "" {
-			defer func() { _ = os.Remove(path) }()
-		}
-		if record == nil {
-			packageCacheWarning("read component cache", errors.New("cache returned an incomplete component record"))
-			c.stats.Errors++
-			continue
-		}
-		if !cache.RecordFresh(record.CreatedAt, c.cacheTTL, time.Now()) {
-			continue
-		}
-		imageID := callerImageID
-		snapshotConfig := callerConfig
-		if record.ChangedFS {
-			if record.Snapshot == nil || path == "" {
-				packageCacheWarning("read component cache", errors.New("cache returned an incomplete component snapshot"))
-				c.stats.Errors++
-				continue
-			}
-			file, openErr := os.Open(path)
-			if openErr != nil {
-				packageCacheWarning("open component cache snapshot", openErr)
-				c.stats.Errors++
-				continue
-			}
-			claimed, identityErr := stateidentity.Calculate(ctx, callerRoot.tarHeader(), file, record.Config, nil)
-			closeErr := file.Close()
-			if err := ctx.Err(); err != nil {
-				return "", nil, false, err
-			}
-			if verifyErr := errors.Join(identityErr, closeErr); verifyErr != nil || claimed != record.Output {
-				if verifyErr == nil {
-					verifyErr = errors.New("snapshot identity differs from cache record")
-				}
-				packageCacheWarning("verify component cache snapshot", verifyErr)
-				c.stats.Errors++
-				continue
-			}
-			imageID, snapshotConfig, err = ImportPackageSnapshot(ctx, executor.store, system, *record.Snapshot, path, platform)
-			if cancelErr := ctx.Err(); cancelErr != nil {
-				return "", nil, false, cancelErr
-			}
-			if err != nil {
-				packageCacheWarning("import component cache snapshot", err)
-				c.stats.Errors++
-				continue
-			}
-		}
-		config, err := imageconfig.Parse(record.Config)
-		if err != nil {
-			packageCacheWarning("parse component cache config", err)
-			c.stats.Errors++
-			continue
-		}
-		observed, _, snapshotPath, eligible, err := snapshotPortableState(ctx, executor.store, system, imageID, snapshotConfig, record.Config, callerRoot, platform, c.stagingDir)
-		if snapshotPath != "" {
-			_ = os.Remove(snapshotPath)
-		}
-		if cancelErr := ctx.Err(); cancelErr != nil {
-			return "", nil, false, cancelErr
-		}
-		if err != nil || !eligible || observed != record.Output {
-			if err == nil {
-				err = errors.New("restored state does not match cache record")
-			}
-			packageCacheWarning("verify restored component cache", err)
-			c.stats.Errors++
-			continue
-		}
-		// A remote hit can seed earlier (typically local) cache stores so a
-		// later offline build can reuse the same validated record.
-		var seedErr error
-		for _, earlier := range c.writeStores {
-			if sameCacheStore(earlier, store) {
-				continue
-			}
-			if err := ctx.Err(); err != nil {
-				return "", nil, false, err
-			}
-			_, err := earlier.Put(ctx, key, *record, path)
-			if cancelErr := ctx.Err(); cancelErr != nil {
-				return "", nil, false, cancelErr
-			}
-			if err != nil {
-				c.stats.Errors++
-				seedErr = errors.Join(seedErr, fmt.Errorf("seed component cache: %w", err))
-			} else {
-				c.stats.Stored++
-			}
-		}
-		if seedErr != nil {
-			if path != "" {
-				seedErr = errors.Join(seedErr, os.Remove(path))
-			}
-			return "", nil, false, seedErr
-		}
-		c.stats.Hits++
-		return imageID, config, true, nil
 	}
-	if err := ctx.Err(); err != nil {
-		return "", nil, false, err
+	for _, store := range c.writeStores {
+		if images, ok := store.(instructionCacheStore); ok {
+			c.images.writeStores = append(c.images.writeStores, images)
+		}
 	}
-	c.stats.Misses++
-	return "", nil, false, nil
+	return c.images
 }
 
-func (c *componentCache) record(ctx context.Context, executor *graphExecutor, key cache.Key, outputImageID string, outputConfig *imageconfig.Config, root *PackageRootMetadata, platform v1.Platform, system *types.SystemContext) {
-	if c == nil || len(c.writeStores) == 0 {
-		return
-	}
-	raw, err := outputConfig.MarshalJSON()
+func componentImageCacheKey(key cache.Key, format string) (cache.ImageKey, error) {
+	identity, err := key.Digest()
 	if err != nil {
-		packageCacheWarning("prepare component cache candidate", err)
-		c.stats.Errors++
-		return
+		return cache.ImageKey{}, err
 	}
-	identity, pkg, path, eligible, err := snapshotPortableState(ctx, executor.store, system, outputImageID, raw, raw, root, platform, c.stagingDir)
-	if err != nil || !eligible {
-		packageCacheWarning("snapshot component cache candidate", err)
+	normalized, err := normalizedOutputFormat(format)
+	if err != nil {
+		return cache.ImageKey{}, err
+	}
+	return cache.ImageKey{Instruction: identity, Parent: key.Input.State, Platform: key.Platform, Executor: key.Executor, Format: normalized}, nil
+}
+
+// Component results use verified whole-image graphs, never flattened filesystem
+// snapshots. The key includes the caller's selected manifest to retain its exact
+// parent layers even when another caller has equivalent filesystem contents.
+func (c *componentCache) lookup(ctx context.Context, executor *graphExecutor, key cache.Key, system *types.SystemContext, caller componentCacheCaller) (instructionCacheEntry, *imageconfig.Config, error) {
+	if err := ctx.Err(); err != nil {
+		return instructionCacheEntry{}, nil, err
+	}
+	imageKey, err := componentImageCacheKey(key, executor.options.Output.Format)
+	if err != nil {
+		return instructionCacheEntry{}, nil, err
+	}
+	localKey, err := imageKey.Digest()
+	if err != nil {
+		return instructionCacheEntry{}, nil, err
+	}
+	images := c.imageCache()
+	before := images.stats
+	entry, err := images.lookupValidated(ctx, executor, imageKey, localKey, system, func(ctx context.Context, executor *graphExecutor, record *cache.ImageRecord, entry instructionCacheEntry, system *types.SystemContext) error {
+		if err := validateComponentImageCacheHit(ctx, executor, record, entry, system); err != nil {
+			return err
+		}
+		if *entry.RetainsCaller {
+			if !caller.RetainsCallerAllowed {
+				return errors.New("cached component claims caller ancestry outside selected output contract")
+			}
+			parentRaw, err := packageImageConfigSelected(ctx, executor.store, caller.ImageID, system, caller.Manifest)
+			if err != nil {
+				return err
+			}
+			baseRaw, err := packageImageConfigSelected(ctx, executor.store, entry.BaseImageID, system, record.BaseImage.Digest)
+			if err != nil {
+				return err
+			}
+			var parent, base v1.Image
+			if err := json.Unmarshal(parentRaw, &parent); err != nil {
+				return err
+			}
+			if err := json.Unmarshal(baseRaw, &base); err != nil {
+				return err
+			}
+			if len(parent.RootFS.DiffIDs) > len(base.RootFS.DiffIDs) {
+				return errors.New("cached component discarded caller image chain")
+			}
+			for i, id := range parent.RootFS.DiffIDs {
+				if id != base.RootFS.DiffIDs[i] {
+					return errors.New("cached component discarded caller image chain")
+				}
+			}
+		}
+		return nil
+	})
+	c.stats = addCacheStats(c.stats, cacheStatsDifference(images.stats, before))
+	if err != nil || entry.ImageID == "" {
+		return entry, nil, err
+	}
+	raw, err := packageImageConfigSelected(ctx, executor.store, entry.ImageID, system, entry.ManifestDigest)
+	if err != nil {
+		return instructionCacheEntry{}, nil, err
+	}
+	config, err := imageconfig.Parse(entry.LogicalConfig)
+	if err != nil {
+		return instructionCacheEntry{}, nil, err
+	}
+	if err := config.AdoptExecutorProvenance(raw); err != nil {
+		return instructionCacheEntry{}, nil, err
+	}
+	return entry, config, nil
+}
+
+func cacheStatsDifference(after, before CacheStats) CacheStats {
+	return CacheStats{Hits: after.Hits - before.Hits, Misses: after.Misses - before.Misses, Stored: after.Stored - before.Stored, Skipped: after.Skipped - before.Skipped, Errors: after.Errors - before.Errors}
+}
+
+func (c *componentCache) record(ctx context.Context, executor *graphExecutor, key cache.Key, imageID string, manifest digest.Digest, config *imageconfig.Config, root *PackageRootMetadata, system *types.SystemContext, baseImageID string, retainsCaller bool) {
+	imageKey, err := componentImageCacheKey(key, executor.options.Output.Format)
+	if err != nil {
+		packageCacheWarning("prepare component image cache", err)
 		c.stats.Skipped++
 		return
 	}
-	changed := identity.Filesystem != key.Input.Filesystem
-	record := cache.Record{Version: cache.RecordVersion, CreatedAt: time.Now().UTC(), Key: key, Output: identity, Config: raw, ChangedFS: changed}
-	if changed {
-		pkg.Descriptor.MediaType = cache.SnapshotMediaType
-		record.Snapshot = &pkg
-		importedID, importedConfig, importErr := ImportPackageSnapshot(ctx, executor.store, system, pkg, path, platform)
-		if importErr != nil {
-			packageCacheWarning("import component cache candidate", importErr)
-			_ = os.Remove(path)
-			c.stats.Skipped++
-			return
-		}
-		roundtrip, _, roundtripPath, ok, observeErr := snapshotPortableState(ctx, executor.store, system, importedID, importedConfig, raw, root, platform, c.stagingDir)
-		if roundtripPath != "" {
-			_ = os.Remove(roundtripPath)
-		}
-		if observeErr != nil || !ok || roundtrip != identity {
-			packageCacheWarning("verify component cache candidate", observeErr)
-			_ = os.Remove(path)
-			c.stats.Skipped++
-			return
-		}
-	} else {
-		_ = os.Remove(path)
-		path = ""
+	raw, err := config.MarshalJSON()
+	if err != nil {
+		packageCacheWarning("record component image config", err)
+		c.stats.Errors++
+		return
 	}
-	c.candidates = append(c.candidates, componentCacheCandidate{key: key, record: record, path: path})
+	images := c.imageCache()
+	before := images.stats
+	images.recordImage(ctx, executor, imageKey, imageID, manifest, root, system, raw, baseImageID, &retainsCaller)
+	c.stats = addCacheStats(c.stats, cacheStatsDifference(images.stats, before))
 }
 
 func (c *componentCache) publish(ctx context.Context) error {
 	if c == nil {
 		return ctx.Err()
 	}
-	var exportErr error
-	for _, candidate := range c.candidates {
-		for _, store := range c.writeStores {
-			if err := ctx.Err(); err != nil {
-				break
-			}
-			_, err := store.Put(ctx, candidate.key, candidate.record, candidate.path)
-			if cancelErr := ctx.Err(); cancelErr != nil {
-				break
-			}
-			if err != nil {
-				c.stats.Errors++
-				exportErr = errors.Join(exportErr, fmt.Errorf("write component cache: %w", err))
-			} else {
-				c.stats.Stored++
-			}
+	images := c.imageCache()
+	before := images.stats
+	err := images.publish(ctx)
+	c.stats = addCacheStats(c.stats, cacheStatsDifference(images.stats, before))
+	return err
+}
+
+// Native OCI omits Docker-only extension fields. The sidecar may preserve those,
+// but cannot override runtime fields represented by the selected image itself.
+func componentCachedConfigMatchesImage(logical, native []byte) error {
+	var left, right builderConfigDocument
+	if err := json.Unmarshal(logical, &left); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(native, &right); err != nil {
+		return err
+	}
+	normalize := func(config *builderRuntimeConfig) {
+		config.Shell = nil
+		config.Hostname = ""
+		if len(config.Env) == 0 {
+			config.Env = nil
 		}
-		if candidate.path != "" {
-			if err := os.Remove(candidate.path); err != nil && !errors.Is(err, os.ErrNotExist) {
-				exportErr = errors.Join(exportErr, fmt.Errorf("remove staged component cache: %w", err))
-			}
+		if len(config.Cmd) == 0 {
+			config.Cmd = nil
+		}
+		if len(config.Entrypoint) == 0 {
+			config.Entrypoint = nil
+		}
+		if len(config.Labels) == 0 {
+			config.Labels = nil
+		}
+		if len(config.Volumes) == 0 {
+			config.Volumes = nil
+		}
+		if len(config.ExposedPorts) == 0 {
+			config.ExposedPorts = nil
 		}
 	}
-	c.candidates = nil
-	return errors.Join(ctx.Err(), exportErr)
+	var leftObject, rightObject struct {
+		Config map[string]json.RawMessage `json:"config"`
+	}
+	if err := json.Unmarshal(logical, &leftObject); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(native, &rightObject); err != nil {
+		return err
+	}
+	for _, name := range []string{"Shell", "OnBuild", "Healthcheck"} {
+		raw, exists := rightObject.Config[name]
+		if !exists || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			continue
+		}
+		decode := func(raw json.RawMessage) (any, error) {
+			var result any
+			decoder := json.NewDecoder(bytes.NewReader(raw))
+			decoder.UseNumber()
+			err := decoder.Decode(&result)
+			return result, err
+		}
+		expected, err := decode(raw)
+		if err != nil {
+			return err
+		}
+		actual, err := decode(leftObject.Config[name])
+		if err != nil {
+			return fmt.Errorf("cached logical %s is missing: %w", name, err)
+		}
+		if !reflect.DeepEqual(actual, expected) {
+			return fmt.Errorf("cached logical %s disagrees with selected image configuration", name)
+		}
+	}
+	// Buildah adds its identity label at commit; it is not an authored runtime change.
+	if _, authored := left.Config.Labels["io.buildah.version"]; !authored && right.Config.Labels["io.buildah.version"] == define.Version {
+		delete(right.Config.Labels, "io.buildah.version")
+	}
+	normalize(&left.Config)
+	normalize(&right.Config)
+	if !reflect.DeepEqual(left, right) {
+		for i := 0; i < reflect.TypeOf(left.Config).NumField(); i++ {
+			if !reflect.DeepEqual(reflect.ValueOf(left.Config).Field(i).Interface(), reflect.ValueOf(right.Config).Field(i).Interface()) {
+				return fmt.Errorf("cached logical %s disagrees with selected image runtime configuration", reflect.TypeOf(left.Config).Field(i).Name)
+			}
+		}
+		return errors.New("cached logical author disagrees with selected image runtime configuration")
+	}
+	return nil
+}
+
+func validateComponentImageCacheHit(ctx context.Context, executor *graphExecutor, record *cache.ImageRecord, entry instructionCacheEntry, system *types.SystemContext) error {
+	if entry.RootMetadata == nil || entry.RetainsCaller == nil || len(entry.LogicalConfig) == 0 || record.BaseImage == nil || entry.BaseImageID == "" {
+		return errors.New("cached component image is missing root metadata, logical configuration, executed lineage or effective base image")
+	}
+	logical, err := imageconfig.Parse(entry.LogicalConfig)
+	if err != nil {
+		return err
+	}
+	raw, err := packageImageConfigSelected(ctx, executor.store, entry.ImageID, system, entry.ManifestDigest)
+	if err != nil {
+		return err
+	}
+	if err := componentCachedConfigMatchesImage(entry.LogicalConfig, raw); err != nil {
+		return err
+	}
+	if err := logical.AdoptExecutorProvenance(raw); err != nil {
+		return err
+	}
+	baseRaw, err := packageImageConfigSelected(ctx, executor.store, entry.BaseImageID, system, record.BaseImage.Digest)
+	if err != nil {
+		return err
+	}
+	var selected, base v1.Image
+	if err := json.Unmarshal(raw, &selected); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(baseRaw, &base); err != nil {
+		return err
+	}
+	if base.OS != selected.OS || base.Architecture != selected.Architecture || base.Variant != selected.Variant || len(base.RootFS.DiffIDs) > len(selected.RootFS.DiffIDs) {
+		return errors.New("cached effective base image is outside selected image lineage")
+	}
+	for i, id := range base.RootFS.DiffIDs {
+		if id != selected.RootFS.DiffIDs[i] {
+			return errors.New("cached effective base image is outside selected image lineage")
+		}
+	}
+	return nil
+}
+
+type componentCacheCaller struct {
+	ImageID              string
+	Manifest             digest.Digest
+	RetainsCallerAllowed bool
 }

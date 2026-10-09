@@ -51,7 +51,7 @@ func outputDestinations(kind oci.Kind, tag string, tags []string, push bool) ([]
 	return destinations, nil
 }
 
-func validateOutputArtifacts(destinations []transfer.Destination, definition, metadata, iid string) ([]string, error) {
+func validateOutputArtifacts(destinations []transfer.Destination, definition, metadata, iid string, extra ...string) ([]string, error) {
 	paths := []string{}
 	for _, destination := range destinations {
 		path, err := archiveOutput(destination, definition)
@@ -62,7 +62,7 @@ func validateOutputArtifacts(destinations []transfer.Destination, definition, me
 			paths = append(paths, path)
 		}
 	}
-	for _, path := range []string{metadata, iid} {
+	for _, path := range append([]string{metadata, iid}, extra...) {
 		if path == "" {
 			continue
 		}
@@ -177,16 +177,16 @@ func publishDestinations(ctx context.Context, kind oci.Kind, root v1.Descriptor,
 
 // Metadata uses the established buildx image keys, with per-platform entries
 // for consumers that need the individual manifest and configuration digests.
-func finishOutputs(path, iidPath string, root v1.Descriptor, variants []oci.IndexVariant, selections map[string]oci.StoredSelection, report outputReport, publicationErr error) (string, error) {
-	metadataErr := writeOutputMetadata(path, iidPath, root, variants, selections, report, publicationErr)
+func finishOutputs(path, iidPath string, root v1.Descriptor, variants []oci.IndexVariant, selections map[string]oci.StoredSelection, report outputReport, publicationErr error, rawIID string) (string, error) {
+	metadataErr := writeOutputMetadata(path, iidPath, root, variants, selections, report, publicationErr, rawIID)
 	if metadataErr != nil {
 		metadataErr = fmt.Errorf("result retained as %s; completed destinations %v; %w", root.Digest, report.References, metadataErr)
 	}
 	return strings.Join(report.References, "\n"), errors.Join(publicationErr, metadataErr)
 }
 
-func writeOutputMetadata(path, iidPath string, root v1.Descriptor, variants []oci.IndexVariant, selections map[string]oci.StoredSelection, report outputReport, publicationErr error) error {
-	if path == "" && iidPath == "" {
+func writeOutputMetadata(path, iidPath string, root v1.Descriptor, variants []oci.IndexVariant, selections map[string]oci.StoredSelection, report outputReport, publicationErr error, rawIID string) error {
+	if path == "" && iidPath == "" && rawIID == "" {
 		return nil
 	}
 	type platformResult struct {
@@ -215,8 +215,13 @@ func writeOutputMetadata(path, iidPath string, root v1.Descriptor, variants []oc
 	}
 	var resultErr error
 	if iidPath != "" {
-		if err := writeResultFile(iidPath, []byte(imageID+"\n")); err != nil {
+		if err := writeResultFile(iidPath, []byte(imageID)); err != nil {
 			resultErr = fmt.Errorf("write image ID: %w", err)
+		}
+	}
+	if rawIID != "" {
+		if err := writeResultFile(rawIID, []byte(strings.TrimPrefix(imageID, "sha256:"))); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("write raw image ID: %w", err))
 		}
 	}
 	if err := errors.Join(publicationErr, resultErr); err != nil {

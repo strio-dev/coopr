@@ -45,6 +45,44 @@ func prepareDefinitionContext(ctx context.Context, file, contextValue string, in
 	return def, primary, file, cleanup, nil
 }
 
+// Buildah appends the parsed instructions of additional files in command-line
+// order, including any stage declarations. Materialize a shared context once.
+func prepareDefinitionsContext(ctx context.Context, files []string, contextValue string, inContext []bool, secrets, ssh []string, stdin io.Reader) (*definition.Definition, buildah.PrimaryContext, string, func() error, error) {
+	if len(files) == 0 {
+		return nil, buildah.PrimaryContext{}, "", nil, errors.New("definition is required")
+	}
+	contains := func(i int) bool { return i < len(inContext) && inContext[i] }
+	def, primary, file, cleanup, err := prepareDefinitionContext(ctx, files[0], contextValue, contains(0), secrets, ssh, stdin)
+	if err != nil {
+		return nil, buildah.PrimaryContext{}, "", nil, err
+	}
+	for i, name := range files[1:] {
+		original := name
+		if contains(i + 1) {
+			name, err = contextDefinitionPath(primary.Path, name)
+		}
+		if err == nil {
+			var additional *definition.Definition
+			additional, err = readDefinition(ctx, name, stdin)
+			if err == nil {
+				def.Instructions = append(def.Instructions, additional.Instructions...)
+			}
+		}
+		if err != nil {
+			_ = cleanup()
+			return nil, buildah.PrimaryContext{}, "", nil, fmt.Errorf("additional definition %s: %w", definitionDisplayName(original), err)
+		}
+	}
+	return def, primary, file, cleanup, nil
+}
+
+func definitionFiles(file string, files []string, inContext bool, contained []bool) ([]string, []bool) {
+	if len(files) == 0 {
+		return []string{file}, []bool{inContext}
+	}
+	return files, contained
+}
+
 func contextDefinitionPath(contextDir, name string) (string, error) {
 	if !filepath.IsLocal(name) {
 		return "", fmt.Errorf("definition path %q must be a local relative path", name)

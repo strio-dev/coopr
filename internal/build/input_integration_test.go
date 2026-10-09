@@ -115,3 +115,57 @@ func TestBuildCooprIgnoreOverridesDefaultsAndIgnoresLegacy(t *testing.T) {
 		t.Fatalf("coopr ignore did not replace defaults: %v", names)
 	}
 }
+
+func TestBuildCombinesDefinitionsAndWritesRawIID(t *testing.T) {
+	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
+		t.Skip("set COOPR_TEST_BUILDAH for live combined definition input")
+	}
+	for _, secondFrom := range []bool{false, true} {
+		t.Run(map[bool]string{false: "append", true: "new-stage"}[secondFrom], func(t *testing.T) {
+			root := t.TempDir()
+			first := filepath.Join(root, "first.coopr")
+			second := filepath.Join(root, "second.coopr")
+			firstSource := "from \"scratch\" as=\"base\"\nlabel first=\"present\"\ncopy \"payload\" \"/payload\"\n"
+			secondSource := "label second=\"present\"\n"
+			if secondFrom {
+				secondSource = "from \"scratch\" as=\"final\"\n" + secondSource + "copy \"/payload\" \"/payload\" from=\"base\"\n"
+			}
+			for path, source := range map[string]string{first: firstSource, second: secondSource, filepath.Join(root, "payload"): "multifile fixture\n"} {
+				if err := os.WriteFile(path, []byte(source), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			raw := filepath.Join(t.TempDir(), "raw-iid")
+			iid := filepath.Join(t.TempDir(), "iid")
+			store := nativeBuildTestStore(filepath.Join(os.Getenv("XDG_DATA_HOME"), "multi-definitions", strings.ReplaceAll(t.Name(), "/", "-")))
+			if _, err := Run(context.Background(), Options{Files: []string{first, second}, Context: root, BuildStore: store, Tag: "combined:test", Platform: "linux/" + runtime.GOARCH, IIDFile: iid, IIDFileRaw: raw}); err != nil {
+				t.Fatal(err)
+			}
+			selection, found, err := testStoredImageSelection(context.Background(), store, "combined:test", v1.Platform{OS: "linux", Architecture: runtime.GOARCH})
+			if err != nil || !found {
+				t.Fatalf("combined image: %v %t", err, found)
+			}
+			data, err := os.ReadFile(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(data) != selection.ImageID {
+				t.Fatalf("raw IID: %q", data)
+			}
+			data, err = os.ReadFile(iid)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(data) != "sha256:"+selection.ImageID {
+				t.Fatalf("IID: %q", data)
+			}
+			var config v1.Image
+			if err := json.Unmarshal(selection.ConfigData, &config); err != nil {
+				t.Fatal(err)
+			}
+			if config.Config.Labels["second"] != "present" || (config.Config.Labels["first"] == "present") == secondFrom {
+				t.Fatalf("combined config labels: %v", config.Config.Labels)
+			}
+		})
+	}
+}

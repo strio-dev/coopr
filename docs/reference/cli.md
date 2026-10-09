@@ -36,7 +36,7 @@ These controls apply to both build commands unless noted. Refer to the [executio
 
 | Option | Behavior |
 | --- | --- |
-| `--file`, `--from` | Select a definition or replace the first FROM image. Positional FILE uses its directory as context; `--file FILE [CONTEXT]` defaults to the current directory. |
+| `--file`, `--from` | Read explicit definition files in the order supplied, or replace the first FROM image. Positional FILE uses its directory as context; `--file FILE [CONTEXT]` defaults to the current directory. |
 | `--target` | Select a named output; default is the final stage. Component invocation cannot change the published target. |
 | `--build-arg NAME[=VALUE]`, `--build-arg-file PATH` | Repeatable arguments/files; explicit arguments override files. Bare names import host values when set. |
 | `--build-context NAME=VALUE`, `--ignorefile PATH` | Supply named inputs or override automatic ignore-file selection. |
@@ -44,15 +44,21 @@ These controls apply to both build commands unless noted. Refer to the [executio
 | `--platform` | Repeated/comma-separated Linux platforms; defaults to host platform. |
 | `--jobs` | Total stage/platform concurrency; default 1, zero unlimited. |
 | `--pull` | Image inputs: `missing` (default), `always`, `newer`, `never`. Bare `--pull` means always. |
+| `--source-policy-file PATH` | Apply a BuildKit-format image source policy using Buildah's ALLOW, DENY, and CONVERT rules. |
 | `--no-cache`, `--cache-ttl` | Bypass result reads or limit wall-clock publication age. Fresh results are still written. |
 | `--cache-from`, `--cache-to` | Read or write caches; repeatable `oci-layout:PATH` or `registry:HOST/REPOSITORY`. Supply both to read and write the same cache. |
 | `--network`, `--add-host` | Default RUN network and repeatable host mappings. Authored RUN network values override the default. `--network=host` also authorizes host-network requests. |
 | `--secret`, `--ssh`, `--allow` | Supply credentials or authorize elevated RUN behavior; see [security](../guides/security.md). |
+| `--mount SPEC` | Add a comma-separated RUN mount specification to every RUN, after its authored mounts. Repeatable; stage sources create graph dependencies. |
 | `--source-date-epoch`, `--timestamp`, `--rewrite-timestamp` | Set creation time, force new-layer file times, or clamp newer times. Timestamp conflicts with the other two. |
 | `--metadata-file` | Write result/platform/destination metadata. |
 | `--quiet`, `--logfile`, `--logsplit` | Suppress progress or record it, optionally per platform. |
 
-Image builds also expose `--format oci|docker`, filesystem `--output`, `--iidfile`, metadata controls, `--all-platforms`, `--manifest`, signing, SBOM scanners, and confidential workload conversion. Some require native runtime capabilities or external scanner images.
+Image builds also expose `--format oci|docker`, filesystem `--output`, metadata controls, `--all-platforms`, `--manifest`, signing, SBOM scanners, and confidential workload conversion. Some require native runtime capabilities or external scanner images.
+
+`--iidfile PATH` writes an algorithm-prefixed image ID for one platform or an index digest for several. `--iidfile-raw PATH` (alias `--raw-iidfile`) writes the image ID without its prefix and requires one platform. Neither adds a trailing newline.
+
+Image-layer compression controls are `--compression-format gzip|zstd|zstd:chunked`, `--compression-level N`, and `--force-compression`. Specifying a format defaults force-compression to true; set `--force-compression=false` to permit reuse of compatible compressed blobs. See [output compression](execution.md#output-compression) for format and storage behavior.
 
 ### Named inputs
 
@@ -83,7 +89,7 @@ Global storage/runtime settings live in [configuration](configuration.md). Image
 
 Both prune commands support `--dry-run`, which previews initial image candidates without changing data. Recursive pruning can remove additional parent images. See [storage](../guides/storage.md#inspect-and-maintain) for examples and cache-mount scope.
 
-`--layers=false` reruns filesystem instructions into one new layer; `--rm` and `--force-rm` default to true. Resource controls depend on host cgroup and namespace permissions.
+`--layers=false` reruns filesystem instructions into one new layer; `--rm` and `--force-rm` default to true. `--save-stages` retains completed intermediate stage images. `--stage-labels` requires it and adds `io.buildah.stage.name` and `io.buildah.stage.base` labels to stages with instructions; a FROM-only stage keeps the base image unchanged. `--compat-volumes` discards RUN changes under declared image volumes while retaining COPY/ADD changes. Resource controls depend on host cgroup and namespace permissions.
 
 Global `--log-level` controls diagnostic stderr logs: `trace`, `debug`, `info`, `warn` (or `warning`), `error`, `fatal`, `panic`. Default `warn` shows warnings/errors.
 

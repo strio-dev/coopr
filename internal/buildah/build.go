@@ -18,6 +18,7 @@ import (
 	upstream "go.podman.io/buildah"
 	"go.podman.io/buildah/copier"
 	"go.podman.io/buildah/define"
+	"go.podman.io/buildah/pkg/blobcache"
 	"go.podman.io/buildah/pkg/parse"
 	buildahutil "go.podman.io/buildah/util"
 	nettypes "go.podman.io/common/libnetwork/types"
@@ -46,37 +47,45 @@ type StoreOptions struct {
 
 // Request is one ordered, single-stage build.
 type Request struct {
-	Lifecycle        LifecycleControls
-	Store            StoreOptions
-	Base             string
-	ContextDir       string
-	ContextArtifacts []string
-	Isolation        string
-	Runtime          string
-	Operations       []Operation
-	Secrets          []string
-	SSH              []string
-	Allow            []string
-	AddHosts         []string
-	RunControls      RunControls
-	ImageControls    ImageControls
-	Output           Output
-	Timestamp        *int64
-	SourceDateEpoch  *int64
-	RewriteTimestamp bool
-	CacheTTL         *time.Duration
+	Lifecycle          LifecycleControls
+	Store              StoreOptions
+	Base               string
+	TransientRunMounts []RunMount
+	ContextDir         string
+	ContextArtifacts   []string
+	IgnoreFile         string
+	Isolation          string
+	Runtime            string
+	Operations         []Operation
+	Secrets            []string
+	SSH                []string
+	Allow              []string
+	AddHosts           []string
+	RunControls        RunControls
+	ImageControls      ImageControls
+	Output             Output
+	Timestamp          *int64
+	SourceDateEpoch    *int64
+	RewriteTimestamp   bool
+	CacheTTL           *time.Duration
 }
 
 // Output selects an image-layout destination. Format is "oci" by default or
 // "docker" for Docker schema-2 manifest and config media types. Reference is
 // the optional org.opencontainers.image.ref.name annotation in the index.
 type Output struct {
+	// compressionResolved keeps request-selected defaults stable through finalization.
+	compressionResolved  bool
 	Path                 string
 	Reference            string
 	Format               string
 	Squash               bool
 	SquashAll            bool
 	DisableCompression   bool
+	BlobDirectory        string
+	CompressionFormat    string
+	CompressionLevel     *int
+	ForceCompression     *bool
 	ConfidentialWorkload define.ConfidentialWorkloadOptions
 	SBOM                 []define.SBOMScanOptions
 	Filesystem           FilesystemOutput
@@ -204,14 +213,50 @@ func Build(ctx context.Context, request Request) (result Result, retErr error) {
 	if err := prepareBuilderImageControls(builder, request.ImageControls); err != nil {
 		return Result{}, err
 	}
+	request.Operations = slices.Clone(request.Operations)
+	writableContext := false
 	for index, operation := range request.Operations {
 		if run, ok := operation.(Run); ok {
-			run.cacheLockRoot = store.GraphRoot()
+			run.Mounts = append(slices.Clone(run.Mounts), request.TransientRunMounts...)
+			writableContext = writableContext || hasWritableContextBindMount(run.Mounts)
 			request.Operations[index] = run
+		}
+	}
+	contextIgnoreFile := request.IgnoreFile
+	if writableContext {
+		prepared, cleanup, err := snapshotBuildContext(PlanOptions{ContextDir: request.ContextDir, ContextArtifacts: request.ContextArtifacts, IgnoreFile: request.IgnoreFile, Store: request.Store, Output: request.Output})
+		if err != nil {
+			return Result{}, err
+		}
+		defer func() { retErr = errors.Join(retErr, cleanup()) }()
+		request.ContextDir, contextIgnoreFile = prepared.ContextDir, prepared.IgnoreFile
+	}
+	for index, operation := range request.Operations {
+		switch operation := operation.(type) {
+		case Run:
+			operation.contextPrepared = writableContext
+			operation.cacheLockRoot = store.GraphRoot()
+			if contextIgnoreFile != "" {
+				operation.ContextIgnoreFile = contextIgnoreFile
+			}
+			request.Operations[index] = operation
+		case Copy:
+			if contextIgnoreFile != "" {
+				operation.IgnoreFile = contextIgnoreFile
+				request.Operations[index] = operation
+			}
+		case Add:
+			if contextIgnoreFile != "" {
+				operation.IgnoreFile = contextIgnoreFile
+				request.Operations[index] = operation
+			}
 		}
 	}
 
 	artifacts := append(slices.Clone(request.ContextArtifacts), request.Store.RunRoot, request.Store.GraphRoot, request.Store.ImageStore, request.Output.Path)
+	if writableContext {
+		artifacts = nil
+	}
 	linked := false
 	for _, operation := range request.Operations {
 		if linkedCopyOrAdd(operation) {
@@ -220,7 +265,7 @@ func Build(ctx context.Context, request Request) (result Result, retErr error) {
 		}
 	}
 	if !linked {
-		adapter := nativeBuilder{Builder: builder, isolation: builderOptions.Isolation, runtime: effectiveRuntime(request.Runtime, request.RunControls), runtimeArgs: slices.Clone(request.RunControls.RuntimeFlags), secretSpecs: request.Secrets, sshSpecs: request.SSH, cgroupManager: request.RunControls.CgroupManager, cgroupManagerSet: request.RunControls.CgroupManagerSet, compatVolumes: request.Lifecycle.CompatVolumes, runControls: request.RunControls}
+		adapter := nativeBuilder{Builder: builder, isolation: builderOptions.Isolation, runtime: effectiveRuntime(request.Runtime, request.RunControls), runtimeArgs: slices.Clone(request.RunControls.RuntimeFlags), secretSpecs: request.Secrets, sshSpecs: request.SSH, cgroupManager: request.RunControls.CgroupManager, cgroupManagerSet: request.RunControls.CgroupManagerSet, compatVolumes: request.Lifecycle.CompatVolumes, noLayers: true, runControls: request.RunControls}
 		if err := applyOperationsWithArtifacts(ctx, adapter, request.ContextDir, artifacts, request.Operations); err != nil {
 			return Result{}, err
 		}
@@ -241,7 +286,7 @@ func Build(ctx context.Context, request Request) (result Result, retErr error) {
 			}
 			builder = replacement
 		}
-		adapter := nativeBuilder{Builder: builder, isolation: builderOptions.Isolation, runtime: effectiveRuntime(request.Runtime, request.RunControls), runtimeArgs: slices.Clone(request.RunControls.RuntimeFlags), secretSpecs: request.Secrets, sshSpecs: request.SSH, cgroupManager: request.RunControls.CgroupManager, cgroupManagerSet: request.RunControls.CgroupManagerSet, compatVolumes: request.Lifecycle.CompatVolumes, runControls: request.RunControls}
+		adapter := nativeBuilder{Builder: builder, isolation: builderOptions.Isolation, runtime: effectiveRuntime(request.Runtime, request.RunControls), runtimeArgs: slices.Clone(request.RunControls.RuntimeFlags), secretSpecs: request.Secrets, sshSpecs: request.SSH, cgroupManager: request.RunControls.CgroupManager, cgroupManagerSet: request.RunControls.CgroupManagerSet, compatVolumes: request.Lifecycle.CompatVolumes, noLayers: true, runControls: request.RunControls}
 		if err := applyOperationsWithArtifacts(ctx, adapter, request.ContextDir, artifacts, []Operation{operation}); err != nil {
 			return Result{}, fmt.Errorf("operation %d: %w", index+1, err)
 		}
@@ -297,6 +342,10 @@ func newBuilderOptionsWithHosts(base string, isolation define.Isolation, capabil
 }
 
 func commitOutput(ctx context.Context, store storage.Store, builder *upstream.Builder, output Output, systemContext *types.SystemContext, linked bool, policy timestampPolicy, controls ImageControls) (Result, error) {
+	output, err := normalizeOutputCompression(output)
+	if err != nil {
+		return Result{}, err
+	}
 	manifestType, err := outputManifestType(output.Format)
 	if err != nil {
 		return Result{}, err
@@ -309,14 +358,16 @@ func commitOutput(ctx context.Context, store storage.Store, builder *upstream.Bu
 			OmitHistory:           controls.OmitHistory,
 			SystemContext:         systemContext,
 		}
-		applyFinalCommitOptions(&options, output)
+		if err := applyFinalCommitOptions(&options, output); err != nil {
+			return Result{}, err
+		}
 		policy.apply(&options)
 		imageID, _, manifestDigest, err := builder.Commit(ctx, nil, options)
 		if err != nil {
 			return Result{}, fmt.Errorf("commit Docker image to containers/storage: %w", err)
 		}
 		var result Result
-		if output.DisableCompression {
+		if output.DisableCompression && output.BlobDirectory == "" {
 			result, err = exportStoredImageVariantRaw(ctx, store, imageID, output, systemContext, &manifestDigest)
 		} else {
 			result, err = copyStoredOutputCompressed(ctx, store, imageID, output, systemContext, nil)
@@ -345,7 +396,9 @@ func commitOutput(ctx context.Context, store storage.Store, builder *upstream.Bu
 		OmitHistory:           controls.OmitHistory,
 		SystemContext:         systemContext,
 	}
-	applyFinalCommitOptions(&options, output)
+	if err := applyFinalCommitOptions(&options, output); err != nil {
+		return Result{}, err
+	}
 	policy.apply(&options)
 	imageID, _, manifestDigest, err := builder.Commit(ctx, destination, options)
 	if err != nil {
@@ -382,7 +435,11 @@ func commitStoredSnapshotSelected(ctx context.Context, builder *upstream.Builder
 // containers/storage. A cache hit has no pending builder diff, so committing a
 // clean replacement builder would synthesize an extra empty layer.
 func copyStoredOutputSelected(ctx context.Context, store storage.Store, imageID string, output Output, systemContext *types.SystemContext, selected *digest.Digest) (Result, error) {
-	if !output.DisableCompression {
+	output, err := normalizeOutputCompression(output)
+	if err != nil {
+		return Result{}, err
+	}
+	if !output.DisableCompression || output.BlobDirectory != "" {
 		return copyStoredOutputCompressed(ctx, store, imageID, output, systemContext, selected)
 	}
 	source, err := imagestorage.Transport.NewStoreReference(store, nil, imageID)
@@ -426,9 +483,35 @@ func copyStoredOutputCompressed(ctx context.Context, store storage.Store, imageI
 	if systemContext != nil {
 		*system = *systemContext
 	}
-	system.OCIAcceptUncompressedLayers = false
-	manifest, err := imagecopy.Image(ctx, policyContext, destination, source, &imagecopy.Options{
-		SourceCtx: system, DestinationCtx: system, ImageListSelection: imagecopy.CopySystemImage,
+	var compressionOptions upstream.CommitOptions
+	if err := applyFinalCommitOptions(&compressionOptions, output); err != nil {
+		return Result{}, err
+	}
+	system.CompressionFormat = compressionOptions.CompressionFormat
+	system.CompressionLevel = compressionOptions.CompressionLevel
+
+	system.OCIAcceptUncompressedLayers = output.DisableCompression
+	cachedDestination := destination
+	if output.BlobDirectory != "" {
+		compress := types.PreserveOriginal
+		if !output.DisableCompression {
+			compress = types.Compress
+		}
+		var cacheOptions []blobcache.Option
+		if compressionOptions.CompressionFormat != nil {
+			cacheOptions = append(cacheOptions, blobcache.WithCompressAlgorithm(compressionOptions.CompressionFormat))
+		}
+		source, err = blobcache.NewBlobCache(source, output.BlobDirectory, compress, cacheOptions...)
+		if err != nil {
+			return Result{}, err
+		}
+		cachedDestination, err = blobcache.NewBlobCache(destination, output.BlobDirectory, compress, cacheOptions...)
+		if err != nil {
+			return Result{}, err
+		}
+	}
+	manifest, err := imagecopy.Image(ctx, policyContext, cachedDestination, source, &imagecopy.Options{
+		SourceCtx: system, DestinationCtx: system, ImageListSelection: imagecopy.CopySystemImage, ForceCompressionFormat: compressionOptions.ForceCompressionFormat,
 	})
 	if err != nil {
 		return Result{}, fmt.Errorf("write compressed OCI output: %w", err)
@@ -582,6 +665,7 @@ type nativeBuilder struct {
 	cgroupManager    string
 	cgroupManagerSet bool
 	compatVolumes    bool
+	noLayers         bool
 	runControls      RunControls
 }
 
@@ -608,8 +692,20 @@ func (b nativeBuilder) addSourceSecret(id string) ([]byte, bool, error) {
 	return value, true, nil
 }
 
-func (b nativeBuilder) run(command []string, options upstream.RunOptions) error {
-	if b.compatVolumes {
+func (b nativeBuilder) run(command []string, options upstream.RunOptions) (retErr error) {
+	if b.compatVolumes && b.noLayers && len(b.Volumes()) != 0 {
+		for _, volume := range b.Volumes() {
+			if err := b.ensureContainerPathIsDirectory(volume, "0"); err != nil {
+				return err
+			}
+		}
+		restore, err := b.preserveRunVolumes()
+		if err != nil {
+			return err
+		}
+		defer func() { retErr = errors.Join(retErr, restore()) }()
+		options.CompatBuiltinVolumes = types.OptionalBoolFalse
+	} else if b.compatVolumes {
 		options.CompatBuiltinVolumes = types.OptionalBoolTrue
 	}
 	cgroupManager := b.cgroupManager

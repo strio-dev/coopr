@@ -113,16 +113,17 @@ component "local:bundle-onbuild"
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifest, _ := readPlanImage(t, invokedLayout)
-	if len(manifest.Layers) != 1 {
-		t.Fatalf("invoked component layers = %d, want one", len(manifest.Layers))
+	manifest, image := readPlanImage(t, invokedLayout)
+	if len(manifest.Layers) != 2 || len(image.RootFS.DiffIDs) != 2 {
+		t.Fatalf("invoked component layers=%d diffIDs=%d, want 2 authored COPY instructions", len(manifest.Layers), len(image.RootFS.DiffIDs))
 	}
-	blob := filepath.Join(invokedLayout, "blobs", "sha256", manifest.Layers[0].Digest.Encoded())
-	for name, want := range map[string]string{"selected": "inherited argument\n", "inherited": "hidden producer\n"} {
-		if got := readLayerFile(t, blob, name); got != want {
-			t.Fatalf("invoked %s = %q, want %q", name, got, want)
+	for i, file := range []struct{ name, want string }{{"selected", "inherited argument\n"}, {"inherited", "hidden producer\n"}} {
+		blob := filepath.Join(invokedLayout, "blobs", "sha256", manifest.Layers[i].Digest.Encoded())
+		if got := readLayerFile(t, blob, file.name); got != file.want {
+			t.Fatalf("invoked layer %d %s=%q, want %q", i, file.name, got, file.want)
 		}
 	}
+
 }
 
 func TestPublishedPackageOnBuildArgumentPlansInvocationFromPackage(t *testing.T) {

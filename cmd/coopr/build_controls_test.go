@@ -189,3 +189,67 @@ func TestBuildAndCopyFlagsHaveCommandLocalScope(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildCDIOverrideAndSavedStageControls(t *testing.T) {
+	command := &cobra.Command{}
+	var flags buildControlFlags
+	flags.addTo(command)
+	directory := t.TempDir()
+	if err := command.ParseFlags([]string{"--cdi-config-dir", directory, "--save-stages", "--stage-labels"}); err != nil {
+		t.Fatal(err)
+	}
+	controls, err := flags.controls()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(controls.CDISpecDirs, []string{directory}) {
+		t.Fatalf("CDI override: %v", controls.CDISpecDirs)
+	}
+	lifecycle := flags.lifecycle()
+	if !lifecycle.SaveStages || !lifecycle.StageLabels {
+		t.Fatalf("saved stages: %#v", lifecycle)
+	}
+}
+
+func TestBuildCompressionFlagsPreserveExplicitFalseAndZero(t *testing.T) {
+	command := newBuildCommand()
+	if forceCompressionValue(command, false) != nil || compressionLevelValue(command, 0) != nil {
+		t.Fatal("unspecified flags must preserve configured defaults")
+	}
+	if err := command.ParseFlags([]string{"--force-compression=false", "--compression-level=0"}); err != nil {
+		t.Fatal(err)
+	}
+	force := forceCompressionValue(command, false)
+	level := compressionLevelValue(command, 0)
+	if force == nil || *force || level == nil || *level != 0 {
+		t.Fatalf("explicit compression flags: %v %v", force, level)
+	}
+}
+
+func TestHiddenPullAliasesMatchNativePolicyAndConflicts(t *testing.T) {
+	for _, factory := range []func() *cobra.Command{newBuildCommand, newComponentBuildCommand} {
+		for _, test := range []struct {
+			args   []string
+			want   string
+			failed bool
+		}{
+			{[]string{"--pull-always"}, "always", false}, {[]string{"--pull-never"}, "never", false},
+			{[]string{"--pull-always=false"}, "missing", false}, {[]string{"--pull-never=false"}, "missing", false},
+			{[]string{"--pull=true", "--pull-never=false"}, "", true}, {[]string{"--pull-always=false", "--pull-never=false"}, "", true},
+		} {
+			command := factory()
+			if err := command.ParseFlags(test.args); err != nil {
+				t.Fatal(err)
+			}
+			got, err := resolveBuildPullPolicy(command)
+			if (err != nil) != test.failed || got != test.want {
+				t.Fatalf("%v policy=%s err=%v", test.args, got, err)
+			}
+			for _, name := range []string{"pull-always", "pull-never"} {
+				if !command.Flags().Lookup(name).Hidden {
+					t.Fatalf("%s should match hidden upstream alias", name)
+				}
+			}
+		}
+	}
+}

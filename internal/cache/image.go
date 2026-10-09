@@ -75,11 +75,14 @@ func (k ImageKey) Digest() (digest.Digest, error) {
 }
 
 type ImageRecord struct {
-	Version      string          `json:"version"`
-	CreatedAt    time.Time       `json:"created_at"`
-	Key          ImageKey        `json:"key"`
-	Image        v1.Descriptor   `json:"image"`
-	RootMetadata json.RawMessage `json:"root_metadata,omitempty"`
+	RetainsCaller *bool           `json:"retains_caller,omitempty"`
+	Version       string          `json:"version"`
+	CreatedAt     time.Time       `json:"created_at"`
+	Key           ImageKey        `json:"key"`
+	Image         v1.Descriptor   `json:"image"`
+	RootMetadata  json.RawMessage `json:"root_metadata,omitempty"`
+	LogicalConfig json.RawMessage `json:"logical_config,omitempty"`
+	BaseImage     *v1.Descriptor  `json:"base_image,omitempty"`
 }
 
 func (r ImageRecord) validate(key ImageKey) error {
@@ -96,6 +99,17 @@ func (r ImageRecord) validate(key ImageKey) error {
 	}
 	if r.Image.MediaType != v1.MediaTypeImageManifest && r.Image.MediaType != "application/vnd.docker.distribution.manifest.v2+json" {
 		return fmt.Errorf("unsupported cached image manifest type %q", r.Image.MediaType)
+	}
+	if len(r.LogicalConfig) != 0 && !json.Valid(r.LogicalConfig) {
+		return errors.New("invalid cached logical image configuration")
+	}
+	if r.BaseImage != nil {
+		if err := validDescriptor(*r.BaseImage); err != nil {
+			return err
+		}
+		if r.BaseImage.MediaType != v1.MediaTypeImageManifest && r.BaseImage.MediaType != "application/vnd.docker.distribution.manifest.v2+json" {
+			return errors.New("invalid cached base image manifest type")
+		}
 	}
 	return validDescriptor(r.Image)
 }
@@ -121,6 +135,11 @@ func (s *OCIStore) PutImage(ctx context.Context, key ImageKey, record ImageRecor
 	if err := verifyImageGraph(ctx, source, record.Image); err != nil {
 		return v1.Descriptor{}, fmt.Errorf("verify instruction image graph: %w", err)
 	}
+	if record.BaseImage != nil {
+		if err := verifyImageGraph(ctx, source, *record.BaseImage); err != nil {
+			return v1.Descriptor{}, fmt.Errorf("verify cached base image graph: %w", err)
+		}
+	}
 	target, release, err := s.operationTarget(ctx)
 	if err != nil {
 		return v1.Descriptor{}, err
@@ -129,12 +148,21 @@ func (s *OCIStore) PutImage(ctx context.Context, key ImageKey, record ImageRecor
 	if err := oras.CopyGraph(ctx, source, target, record.Image, oras.DefaultCopyGraphOptions); err != nil {
 		return v1.Descriptor{}, fmt.Errorf("store instruction image graph: %w", err)
 	}
+	if record.BaseImage != nil {
+		if err := oras.CopyGraph(ctx, source, target, *record.BaseImage, oras.DefaultCopyGraphOptions); err != nil {
+			return v1.Descriptor{}, err
+		}
+	}
+	graphs := []v1.Descriptor{record.Image}
+	if record.BaseImage != nil {
+		graphs = append(graphs, *record.BaseImage)
+	}
 	data, err := json.Marshal(record)
 	if err != nil || len(data) > maxImageRecordBytes {
 		return v1.Descriptor{}, errors.Join(err, errors.New("instruction image cache record too large"))
 	}
 	config := oci.Descriptor(ImageConfigMediaType, data)
-	manifestData, err := json.Marshal(oci.VersionedManifest(config, []v1.Descriptor{record.Image}, ImageArtifactType))
+	manifestData, err := json.Marshal(oci.VersionedManifest(config, graphs, ImageArtifactType))
 	if err != nil {
 		return v1.Descriptor{}, err
 	}
@@ -191,7 +219,7 @@ func (s *OCIStore) LookupImage(ctx context.Context, key ImageKey) (*ImageRecord,
 	if err := strictJSON(manifestData, &artifact); err != nil {
 		return nil, "", err
 	}
-	if artifact.SchemaVersion != 2 || artifact.MediaType != "" && artifact.MediaType != v1.MediaTypeImageManifest || artifact.ArtifactType != ImageArtifactType || artifact.Config.MediaType != ImageConfigMediaType || len(artifact.Layers) != 1 || artifact.Subject != nil {
+	if artifact.SchemaVersion != 2 || artifact.MediaType != "" && artifact.MediaType != v1.MediaTypeImageManifest || artifact.ArtifactType != ImageArtifactType || artifact.Config.MediaType != ImageConfigMediaType || (len(artifact.Layers) != 1 && len(artifact.Layers) != 2) || artifact.Subject != nil {
 		return nil, "", errors.New("invalid instruction image cache artifact")
 	}
 	if err := validDescriptor(artifact.Config); err != nil {
@@ -213,6 +241,17 @@ func (s *OCIStore) LookupImage(ctx context.Context, key ImageKey) (*ImageRecord,
 	}
 	if !sameDescriptor(artifact.Layers[0], record.Image) {
 		return nil, "", errors.New("instruction image differs from cache artifact")
+	}
+	if (record.BaseImage == nil) != (len(artifact.Layers) == 1) {
+		return nil, "", errors.New("cached base image differs from artifact")
+	}
+	if record.BaseImage != nil {
+		if !sameDescriptor(artifact.Layers[1], *record.BaseImage) {
+			return nil, "", errors.New("cached base image differs from artifact")
+		}
+		if err := verifyImageGraph(ctx, target, *record.BaseImage); err != nil {
+			return nil, "", fmt.Errorf("verify cached base image graph: %w", err)
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, "", err
@@ -250,6 +289,11 @@ func (s *OCIStore) LookupImage(ctx context.Context, key ImageKey) (*ImageRecord,
 	if err := oras.CopyGraph(ctx, target, destination, record.Image, options); err != nil {
 		return nil, "", err
 	}
+	if record.BaseImage != nil {
+		if err := oras.CopyGraph(ctx, target, destination, *record.BaseImage, oras.DefaultCopyGraphOptions); err != nil {
+			return nil, "", err
+		}
+	}
 	if err := destination.Tag(ctx, record.Image, record.Image.Digest.String()); err != nil {
 		return nil, "", err
 	}
@@ -275,13 +319,19 @@ func imageGraphDescriptors(ctx context.Context, target oras.Target, root v1.Desc
 	if manifest.Config.MediaType != v1.MediaTypeImageConfig && manifest.Config.MediaType != "application/vnd.docker.container.image.v1+json" {
 		return nil, fmt.Errorf("unsupported cached image config media type %q", manifest.Config.MediaType)
 	}
-	descriptors := append([]v1.Descriptor{manifest.Config}, manifest.Layers...)
-	for _, descriptor := range descriptors {
+	if err := validDescriptor(manifest.Config); err != nil {
+		return nil, err
+	}
+	for _, descriptor := range manifest.Layers {
+		// OCI layers may carry compression metadata such as zstd:chunked
+		// offsets and checksums. Keep it in the verified manifest; annotations
+		// do not relax the digest, size or local blob requirements.
+		descriptor.Annotations = nil
 		if err := validDescriptor(descriptor); err != nil {
 			return nil, err
 		}
 	}
-	return descriptors, nil
+	return append([]v1.Descriptor{manifest.Config}, manifest.Layers...), nil
 }
 
 func verifyImageGraph(ctx context.Context, target oras.Target, root v1.Descriptor) error {

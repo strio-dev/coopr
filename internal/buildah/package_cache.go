@@ -133,6 +133,11 @@ func packageCacheEligibility(stages []planner.Stage, controls RunControls) (need
 					switch child.Arguments[0] {
 					case "bind":
 						if child.Properties["from"] == "" {
+							if hasWritableContextBindMount([]RunMount{{Type: "bind", Properties: child.Properties}}) {
+								// Package images cannot replay writes into the caller's
+								// disposable context; the producer must execute again.
+								return false, false
+							}
 							needsContext = true
 						}
 					case "cache", "tmpfs", "secret", "ssh":

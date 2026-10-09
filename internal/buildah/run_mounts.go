@@ -1,14 +1,18 @@
 package buildah
 
 import (
+	"encoding/csv"
 	"encoding/hex"
 	"fmt"
-	"path"
+	"io"
+	"maps"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 
+	"coopr/internal/definition"
 	"coopr/internal/planner"
 )
 
@@ -24,6 +28,7 @@ type RunMount struct {
 	// PrivateRelabel is executor-owned. Filtered context snapshots are private
 	// to one RUN and require an SELinux label usable by that container.
 	PrivateRelabel bool
+	SharedRelabel  bool
 }
 
 func lowerRunMounts(operation planner.Operation, resolve CacheMountIDResolver, boundFrom map[int]string) ([]RunMount, error) {
@@ -99,11 +104,11 @@ func serializeRunMount(mount RunMount, contextDir string) (string, error) {
 	var allowed map[string]bool
 	switch mount.Type {
 	case "bind":
-		allowed = propertySet("source", "target", "readonly")
+		allowed = propertySet("source", "target", "readonly", "bind-nonrecursive", "nosuid", "nodev", "noexec", "shared", "rshared", "private", "rprivate", "slave", "rslave", "u", "no-dereference", "bind-propagation", "relabel", "consistency")
 	case "cache":
-		allowed = propertySet("id", "source", "target", "readonly", "sharing", "mode", "uid", "gid")
+		allowed = propertySet("id", "source", "target", "readonly", "sharing", "mode", "uid", "gid", "nosuid", "nodev", "noexec", "u", "shared", "rshared", "private", "rprivate", "slave", "rslave", "bind-propagation", "relabel")
 	case "tmpfs":
-		allowed = propertySet("target", "readonly", "size", "mode")
+		allowed = propertySet("target", "readonly", "size", "mode", "nosuid", "nodev", "noexec", "tmpcopyup")
 	case "secret":
 		allowed = propertySet("id", "target", "required", "mode", "uid", "gid", "env")
 	case "ssh":
@@ -136,9 +141,6 @@ func serializeRunMount(mount RunMount, contextDir string) (string, error) {
 	target := mount.Properties["target"]
 	if target == "" && mount.Type != "secret" && mount.Type != "ssh" {
 		return "", fmt.Errorf("%s mount requires target", mount.Type)
-	}
-	if (mount.Type == "bind" || mount.Type == "cache" || mount.Type == "tmpfs") && path.Clean(target) == "/" {
-		return "", fmt.Errorf("%s mount target must not be /", mount.Type)
 	}
 	if mount.Type == "secret" && mount.Properties["id"] == "" && target == "" {
 		return "", fmt.Errorf("secret mount requires id or target")
@@ -191,11 +193,18 @@ func serializeRunMount(mount RunMount, contextDir string) (string, error) {
 	}
 
 	fields := []string{"type=" + mount.Type}
-	if mount.PrivateRelabel {
+	if mount.PrivateRelabel && mount.SharedRelabel {
+		return "", fmt.Errorf("context mount cannot require both private and shared relabel")
+	}
+	if (mount.PrivateRelabel || mount.SharedRelabel) && mount.Properties["relabel"] == "" {
 		if mount.Type != "bind" || mount.BoundFrom {
-			return "", fmt.Errorf("private relabel requires a context bind mount")
+			return "", fmt.Errorf("executor relabel requires a context bind mount")
 		}
-		fields = append(fields, "relabel=private")
+		if mount.SharedRelabel {
+			fields = append(fields, "relabel=shared")
+		} else {
+			fields = append(fields, "relabel=private")
+		}
 	}
 	keys := make([]string, 0, len(mount.Properties))
 	for name := range mount.Properties {
@@ -205,6 +214,36 @@ func serializeRunMount(mount RunMount, contextDir string) (string, error) {
 	for _, name := range keys {
 		value := mount.Properties[name]
 		switch name {
+		case "bind-nonrecursive", "nosuid", "nodev", "noexec", "shared", "rshared", "private", "rprivate", "slave", "rslave", "u", "no-dereference", "tmpcopyup":
+			enabled, err := strconv.ParseBool(value)
+			if err != nil {
+				return "", fmt.Errorf("%s mount %s must be true or false", mount.Type, name)
+			}
+			if enabled {
+				if name == "u" {
+					fields = append(fields, "U")
+				} else {
+					fields = append(fields, name)
+				}
+			}
+		case "relabel":
+			if value != "private" && value != "shared" {
+				return "", fmt.Errorf("%s mount relabel must be private or shared", mount.Type)
+			}
+			if mount.Type == "cache" {
+				if value == "private" {
+					fields = append(fields, "Z")
+				} else {
+					fields = append(fields, "z")
+				}
+			} else {
+				fields = append(fields, "relabel="+value)
+			}
+		case "bind-propagation":
+			if !slices.Contains([]string{"shared", "rshared", "private", "rprivate", "slave", "rslave"}, value) {
+				return "", fmt.Errorf("%s mount has invalid bind-propagation %q", mount.Type, value)
+			}
+			fields = append(fields, name+"="+value)
 		case "readonly":
 			enabled, err := strconv.ParseBool(value)
 			if err != nil {
@@ -233,9 +272,19 @@ func serializeRunMount(mount RunMount, contextDir string) (string, error) {
 func normalizeRunMountProperties(mountType string, authored map[string]string) (map[string]string, error) {
 	properties := make(map[string]string, len(authored))
 	aliases := map[string]string{
-		"src": "source", "dst": "target", "destination": "target", "ro": "readonly",
+		"src": "source", "dst": "target", "destination": "target", "ro": "readonly", "tmpfs-mode": "mode", "tmpfs-size": "size", "U": "u",
 	}
 	for name, value := range authored {
+		if name == "Z" || name == "z" {
+			if value != "true" {
+				return nil, fmt.Errorf("%s mount %s does not accept a value", mountType, name)
+			}
+			if name == "Z" {
+				name, value = "relabel", "private"
+			} else {
+				name, value = "relabel", "shared"
+			}
+		}
 		canonical := name
 		if alias, ok := aliases[name]; ok {
 			canonical = alias
@@ -322,4 +371,75 @@ func validateUnsignedMountProperty(properties map[string]string, name string, ba
 		return fmt.Errorf("mount property %q has invalid value %q", name, value)
 	}
 	return nil
+}
+
+// ParseTransientRunMounts accepts the same comma-separated mount vocabulary as
+// Buildah --mount. Execution uses the normal RUN mount binding and cache path.
+func ParseTransientRunMounts(specifications []string) ([]RunMount, error) {
+	result := make([]RunMount, 0, len(specifications))
+	for index, specification := range specifications {
+		reader := csv.NewReader(strings.NewReader(specification))
+		fields, err := reader.Read()
+		if err != nil {
+			return nil, fmt.Errorf("mount %d: %w", index+1, err)
+		}
+		if _, err := reader.Read(); err != io.EOF {
+			return nil, fmt.Errorf("mount %d: expected one mount specification", index+1)
+		}
+		mount := RunMount{Type: "bind", Properties: make(map[string]string)}
+		typeSpecified := false
+		for _, field := range fields {
+			name, value, hasValue := strings.Cut(field, "=")
+			if !hasValue {
+				if slices.Contains([]string{"type", "source", "src", "target", "dst", "destination", "from", "id", "sharing", "mode", "uid", "gid", "size", "tmpfs-mode", "tmpfs-size", "env", "relabel", "bind-propagation", "consistency"}, name) {
+					return nil, fmt.Errorf("mount %d: property %q requires a value", index+1, name)
+				}
+				value = "true"
+			}
+			if name == "type" {
+				if typeSpecified {
+					return nil, fmt.Errorf("mount %d: duplicate property %q", index+1, name)
+				}
+				typeSpecified = true
+				mount.Type = value
+				continue
+			}
+			if _, found := mount.Properties[name]; found {
+				return nil, fmt.Errorf("mount %d: duplicate property %q", index+1, name)
+			}
+			mount.Properties[name] = value
+		}
+		properties, err := normalizeRunMountProperties(mount.Type, mount.Properties)
+		if err != nil {
+			return nil, fmt.Errorf("mount %d: %w", index+1, err)
+		}
+		mount.Properties = properties
+		// from= is validated once the graph has bound its immutable image source.
+		validate := mount
+		validate.Properties = make(map[string]string, len(properties))
+		for name, value := range properties {
+			if name != "from" {
+				validate.Properties[name] = value
+			}
+		}
+		if validate.Type == "cache" && validate.Properties["id"] == "" {
+			// The graph assigns implicit cache identities after binding inputs.
+			// Validate the remaining native options without freezing a fake ID.
+			validate.Properties["id"] = "validation"
+		}
+		if _, err := serializeRunMount(validate, "."); err != nil {
+			return nil, fmt.Errorf("mount %d: %w", index+1, err)
+		}
+		result = append(result, mount)
+	}
+	return result, nil
+}
+
+// TransientMountInstructions supplies planner-visible execution dependencies.
+func TransientMountInstructions(mounts []RunMount) []definition.Instruction {
+	result := make([]definition.Instruction, 0, len(mounts))
+	for _, mount := range mounts {
+		result = append(result, definition.Instruction{Name: "mount", Arguments: []string{mount.Type}, Properties: maps.Clone(mount.Properties)})
+	}
+	return result
 }

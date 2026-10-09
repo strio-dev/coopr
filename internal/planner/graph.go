@@ -134,6 +134,9 @@ func ProjectPublished(component *PublishedComponent) (*RawGraph, error) {
 	}
 	for i := range projected.Stages {
 		stage := &projected.Stages[i]
+		if binding := projected.FromBindings[stage.ID]; binding.AfterStage != "" {
+			stage.Dependencies = appendUnique(stage.Dependencies, binding.AfterStage)
+		}
 		if binding, ok := projected.FromBindings[stage.ID]; ok && binding.Kind == "stage" {
 			stage.Dependencies = appendUnique(stage.Dependencies, binding.Stage)
 		}
@@ -152,7 +155,7 @@ func projectRaw(def *definition.Definition) (*RawGraph, error) {
 	}
 	result := &RawGraph{}
 	aliases := map[string]bool{}
-	for pos, inst := range def.Instructions {
+	for pos, inst := range definition.FlattenLayers(def.Instructions) {
 		switch inst.Name {
 		case "from", "extend", "package":
 			name := inst.Properties["as"]

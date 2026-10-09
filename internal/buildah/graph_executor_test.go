@@ -239,7 +239,7 @@ func TestStandaloneGraphDefersComponentFailureToExecutor(t *testing.T) {
 		t.Fatal(err)
 	}
 	executor := &graphExecutor{}
-	_, err = executor.applyComponentOperation(context.Background(), nil, nil, imageconfig.New(), nil, v1.Platform{OS: runtime.GOOS, Architecture: runtime.GOARCH}, operations[0].(componentGraphOperation).planned, stageProgress{})
+	_, err = executor.applyComponentOperation(context.Background(), nil, nil, imageconfig.New(), v1.Platform{OS: runtime.GOOS, Architecture: runtime.GOARCH}, operations[0].(componentGraphOperation).planned, stageProgress{})
 	if err == nil || !strings.Contains(err.Error(), "component resolver") {
 		t.Fatalf("component interception error = %v", err)
 	}

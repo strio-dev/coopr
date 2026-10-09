@@ -10,7 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"coopr/internal/buildcontext"
 	"coopr/internal/cache"
 	"coopr/internal/definition"
 	"coopr/internal/imageconfig"
@@ -23,6 +25,7 @@ import (
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	upstream "go.podman.io/buildah"
 	"go.podman.io/buildah/define"
+	imagestorage "go.podman.io/image/v5/storage"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/storage"
 	orasoci "oras.land/oras-go/v2/content/oci"
@@ -90,7 +93,19 @@ func (executor *graphExecutor) resolveComponentInvocation(ctx context.Context, r
 	resolved, err := resolve(ctx, ComponentPlanRequest{
 		Resolver: executor.options.Resolver, Reference: resolveReference,
 		Parameters: maps.Clone(parameters), Platform: target, LocalParameters: local,
-		ResolveBase: executor.resolveBaseImage,
+		DeferImageSource: deferredPolicySource(executor.sourcePolicy), ResolveBase: executor.resolveBaseImage, TransientRunMounts: executor.options.TransientRunMounts,
+		BuildContexts: executor.options.BuildContexts,
+		ResolveContext: func(ctx context.Context, spec buildcontext.Spec, target v1.Platform) (ResolvedImageSource, error) {
+			platform, err := componentPlatformString(target)
+			if err != nil {
+				return ResolvedImageSource{}, err
+			}
+			key := graphNamedContextKey(spec.Name, platform)
+			if selected, found := executor.resolvedBases[key]; found {
+				return selected, nil
+			}
+			return executor.materializeNamedContext(ctx, spec, target)
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -200,9 +215,9 @@ func (executor *graphExecutor) prepareIsolatedStageComponents(ctx context.Contex
 }
 
 // applyComponentOperation executes one immutable component invocation against
-// the caller state at this exact source position, then compacts its net change
-// onto a fresh caller-based builder. The caller builder remains valid on error.
-func (executor *graphExecutor) applyComponentOperation(ctx context.Context, caller *upstream.Builder, builderOptions *upstream.BuilderOptions, logical *imageconfig.Config, rootBaseline *PackageRootMetadata, platform v1.Platform, operation planner.Operation, progress stageProgress) (_ *upstream.Builder, retErr error) {
+// the caller state at this exact source position, then adopts the selected whole output image
+// as the continuation base. The caller builder remains valid on error.
+func (executor *graphExecutor) applyComponentOperation(ctx context.Context, caller *upstream.Builder, builderOptions *upstream.BuilderOptions, logical *imageconfig.Config, platform v1.Platform, operation planner.Operation, progress stageProgress, adoption ...componentAdoptionContext) (_ *upstream.Builder, retErr error) {
 	if executor.options.Resolver == nil || executor.packageImport == nil {
 		return nil, errors.New("component invocation requires a Coopr component resolver")
 	}
@@ -217,6 +232,7 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 	if err != nil {
 		return nil, err
 	}
+	extendsCaller := componentOutputExtendsCaller(resolved.Plan)
 	release, err := executor.enterLocalComponent(resolved.localSourceIdentity)
 	if err != nil {
 		return nil, err
@@ -250,7 +266,14 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 		if stage.Kind != "from" || stage.Source == "" || strings.EqualFold(stage.Source, "scratch") || localNames[strings.ToLower(stage.Source)] {
 			continue
 		}
+		if stage.DeferredImageSource {
+			// The executor selects and pins this source after its producers finish.
+			continue
+		}
 		key := ResolvedBaseKey{Reference: stage.Source, Platform: stage.Platform}
+		if stage.SourceContext != "" {
+			key = graphNamedContextKey(stage.SourceContext, stage.Platform)
+		}
 		selected, selectedHere := resolved.SelectedBases[key]
 		if !selectedHere {
 			return nil, fmt.Errorf("component %s external base %q was not selected during planning", resolved.Identity, stage.Source)
@@ -260,8 +283,14 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 			return nil, fmt.Errorf("component %s external base %q changed after planning", resolved.Identity, stage.Source)
 		}
 	}
+	// Root metadata can change in a preceding RUN without an image layer.
+	rootBaseline, err := capturePackageRootMetadata(executor.store, caller)
+	if err != nil {
+		return nil, fmt.Errorf("capture current component caller root: %w", err)
+	}
 	var cacheInputConfig json.RawMessage
 	cacheable := executor.componentCache != nil && (len(executor.componentCache.readStores) != 0 || len(executor.componentCache.writeStores) != 0) && buildResultCacheEligible(executor.options.AddHosts) && componentCacheEligible(resolved, executor.options.RunControls)
+
 	if cacheable && executor.instructionRuntime == "" && componentCacheNeedsRuntime(resolved) {
 		cacheable = false
 	}
@@ -297,24 +326,66 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 		if err != nil {
 			return nil, fmt.Errorf("inspect component caller changes: %w", err)
 		}
-		commitOptions := upstream.CommitOptions{
-			PreferredManifestType: builderOptions.Format,
-			// This checkpoint is an internal component base, not a source
-			// instruction. Do not materialize an empty user-visible layer.
-			EmptyLayerIfEmptyDiff: true,
-			OmitLayerHistoryEntry: !filesystemChanged,
-			SystemContext:         builderOptions.SystemContext,
+		sourceManifest := digest.Digest("")
+		if len(adoption) != 0 && adoption[0].manifest != nil {
+			sourceManifest = *adoption[0].manifest
 		}
-		timestampPolicyFromOptions(executor.options).apply(&commitOptions)
-		callerImageID, _, callerManifest, err = caller.Commit(ctx, nil, commitOptions)
-		if err != nil {
-			return nil, fmt.Errorf("checkpoint component caller: %w", err)
+		if sourceManifest == "" && caller.FromImageID != "" {
+			sourceManifest, err = storedImageDefaultManifestDigest(executor.store, caller.FromImageID)
+			if err != nil {
+				return nil, err
+			}
+		}
+		metadataChanged := false
+		if caller.FromImageID != "" {
+			annotations, err := componentImageAnnotations(ctx, executor.store, caller.FromImageID, sourceManifest, builderOptions.SystemContext)
+			if err != nil {
+				return nil, fmt.Errorf("read component caller annotations: %w", err)
+			}
+			metadataChanged = !maps.Equal(annotations, caller.Annotations())
+		}
+		if !filesystemChanged && !metadataChanged && caller.FromImageID != "" && len(caller.PrependedEmptyLayers) == 0 && len(caller.AppendedEmptyLayers) == 0 && len(caller.AppendedLinkedLayers) == 0 {
+			callerImageID, callerManifest = caller.FromImageID, sourceManifest
+		} else {
+			commitOptions := upstream.CommitOptions{
+				PreferredManifestType: builderOptions.Format,
+				// This checkpoint is an internal component base, not a source
+				// instruction. Do not materialize an empty user-visible layer.
+				EmptyLayerIfEmptyDiff: true,
+				OmitLayerHistoryEntry: !filesystemChanged,
+				SystemContext:         builderOptions.SystemContext,
+			}
+			// A metadata-only internal checkpoint retains its parent's creation time,
+			// avoiding a new caller identity on each otherwise unchanged invocation.
+			if caller.FromImageID != "" && !filesystemChanged && len(caller.PrependedEmptyLayers) == 0 && len(caller.AppendedEmptyLayers) == 0 && len(caller.AppendedLinkedLayers) == 0 {
+				raw, err := packageImageConfigSelected(ctx, executor.store, caller.FromImageID, builderOptions.SystemContext, sourceManifest)
+				if err != nil {
+					return nil, err
+				}
+				var image v1.Image
+				if err := json.Unmarshal(raw, &image); err != nil {
+					return nil, err
+				}
+				created := time.Time{}
+				if image.Created != nil {
+					created = *image.Created
+				}
+				commitOptions.HistoryTimestamp = &created
+			}
+
+			timestampPolicyFromOptions(executor.options).apply(&commitOptions)
+			callerImageID, _, callerManifest, err = caller.Commit(ctx, nil, commitOptions)
+			if err != nil {
+				return nil, fmt.Errorf("checkpoint component caller: %w", err)
+			}
 		}
 	}
 	if err := adoptCommittedConfig(ctx, executor.store, callerImageID, builderOptions.SystemContext, logical); err != nil {
 		return nil, fmt.Errorf("reconcile component caller config: %w", err)
 	}
 	var componentImageID string
+	var componentManifest digest.Digest
+	var componentBaseImageID string
 	var componentConfig *imageconfig.Config
 	var componentRoot *PackageRootMetadata
 	var candidateKey *cache.Key
@@ -336,18 +407,26 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 			if configErr == nil && eligible {
 				key, keyErr := executor.componentCache.key(executor, identity, resolved, operation.Properties, platform)
 				if keyErr == nil {
+					if key.Inputs == nil {
+						key.Inputs = map[string]digest.Digest{}
+					}
+					key.Inputs["caller-image"] = callerManifest
 					candidateKey = &key
-					var hit bool
+					var entry instructionCacheEntry
 					if !executor.options.NoCache {
-						componentImageID, componentConfig, hit, configErr = executor.componentCache.lookup(ctx, executor, key, callerImageID, postCommitConfig, rootBaseline, platform, builderOptions.SystemContext)
+						entry, componentConfig, configErr = executor.componentCache.lookup(ctx, executor, key, builderOptions.SystemContext, componentCacheCaller{ImageID: callerImageID, Manifest: callerManifest, RetainsCallerAllowed: componentOutputExtendsCaller(resolved.Plan)})
 						if configErr != nil {
 							return nil, fmt.Errorf("component cache lookup: %w", configErr)
 						}
-						if hit {
+						if entry.ImageID != "" {
+							componentImageID = entry.ImageID
+							componentBaseImageID = entry.BaseImageID
+							extendsCaller = *entry.RetainsCaller
 							cacheHit = true
 							progress.line("--> Using component cache %s", resolved.Identity)
 							progress.image(componentImageID)
-							componentRoot = rootBaseline
+							componentRoot = entry.RootMetadata
+							componentManifest = entry.ManifestDigest
 						}
 					}
 				} else {
@@ -380,9 +459,16 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 			stageTotal = definitionStageCount(resolved.Artifact.Component.Component.Definition)
 		}
 		bindings := &graphBindings{
+			observeManifest: func(id string, manifest digest.Digest, baseID string, retainsCaller bool) {
+				if id == outputID {
+					componentManifest = manifest
+					componentBaseImageID = baseID
+					extendsCaller = retainsCaller
+				}
+			},
 			progressStageTotal: stageTotal,
 			progressPrefix:     progress.prefix + "[component " + progressText(operation.Arguments[0]) + "] ",
-			caller:             stageState{storageImageID: callerImageID, manifestDigest: callerManifest, config: logical.Clone()},
+			caller:             stageState{storageImageID: callerImageID, manifestDigest: callerManifest, config: logical.Clone(), root: rootBaseline},
 			packages:           packages,
 			cacheScope: CacheMountScope{
 				Kind: "component", Source: resolved.Identity, Platform: platform,
@@ -406,14 +492,33 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 	if componentImageID == "" || componentConfig == nil || componentRoot == nil {
 		return nil, fmt.Errorf("component %s output stage %s was not executed", resolved.Identity, outputID)
 	}
+	if len(adoption) != 0 && adoption[0].grouped && !extendsCaller {
+		return nil, errors.New("replacement component output cannot cross a layer group's image lineage")
+	}
+	if componentBaseImageID == "" {
+		componentBaseImageID, _, err = executor.zeroLayerCallerImage(ctx, imageconfig.New(), platform, builderOptions.SystemContext)
+		if err != nil {
+			return nil, fmt.Errorf("capture replacement scratch base: %w", err)
+		}
+	}
 	if candidateKey != nil && executor.componentCache != nil && !cacheHit {
-		// Compaction retains the caller's root metadata. Cache that same root
-		// rather than root changes discarded by the image-layer diff.
-		executor.componentCache.record(ctx, executor, *candidateKey, componentImageID, componentConfig, rootBaseline, platform, builderOptions.SystemContext)
+		// Cache the selected image and its current root metadata together.
+		executor.componentCache.record(ctx, executor, *candidateKey, componentImageID, componentManifest, componentConfig, componentRoot, builderOptions.SystemContext, componentBaseImageID, extendsCaller)
 	}
 	if executor.options.Lifecycle.NoLayers {
+		if !extendsCaller {
+			nonLayerBaseID = componentBaseImageID
+			if nonLayerBaseID == "" {
+				nonLayerBaseID, _, err = executor.zeroLayerCallerImage(ctx, imageconfig.New(), platform, builderOptions.SystemContext)
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
+
 		nonLayerOptions := *builderOptions
 		nonLayerOptions.FromImage = nonLayerBaseID
+		nonLayerOptions.PreserveBaseImageAnns = true
 		nonLayerOptions.PullPolicy = define.PullNever
 		nonLayerOptions.Container = executor.builderContainerName("component")
 		combined, err := upstream.NewBuilder(ctx, executor.store, nonLayerOptions)
@@ -422,6 +527,15 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 		}
 		combined.FromImage = nonLayerBaseID
 		combined.FromImageID = nonLayerBaseID
+		if extendsCaller {
+			for _, key := range []string{v1.AnnotationBaseImageName, v1.AnnotationBaseImageDigest} {
+				if value, found := caller.Annotations()[key]; found {
+					combined.SetAnnotation(key, value)
+				} else {
+					combined.UnsetAnnotation(key)
+				}
+			}
+		}
 		keepCombined := false
 		defer func() {
 			if !keepCombined {
@@ -431,6 +545,9 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 		if err := applyComponentDeltaMutable(ctx, executor.store, nonLayerBaseID, componentImageID, combined, os.TempDir()); err != nil {
 			return nil, fmt.Errorf("apply nonlayered component %s: %w", resolved.Identity, err)
 		}
+		if err := restorePackageRootMetadata(executor.store, combined, componentRoot); err != nil {
+			return nil, err
+		}
 		if err := syncBuilderConfig(combined, componentConfig); err != nil {
 			return nil, fmt.Errorf("sync nonlayered component %s config: %w", resolved.Identity, err)
 		}
@@ -439,43 +556,62 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 		}
 		*logical = *componentConfig.Clone()
 		*builderOptions = nonLayerOptions
+		if len(adoption) != 0 && adoption[0].manifest != nil {
+			// The returned builder has a mutable net delta against its effective base.
+			*adoption[0].manifest = ""
+		}
+		if !extendsCaller && len(adoption) != 0 && adoption[0].effectiveBase != nil {
+			*adoption[0].effectiveBase = nonLayerBaseID
+		}
+		if !extendsCaller && len(adoption) != 0 && adoption[0].lineage != nil {
+			*adoption[0].lineage = false
+		}
 		keepCombined = true
 		return combined, nil
 	}
 
-	compactOptions := *builderOptions
-	compactBase, err := oci.SelectedStoredImage(ctx, executor.store, callerImageID, callerManifest)
+	adoptOptions := *builderOptions
+	selectedOutput, err := oci.SelectedStoredImage(ctx, executor.store, componentImageID, componentManifest)
 	if err != nil {
-		return nil, fmt.Errorf("select component caller manifest %s: %w", callerManifest, err)
+		return nil, fmt.Errorf("select component output manifest: %w", err)
 	}
-	compactOptions.FromImage = compactBase
-	compactOptions.PullPolicy = define.PullNever
-	compactOptions.Container = executor.builderContainerName("component")
-	compacted, err := upstream.NewBuilder(ctx, executor.store, compactOptions)
+	adoptOptions.FromImage = selectedOutput
+	adoptOptions.PreserveBaseImageAnns = true
+	adoptOptions.PullPolicy = define.PullNever
+	adoptOptions.Container = executor.builderContainerName("component")
+	adopted, err := upstream.NewBuilder(ctx, executor.store, adoptOptions)
 	if err != nil {
-		return nil, fmt.Errorf("create component output builder: %w", err)
+		return nil, fmt.Errorf("adopt component output: %w", err)
 	}
-	compacted.FromImage = callerImageID
-	compacted.FromImageID = callerImageID
-	keepCompacted := false
+	adopted.FromImage, adopted.FromImageID = componentImageID, componentImageID
+	keep := false
 	defer func() {
-		if !keepCompacted {
-			retErr = errors.Join(retErr, compacted.Delete())
+		if !keep {
+			retErr = errors.Join(retErr, adopted.Delete())
 		}
 	}()
-	if err := ApplyComponentDelta(ctx, executor.store, callerImageID, componentImageID, compacted, os.TempDir()); err != nil {
-		return nil, fmt.Errorf("compact component %s: %w", resolved.Identity, err)
+	if err := restorePackageRootMetadata(executor.store, adopted, componentRoot); err != nil {
+		return nil, fmt.Errorf("restore component root: %w", err)
 	}
-	if err := syncBuilderConfig(compacted, componentConfig); err != nil {
-		return nil, fmt.Errorf("sync component %s config: %w", resolved.Identity, err)
+	if err := syncBuilderConfig(adopted, componentConfig); err != nil {
+		return nil, fmt.Errorf("sync component config: %w", err)
 	}
 	if err := caller.Delete(); err != nil {
-		return nil, fmt.Errorf("delete component caller builder: %w", err)
+		return nil, fmt.Errorf("delete component caller: %w", err)
 	}
 	*logical = *componentConfig.Clone()
-	*builderOptions = compactOptions
-	keepCompacted = true
-	return compacted, nil
+	*builderOptions = adoptOptions
+	if len(adoption) != 0 && adoption[0].manifest != nil {
+		*adoption[0].manifest = componentManifest
+	}
+	if !extendsCaller && len(adoption) != 0 && adoption[0].effectiveBase != nil {
+		*adoption[0].effectiveBase = componentBaseImageID
+	}
+	if !extendsCaller && len(adoption) != 0 && adoption[0].lineage != nil {
+		*adoption[0].lineage = false
+	}
+	keep = true
+	return adopted, nil
 }
 
 func checkCallerCompatibility(caller *upstream.Builder, logical *imageconfig.Config, plan *planner.Plan) (retErr error) {
@@ -488,7 +624,7 @@ func checkCallerCompatibility(caller *upstream.Builder, logical *imageconfig.Con
 		return fmt.Errorf("mount caller rootfs: %w", err)
 	}
 	defer func() { retErr = errors.Join(retErr, caller.Unmount()) }()
-	return CheckCompatibility(rootfs, raw, plan.Platform, plan.Stages)
+	return CheckCompatibility(rootfs, raw, plan.Platform, append(append([]planner.Stage(nil), plan.Stages...), plan.CompatibilityRoots...))
 }
 
 func componentBuilderHasFilesystemChanges(store storage.Store, builder *upstream.Builder) (bool, error) {
@@ -602,4 +738,64 @@ func (executor *graphExecutor) retainComponentBases(reference string, resolved *
 		executor.resolvedBases[key] = selected
 	}
 	return nil
+}
+
+// componentOutputExtendsCaller follows only filesystem ancestry, not COPY,
+// mount or ordering dependencies, to distinguish replacement images.
+func componentOutputExtendsCaller(plan *planner.Plan) bool {
+	if plan == nil || len(plan.Outputs) != 1 {
+		return false
+	}
+	stages := map[string]planner.Stage{}
+	for _, stage := range plan.Stages {
+		stages[stage.ID] = stage
+		if stage.Name != "" {
+			stages[strings.ToLower(stage.Name)] = stage
+		}
+	}
+	current := plan.Outputs[0]
+	seen := map[string]bool{}
+	for !seen[current] {
+		seen[current] = true
+		stage, ok := stages[current]
+		if !ok {
+			return false
+		}
+		if stage.Kind == "extend" {
+			return true
+		}
+		if stage.Kind != "from" || stage.SourceContext != "" {
+			return false
+		}
+		current = strings.ToLower(stage.Source)
+	}
+	return false
+}
+
+type componentAdoptionContext struct {
+	lineage       *bool
+	effectiveBase *string
+	grouped       bool
+	manifest      *digest.Digest
+}
+
+func componentImageAnnotations(ctx context.Context, store storage.Store, imageID string, selected digest.Digest, system *types.SystemContext) (_ map[string]string, retErr error) {
+	reference, err := imagestorage.Transport.NewStoreReference(store, nil, imageID)
+	if err != nil {
+		return nil, err
+	}
+	source, err := reference.NewImageSource(ctx, system)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { retErr = errors.Join(retErr, source.Close()) }()
+	raw, _, err := source.GetManifest(ctx, optionalDigest(selected))
+	if err != nil {
+		return nil, err
+	}
+	var manifest v1.Manifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return nil, err
+	}
+	return manifest.Annotations, nil
 }

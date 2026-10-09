@@ -14,11 +14,14 @@ import (
 	"syscall"
 	"time"
 
+	"coopr/internal/buildcontext"
 	"coopr/internal/imageconfig"
 	"coopr/internal/oci"
 	"coopr/internal/planner"
 	"github.com/opencontainers/go-digest"
+	"go.podman.io/buildah/pkg/sourcepolicy"
 	"go.podman.io/image/v5/types"
+	"go.podman.io/storage"
 	"go.podman.io/storage/pkg/reexec"
 )
 
@@ -28,63 +31,72 @@ const (
 )
 
 type stageWorkerRequest struct {
-	ProgressReference string              `json:"progress_reference,omitempty"`
-	ProgressPrefix    string              `json:"progress_prefix,omitempty"`
-	Lifecycle         LifecycleControls   `json:"lifecycle,omitempty"`
-	Mode              planner.Mode        `json:"mode"`
-	Stage             planner.Stage       `json:"stage"`
-	Base              string              `json:"base"`
-	BaseManifest      digest.Digest       `json:"base_manifest,omitempty"`
-	Logical           json.RawMessage     `json:"logical"`
-	Operations        []planner.Operation `json:"operations,omitempty"`
-	Aliases           map[string]string   `json:"aliases,omitempty"`
-	Images            map[string]string   `json:"images,omitempty"`
-	ResolvedBases     []stageWorkerBase   `json:"resolved_bases,omitempty"`
-	ComponentPins     map[string]string   `json:"component_pins,omitempty"`
-	CacheScope        *CacheMountScope    `json:"cache_scope,omitempty"`
-	Jobs              int                 `json:"jobs,omitempty"`
-	LogRusage         bool                `json:"log_rusage,omitempty"`
-	RusageLogFile     string              `json:"rusage_log_file,omitempty"`
-	Output            bool                `json:"output,omitempty"`
-	CaptureRoot       bool                `json:"capture_root,omitempty"`
-	Store             StoreOptions        `json:"store"`
-	ContextDir        string              `json:"context_dir,omitempty"`
-	IgnoreFile        string              `json:"ignore_file,omitempty"`
-	ContextArtifacts  []string            `json:"context_artifacts,omitempty"`
-	NoCache           bool                `json:"no_cache,omitempty"`
-	CacheLocalDir     string              `json:"cache_local_dir,omitempty"`
-	CacheRepository   string              `json:"cache_repository,omitempty"`
-	CacheFrom         []CacheSpec         `json:"cache_from,omitempty"`
-	CacheTo           []CacheSpec         `json:"cache_to,omitempty"`
-	ComponentRelay    string              `json:"component_relay,omitempty"`
-	InstructionRelay  string              `json:"instruction_relay,omitempty"`
-	Network           string              `json:"network,omitempty"`
-	AddHosts          []string            `json:"add_hosts,omitempty"`
-	ProxyArgs         map[string]string   `json:"proxy_args,omitempty"`
-	RunControls       RunControls         `json:"run_controls,omitempty"`
-	ImageControls     ImageControls       `json:"image_controls,omitempty"`
-	Timestamp         *int64              `json:"timestamp,omitempty"`
-	CacheTTL          *time.Duration      `json:"cache_ttl,omitempty"`
-	SourceDateEpoch   *int64              `json:"source_date_epoch,omitempty"`
-	RewriteTimestamp  bool                `json:"rewrite_timestamp,omitempty"`
-	Allow             []string            `json:"allow,omitempty"`
-	Secrets           []string            `json:"secrets,omitempty"`
-	SSH               []string            `json:"ssh,omitempty"`
-	Isolation         string              `json:"isolation,omitempty"`
-	Runtime           string              `json:"runtime,omitempty"`
-	ImageOutput       Output              `json:"image_output"`
-	JobID             string              `json:"job_id,omitempty"`
-	SignaturePolicy   string              `json:"signature_policy_path,omitempty"`
-	BigFilesTempDir   string              `json:"big_files_temporary_dir,omitempty"`
-	AuthFile          string              `json:"auth_file,omitempty"`
-	CertDir           string              `json:"cert_dir,omitempty"`
-	TLSVerify         *bool               `json:"tls_verify,omitempty"`
-	RegistryOptions   oci.Options         `json:"registry_options,omitempty"`
-	ResolverEnabled   bool                `json:"resolver_enabled,omitempty"`
-	ComponentStore    string              `json:"component_store,omitempty"`
-	Pull              bool                `json:"pull,omitempty"`
-	PullPolicy        string              `json:"pull_policy,omitempty"`
-	ResultPath        string              `json:"result_path"`
+	RetainsCaller         bool                 `json:"retains_caller,omitempty"`
+	BaseRoot              *PackageRootMetadata `json:"base_root,omitempty"`
+	ProgressReference     string               `json:"progress_reference,omitempty"`
+	ProgressPrefix        string               `json:"progress_prefix,omitempty"`
+	Lifecycle             LifecycleControls    `json:"lifecycle,omitempty"`
+	Mode                  planner.Mode         `json:"mode"`
+	Stage                 planner.Stage        `json:"stage"`
+	Base                  string               `json:"base"`
+	BaseName              string               `json:"base_name,omitempty"`
+	PreserveBaseImageAnns bool                 `json:"preserve_base_image_annotations,omitempty"`
+	BaseManifest          digest.Digest        `json:"base_manifest,omitempty"`
+	Logical               json.RawMessage      `json:"logical"`
+	Operations            []planner.Operation  `json:"operations,omitempty"`
+	Aliases               map[string]string    `json:"aliases,omitempty"`
+	Images                map[string]string    `json:"images,omitempty"`
+	ResolvedBases         []stageWorkerBase    `json:"resolved_bases,omitempty"`
+	ComponentPins         map[string]string    `json:"component_pins,omitempty"`
+	CacheScope            *CacheMountScope     `json:"cache_scope,omitempty"`
+	Jobs                  int                  `json:"jobs,omitempty"`
+	LogRusage             bool                 `json:"log_rusage,omitempty"`
+	RusageLogFile         string               `json:"rusage_log_file,omitempty"`
+	Output                bool                 `json:"output,omitempty"`
+	CaptureRoot           bool                 `json:"capture_root,omitempty"`
+	Store                 StoreOptions         `json:"store"`
+	ContextPrepared       bool                 `json:"context_prepared,omitempty"`
+	BuildContexts         []buildcontext.Spec  `json:"build_contexts,omitempty"`
+	TransientRunMounts    []RunMount           `json:"transient_run_mounts,omitempty"`
+	ContextDir            string               `json:"context_dir,omitempty"`
+	SourcePolicyFile      string               `json:"source_policy_file,omitempty"`
+	SourcePolicy          *sourcepolicy.Policy `json:"source_policy,omitempty"`
+	IgnoreFile            string               `json:"ignore_file,omitempty"`
+	ContextArtifacts      []string             `json:"context_artifacts,omitempty"`
+	NoCache               bool                 `json:"no_cache,omitempty"`
+	CacheLocalDir         string               `json:"cache_local_dir,omitempty"`
+	CacheRepository       string               `json:"cache_repository,omitempty"`
+	CacheFrom             []CacheSpec          `json:"cache_from,omitempty"`
+	CacheTo               []CacheSpec          `json:"cache_to,omitempty"`
+	ComponentRelay        string               `json:"component_relay,omitempty"`
+	InstructionRelay      string               `json:"instruction_relay,omitempty"`
+	Network               string               `json:"network,omitempty"`
+	AddHosts              []string             `json:"add_hosts,omitempty"`
+	ProxyArgs             map[string]string    `json:"proxy_args,omitempty"`
+	RunControls           RunControls          `json:"run_controls,omitempty"`
+	ImageControls         ImageControls        `json:"image_controls,omitempty"`
+	Timestamp             *int64               `json:"timestamp,omitempty"`
+	CacheTTL              *time.Duration       `json:"cache_ttl,omitempty"`
+	SourceDateEpoch       *int64               `json:"source_date_epoch,omitempty"`
+	RewriteTimestamp      bool                 `json:"rewrite_timestamp,omitempty"`
+	Allow                 []string             `json:"allow,omitempty"`
+	Secrets               []string             `json:"secrets,omitempty"`
+	SSH                   []string             `json:"ssh,omitempty"`
+	Isolation             string               `json:"isolation,omitempty"`
+	Runtime               string               `json:"runtime,omitempty"`
+	ImageOutput           Output               `json:"image_output"`
+	JobID                 string               `json:"job_id,omitempty"`
+	SignaturePolicy       string               `json:"signature_policy_path,omitempty"`
+	BigFilesTempDir       string               `json:"big_files_temporary_dir,omitempty"`
+	AuthFile              string               `json:"auth_file,omitempty"`
+	CertDir               string               `json:"cert_dir,omitempty"`
+	TLSVerify             *bool                `json:"tls_verify,omitempty"`
+	RegistryOptions       oci.Options          `json:"registry_options,omitempty"`
+	ResolverEnabled       bool                 `json:"resolver_enabled,omitempty"`
+	ComponentStore        string               `json:"component_store,omitempty"`
+	Pull                  bool                 `json:"pull,omitempty"`
+	PullPolicy            string               `json:"pull_policy,omitempty"`
+	ResultPath            string               `json:"result_path"`
 }
 
 type stageWorkerBase struct {
@@ -93,6 +105,8 @@ type stageWorkerBase struct {
 }
 
 type stageWorkerResponse struct {
+	RetainsCaller         bool                            `json:"retains_caller,omitempty"`
+	BaseImageID           string                          `json:"base_image_id,omitempty"`
 	ImageID               string                          `json:"image_id,omitempty"`
 	ManifestDigest        digest.Digest                   `json:"manifest_digest,omitempty"`
 	Config                json.RawMessage                 `json:"config,omitempty"`
@@ -167,21 +181,24 @@ func (executor *graphExecutor) executeGraphStageIsolated(ctx context.Context, pl
 	request := stageWorkerRequest{
 		ProgressPrefix:    prepared.progressPrefix,
 		ProgressReference: executor.options.ProgressReference,
-		Mode:              plan.Mode, Stage: prepared.stage, Base: prepared.base, BaseManifest: prepared.baseManifest, Logical: logical,
+		Mode:              plan.Mode, Stage: prepared.stage, Base: prepared.base, BaseName: prepared.baseName, BaseRoot: prepared.baseRoot, RetainsCaller: prepared.retainsCaller, PreserveBaseImageAnns: prepared.preserveBaseImageAnnotations, BaseManifest: prepared.baseManifest, Logical: logical,
 		Operations: prepared.operations, Aliases: aliases, Images: encodedImages,
 		CacheScope: prepared.cacheScope, Jobs: 1, LogRusage: executor.options.LogRusage, RusageLogFile: executor.options.RusageLogFile,
-		Output: stageWorkerOutput(prepared.stage.ID, imageOutputID), CaptureRoot: observed[prepared.stage.ID],
-		Store: executor.options.Store, ContextDir: executor.options.ContextDir, IgnoreFile: executor.options.IgnoreFile,
-		ContextArtifacts: append(append([]string(nil), executor.options.ContextArtifacts...), jobDir),
-		NoCache:          executor.options.NoCache,
-		CacheLocalDir:    executor.options.CacheLocalDir,
-		CacheRepository:  executor.options.CacheRepository,
-		CacheFrom:        slices.Clone(executor.options.CacheFrom),
-		CacheTo:          slices.Clone(executor.options.CacheTo),
-		Network:          executor.options.Network,
-		AddHosts:         append([]string(nil), executor.options.AddHosts...),
-		ProxyArgs:        cloneStringMap(executor.options.ProxyArgs),
-		RunControls:      executor.options.RunControls, Lifecycle: executor.options.Lifecycle,
+		Output: stageWorkerOutput(prepared.stage.ID, imageOutputID), CaptureRoot: graphStageNeedsRootMetadata(plan, prepared.stage.ID, observed),
+		Store: executor.options.Store, ContextDir: executor.options.ContextDir, SourcePolicyFile: executor.options.SourcePolicyFile, SourcePolicy: executor.sourcePolicy, IgnoreFile: executor.options.IgnoreFile,
+		ContextArtifacts:   append(append([]string(nil), executor.options.ContextArtifacts...), jobDir),
+		ContextPrepared:    executor.options.ContextPrepared,
+		TransientRunMounts: executor.options.TransientRunMounts,
+		BuildContexts:      executor.options.BuildContexts,
+		NoCache:            executor.options.NoCache,
+		CacheLocalDir:      executor.options.CacheLocalDir,
+		CacheRepository:    executor.options.CacheRepository,
+		CacheFrom:          slices.Clone(executor.options.CacheFrom),
+		CacheTo:            slices.Clone(executor.options.CacheTo),
+		Network:            executor.options.Network,
+		AddHosts:           append([]string(nil), executor.options.AddHosts...),
+		ProxyArgs:          cloneStringMap(executor.options.ProxyArgs),
+		RunControls:        executor.options.RunControls, Lifecycle: executor.options.Lifecycle,
 		ImageControls:    executor.options.ImageControls,
 		Timestamp:        executor.options.Timestamp,
 		CacheTTL:         executor.options.CacheTTL,
@@ -236,6 +253,12 @@ func (executor *graphExecutor) executeGraphStageIsolated(ctx context.Context, pl
 		return executedGraphStage{}, errors.Join(processErr, fmt.Errorf("stage worker files retained at %s because process exit was not confirmed", jobDir))
 	}
 	response, responseErr := readStageWorkerResponse(request.ResultPath)
+	return executor.completeStageWorkerResponse(ctx, prepared.stage.ID, response, responseErr, processErr, ownedJobID, jobID)
+}
+
+func (executor *graphExecutor) completeStageWorkerResponse(ctx context.Context, stageID string, response stageWorkerResponse, responseErr, processErr error, ownedJobID bool, jobID string) (executedGraphStage, error) {
+	finished, resultErr := stageWorkerResult(response, stageID, executor.store)
+	responseErr = errors.Join(responseErr, resultErr)
 	var cleanupErr error
 	failed := processErr != nil || responseErr != nil || response.Error != ""
 	if ownedJobID && (responseErr != nil || executor.options.Lifecycle.removeBuilder(failed, ctx.Err() != nil)) {
@@ -243,47 +266,54 @@ func (executor *graphExecutor) executeGraphStageIsolated(ctx context.Context, pl
 			cleanupErr = fmt.Errorf("clean isolated stage worker: %w", err)
 		}
 	}
-	if responseErr == nil && response.Error != "" {
-		if ctx.Err() != nil {
-			return executedGraphStage{}, errors.Join(ctx.Err(), errors.New(response.Error), processErr, cleanupErr)
-		}
-		return executedGraphStage{}, errors.Join(errors.New(response.Error), cleanupErr)
+	if response.Error != "" {
+		responseErr = errors.Join(responseErr, errors.New(response.Error))
 	}
-	if processErr != nil {
-		if ctx.Err() != nil {
-			return executedGraphStage{}, errors.Join(ctx.Err(), processErr, cleanupErr)
-		}
-		return executedGraphStage{}, errors.Join(processErr, responseErr, cleanupErr)
-	}
-	if responseErr != nil {
-		return executedGraphStage{}, errors.Join(responseErr, cleanupErr)
-	}
-	if cleanupErr != nil {
-		return executedGraphStage{}, cleanupErr
-	}
-	if err := ctx.Err(); err != nil {
-		return executedGraphStage{}, err
+	if err := errors.Join(processErr, ctx.Err(), responseErr, cleanupErr); err != nil {
+		return finished, err
 	}
 	executor.stageRelayMu.Lock()
 	defer executor.stageRelayMu.Unlock()
 	if executor.componentCache != nil {
 		if err := executor.componentCache.acceptRelayedCandidates(response.ComponentRelays); err != nil {
-			return executedGraphStage{}, fmt.Errorf("accept stage %s component cache: %w", prepared.stage.ID, err)
+			return finished, fmt.Errorf("accept stage %s component cache: %w", stageID, err)
 		}
 		executor.componentCache.stats = addCacheStats(executor.componentCache.stats, response.ComponentCacheStats)
 	}
 	if executor.instructionPortableCache != nil {
 		if err := executor.instructionPortableCache.acceptRelayedCandidates(response.InstructionRelays); err != nil {
-			return executedGraphStage{}, fmt.Errorf("accept stage %s instruction cache: %w", prepared.stage.ID, err)
+			return finished, fmt.Errorf("accept stage %s instruction cache: %w", stageID, err)
 		}
 		executor.instructionPortableCache.stats = addCacheStats(executor.instructionPortableCache.stats, response.InstructionCacheStats)
 	}
+	return finished, nil
+}
+
+// stageWorkerResult retains a validated committed output even when the worker
+// subsequently reports cancellation or fails while closing its resources.
+func stageWorkerResult(response stageWorkerResponse, stageID string, store storage.Store) (executedGraphStage, error) {
+	if response.ImageID == "" {
+		if response.Error != "" {
+			return executedGraphStage{}, nil
+		}
+		return executedGraphStage{}, fmt.Errorf("stage %s result lacks an image ID", stageID)
+	}
+	if err := digest.NewDigestFromEncoded(digest.SHA256, response.ImageID).Validate(); err != nil {
+		return executedGraphStage{}, fmt.Errorf("stage %s result image ID: %w", stageID, err)
+	}
+	image, err := store.Image(response.ImageID)
+	if err != nil {
+		return executedGraphStage{}, fmt.Errorf("stage %s result image unavailable: %w", stageID, err)
+	}
+	if image.ID != response.ImageID {
+		return executedGraphStage{}, fmt.Errorf("stage %s result image ID is not canonical", stageID)
+	}
 	finalConfig, err := imageconfig.Parse(response.Config)
 	if err != nil {
-		return executedGraphStage{}, fmt.Errorf("decode stage %s result config: %w", prepared.stage.ID, err)
+		return executedGraphStage{}, fmt.Errorf("decode stage %s result config: %w", stageID, err)
 	}
 	return executedGraphStage{
-		state:  stageState{storageImageID: response.ImageID, manifestDigest: response.ManifestDigest, config: finalConfig},
+		state:  stageState{storageImageID: response.ImageID, manifestDigest: response.ManifestDigest, config: finalConfig, root: response.Root, baseImageID: response.BaseImageID, retainsCaller: response.RetainsCaller},
 		result: response.Result,
 		root:   response.Root,
 	}, nil
@@ -373,17 +403,20 @@ func executeStageWorkerRequest(ctx context.Context, request stageWorkerRequest) 
 	options := PlanOptions{
 		ProgressReference: request.ProgressReference,
 		ProgressPrefix:    request.ProgressPrefix,
-		Store:             request.Store, ContextDir: request.ContextDir, IgnoreFile: request.IgnoreFile, ContextArtifacts: request.ContextArtifacts,
+		Store:             request.Store, ContextDir: request.ContextDir, SourcePolicyFile: request.SourcePolicyFile, SourcePolicy: request.SourcePolicy, IgnoreFile: request.IgnoreFile, ContextArtifacts: request.ContextArtifacts,
 		Isolation: request.Isolation, Runtime: request.Runtime, Output: request.ImageOutput, JobID: request.JobID,
-		NoCache:         request.NoCache,
-		CacheLocalDir:   request.CacheLocalDir,
-		CacheRepository: request.CacheRepository,
-		CacheFrom:       request.CacheFrom,
-		CacheTo:         request.CacheTo,
-		Network:         request.Network,
-		AddHosts:        request.AddHosts,
-		ProxyArgs:       request.ProxyArgs,
-		RunControls:     request.RunControls, Lifecycle: request.Lifecycle,
+		ContextPrepared:    request.ContextPrepared,
+		TransientRunMounts: request.TransientRunMounts,
+		BuildContexts:      request.BuildContexts,
+		NoCache:            request.NoCache,
+		CacheLocalDir:      request.CacheLocalDir,
+		CacheRepository:    request.CacheRepository,
+		CacheFrom:          request.CacheFrom,
+		CacheTo:            request.CacheTo,
+		Network:            request.Network,
+		AddHosts:           request.AddHosts,
+		ProxyArgs:          request.ProxyArgs,
+		RunControls:        request.RunControls, Lifecycle: request.Lifecycle,
 		ImageControls:           request.ImageControls,
 		Timestamp:               request.Timestamp,
 		CacheTTL:                request.CacheTTL,
@@ -419,7 +452,7 @@ func executeStageWorkerRequest(ctx context.Context, request stageWorkerRequest) 
 		}
 	}
 	finished, err := executor.executeGraphStage(ctx, &planner.Plan{Mode: request.Mode}, preparedGraphStage{
-		stage: request.Stage, base: request.Base, baseManifest: request.BaseManifest, logical: logical, operations: request.Operations,
+		stage: request.Stage, base: request.Base, baseName: request.BaseName, baseRoot: request.BaseRoot, retainsCaller: request.RetainsCaller, preserveBaseImageAnnotations: request.PreserveBaseImageAnns, baseManifest: request.BaseManifest, logical: logical, operations: request.Operations,
 		cacheMountID: cacheMountID, cacheScope: request.CacheScope, progressPrefix: request.ProgressPrefix,
 	}, request.Aliases, images, outputStageID(request), observedStage(request), true)
 	if err != nil {
@@ -430,7 +463,7 @@ func executeStageWorkerRequest(ctx context.Context, request stageWorkerRequest) 
 		return response, fmt.Errorf("marshal stage %s result config: %w", request.Stage.ID, err)
 	}
 	response = stageWorkerResponse{
-		ImageID: finished.state.storageImageID, ManifestDigest: finished.state.manifestDigest, Config: config, Result: finished.result, Root: finished.root,
+		BaseImageID: finished.state.baseImageID, RetainsCaller: finished.state.retainsCaller, ImageID: finished.state.storageImageID, ManifestDigest: finished.state.manifestDigest, Config: config, Result: finished.result, Root: finished.root,
 		ComponentCacheStats: cacheStats(executor.componentCache), InstructionCacheStats: portableInstructionCacheStats(executor.instructionPortableCache),
 	}
 	if executor.componentCache != nil {

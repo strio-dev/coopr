@@ -20,10 +20,15 @@ func newBuildCommand() *cobra.Command {
 
 func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 	var ignoreFile string
-	var definitionFile, from, target, format, network, pullPolicy string
+	var definitionFiles []string
+	var sourcePolicyFile string
+	var from, target, format, network, pullPolicy string
 	var osName, arch, variant string
 	var tags []string
-	var metadataFile, iidFile string
+	var metadataFile, iidFile, iidFileRaw string
+	var compressionFormat, blobDirectory string
+	var compressionLevel int
+	var forceCompression bool
 	platform := runtime.GOOS + "/" + runtime.GOARCH
 	var args []string
 	var push, pull, noCache, rewriteTimestamp bool
@@ -60,7 +65,7 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 			if len(paths) != 0 {
 				argument = paths[0]
 			}
-			file, resolvedContext, definitionInContext, err := resolveBuildInput(argument, definitionFile)
+			files, resolvedContext, definitionsInContext, err := resolveBuildInputs(argument, definitionFiles)
 			if err != nil {
 				return err
 			}
@@ -79,7 +84,8 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 					return fmt.Errorf("parse --cw: %w", err)
 				}
 			}
-			if _, err := oci.NormalizePullPolicy(pullPolicy, pull); err != nil {
+			pullPolicy, err = resolveBuildPullPolicy(cmd)
+			if err != nil {
 				return err
 			}
 			imageOptions, err := imageControls.controls(cmd)
@@ -103,6 +109,10 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 				return err
 			}
 			runControls, err := controls.controls()
+			if err != nil {
+				return err
+			}
+			transientRunMounts, err := buildah.ParseTransientRunMounts(controls.mounts)
 			if err != nil {
 				return err
 			}
@@ -149,15 +159,15 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 				executionStdin = cmd.InOrStdin()
 			}
 			result, err := build.Run(cmd.Context(), build.Options{
-				File: file, Context: resolvedContext, DefinitionInContext: definitionInContext, From: from, IgnoreFile: ignoreFile,
+				File: files[0], Files: files, Context: resolvedContext, DefinitionsInContext: definitionsInContext, SourcePolicyFile: sourcePolicyFile, TransientRunMounts: transientRunMounts, From: from, IgnoreFile: ignoreFile,
 				Lifecycle:          controls.lifecycle(),
-				DisableCompression: disableCompression, ConfidentialWorkload: cw,
+				DisableCompression: disableCompression, BlobDirectory: blobDirectory, CompressionFormat: compressionFormat, CompressionLevel: compressionLevelValue(cmd, compressionLevel), ForceCompression: forceCompressionValue(cmd, forceCompression), ConfidentialWorkload: cw,
 				Quiet: quiet, LogFile: logFile, LogSplit: logSplit, LogRusage: logRusage && !quiet, RusageLogFile: rusageLogFile,
 				BuildStore: store,
 				Outputs:    filesystems, Squash: squash, SquashAll: squashAll, SBOM: scans, Signing: signing.options(),
 				ImageControls: imageOptions, Timestamp: forceTimestamp, SourceDateEpoch: epoch, CacheTTL: ttl,
 				AllPlatforms: allPlatforms, Manifest: manifest,
-				Tags: tags, MetadataFile: metadataFile, IIDFile: iidFile,
+				Tags: tags, MetadataFile: metadataFile, IIDFile: iidFile, IIDFileRaw: iidFileRaw,
 				Push:             push,
 				Pull:             pull,
 				PullPolicy:       pullPolicy,
@@ -191,9 +201,15 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
-	f.StringVarP(&definitionFile, "file", "f", "", "definition file path (required when supplying a build context)")
+	f.StringArrayVarP(&definitionFiles, "file", "f", nil, "definition file path (repeatable, combined in order; required with a build context)")
+	f.StringVar(&sourcePolicyFile, "source-policy-file", "", "BuildKit-format policy file for base image sources")
 	f.StringVar(&from, "from", "", "replace the image in the first FROM instruction")
 	f.BoolVarP(&disableCompression, "disable-compression", "D", true, "do not compress newly-created image layers")
+	f.StringVar(&blobDirectory, "blob-cache", "", "directory for native layer blob caching")
+	_ = f.MarkHidden("blob-cache")
+	f.StringVar(&compressionFormat, "compression-format", "", "compression algorithm for image layers: gzip, zstd, or zstd:chunked")
+	f.IntVar(&compressionLevel, "compression-level", 0, "compression level for image layers")
+	f.BoolVar(&forceCompression, "force-compression", false, "recompress image layers using the selected compression algorithm")
 	f.StringVar(&confidentialWorkload, "cw", "", "confidential workload options")
 	f.BoolVarP(&quiet, "quiet", "q", false, "suppress build progress")
 	f.StringVar(&logFile, "logfile", "", "write build output to a file")
@@ -213,6 +229,8 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 	signing.addTo(cmd)
 	f.StringVar(&metadataFile, "metadata-file", "", "write result, index, platform, and image configuration digests as JSON")
 	f.StringVar(&iidFile, "iidfile", "", "write the image ID (index digest for multiple platforms)")
+	f.StringVar(&iidFileRaw, "iidfile-raw", "", "write the image ID without its algorithm prefix")
+	f.StringVar(&iidFileRaw, "raw-iidfile", "", "alias for --iidfile-raw")
 	f.StringVar(&ignoreFile, "ignorefile", "", "context ignore file (default: first of .cooprignore, .containerignore, .dockerignore at the context root)")
 	f.StringArrayVarP(&tags, "tag", "t", nil, "name or copy the image; unprefixed names use native container storage; prefixes: docker:, registry:, oci-archive:")
 	f.BoolVar(&push, "push", false, "publish the image to the registry named by --tag")

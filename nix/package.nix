@@ -22,7 +22,7 @@
       ../examples
     ];
   };
-  vendorHash = "sha256-v3klBYyr5nqENYe3z1Ir6+sOGDuDTmodWozm+Th1wfg=";
+  vendorHash = "sha256-P6E5VjQ/41JN0bH/lfLJa8Hqc3OVfoP014GUhsamRLw=";
   subPackages = [ "./cmd/coopr" ];
   ldflags = [ "-X main.version=${version}" ];
   tags = [

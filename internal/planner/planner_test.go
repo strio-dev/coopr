@@ -186,8 +186,6 @@ func TestRejectedGraphs(t *testing.T) {
 		{"unused cycle", "from \"b\" as=\"a\"\nfrom \"a\" as=\"b\"\nextend\n", Publish, "cycle"},
 		{"package depends on extend", "extend as=\"base\"\npackage as=\"p\"\ncopy \"/a\" \"/a\" from=\"base\"\nfrom \"base\"\ncopy \"/a\" \"/a\" from=\"p\"\n", Publish, "depends on extend"},
 		{"indirect extend dependency", "extend as=\"base\"\nfrom \"base\" as=\"builder\"\npackage as=\"p\"\ncopy \"/a\" \"/a\" from=\"builder\"\nfrom \"base\"\ncopy \"/a\" \"/a\" from=\"p\"\n", Publish, "depends on extend"},
-		{"output replaces consuming image", "extend\nfrom \"debian\"\n", Publish, "must descend"},
-		{"copy ancestry is insufficient", "extend as=\"base\"\nfrom \"scratch\"\ncopy \"/\" \"/\" from=\"base\"\n", Publish, "must descend"},
 		{"package in image", "from \"debian\"\npackage as=\"p\"\n", Build, "require a component"},
 		{"operation before base", "run \"echo hi\"\nfrom \"debian\"\n", Build, "requires a stage"},
 		{"missing structural arg", "arg \"base\"\nfrom \"${base}\"\n", Build, "invalid from source"},
@@ -576,8 +574,8 @@ extend as="debug"
 		target, message string
 	}{
 		{Publish, "missing", "unknown target"},
-		{Publish, "builder", "must descend"},
-		{Publish, "tools", "must descend"},
+		{Publish, "builder", "must follow extend"},
+		{Publish, "tools", "selected output cannot be a package"},
 	} {
 		t.Run(string(tc.mode)+tc.target, func(t *testing.T) {
 			_, err := Create(parse(t, source), Options{Mode: tc.mode, Target: tc.target})
@@ -629,8 +627,9 @@ func TestNamedTargetCanPrecedePrivateFinalStage(t *testing.T) {
 from "compiler" as="builder"
 `
 	makePlan(t, source, Options{Mode: Publish, Target: "runtime"})
-	if _, err := Create(parse(t, source), Options{Mode: Publish}); err == nil {
-		t.Fatal("default private output accepted")
+	replacement := makePlan(t, source, Options{Mode: Publish})
+	if replacement.Component.Output != "1" {
+		t.Fatalf("default replacement output: %+v", replacement.Component)
 	}
 }
 
