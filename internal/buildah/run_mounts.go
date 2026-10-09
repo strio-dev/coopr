@@ -101,19 +101,8 @@ func serializeRunMount(mount RunMount, contextDir string) (string, error) {
 		return "", err
 	}
 	mount.Properties = properties
-	var allowed map[string]bool
-	switch mount.Type {
-	case "bind":
-		allowed = propertySet("source", "target", "readonly", "bind-nonrecursive", "nosuid", "nodev", "noexec", "shared", "rshared", "private", "rprivate", "slave", "rslave", "u", "no-dereference", "bind-propagation", "relabel", "consistency")
-	case "cache":
-		allowed = propertySet("id", "source", "target", "readonly", "sharing", "mode", "uid", "gid", "nosuid", "nodev", "noexec", "u", "shared", "rshared", "private", "rprivate", "slave", "rslave", "bind-propagation", "relabel")
-	case "tmpfs":
-		allowed = propertySet("target", "readonly", "size", "mode", "nosuid", "nodev", "noexec", "tmpcopyup")
-	case "secret":
-		allowed = propertySet("id", "target", "required", "mode", "uid", "gid", "env")
-	case "ssh":
-		allowed = propertySet("id", "target", "required", "mode", "uid", "gid")
-	default:
+	allowed, known := definition.MountProperties(mount.Type)
+	if !known {
 		return "", fmt.Errorf("mount type %q is not supported", mount.Type)
 	}
 	if mount.BoundFrom {
@@ -125,10 +114,11 @@ func serializeRunMount(mount RunMount, contextDir string) (string, error) {
 		if _, err := hex.Decode(decoded, []byte(imageID)); err != nil || hex.EncodeToString(decoded) != imageID {
 			return "", fmt.Errorf("bound %s mount requires an immutable storage image ID", mount.Type)
 		}
-		allowed["from"] = true
+		allowed = append(allowed, "from")
 	}
-	for name, value := range mount.Properties {
-		if !allowed[name] {
+	for _, name := range slices.Sorted(maps.Keys(mount.Properties)) {
+		value := mount.Properties[name]
+		if !slices.Contains(allowed, name) {
 			if name == "from" {
 				return "", fmt.Errorf("%s mounts from stages or images are not supported until their sources are bound", mount.Type)
 			}
@@ -274,7 +264,8 @@ func normalizeRunMountProperties(mountType string, authored map[string]string) (
 	aliases := map[string]string{
 		"src": "source", "dst": "target", "destination": "target", "ro": "readonly", "tmpfs-mode": "mode", "tmpfs-size": "size", "U": "u",
 	}
-	for name, value := range authored {
+	for _, name := range slices.Sorted(maps.Keys(authored)) {
+		value := authored[name]
 		if name == "Z" || name == "z" {
 			if value != "true" {
 				return nil, fmt.Errorf("%s mount %s does not accept a value", mountType, name)
@@ -322,14 +313,6 @@ func normalizeRunMountProperties(mountType string, authored map[string]string) (
 		}
 	}
 	return properties, nil
-}
-
-func propertySet(names ...string) map[string]bool {
-	result := make(map[string]bool, len(names))
-	for _, name := range names {
-		result[name] = true
-	}
-	return result
 }
 
 func normalizeContextMountSource(source string) (string, error) {

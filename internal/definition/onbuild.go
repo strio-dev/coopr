@@ -9,12 +9,32 @@ import (
 	"strings"
 
 	buildkitinstructions "github.com/moby/buildkit/frontend/dockerfile/instructions"
+	buildkitparser "github.com/moby/buildkit/frontend/dockerfile/parser"
 )
 
 // formatOnBuild converts one parsed Coopr instruction to the Dockerfile
-// instruction syntax stored in an OCI image's Config.OnBuild field. It is a
+// instruction syntax stored in Docker image configuration's OnBuild field. It is a
 // metadata boundary only; Coopr never feeds this output to its builder.
 func formatOnBuild(inst Instruction) (string, error) {
+	raw, err := formatOnBuildInstruction(inst)
+	if err != nil {
+		return "", err
+	}
+	// Validate the actual metadata dialect at publication, rather than leaving
+	// the consuming build to discover a trigger that Dockerfile cannot parse.
+	parsed, err := buildkitparser.Parse(strings.NewReader(raw))
+	if err == nil && len(parsed.AST.Children) == 1 {
+		_, err = buildkitinstructions.ParseCommand(parsed.AST.Children[0])
+	} else if err == nil {
+		err = fmt.Errorf("expected exactly one instruction")
+	}
+	if err != nil {
+		return "", fmt.Errorf("ONBUILD %s cannot be represented as Dockerfile metadata: %w", strings.ToUpper(inst.Name), err)
+	}
+	return raw, nil
+}
+
+func formatOnBuildInstruction(inst Instruction) (string, error) {
 	keyword := strings.ToUpper(inst.Name)
 	switch inst.Name {
 	case "arg":
@@ -96,6 +116,9 @@ func formatOnBuildRun(inst Instruction) (string, error) {
 	flags := make([]string, 0, len(inst.Children)+2)
 	for _, name := range []string{"network", "security"} {
 		if value, ok := inst.Properties[name]; ok && value != "" {
+			if strings.Contains(value, "$") {
+				return "", fmt.Errorf("ONBUILD RUN %s must be a literal value; Dockerfile ONBUILD does not expand this flag", name)
+			}
 			flags = append(flags, "--"+name+"="+value)
 		}
 	}
@@ -111,6 +134,9 @@ func formatOnBuildRun(inst Instruction) (string, error) {
 			requiredValue, requiredSet := child.Properties["required"]
 			requiredOverride := false
 			if requiredSet {
+				if strings.Contains(requiredValue, "$") {
+					return "", fmt.Errorf("ONBUILD RUN device required must be a literal boolean; Dockerfile ONBUILD does not expand this flag")
+				}
 				var err error
 				requiredOverride, err = strconv.ParseBool(requiredValue)
 				if err != nil {
@@ -204,6 +230,12 @@ func formatOnBuildCopyOrAdd(inst Instruction) (string, error) {
 		if !ok || value == "" {
 			continue
 		}
+		switch name {
+		case "link", "parents", "keep-git-dir", "unpack":
+			if strings.Contains(value, "$") {
+				return "", fmt.Errorf("ONBUILD %s %s must be a literal boolean; Dockerfile ONBUILD does not expand this flag", strings.ToUpper(inst.Name), name)
+			}
+		}
 		flags = append(flags, "--"+name+"="+value)
 	}
 	for _, child := range inst.Children {
@@ -233,6 +265,12 @@ func formatOnBuildMount(inst Instruction) (string, error) {
 	if len(inst.Arguments) != 1 {
 		return "", fmt.Errorf("ONBUILD RUN mount requires one type")
 	}
+	// ONBUILD uses Dockerfile metadata, whose mount vocabulary is narrower
+	// than native Buildah execution. Reject unrepresentable options now, even
+	// when supported fields still contain child-stage expressions.
+	if err := ValidateProperties(inst.Properties, "from", "source", "src", "target", "dst", "destination", "readonly", "ro", "readwrite", "rw", "required", "size", "id", "sharing", "mode", "uid", "gid", "env"); err != nil {
+		return "", fmt.Errorf("ONBUILD RUN mount Dockerfile metadata: %w", err)
+	}
 	fields := []string{"type=" + inst.Arguments[0]}
 	keys := make([]string, 0, len(inst.Properties))
 	for key := range inst.Properties {
@@ -255,7 +293,21 @@ func formatOnBuildMount(inst Instruction) (string, error) {
 	if err := writer.Error(); err != nil {
 		return "", fmt.Errorf("encode ONBUILD RUN mount: %w", err)
 	}
-	return strings.TrimSuffix(encoded.String(), "\n"), nil
+	raw := strings.TrimSuffix(encoded.String(), "\n")
+	if !strings.Contains(raw, "$") {
+		parsed, err := buildkitparser.Parse(strings.NewReader("RUN --mount=" + raw + " true"))
+		if err != nil {
+			return "", fmt.Errorf("ONBUILD RUN mount: %w", err)
+		}
+		command, err := buildkitinstructions.ParseCommand(parsed.AST.Children[0])
+		if err == nil {
+			err = command.(*buildkitinstructions.RunCommand).Expand(func(value string) (string, error) { return value, nil })
+		}
+		if err != nil {
+			return "", fmt.Errorf("ONBUILD RUN mount Dockerfile metadata: %w", err)
+		}
+	}
+	return raw, nil
 }
 
 func formatOnBuildHealthcheck(inst Instruction) (string, error) {
@@ -268,6 +320,9 @@ func formatOnBuildHealthcheck(inst Instruction) (string, error) {
 	flags := make([]string, 0, len(inst.Properties))
 	for _, name := range []string{"interval", "timeout", "start-period", "start-interval", "retries"} {
 		if value, ok := inst.Properties[name]; ok {
+			if strings.Contains(value, "$") {
+				return "", fmt.Errorf("ONBUILD HEALTHCHECK %s must be a literal value; Dockerfile ONBUILD does not expand this flag", name)
+			}
 			flags = append(flags, "--"+name+"="+value)
 		}
 	}
@@ -335,18 +390,8 @@ func formatKeyValues(inst Instruction) ([]string, error) {
 }
 
 func validateOnBuildProperties(inst Instruction, allowed ...string) error {
-	if onlyProps(inst.Properties, allowed...) {
-		return nil
-	}
-	keys := make([]string, 0, len(inst.Properties))
-	for key := range inst.Properties {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		if !onlyProps(map[string]string{key: inst.Properties[key]}, allowed...) {
-			return fmt.Errorf("ONBUILD %s property %q is not supported", strings.ToUpper(inst.Name), key)
-		}
+	if err := ValidateProperties(inst.Properties, allowed...); err != nil {
+		return fmt.Errorf("ONBUILD %s: %w", strings.ToUpper(inst.Name), err)
 	}
 	return nil
 }

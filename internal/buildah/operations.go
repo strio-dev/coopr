@@ -593,7 +593,7 @@ func (operation OnBuild) apply(builder operationBuilder, _ string) error {
 	if strings.TrimSpace(trigger) == "" || strings.ContainsRune(trigger, '\x00') {
 		return errors.New("ONBUILD trigger must be one nonempty Dockerfile instruction without NUL")
 	}
-	if _, err := onbuildparse.Parse(trigger); err != nil {
+	if _, err := onbuildparse.ParseDeferred(trigger); err != nil {
 		return fmt.Errorf("validate ONBUILD trigger: %w", err)
 	}
 	builder.SetOnBuild(trigger)

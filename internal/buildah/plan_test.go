@@ -134,7 +134,6 @@ func TestRequestFromPlanRejectsUnsupportedSemantics(t *testing.T) {
 		{"run mount without cache scope", "from \"scratch\"\nrun \"true\" { mount \"cache\" target=\"/cache\" }\n", "requires executor scope"},
 		{"copy invalid parents", "from \"scratch\"\ncopy \"a\" \"/a\" parents=\"sometimes\"\n", "parents must be true or false"},
 		{"copy remote URL", "from \"scratch\"\ncopy \"https://example.invalid/file\" \"/file\"\n", "COPY source must be local"},
-		{"unsupported instruction", "from \"scratch\"\nfrobnicate \"value\"\n", "instruction is not supported"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -143,6 +142,13 @@ func TestRequestFromPlanRejectsUnsupportedSemantics(t *testing.T) {
 				t.Fatalf("want %q, got %v", test.message, err)
 			}
 		})
+	}
+}
+
+func TestLowerOperationRejectsUnknownInstruction(t *testing.T) {
+	_, _, err := lowerOperation(planner.Operation{Instruction: definition.Instruction{Name: "frobnicate", Arguments: []string{"value"}}}, nil)
+	if err == nil || !strings.Contains(err.Error(), "instruction is not supported") {
+		t.Fatalf("unknown operation error = %v", err)
 	}
 }
 
@@ -437,7 +443,6 @@ run "true" {
 
 func TestRequestFromPlanRejectsUnboundAndAmbiguousRunMounts(t *testing.T) {
 	tests := []struct{ name, mount, message string }{
-		{"ssh invalid property", `mount "ssh" env="TOKEN"`, "not supported"},
 		{"comma", `mount "tmpfs" target="/tmp,other"`, "unsafe or ambiguous"},
 		{"context escape", `mount "bind" source="../secret" target="/secret"`, "escapes the build context"},
 	}
@@ -453,6 +458,13 @@ func TestRequestFromPlanRejectsUnboundAndAmbiguousRunMounts(t *testing.T) {
 				t.Fatalf("want %q, got %v", test.message, err)
 			}
 		})
+	}
+}
+
+func TestSerializeRunMountRejectsUnsupportedProperty(t *testing.T) {
+	_, err := serializeRunMount(RunMount{Type: "ssh", Properties: map[string]string{"env": "TOKEN"}}, "")
+	if err == nil || !strings.Contains(err.Error(), `ssh mount property "env" is not supported`) {
+		t.Fatalf("invalid SSH mount property error = %v", err)
 	}
 }
 

@@ -225,7 +225,7 @@ func lowerOperationWithCacheMountIDs(operation planner.Operation, shell []string
 		if len(instruction.Arguments) == 0 {
 			return nil, nil, fmt.Errorf("RUN requires a command")
 		}
-		if err := allowProperties(instruction, "network", "security"); err != nil {
+		if err := allowProperties(instruction); err != nil {
 			return nil, nil, err
 		}
 		security := instruction.Properties["security"]
@@ -426,7 +426,7 @@ func lowerRunDevices(instruction definition.Instruction) ([]runDeviceRequest, er
 		if len(child.Arguments) == 0 || child.Form != "" || len(child.Children) != 0 {
 			return nil, fmt.Errorf("child %d: device requires a selector", index+1)
 		}
-		if err := allowProperties(child, "required"); err != nil {
+		if err := allowProperties(child); err != nil {
 			return nil, err
 		}
 		for _, selector := range child.Arguments {
@@ -460,11 +460,7 @@ func lowerCopyOrAdd(instruction definition.Instruction, inputContext string) ([]
 	if inputContext != "build" {
 		return nil, nil, fmt.Errorf("%s requires the standalone build context, got %q", strings.ToUpper(instruction.Name), inputContext)
 	}
-	allowed := []string{"chown", "chmod", "link", "parents"}
-	if instruction.Name == "add" {
-		allowed = append(allowed, "checksum", "keep-git-dir", "unpack")
-	}
-	if err := allowProperties(instruction, allowed...); err != nil {
+	if err := allowProperties(instruction); err != nil {
 		return nil, nil, err
 	}
 	excludes := []string{}
@@ -551,11 +547,14 @@ func plainInstruction(instruction definition.Instruction, argumentCount int) err
 	return nil
 }
 
-func allowProperties(instruction definition.Instruction, allowed ...string) error {
-	for property := range instruction.Properties {
-		if !slices.Contains(allowed, property) {
-			return fmt.Errorf("%s property %q is not supported", strings.ToUpper(instruction.Name), property)
-		}
+func allowProperties(instruction definition.Instruction) error {
+	allowed, _ := definition.InstructionProperties(instruction.Name)
+	if instruction.Name == "copy" || instruction.Name == "add" {
+		// Graph lowering binds from= to an immutable input before this adapter.
+		allowed = slices.DeleteFunc(allowed, func(name string) bool { return name == "from" })
+	}
+	if err := definition.ValidateProperties(instruction.Properties, allowed...); err != nil {
+		return fmt.Errorf("%s: %w", strings.ToUpper(instruction.Name), err)
 	}
 	return nil
 }

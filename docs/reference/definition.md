@@ -4,10 +4,10 @@ Definitions use KDL v2 in `.coopr` files. Instructions run in source order withi
 
 ## Values and forms
 
-Use quoted strings for text and Unix permissions, quoted `"true"`/`"false"` for boolean options, and native numbers for numeric options. Bare `true` and `false` are not valid KDL v2 values:
+Use quoted strings for text, native `#true`/`#false` or quoted `"true"`/`"false"` for boolean options, and native numbers for numeric options. Bare `true` and `false` are not valid KDL v2 values:
 
 ```kdl
-copy "app" "/app" chmod="0755" link="true"
+copy "app" "/app" chmod=0o755 link=#true
 run "echo $HOME"
 run {
     exec "/bin/sh" "-c" "echo hello"
@@ -17,6 +17,8 @@ cmd {
 }
 cmd "echo hello"
 ```
+
+Unix permissions accept native KDL octal literals, such as `chmod=0o755` or `mode=0o400`, and quoted octal digits, such as `chmod="0755"`. Other numeric options accept ordinary KDL numbers. Quote parameter expressions, for example `chmod="${permissions}"`.
 
 RUN, CMD, ENTRYPOINT and HEALTHCHECK take one shell-command string or an `exec` child containing the executable and its arguments. An `exec` child is valid only under those instructions. Do not combine it with a shell-command string. RUN mounts and devices are siblings of `exec`; healthcheck timing stays on the parent. Empty CMD or ENTRYPOINT, including an empty `exec` child, clears that image setting.
 
@@ -49,7 +51,9 @@ A multiline RUN starting with a `#!` interpreter line executes as a script with 
 | `expose`, `volume`, `stopsignal` | Set runtime configuration. |
 | `healthcheck`, `onbuild` | Preserve healthcheck or inherited build-trigger configuration. |
 
-Unknown instructions or unsupported options fail explicitly. See the [execution reference](execution.md) for stage, input, and runtime rules.
+Instruction names are lowercase. Unknown instructions and option names fail during definition validation, including in unused stages. Parameterized values are checked after expansion in the selected stage. See the [execution reference](execution.md) for stage, input, and runtime rules.
+
+Schema errors identify the instruction and nested child where applicable. Source coordinates use byte columns; line numbers are accurate for LF and CRLF files. The parser currently misreports line numbers for CR-only and Unicode line separators.
 
 FROM accepts `as`, `platform`, and `after`. `after="NAME"` names one earlier stage (or its numeric index) that must finish before the external image is resolved. Use it for an image layout or archive generated through a writable primary-context mount. It adds a dependency without inheriting that stage's state. See [image selection](execution.md#image-selection) for accepted transports and context confinement.
 
@@ -80,6 +84,17 @@ env APP_CHANNEL="${channel}"
 
 Global ARGs precede the first stage and support structural expansion; redeclare them in a stage for RUN exposure. Local ARGs apply from declaration and pass through FROM inheritance. Independent EXTEND roots get global and explicitly supplied component arguments. Values are strings; unset references expand to empty text. Structural references must remain valid after expansion. Package-producing arguments are fixed at component build; see [argument scope](execution.md#arguments-and-normalization).
 
+Boolean options can use arguments. Quote permission defaults so their octal digits survive substitution:
+
+```kdl
+from "docker.io/redhat/ubi9:latest"
+arg "linked" #true
+arg "permissions" "0755"
+copy "app" "/usr/local/bin/app" link="${linked}" chmod="${permissions}"
+```
+
+Numeric ARG values are normalized as decimal text. Mount types and option values support `$name`, `${name}`, and defaults such as `${name:-cache}`.
+
 ## Files and mounts
 
 ```kdl
@@ -102,6 +117,16 @@ onbuild { copy "generated" "/generated" }
 ```
 
 Timing properties are `interval`, `timeout`, `start-period`, and `start-interval`; `retries` is a nonnegative integer. `healthcheck NONE` disables a healthcheck and takes no other options. Quoted `"NONE"` remains a shell command; `exec "NONE"` remains an executable argument. ONBUILD takes one ordinary instruction; nested ONBUILD, FROM, and MAINTAINER are rejected as inherited triggers. Later FROM executes inherited triggers in stored order using the child's context, then clears them.
+
+ONBUILD stores Dockerfile-compatible trigger text. Healthcheck timing/retries, RUN network/security, device `required`, and COPY/ADD boolean flags must be literal values there, as the Dockerfile parser reads them before child-stage expansion. RUN mount values can use child-stage arguments, including typed options such as `required` and `mode`:
+
+```kdl
+onbuild {
+    run "cat /run/token" {
+        mount "secret" id="token" target="/run/token" required="${required:-true}" mode="${mode:-0400}"
+    }
+}
+```
 
 EXTEND compatibility fields (`distro`, `distro-version`, `package-manager`, `architecture`) accept a string property or one child listing allowed strings. See [compatibility requirements](execution.md#compatibility-requirements) for matching rules.
 

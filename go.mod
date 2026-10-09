@@ -3,6 +3,7 @@ module coopr
 go 1.26.8
 
 require (
+	github.com/calico32/kdl-go v0.16.0
 	github.com/containerd/platforms v1.0.0-rc.5
 	github.com/distribution/reference v0.6.0
 	github.com/docker/distribution v2.8.3+incompatible
@@ -12,7 +13,6 @@ require (
 	github.com/moby/buildkit v0.33.0
 	github.com/moby/moby/client v0.5.1
 	github.com/moby/sys/capability v0.4.0
-	github.com/njreid/gokdl2 v0.6.0
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/opencontainers/runtime-spec v1.3.0

@@ -45,7 +45,7 @@ in
   passthru.testSource = testSource;
   # Vendor test imports too, preserving the complete pinned dependency tree.
   overrideModAttrs = _: _: { src = testSource; };
-  vendorHash = "sha256-P6E5VjQ/41JN0bH/lfLJa8Hqc3OVfoP014GUhsamRLw=";
+  vendorHash = "sha256-z00zB7v7aZHP905TZPSBRDWqnU17GIEZbsWZGt7aF6c=";
   subPackages = [ "./cmd/coopr" ];
   ldflags = [ "-X main.version=${version}" ];
   tags = [

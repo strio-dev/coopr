@@ -186,7 +186,7 @@ func TestInvalidDefinitions(t *testing.T) {
 		{"hidden run mount property", `run "x" mount="type=cache,target=/tmp"`, "use a mount child"},
 		{"generic option child", `run "x" { option "mount" "type=bind,from=package" }`, "unsupported child"},
 		{"injected mount type", `run "x" { mount "cache,from=package" target="/tmp" }`, "mount type"},
-		{"injected mount key", `run "x" { mount "cache" "target,from"="/tmp" }`, "invalid mount property name"},
+		{"injected mount key", `run "x" { mount "cache" "target,from"="/tmp" }`, `unsupported property "target,from"`},
 		{"label equals", `label "a=b" "value"`, "nonempty key without equals sign"},
 	}
 	for _, tt := range tests {
@@ -234,16 +234,18 @@ run "true" { device "vendor.example/gpu=one" "vendor.example/gpu=two" required=#
 
 func TestNativeScalarNormalization(t *testing.T) {
 	def, err := Parse(strings.NewReader(`
-run "true" network="none" retry=3 enabled=#true ratio=1.5
+component "example.com/test:latest" retry=3 enabled=#true ratio=1.5
 copy "src" "/dst" chmod="0755"
 run "true" { mount "secret" target="/run/secret" mode="0400" required=#true uid=1000 }
 env "ENABLED" #true
+arg "count" 493
+run "true" { mount "secret" target="/run/other-secret" required="false" }
 `))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := def.Instructions[0]; got.Form != "shell" || got.Properties["retry"] != "3" || got.Properties["enabled"] != "true" || got.Properties["ratio"] != "1.5" {
-		t.Fatalf("normalized RUN = %#v", got)
+	if got := def.Instructions[0]; got.Name != "component" || got.Properties["retry"] != "3" || got.Properties["enabled"] != "true" || got.Properties["ratio"] != "1.5" {
+		t.Fatalf("normalized component = %#v", got)
 	}
 	if got := def.Instructions[1].Properties["chmod"]; got != "0755" {
 		t.Fatalf("chmod = %q, want 0755", got)
@@ -253,6 +255,12 @@ env "ENABLED" #true
 	}
 	if got := def.Instructions[3].Arguments; !reflect.DeepEqual(got, []string{"ENABLED", "true"}) {
 		t.Fatalf("native argument = %#v", got)
+	}
+	if got := def.Instructions[4].Arguments; !reflect.DeepEqual(got, []string{"count", "493"}) {
+		t.Fatalf("decimal ARG = %#v, want unchanged decimal value", got)
+	}
+	if got := def.Instructions[5].Children[0].Properties["required"]; got != "false" {
+		t.Fatalf("string boolean = %q, want false", got)
 	}
 }
 
@@ -353,7 +361,7 @@ func TestInvalidHealthcheckAndOnBuildSyntax(t *testing.T) {
 		{`healthcheck NONE interval="1s"`, "does not accept properties"},
 		{`healthcheck NONE retries=3`, "does not accept properties"},
 		{`healthcheck "one" "two"`, "exactly one command"},
-		{`healthcheck "true" bogus="1s"`, "supported timing properties"},
+		{`healthcheck "true" bogus="1s"`, `unsupported property "bogus"`},
 		{`healthcheck "true" retries="three"`, "nonnegative integer"},
 		{`healthcheck "true" interval="now"`, "duration"},
 		{`healthcheck "true" interval="1us"`, "less than 1ms"},

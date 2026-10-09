@@ -17,6 +17,8 @@ go run ./cmd/coopr build examples/first-image/image.coopr --tag coopr-demo:base
 
 Read the [architecture](concepts/architecture.md) and [execution reference](reference/execution.md) before changing the planner or executor. Add regression coverage for behavior changes.
 
+For editor highlighting, associate `*.coopr` with KDL and use a KDL v2 extension. In VS Code, add `"files.associations": { "*.coopr": "kdl" }` to your settings. Coopr instruction names are lowercase; command scripts use ordinary KDL multiline strings.
+
 ## Check changes
 
 | Command | Checks |
