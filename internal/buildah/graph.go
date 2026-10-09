@@ -367,10 +367,6 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 			original[image.ID] = true
 		}
 		defer func() {
-			if retErr != nil {
-				return
-			}
-
 			borrowed := map[string]bool{}
 			for _, base := range executor.resolvedBases {
 				borrowed[base.ImageID] = true
@@ -382,9 +378,15 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 				}
 			}
 			removed := map[string]bool{}
+			observedImages := map[string]bool{}
 			for stageID, image := range images {
+				if observed[stageID] {
+					observedImages[image.storageImageID] = true
+				}
+			}
+			for _, image := range images {
 				id := image.storageImageID
-				if id == "" || id == result.ImageID || observed[stageID] || original[id] || borrowed[id] || removed[id] {
+				if id == "" || id == result.ImageID || observedImages[id] || original[id] || borrowed[id] || removed[id] {
 					continue
 				}
 				current, err := executor.store.Image(id)
@@ -429,6 +431,9 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 			completion := <-results
 			delete(running, completion.stageID)
 			runningCount--
+			if completion.result.state.storageImageID != "" {
+				images[completion.stageID] = completion.result.state
+			}
 			if completion.err != nil {
 				failures[completion.stageID] = errors.Join(failures[completion.stageID], completion.err)
 			}
@@ -625,10 +630,12 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 		completion := <-results
 		delete(running, completion.stageID)
 		runningCount--
+		if completion.result.state.storageImageID != "" {
+			images[completion.stageID] = completion.result.state
+		}
 		if completion.err != nil {
 			return Result{}, drain(completion.stageID, completion.err)
 		}
-		images[completion.stageID] = completion.result.state
 		completed[completion.stageID] = true
 		finishedStages[completion.stageID] = completion.result
 		result, done, err := reportCompleted()

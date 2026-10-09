@@ -21,6 +21,7 @@ import (
 	"github.com/opencontainers/go-digest"
 	"go.podman.io/buildah/pkg/sourcepolicy"
 	"go.podman.io/image/v5/types"
+	"go.podman.io/storage"
 	"go.podman.io/storage/pkg/reexec"
 )
 
@@ -252,6 +253,12 @@ func (executor *graphExecutor) executeGraphStageIsolated(ctx context.Context, pl
 		return executedGraphStage{}, errors.Join(processErr, fmt.Errorf("stage worker files retained at %s because process exit was not confirmed", jobDir))
 	}
 	response, responseErr := readStageWorkerResponse(request.ResultPath)
+	return executor.completeStageWorkerResponse(ctx, prepared.stage.ID, response, responseErr, processErr, ownedJobID, jobID)
+}
+
+func (executor *graphExecutor) completeStageWorkerResponse(ctx context.Context, stageID string, response stageWorkerResponse, responseErr, processErr error, ownedJobID bool, jobID string) (executedGraphStage, error) {
+	finished, resultErr := stageWorkerResult(response, stageID, executor.store)
+	responseErr = errors.Join(responseErr, resultErr)
 	var cleanupErr error
 	failed := processErr != nil || responseErr != nil || response.Error != ""
 	if ownedJobID && (responseErr != nil || executor.options.Lifecycle.removeBuilder(failed, ctx.Err() != nil)) {
@@ -259,44 +266,51 @@ func (executor *graphExecutor) executeGraphStageIsolated(ctx context.Context, pl
 			cleanupErr = fmt.Errorf("clean isolated stage worker: %w", err)
 		}
 	}
-	if responseErr == nil && response.Error != "" {
-		if ctx.Err() != nil {
-			return executedGraphStage{}, errors.Join(ctx.Err(), errors.New(response.Error), processErr, cleanupErr)
-		}
-		return executedGraphStage{}, errors.Join(errors.New(response.Error), cleanupErr)
+	if response.Error != "" {
+		responseErr = errors.Join(responseErr, errors.New(response.Error))
 	}
-	if processErr != nil {
-		if ctx.Err() != nil {
-			return executedGraphStage{}, errors.Join(ctx.Err(), processErr, cleanupErr)
-		}
-		return executedGraphStage{}, errors.Join(processErr, responseErr, cleanupErr)
-	}
-	if responseErr != nil {
-		return executedGraphStage{}, errors.Join(responseErr, cleanupErr)
-	}
-	if cleanupErr != nil {
-		return executedGraphStage{}, cleanupErr
-	}
-	if err := ctx.Err(); err != nil {
-		return executedGraphStage{}, err
+	if err := errors.Join(processErr, ctx.Err(), responseErr, cleanupErr); err != nil {
+		return finished, err
 	}
 	executor.stageRelayMu.Lock()
 	defer executor.stageRelayMu.Unlock()
 	if executor.componentCache != nil {
 		if err := executor.componentCache.acceptRelayedCandidates(response.ComponentRelays); err != nil {
-			return executedGraphStage{}, fmt.Errorf("accept stage %s component cache: %w", prepared.stage.ID, err)
+			return finished, fmt.Errorf("accept stage %s component cache: %w", stageID, err)
 		}
 		executor.componentCache.stats = addCacheStats(executor.componentCache.stats, response.ComponentCacheStats)
 	}
 	if executor.instructionPortableCache != nil {
 		if err := executor.instructionPortableCache.acceptRelayedCandidates(response.InstructionRelays); err != nil {
-			return executedGraphStage{}, fmt.Errorf("accept stage %s instruction cache: %w", prepared.stage.ID, err)
+			return finished, fmt.Errorf("accept stage %s instruction cache: %w", stageID, err)
 		}
 		executor.instructionPortableCache.stats = addCacheStats(executor.instructionPortableCache.stats, response.InstructionCacheStats)
 	}
+	return finished, nil
+}
+
+// stageWorkerResult retains a validated committed output even when the worker
+// subsequently reports cancellation or fails while closing its resources.
+func stageWorkerResult(response stageWorkerResponse, stageID string, store storage.Store) (executedGraphStage, error) {
+	if response.ImageID == "" {
+		if response.Error != "" {
+			return executedGraphStage{}, nil
+		}
+		return executedGraphStage{}, fmt.Errorf("stage %s result lacks an image ID", stageID)
+	}
+	if err := digest.NewDigestFromEncoded(digest.SHA256, response.ImageID).Validate(); err != nil {
+		return executedGraphStage{}, fmt.Errorf("stage %s result image ID: %w", stageID, err)
+	}
+	image, err := store.Image(response.ImageID)
+	if err != nil {
+		return executedGraphStage{}, fmt.Errorf("stage %s result image unavailable: %w", stageID, err)
+	}
+	if image.ID != response.ImageID {
+		return executedGraphStage{}, fmt.Errorf("stage %s result image ID is not canonical", stageID)
+	}
 	finalConfig, err := imageconfig.Parse(response.Config)
 	if err != nil {
-		return executedGraphStage{}, fmt.Errorf("decode stage %s result config: %w", prepared.stage.ID, err)
+		return executedGraphStage{}, fmt.Errorf("decode stage %s result config: %w", stageID, err)
 	}
 	return executedGraphStage{
 		state:  stageState{storageImageID: response.ImageID, manifestDigest: response.ManifestDigest, config: finalConfig, root: response.Root, baseImageID: response.BaseImageID, retainsCaller: response.RetainsCaller},

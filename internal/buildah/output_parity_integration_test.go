@@ -6,6 +6,7 @@ import (
 	"coopr/internal/imageconfig"
 	"coopr/internal/planner"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -239,6 +240,184 @@ func TestBuildPlanSavesAndLabelsStages(t *testing.T) {
 				if !found["producer"] || !found["final"] {
 					t.Fatalf("saved labels: %v", found)
 				}
+			}
+		})
+	}
+}
+
+func TestFailedNoLayersBuildCleansCompletedStages(t *testing.T) {
+	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
+		t.Skip("set COOPR_TEST_BUILDAH=1 for live failed-stage cleanup")
+	}
+	for _, save := range []bool{false, true} {
+		t.Run(fmt.Sprintf("save=%t", save), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, "proof"), []byte("stage proof\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			options := PlanOptions{Store: cacheTestStore(filepath.Join(root, "store")), ContextDir: root, Isolation: "rootless", Network: "none", Jobs: 1, Lifecycle: LifecycleControls{NoLayers: true, SaveStages: save}, Output: Output{Path: filepath.Join(root, "seed"), DisableCompression: true}}
+			seed, err := BuildPlan(ctx, testPlan(t, "from \"scratch\"\ncopy \"proof\" \"/original\"\n"), options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			options.Output.Path = filepath.Join(root, "failed")
+			_, err = BuildPlan(ctx, testPlan(t, "from \"scratch\" as=\"producer\"\ncopy \"proof\" \"/proof\"\nfrom \"scratch\"\ncopy \"/proof\" \"/proof\" from=\"producer\"\ncopy \"missing\" \"/missing\"\n"), options)
+			if err == nil {
+				t.Fatal("missing COPY unexpectedly succeeded")
+			}
+			lease, err := acquireStore(options.Store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if err := lease.Close(); err != nil {
+					t.Error(err)
+				}
+			}()
+			if _, err := lease.store.Image(seed.ImageID); err != nil {
+				t.Fatalf("failed build removed pre-existing image: %v", err)
+			}
+			images, err := lease.store.Images()
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := 1
+			if save {
+				want++
+			}
+			if len(images) != want {
+				t.Fatalf("failed build save=%t retained %d images, want %d", save, len(images), want)
+			}
+		})
+	}
+}
+
+func TestFailedNoLayersBuildCleansDrainedStages(t *testing.T) {
+	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
+		t.Skip("set COOPR_TEST_BUILDAH=1 for live parallel failed-stage cleanup")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "proof"), []byte("parallel proof\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	options := PlanOptions{Store: cacheTestStore(filepath.Join(root, "store")), ContextDir: root, Isolation: "rootless", Network: "none", Jobs: 2, Lifecycle: LifecycleControls{NoLayers: true}, Output: Output{Path: filepath.Join(root, "output"), DisableCompression: true}}
+	plan := testPlan(t, "from \"scratch\" as=\"a\"\ncopy \"proof\" \"/a\"\nfrom \"scratch\" as=\"b\"\ncopy \"proof\" \"/b\"\nfrom \"scratch\"\ncopy \"/a\" \"/a\" from=\"a\"\ncopy \"/b\" \"/b\" from=\"b\"\n")
+	wantErr := errors.New("stop after parallel stages commit")
+	_, err := executePlanGraph(ctx, plan, options, plan.Stages, plan.Stages[len(plan.Stages)-1].ID, nil, func(store storage.Store, _ planner.Stage, _ string, _ *imageconfig.Config, _ *PackageRootMetadata) error {
+		for {
+			images, err := store.Images()
+			if err != nil {
+				return err
+			}
+			containers, err := store.Containers()
+			if err != nil {
+				return err
+			}
+			if len(images) == 2 && len(containers) == 0 {
+				// Both outputs have committed before the observer fails the graph.
+				return wantErr
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("lost primary observer failure: %v", err)
+	}
+	lease, err := acquireStore(options.Store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := lease.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	images, err := lease.store.Images()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(images) != 0 {
+		t.Fatalf("failed parallel graph retained completed stages: %v", images)
+	}
+}
+
+func TestNoLayersCleanupPreservesObservedImageSharedByAlias(t *testing.T) {
+	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
+		t.Skip("set COOPR_TEST_BUILDAH=1 for observed stage aliases")
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "proof"), []byte("observed proof\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	options := PlanOptions{Store: cacheTestStore(filepath.Join(root, "store")), ContextDir: root, Isolation: "rootless", Network: "none", Jobs: 1, Lifecycle: LifecycleControls{NoLayers: true}, Output: Output{Path: filepath.Join(root, "output"), DisableCompression: true}}
+	plan := testPlan(t, "from \"scratch\" as=\"producer\"\ncopy \"proof\" \"/proof\"\nfrom \"producer\" as=\"alias\"\nfrom \"scratch\"\ncopy \"/proof\" \"/copied\" from=\"alias\"\n")
+	var producerID, aliasID string
+	result, err := executePlanGraph(context.Background(), plan, options, plan.Stages, plan.Stages[len(plan.Stages)-1].ID, map[string]bool{plan.Stages[0].ID: true}, func(_ storage.Store, stage planner.Stage, id string, _ *imageconfig.Config, _ *PackageRootMetadata) error {
+		switch stage.Name {
+		case "producer":
+			producerID = id
+		case "alias":
+			aliasID = id
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if producerID == "" || producerID != aliasID || producerID == result.ImageID {
+		t.Fatalf("expected alias sharing observed intermediate: producer=%s alias=%s output=%s", producerID, aliasID, result.ImageID)
+	}
+	lease, err := acquireStore(options.Store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := lease.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	if _, err := lease.store.Image(producerID); err != nil {
+		t.Fatalf("cleanup removed observed output through its alias: %v", err)
+	}
+}
+
+func TestParallelFailedWorkerHonorsKeepFailed(t *testing.T) {
+	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
+		t.Skip("set COOPR_TEST_BUILDAH=1 for failed isolated builders")
+	}
+	for _, keep := range []bool{false, true} {
+		t.Run(fmt.Sprintf("keep=%t", keep), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			root := t.TempDir()
+			options := PlanOptions{Store: cacheTestStore(filepath.Join(root, "store")), ContextDir: root, Isolation: "rootless", Network: "none", Jobs: 2, Lifecycle: LifecycleControls{KeepFailed: keep}, Output: Output{Path: filepath.Join(root, "output"), DisableCompression: true}}
+			plan := testPlan(t, "from \"scratch\" as=\"a\"\ncopy \"missing-a\" \"/a\"\nfrom \"scratch\" as=\"b\"\ncopy \"missing-b\" \"/b\"\nfrom \"scratch\"\ncopy \"/a\" \"/a\" from=\"a\"\ncopy \"/b\" \"/b\" from=\"b\"\n")
+			if _, err := BuildPlan(ctx, plan, options); err == nil {
+				t.Fatal("failed worker unexpectedly succeeded")
+			}
+			lease, err := acquireStore(options.Store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if err := lease.Close(); err != nil {
+					t.Error(err)
+				}
+			}()
+			containers, err := lease.store.Containers()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (len(containers) > 0) != keep {
+				t.Fatalf("keep-failed=%t retained %d builders", keep, len(containers))
 			}
 		})
 	}

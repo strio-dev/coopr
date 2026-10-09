@@ -1,6 +1,7 @@
 package buildah
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"maps"
@@ -18,6 +19,43 @@ import (
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
+
+func TestStageWorkerResultPreservesCommittedImageOnCancellation(t *testing.T) {
+	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
+		t.Skip("set COOPR_TEST_BUILDAH=1 for committed worker response")
+	}
+	root := t.TempDir()
+	options := PlanOptions{Store: cacheTestStore(filepath.Join(root, "store")), ContextDir: root, Isolation: "rootless", Lifecycle: LifecycleControls{NoLayers: true}, Output: Output{Path: filepath.Join(root, "output"), DisableCompression: true}}
+	seed, err := BuildPlan(context.Background(), testPlan(t, "from \"scratch\"\nenv proof=\"committed\"\n"), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := acquireStore(options.Store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := lease.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	response := stageWorkerResponse{ImageID: seed.ImageID, Config: json.RawMessage(`{"config":{"Env":["proof=committed"]}}`)}
+	for _, workerErr := range []error{nil, context.Canceled, context.DeadlineExceeded, errors.New("worker exit failure")} {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		finished, err := (&graphExecutor{store: lease.store}).completeStageWorkerResponse(ctx, "producer", response, nil, workerErr, false, "")
+		if !errors.Is(err, context.Canceled) || (workerErr != nil && !errors.Is(err, workerErr)) || finished.state.storageImageID != seed.ImageID || finished.state.config == nil {
+			t.Fatalf("lost committed ownership or worker error: %#v, %v", finished.state, err)
+		}
+	}
+	response.ImageID = "invalid"
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	finished, err := (&graphExecutor{store: lease.store}).completeStageWorkerResponse(ctx, "producer", response, nil, nil, false, "")
+	if !errors.Is(err, context.Canceled) || finished.state.storageImageID != "" {
+		t.Fatalf("accepted invalid canceled worker response: %#v, %v", finished.state, err)
+	}
+}
 
 func TestExecuteStageWorkerWritesFailureResponseBeforeReturning(t *testing.T) {
 	root := t.TempDir()
