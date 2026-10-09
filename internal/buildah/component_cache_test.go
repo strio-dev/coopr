@@ -24,7 +24,43 @@ import (
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"go.podman.io/storage"
 )
+
+type componentCacheKeyStore struct{ storage.Store }
+
+func (componentCacheKeyStore) GraphDriverName() string { return "vfs" }
+func (componentCacheKeyStore) GraphOptions() []string  { return nil }
+
+func TestComponentCacheKeyIncludesStageLabels(t *testing.T) {
+	input := validComponentTestKey().Input
+	resolved := &ResolvedComponentPlan{
+		Identity: digest.FromString("component"),
+		Plan:     &planner.Plan{},
+	}
+	executor := &graphExecutor{store: componentCacheKeyStore{}}
+	executor.options.Lifecycle.SaveStages = true
+	key := func(stageLabels bool) digest.Digest {
+		t.Helper()
+		executor.options.Lifecycle.StageLabels = stageLabels
+		key, err := new(componentCache).key(executor, input, resolved, nil, v1.Platform{OS: "linux", Architecture: "amd64"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		identity, err := key.Digest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return identity
+	}
+	plain, labeled := key(false), key(true)
+	if plain == labeled {
+		t.Fatalf("stage-label modes share component cache key %s", plain)
+	}
+	if key(false) != plain || key(true) != labeled {
+		t.Fatal("component cache key changed after switching stage-label modes back")
+	}
+}
 
 func TestComponentCacheRelaysDeferredImageCandidate(t *testing.T) {
 	workerRoot := t.TempDir()

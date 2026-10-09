@@ -9,8 +9,8 @@ import (
 	"go.podman.io/image/v5/pkg/compression"
 )
 
-// Resolve the same containers.conf defaults and explicit-flag precedence as
-// Buildah's build CLI. Compression affects output transport, never step keys.
+// Resolve containers.conf defaults and explicit-flag precedence.
+// Compression affects output transport, never step keys.
 func normalizeOutputCompression(output Output) (Output, error) {
 	if output.compressionResolved {
 		return output, nil
@@ -34,7 +34,8 @@ func normalizeOutputCompressionForControls(output Output, controls RunControls) 
 }
 
 func applyOutputCompressionDefaults(output Output, config *commonconfig.Config) (Output, error) {
-	if output.CompressionFormat == "" && config.Engine.CompressionFormat != "gzip" {
+	forceCompression := output.ForceCompression != nil && *output.ForceCompression
+	if output.CompressionFormat == "" && (config.Engine.CompressionFormat != "gzip" || forceCompression) {
 		output.CompressionFormat = config.Engine.CompressionFormat
 	}
 	if output.CompressionFormat != "" {

@@ -94,6 +94,25 @@ func TestFinalCommitCompressionAlgorithmOverridesDisable(t *testing.T) {
 	}
 }
 
+func TestForcedCompressionUsesConfiguredAlgorithm(t *testing.T) {
+	for _, format := range []string{"gzip", "zstd", "zstd:chunked"} {
+		t.Run(format, func(t *testing.T) {
+			config := &commonconfig.Config{Engine: commonconfig.EngineConfig{CompressionFormat: format}}
+			output, err := applyOutputCompressionDefaults(Output{DisableCompression: true, ForceCompression: boolPointer(true)}, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var options upstream.CommitOptions
+			if err := applyFinalCommitOptions(&options, output); err != nil {
+				t.Fatal(err)
+			}
+			if output.DisableCompression || options.CompressionFormat == nil || options.CompressionFormat.Name() != format || !options.ForceCompressionFormat {
+				t.Fatalf("forced configured compression: output=%#v options=%#v", output, options)
+			}
+		})
+	}
+}
+
 func TestCompressionDefaultsUseRequestConfigModules(t *testing.T) {
 	module := filepath.Join(t.TempDir(), "compression.conf")
 	if err := os.WriteFile(module, []byte("[engine]\ncompression_format=\"zstd\"\ncompression_level=3\n"), 0600); err != nil {

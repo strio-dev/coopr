@@ -73,7 +73,7 @@ func TestRequestFromPlanDoesNotDuplicateGlobalMounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := planner.Create(def, planner.Options{Mode: planner.Build, TransientRunMounts: TransientMountInstructions(mounts)})
+	plan, err := planner.Create(def, planner.Options{Mode: planner.Build, Platform: runtime.GOOS + "/" + runtime.GOARCH, TransientRunMounts: TransientMountInstructions(mounts)})
 	if err != nil {
 		t.Fatal(err)
 	}

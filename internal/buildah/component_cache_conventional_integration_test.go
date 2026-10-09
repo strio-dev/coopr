@@ -61,3 +61,66 @@ run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof"
 		t.Fatalf("component cache layout: %v", err)
 	}
 }
+
+func TestComponentCacheRetainsStageLabelModesAcrossStores(t *testing.T) {
+	requireLiveInstructionCache(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	root := t.TempDir()
+	base, _ := newLiveBusyBoxRegistry(t, ctx)
+	for _, test := range []struct {
+		name, operation string
+	}{
+		{"config", "env proof=\"yes\"\n"},
+		{"run", "run \"printf ready >/proof\"\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := filepath.Join(root, test.name)
+			componentResolver := localConfigComponentResolver(t, ctx, root, "extend as=\"component-output\"\n"+test.operation, false)
+			resolver, err := oci.NewResolver(oci.Options{ComponentStoreDir: componentResolver.ComponentStoreDir(), TLSVerify: new(false)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			policy := writeComponentTestPolicy(t, root)
+			plan := testPlan(t, "from \""+base+"\"\ncomponent \"local:config\"\n")
+			cacheSpec := []CacheSpec{{Transport: "oci-layout", Reference: filepath.Join(root, "cache")}}
+			timestamp := int64(0)
+			for _, attempt := range []struct {
+				name    string
+				labels  bool
+				wantHit bool
+			}{
+				{"plain-cold", false, false},
+				{"labeled-cold", true, false},
+				{"plain-warm", false, true},
+				{"labeled-warm", true, true},
+			} {
+				baseDir := filepath.Join(root, attempt.name)
+				result, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
+					Store: cacheTestStore(baseDir), ContextDir: root, Isolation: "rootless", Runtime: "crun",
+					Output:            Output{Path: filepath.Join(baseDir, "layout")},
+					Lifecycle:         LifecycleControls{SaveStages: true, StageLabels: attempt.labels},
+					Timestamp:         &timestamp,
+					ComponentStoreDir: resolver.ComponentStoreDir(), CacheFrom: cacheSpec, CacheTo: cacheSpec,
+					TLSVerify: new(false), SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if attempt.wantHit {
+					if result.CacheStats.Hits != 1 || result.CacheStats.Misses != 0 {
+						t.Fatalf("%s: expected whole-component hit, got %+v", attempt.name, result.CacheStats)
+					}
+				} else if result.CacheStats.Misses == 0 {
+					t.Fatalf("%s: expected cache miss, got %+v", attempt.name, result.CacheStats)
+				}
+				_, image := readPlanImage(t, result.Layout)
+				name, hasName := image.Config.Labels["io.buildah.stage.name"]
+				_, hasBase := image.Config.Labels["io.buildah.stage.base"]
+				if hasName != attempt.labels || hasBase != attempt.labels || (attempt.labels && name != "component-output") {
+					t.Fatalf("%s: incorrect stage labels: %v", attempt.name, image.Config.Labels)
+				}
+			}
+		})
+	}
+}

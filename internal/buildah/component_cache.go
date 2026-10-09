@@ -384,7 +384,8 @@ func (c *componentCache) key(executor *graphExecutor, input stateidentity.Identi
 	mode, err := json.Marshal(struct {
 		NoLayers      bool
 		CompatVolumes bool
-	}{executor.options.Lifecycle.NoLayers, executor.options.Lifecycle.CompatVolumes})
+		StageLabels   bool
+	}{executor.options.Lifecycle.NoLayers, executor.options.Lifecycle.CompatVolumes, executor.options.Lifecycle.StageLabels})
 	if err != nil {
 		return cache.Key{}, err
 	}

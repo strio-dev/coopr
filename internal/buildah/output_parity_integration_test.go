@@ -35,13 +35,32 @@ func TestBuildPlanCompressionAppliesOnCacheHits(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(contextDir, "proof"), []byte("compressed proof\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	options := PlanOptions{Store: StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}, ContextDir: contextDir, Isolation: "rootless", Network: "none"}
+	module := filepath.Join(root, "compression.conf")
+	if err := os.WriteFile(module, []byte("[engine]\ncompression_format=\"gzip\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	options := PlanOptions{Store: StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}, ContextDir: contextDir, Isolation: "rootless", Network: "none", RunControls: RunControls{ConfigModules: []string{module}}}
 	plan := testPlan(t, "from \"scratch\"\ncopy \"proof\" \"/proof\"\n")
 	blobDirectory := filepath.Join(root, "blob-cache")
 	if err := os.Mkdir(blobDirectory, 0700); err != nil {
 		t.Fatal(err)
 	}
 	var seedImage string
+	for i, force := range []bool{true, true, false} {
+		options.Output = Output{Path: filepath.Join(root, fmt.Sprintf("force-default-%d", i)), DisableCompression: true, ForceCompression: boolPointer(force)}
+		result, err := BuildPlan(ctx, plan, options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifest := readLayoutManifest(t, result.Layout)
+		want := v1.MediaTypeImageLayer
+		if force {
+			want = v1.MediaTypeImageLayerGzip
+		}
+		if len(manifest.Layers) != 1 || manifest.Layers[0].MediaType != want {
+			t.Fatalf("default compression force=%t: %#v", force, manifest.Layers)
+		}
+	}
 	for i, algorithm := range []string{"gzip", "zstd", "zstd:chunked", "gzip", ""} {
 		options.Output = Output{Path: filepath.Join(root, fmt.Sprintf("output-%d", i)), CompressionFormat: algorithm, DisableCompression: true, BlobDirectory: blobDirectory}
 		result, err := BuildPlan(ctx, plan, options)
@@ -64,7 +83,6 @@ func TestBuildPlanCompressionAppliesOnCacheHits(t *testing.T) {
 			t.Fatalf("%s layers: %#v", algorithm, manifest.Layers)
 		}
 	}
-
 	selection, found, err := nativeFixtureSelection(ctx, options.Store, seedImage, v1.Platform{OS: "linux", Architecture: runtime.GOARCH})
 	if err != nil || !found {
 		t.Fatalf("compression base lookup: %t %v", found, err)
