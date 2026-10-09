@@ -506,7 +506,9 @@ func extractRemoteNamedContext(ctx context.Context, directory string, archiveRea
 			}
 		}
 	}
-	if _, err := io.Copy(archive, &contextReader{ctx: ctx, reader: stream}); err != nil {
+	// Consume the compressed stream to validate its footer without staging
+	// trailing bytes that cannot contribute to the extracted tar.
+	if _, err := io.Copy(io.Discard, &contextReader{ctx: ctx, reader: stream}); err != nil {
 		return time.Time{}, fmt.Errorf("finish remote context archive: %w", err)
 	}
 	if _, err := archive.Seek(0, io.SeekStart); err != nil {

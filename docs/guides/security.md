@@ -34,6 +34,8 @@ HTTPS Git accepts host-scoped `GIT_AUTH_HEADER.<host>` or `GIT_AUTH_TOKEN.<host>
 
 Image inputs honor native registry routing and signature policy. Images, components, and registry caches share native registry TLS settings; see [configuration](../reference/configuration.md#runtime-and-trust). Keep TLS verification enabled outside deliberately configured test registries. For immutable selection, pin image and component references by digest, including nested references. A component digest alone does not establish publisher trust or signature policy.
 
+Archive processing has no size quota. A small compressed context or image archive can consume substantial disk, memory, or CPU. Review the source and apply resource limits to the Coopr process or its outer container; RUN limits do not cover input preparation.
+
 ## Nested container profile
 
 The scratch-based container image includes Coopr's embedded Buildah backend, `fuse-overlayfs`, `crun`, network and UID-map helpers, Git/SSH, GPGME/GnuPG, certificates, and archive support. It runs as UID/GID 0 inside the container; with rootless Podman, that identity maps to the invoking host user. It has no distribution package manager or builder daemon.
