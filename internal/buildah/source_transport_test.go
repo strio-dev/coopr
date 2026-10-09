@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -348,4 +350,46 @@ func TestImageSourceDirectoryLinksStayInsideSnapshot(t *testing.T) {
 			t.Fatalf("unconfined directory link: %+v", header)
 		}
 	}
+}
+
+func TestFilterImageArchiveCancellationDuringEntry(t *testing.T) {
+	var source bytes.Buffer
+	writer := tar.NewWriter(&source)
+	body := bytes.Repeat([]byte("x"), 64*1024)
+	if err := writer.WriteHeader(&tar.Header{Name: "layer.tar", Typeflag: tar.TypeReg, Mode: 0600, Size: int64(len(body))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	input := &cancelingImageArchiveReader{Reader: bytes.NewReader(source.Bytes()), cancel: cancel}
+	if err := filterImageArchive(ctx, input, io.Discard); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+	if input.bytesRead >= 512+len(body) {
+		t.Fatalf("cancellation consumed the entire entry: read %d bytes", input.bytesRead)
+	}
+}
+
+type cancelingImageArchiveReader struct {
+	*bytes.Reader
+	cancel    context.CancelFunc
+	bytesRead int
+}
+
+func (reader *cancelingImageArchiveReader) Read(buffer []byte) (int, error) {
+	if len(buffer) > 1024 {
+		buffer = buffer[:1024]
+	}
+	n, err := reader.Reader.Read(buffer)
+	reader.bytesRead += n
+	if reader.bytesRead > 512 {
+		reader.cancel()
+	}
+	return n, err
 }

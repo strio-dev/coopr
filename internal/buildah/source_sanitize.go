@@ -90,7 +90,7 @@ func sanitizeTransportSource(ctx context.Context, reference, contextDir string) 
 	// Archives may leave the enclosing copier tar padding unread. Drain that
 	// stream before joining the producer so a valid inner tar cannot hide a
 	// failed source copy and the producer cannot remain blocked writing it.
-	if _, err := io.Copy(io.Discard, stream); err != nil {
+	if _, err := io.Copy(io.Discard, contextReader{ctx: ctx, reader: stream}); err != nil {
 		return fail(err)
 	}
 	copyErr := <-result
@@ -119,7 +119,7 @@ func sanitizeTransportSource(ctx context.Context, reference, contextDir string) 
 }
 
 func filterImageArchive(ctx context.Context, input io.Reader, output io.Writer) error {
-	reader := tar.NewReader(input)
+	reader := tar.NewReader(contextReader{ctx: ctx, reader: input})
 	writer := tar.NewWriter(output)
 	seen := map[string]byte{}
 	for {

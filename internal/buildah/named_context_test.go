@@ -3,6 +3,7 @@ package buildah
 import (
 	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -338,6 +339,87 @@ func TestExtractRemoteNamedContextConfinesArchivePaths(t *testing.T) {
 			}
 			if _, err := os.Lstat(filepath.Join(parent, "escape")); !os.IsNotExist(err) {
 				t.Fatalf("archive escaped context root: %v", err)
+			}
+		})
+	}
+}
+
+func TestExtractRemoteNamedContextDiscardsTrailingData(t *testing.T) {
+	staging := t.TempDir()
+	t.Setenv("TMPDIR", staging)
+	archive := tarBytes(t, "proof", "context\n")
+	input := &contextArchiveStageReader{
+		Reader:  bytes.NewReader(append(archive, bytes.Repeat([]byte("trailer"), 65536)...)),
+		staging: staging,
+	}
+	directory := t.TempDir()
+	if _, err := extractRemoteNamedContext(context.Background(), directory, input); err != nil {
+		t.Fatal(err)
+	}
+	if input.largest > int64(len(archive)) {
+		t.Fatalf("staged archive grew to %d bytes for a %d-byte tar", input.largest, len(archive))
+	}
+	if contents, err := os.ReadFile(filepath.Join(directory, "proof")); err != nil || string(contents) != "context\n" {
+		t.Fatalf("extracted proof = %q, %v", contents, err)
+	}
+	if entries, err := os.ReadDir(staging); err != nil || len(entries) != 0 {
+		t.Fatalf("staging cleanup = %v, %v", entries, err)
+	}
+}
+
+type contextArchiveStageReader struct {
+	io.Reader
+	staging string
+	largest int64
+}
+
+func (reader *contextArchiveStageReader) Read(buffer []byte) (int, error) {
+	entries, err := os.ReadDir(reader.staging)
+	if err != nil {
+		return 0, err
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "coopr-named-context-") {
+			info, err := entry.Info()
+			if err != nil {
+				return 0, err
+			}
+			reader.largest = max(reader.largest, info.Size())
+		}
+	}
+	return reader.Reader.Read(buffer)
+}
+
+func TestExtractRemoteNamedContextValidatesGzipFooter(t *testing.T) {
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	if _, err := writer.Write(tarBytes(t, "proof", "context\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	corrupt := bytes.Clone(compressed.Bytes())
+	corrupt[len(corrupt)-8] ^= 1
+	for _, test := range []struct {
+		name string
+		data []byte
+		fail bool
+	}{
+		{name: "valid", data: compressed.Bytes()},
+		{name: "bad checksum", data: corrupt, fail: true},
+		{name: "truncated footer", data: compressed.Bytes()[:compressed.Len()-4], fail: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			staging := t.TempDir()
+			t.Setenv("TMPDIR", staging)
+			directory := t.TempDir()
+			_, err := extractRemoteNamedContext(context.Background(), directory, bytes.NewReader(test.data))
+			if (err != nil) != test.fail {
+				t.Fatalf("extraction error = %v, want failure %t", err, test.fail)
+			}
+			if entries, err := os.ReadDir(staging); err != nil || len(entries) != 0 {
+				t.Fatalf("staging cleanup = %v, %v", entries, err)
 			}
 		})
 	}
