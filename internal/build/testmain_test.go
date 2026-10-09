@@ -1,6 +1,7 @@
 package build
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"testing"
@@ -13,12 +14,8 @@ func TestMain(m *testing.M) {
 	if reexec.Init() {
 		return
 	}
-	if os.Getenv("COOPR_TEST_PACKAGED_ACCEPTANCE") == "1" {
-		// Assembled-image acceptance invokes host Podman, so it must retain the
-		// caller's namespace and storage configuration rather than native-test isolation.
-		os.Exit(m.Run())
-	}
-	if os.Getenv("COOPR_TEST_BUILDAH") != "" || os.Getenv("COOPR_TEST_BUILDAH_REGISTRY") != "" || os.Getenv("COOPR_TEST_CONTAINER_STORAGE") != "" {
+	flag.Parse()
+	if !testing.Short() && flag.Lookup("test.list").Value.String() == "" {
 		// Live native storage needs the same user/mount namespace as the CLI.
 		unshare.MaybeReexecUsingUserNamespace(false)
 	}

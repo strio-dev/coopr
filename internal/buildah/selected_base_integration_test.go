@@ -24,8 +24,8 @@ import (
 )
 
 func TestSelectedBaseAliasInitializesExactSameConfigManifest(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live selected-base alias coverage")
+	if testing.Short() {
+		t.Skip("skipping live selected-base alias coverage in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -150,8 +150,8 @@ func TestSelectedBaseAliasInitializesExactSameConfigManifest(t *testing.T) {
 }
 
 func TestSelectedBaseAliasSupportsConfigOnlyImage(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live config-only selected-base coverage")
+	if testing.Short() {
+		t.Skip("skipping live config-only selected-base coverage in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -224,8 +224,8 @@ func TestSelectedBaseAliasSupportsConfigOnlyImage(t *testing.T) {
 }
 
 func TestGraphBuildConsumesPlanningSelectedManifestAfterCollision(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live selected graph-base coverage")
+	if testing.Short() {
+		t.Skip("skipping live selected graph-base coverage in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()

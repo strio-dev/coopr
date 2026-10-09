@@ -1,8 +1,8 @@
 set default-list
 
-# Run Go tests; live tests skip unless their environment is configured.
+# Run unit tests; integration tasks select the live suites.
 test:
-    nix develop path:. -c env TMPDIR=/tmp go test ./...
+    nix develop path:. -c env TMPDIR=/tmp go test -short ./...
 
 # Run Go static analysis in the Nix development environment.
 vet:
@@ -50,12 +50,20 @@ packaged-acceptance:
     nix develop path:.#runtime -c ./scripts/acceptance/release.sh
 
 # Compare current Coopr and Podman cold, warm, changed-step, and concurrent builds.
-benchmark:
-    ./scripts/benchmarks/run.sh
+benchmark iterations="5" multiplatform="0":
+    nix develop path:. -c ./scripts/benchmarks/run.sh {{ quote(iterations) }} {{ quote(multiplatform) }}
 
 # Verify explicit Docker engine transfers and imports with a disposable daemon.
-docker-acceptance:
-    ./scripts/acceptance/docker.sh
+docker-acceptance store="modern":
+    nix develop path:.#docker -c ./scripts/acceptance/docker.sh {{ quote(store) }}
+
+# Publish the repository examples, remove publisher files, and run the consumer.
+examples-acceptance:
+    nix develop path:.#examples -c go test -count=1 -v -timeout=15m ./internal/acceptance -run '^TestPublishedExamplesSurvivePublisherRemovalAndRun$'
+
+# Verify a registry signature with an installed Cosign CLI.
+cosign-acceptance:
+    nix develop path:.#cosign -c go test -count=1 -v ./internal/transfer -run '^TestCopyRootSigstoreSignatureWithCosign$'
 
 # Build the local documentation site with the repository-pinned Zensical.
 docs-build:
@@ -67,5 +75,5 @@ docs-serve:
 
 # Build documentation strictly and parse its KDL examples.
 docs-check: docs-build
-    nix develop path:. -c env COOPR_TEST_DOCS=1 go test -count=1 ./internal/definition -run TestDocumentationKDLExamples
+    nix develop path:. -c go test -count=1 ./internal/definition -run TestDocumentationKDLExamples
     nix develop path:. -c python3 nix/tests/installer.py docs/install.sh

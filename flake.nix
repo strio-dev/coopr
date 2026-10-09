@@ -98,9 +98,28 @@
           };
           formatter = pkgs.nixfmt-tree;
           devShells.default = pkgs.callPackage ./nix/devshell.nix { inherit coopr zensical; };
-          devShells.runtime = pkgs.callPackage ./nix/devshell.nix {
+          devShells.runtime =
+            (pkgs.callPackage ./nix/devshell.nix {
+              inherit coopr;
+              withDevelopmentTools = false;
+            }).overrideAttrs
+              {
+                COOPR_TEST_FIXTURES = pkgs.callPackage ./nix/tests/fixtures.nix { inherit coopr; };
+              };
+          devShells.examples = pkgs.callPackage ./nix/devshell.nix {
             inherit coopr;
             withDevelopmentTools = false;
+            testTags = [ "examplesintegration" ];
+          };
+          devShells.docker = pkgs.callPackage ./nix/devshell.nix {
+            inherit coopr;
+            withDevelopmentTools = false;
+            testTags = [ "dockerintegration" ];
+          };
+          devShells.cosign = pkgs.callPackage ./nix/devshell.nix {
+            inherit coopr;
+            withDevelopmentTools = false;
+            testTags = [ "cosignintegration" ];
           };
           devShells.release = pkgs.callPackage ./nix/release.nix { };
           devShells.security = pkgs.callPackage ./nix/security.nix { };

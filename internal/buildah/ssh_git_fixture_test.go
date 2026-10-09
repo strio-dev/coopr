@@ -115,8 +115,8 @@ func packageDirectory(t *testing.T) string {
 }
 
 func TestBuildPlanAddsSSHGitSourceWithPinnedHostKey(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live supervised SSH Git ADD build")
+	if testing.Short() {
+		t.Skip("skipping a live supervised SSH Git ADD build in short mode")
 	}
 	source, privateKey, knownHosts := gitSSHFixture(t)
 	root := t.TempDir()

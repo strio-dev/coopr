@@ -178,8 +178,8 @@ func TestBuildPlanRequiresCooprResolverForExternalBase(t *testing.T) {
 }
 
 func TestBuildPlanNamedStageTargetCreatesOneLayerPerCopy(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah graph build")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah graph build in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -228,8 +228,8 @@ copy "base" "/unused"
 }
 
 func TestBuildPlanCopiesFromIndependentNamedStage(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah graph build")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah graph build in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -306,8 +306,8 @@ func TestBuildPlanCopiesFromIndependentNamedStage(t *testing.T) {
 }
 
 func TestBuildPlanRunsWithStageBindAndCacheMounts(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless stage mount build")
+	if testing.Short() {
+		t.Skip("skipping a live rootless stage mount build in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -406,8 +406,8 @@ run "cat /input >/original" network="none" {
 }
 
 func TestBuildPlanMetadataOnlyFinalStageKeepsBaseLayers(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah graph build")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah graph build in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -440,8 +440,8 @@ func TestBuildPlanMetadataOnlyFinalStageKeepsBaseLayers(t *testing.T) {
 }
 
 func TestBuildPlanUsesSelectedLocalImageAsBase(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah graph build")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah graph build in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

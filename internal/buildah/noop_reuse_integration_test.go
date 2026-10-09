@@ -27,8 +27,8 @@ import (
 )
 
 func TestFromOnlyBuildReusesExactBaseUnlessOutputPolicyChanges(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live FROM-only reuse coverage")
+	if testing.Short() {
+		t.Skip("skipping live FROM-only reuse coverage in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -146,8 +146,8 @@ func TestFromOnlyBuildReusesExactBaseUnlessOutputPolicyChanges(t *testing.T) {
 }
 
 func TestInstructionCacheExportsSelectedManifestAfterFormatCollision(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live selected-cache-manifest coverage")
+	if testing.Short() {
+		t.Skip("skipping live selected-cache-manifest coverage in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()

@@ -3,7 +3,6 @@ package buildah
 import (
 	"context"
 	"io"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -28,8 +27,8 @@ func TestValidatePublicationGraphAcceptsConfigOnlyComponent(t *testing.T) {
 }
 
 func TestPublishPlanSupervisedWritesConfigOnlyComponentLayout(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live config-only component publication")
+	if testing.Short() {
+		t.Skip("skipping a live config-only component publication in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

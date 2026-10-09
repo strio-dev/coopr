@@ -17,8 +17,8 @@ import (
 )
 
 func TestBuildDefinitionPredefinedProxyArgReusesRunCache(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live predefined proxy argument build")
+	if testing.Short() {
+		t.Skip("skipping a live predefined proxy argument build in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -78,8 +78,8 @@ run "printf '%%s' \"$HTTP_PROXY\" >/proof" network="none"
 }
 
 func TestPublishDefinitionPredefinedProxyArgReachesPackageRun(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live component proxy argument build")
+	if testing.Short() {
+		t.Skip("skipping a live component proxy argument build in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()

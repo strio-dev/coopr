@@ -5,23 +5,18 @@ set -euo pipefail
 
 script_path=$(realpath "${BASH_SOURCE[0]}")
 repo_root=$(cd "$(dirname "$script_path")/../.." && pwd)
-iterations=${COOPR_PARITY_BENCH_ITERATIONS:-5}
-multiplatform=${COOPR_PARITY_BENCH_MULTIPLATFORM:-0}
+iterations=${1:-5}
+multiplatform=${2:-0}
 
 fail() {
   printf 'parity benchmark: %s\n' "$*" >&2
   exit 1
 }
 
-if [[ ${COOPR_PARITY_BENCH_IN_NIX:-} != 1 ]]; then
-  command -v nix >/dev/null 2>&1 || fail 'nix is required'
-  exec env COOPR_PARITY_BENCH_IN_NIX=1 \
-    nix develop "path:$repo_root" -c "$script_path"
-fi
-
-[[ $iterations =~ ^[1-9][0-9]*$ ]] || fail 'COOPR_PARITY_BENCH_ITERATIONS must be positive'
+[[ $# -le 2 ]] || fail 'usage: run.sh [iterations] [multiplatform]'
+[[ $iterations =~ ^[1-9][0-9]*$ ]] || fail 'iterations must be positive'
 [[ $multiplatform == 0 || $multiplatform == 1 ]] || \
-  fail 'COOPR_PARITY_BENCH_MULTIPLATFORM must be 0 or 1'
+  fail 'multiplatform must be 0 or 1'
 [[ $(uname -s) == Linux ]] || fail 'Linux is required'
 [[ $(id -u) != 0 ]] || fail 'run as a non-root user'
 for tool in busybox date go podman; do

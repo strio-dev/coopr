@@ -23,8 +23,8 @@ import (
 )
 
 func TestBuildPlanCompressionAppliesOnCacheHits(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live output compression")
+	if testing.Short() {
+		t.Skip("skipping live output compression in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
@@ -141,8 +141,8 @@ func readLayoutManifest(t *testing.T, layout string) v1.Manifest {
 }
 
 func TestBuildPlanSavesAndLabelsStages(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live saved stages")
+	if testing.Short() {
+		t.Skip("skipping live saved stages in short mode")
 	}
 	for _, save := range []bool{false, true} {
 		t.Run(map[bool]string{false: "remove", true: "save"}[save], func(t *testing.T) {
@@ -246,8 +246,8 @@ func TestBuildPlanSavesAndLabelsStages(t *testing.T) {
 }
 
 func TestFailedNoLayersBuildCleansCompletedStages(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live failed-stage cleanup")
+	if testing.Short() {
+		t.Skip("skipping live failed-stage cleanup in short mode")
 	}
 	for _, save := range []bool{false, true} {
 		t.Run(fmt.Sprintf("save=%t", save), func(t *testing.T) {
@@ -295,8 +295,8 @@ func TestFailedNoLayersBuildCleansCompletedStages(t *testing.T) {
 }
 
 func TestFailedNoLayersBuildCleansDrainedStages(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live parallel failed-stage cleanup")
+	if testing.Short() {
+		t.Skip("skipping live parallel failed-stage cleanup in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
@@ -350,8 +350,8 @@ func TestFailedNoLayersBuildCleansDrainedStages(t *testing.T) {
 }
 
 func TestNoLayersCleanupPreservesObservedImageSharedByAlias(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for observed stage aliases")
+	if testing.Short() {
+		t.Skip("skipping observed stage aliases in short mode")
 	}
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "proof"), []byte("observed proof\n"), 0600); err != nil {
@@ -390,8 +390,8 @@ func TestNoLayersCleanupPreservesObservedImageSharedByAlias(t *testing.T) {
 }
 
 func TestParallelFailedWorkerHonorsKeepFailed(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for failed isolated builders")
+	if testing.Short() {
+		t.Skip("skipping failed isolated builders in short mode")
 	}
 	for _, keep := range []bool{false, true} {
 		t.Run(fmt.Sprintf("keep=%t", keep), func(t *testing.T) {
@@ -424,8 +424,8 @@ func TestParallelFailedWorkerHonorsKeepFailed(t *testing.T) {
 }
 
 func TestSavedStageLabelsSkipFromOnlyAndKeepTaggedIntermediates(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live stage label parity")
+	if testing.Short() {
+		t.Skip("skipping live stage label parity in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
@@ -497,8 +497,8 @@ func TestSavedStageLabelsSkipFromOnlyAndKeepTaggedIntermediates(t *testing.T) {
 }
 
 func TestPortableInstructionCacheUsesSelectedCompression(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for compressed instruction cache")
+	if testing.Short() {
+		t.Skip("skipping compressed instruction cache in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
@@ -562,8 +562,8 @@ func TestPortableInstructionCacheUsesSelectedCompression(t *testing.T) {
 }
 
 func TestStageBaseAnnotationsMatchNativeBuildah(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for native stage provenance comparison")
+	if testing.Short() {
+		t.Skip("skipping native stage provenance comparison in short mode")
 	}
 	for _, mode := range []string{"direct", "policy", "named", "digest-multiple-names"} {
 		t.Run(mode, func(t *testing.T) { testStageBaseAnnotations(t, mode) })

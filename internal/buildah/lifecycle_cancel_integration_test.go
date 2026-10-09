@@ -14,8 +14,8 @@ import (
 )
 
 func TestLifecycleCancellationRetainsStoppedBuilderWhenSelected(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for native lifecycle builds")
+	if testing.Short() {
+		t.Skip("skipping native lifecycle builds in short mode")
 	}
 	root := t.TempDir()
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}

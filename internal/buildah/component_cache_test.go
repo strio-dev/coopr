@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	registryserver "github.com/google/go-containerregistry/pkg/registry"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	registryserver "github.com/google/go-containerregistry/pkg/registry"
 
 	"coopr/internal/cache"
 	"coopr/internal/definition"
@@ -326,8 +327,8 @@ func TestComponentImageCacheKeyRejectsOldLoweringAndCallerGraphChanges(t *testin
 }
 
 func TestComponentCacheSeedFailureReachesBuildCaller(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for rootless graph error propagation")
+	if testing.Short() {
+		t.Skip("skipping rootless graph error propagation in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()

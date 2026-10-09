@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"coopr/internal/testutil"
 )
 
 func TestStorageTestCLIRejectsInvalidExecutable(t *testing.T) {
@@ -17,7 +19,7 @@ func TestStorageTestCLIRejectsInvalidExecutable(t *testing.T) {
 		"directory": root, "non-executable": nonExecutable,
 	} {
 		t.Run(name, func(t *testing.T) {
-			if err := validateStorageTestCLI(path); err == nil {
+			if err := testutil.ValidateExecutable(path); err == nil {
 				t.Fatalf("accepted invalid executable %q", path)
 			}
 		})

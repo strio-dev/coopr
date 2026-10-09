@@ -95,8 +95,8 @@ label purpose="finalization"
 }
 
 func TestConfidentialWorkloadPreservesConvertedImageConfig(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for native confidential-workload conversion")
+	if testing.Short() {
+		t.Skip("skipping native confidential-workload conversion in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()

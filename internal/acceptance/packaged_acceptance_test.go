@@ -1,4 +1,4 @@
-package build
+package acceptance
 
 import (
 	"archive/tar"
@@ -18,8 +18,9 @@ import (
 	"testing"
 	"time"
 
+	"coopr/internal/testutil"
+
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
-	"go.podman.io/storage/pkg/reexec"
 	"oras.land/oras-go/v2/content"
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
@@ -27,8 +28,8 @@ import (
 // This test exercises the assembled release container, including an optional
 // static release CLI staged into that container by scripts/acceptance/release.sh.
 func TestPackagedAcceptance(t *testing.T) {
-	if os.Getenv("COOPR_TEST_PACKAGED_ACCEPTANCE") != "1" {
-		t.Skip("set COOPR_TEST_PACKAGED_ACCEPTANCE=1 for packaged acceptance")
+	if testing.Short() {
+		t.Skip("requires packaged acceptance fixtures")
 	}
 	if runtime.GOOS != "linux" || os.Getuid() == 0 {
 		t.Fatal("packaged acceptance requires a non-root Linux user")
@@ -74,7 +75,7 @@ func TestPackagedAcceptance(t *testing.T) {
 		// Storage entries can be owned by subordinate UIDs; use Podman's normal
 		// rootless user namespace to remove only this test's temporary directory.
 		command := exec.Command("podman", "unshare", "rm", "-rf", "--", root)
-		command.Env = hostPodmanEnv()
+		command.Env = os.Environ()
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Errorf("remove packaged acceptance workspace: %v: %s", err, output)
 		}
@@ -100,23 +101,15 @@ func TestPackagedAcceptance(t *testing.T) {
 	}
 	a.copyExecutable("busybox", commandPath(t, "busybox"))
 	for _, arch := range []string{"amd64", "arm64"} {
-		fixtureRoot, supplied := os.LookupEnv("COOPR_TEST_FIXTURES")
-		if supplied {
-			if !filepath.IsAbs(fixtureRoot) {
-				t.Fatal("COOPR_TEST_FIXTURES must be absolute")
-			}
-			source := filepath.Join(fixtureRoot, "acceptance-proof-"+arch)
-			if err := validateStorageTestCLI(source); err != nil {
-				t.Fatal(err)
-			}
-			a.copyExecutable("proof-"+arch, source)
-		} else {
-			command := exec.CommandContext(ctx, "go", "build", "-trimpath", "-o", filepath.Join(a.workspace, "proof-"+arch), filepath.Join(a.repoRoot(), "scripts/acceptance/fixtures/platform-proof/main.go"))
-			command.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH="+arch)
-			if output, err := command.CombinedOutput(); err != nil {
-				t.Fatalf("build %s fixture: %v: %s", arch, err, output)
-			}
+		fixtureRoot := os.Getenv("COOPR_TEST_FIXTURES")
+		if !filepath.IsAbs(fixtureRoot) {
+			t.Fatal("COOPR_TEST_FIXTURES must be an absolute fixture directory")
 		}
+		source := filepath.Join(fixtureRoot, "acceptance-proof-"+arch)
+		if err := testutil.ValidateExecutable(source); err != nil {
+			t.Fatal(err)
+		}
+		a.copyExecutable("proof-"+arch, source)
 	}
 	const base = "coopr-release-base:acceptance"
 	const component = "coopr-release-component-acceptance"
@@ -193,6 +186,35 @@ cmd { exec "/component-proof" }
 		a.assertImage("child-docker.oci.tar", "base\nchild\nbase", a.platform)
 		if _, err := os.Stat(filepath.Join(a.state, "containers/storage/overlay/.has-mount-program")); err != nil {
 			t.Fatalf("packaged builds did not use fuse-overlayfs: %v", err)
+		}
+	})
+	t.Run("SelfContainedLocalState", func(t *testing.T) {
+		a.t = t
+		a.write("self-component.coopr", "extend\nenv SELF_CONTAINED_PROOF=ready\n")
+		a.write("self-app.coopr", "from \""+base+"\"\ncomponent \"local:self-proof\"\nrun \"test \\\"$SELF_CONTAINED_PROOF\\\" = ready && printf self-contained-ok >/proof\"\ncmd { exec \"/bin/cat\" \"/proof\" }\n")
+		a.coopr(false, "none", "component", "build", "/work/self-component.coopr", "--tag", "self-proof", "--platform", a.platform)
+		for _, name := range []string{"offline", "chroot"} {
+			args := []string{"build", "/work/self-app.coopr", "--tag", "oci-archive:/work/self-" + name + ".oci.tar", "--platform", a.platform}
+			if name == "chroot" {
+				// Chroot uses the outer container's network namespace; this
+				// container is offline and must not launch a nested helper.
+				args = append(args, "--isolation=chroot", "--network=host", "--no-cache")
+			}
+			a.coopr(false, "none", args...)
+			a.assertImage("self-"+name+".oci.tar", "self-contained-ok", a.platform)
+		}
+		for _, name := range []string{"containers/storage", "coopr/components"} {
+			if info, err := os.Stat(filepath.Join(a.state, name)); err != nil || !info.IsDir() {
+				t.Fatalf("persistent state directory %s: %v", name, err)
+			}
+		}
+		manifest, config := testutil.ReadImage(t, a.ctx, filepath.Join(a.workspace, "self-offline.oci.tar"))
+		found := false
+		for _, value := range config.Config.Env {
+			found = found || value == "SELF_CONTAINED_PROOF=ready"
+		}
+		if len(manifest.Layers) == 0 || !found {
+			t.Fatalf("offline result lost filesystem or component configuration: layers=%d env=%v", len(manifest.Layers), config.Config.Env)
 		}
 	})
 	t.Run("NetworkRejection", func(t *testing.T) {
@@ -332,7 +354,7 @@ func (a packagedAcceptance) coopr(oci bool, network string, args ...string) {
 }
 func (a packagedAcceptance) loadImage(archive string) string {
 	a.t.Helper()
-	manifest, _ := readExampleImage(a.t, a.ctx, archive)
+	manifest, _ := testutil.ReadImage(a.t, a.ctx, archive)
 	id := manifest.Config.Digest.String()
 	a.podman("load", "-i", archive)
 	a.podman("image", "exists", id)
@@ -620,11 +642,13 @@ func TestPackagedCallerEnvironment(t *testing.T) {
 		return
 	}
 	dataHome := t.TempDir()
-	// Storage's reexec helper addresses the live executable even when the
-	// native test harness was reexecuted from an anonymous memfd.
-	command := exec.Command(reexec.Self(), "-test.run", "^TestPackagedCallerEnvironment$", "-test.v")
+	// Exercise the same test executable in the caller namespace.
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(binary, "-test.run", "^TestPackagedCallerEnvironment$", "-test.v")
 	command.Env = append(os.Environ(),
-		"COOPR_TEST_PACKAGED_ACCEPTANCE=1", "COOPR_TEST_BUILDAH=1", "COOPR_TEST_BUILDAH_REGISTRY=1", "COOPR_TEST_CONTAINER_STORAGE=1",
 		"COOPR_PACKAGED_ENV_CONTROL=1", "COOPR_PACKAGED_EXPECT_UID="+strconv.Itoa(os.Getuid()),
 		"XDG_DATA_HOME="+dataHome, "COOPR_PACKAGED_EXPECT_XDG="+dataHome,
 	)

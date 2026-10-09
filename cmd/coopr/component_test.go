@@ -149,8 +149,8 @@ func TestComponentBuildArgHelpHasNoDefault(t *testing.T) {
 }
 
 func TestComponentBuildPushCommandLive(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH_REGISTRY") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH_REGISTRY for live Buildah registry tests")
+	if testing.Short() {
+		t.Skip("skipping _REGISTRY for live Buildah registry tests in short mode")
 	}
 	server := httptest.NewServer(registry.New())
 	defer server.Close()
@@ -167,8 +167,8 @@ func TestComponentBuildPushCommandLive(t *testing.T) {
 }
 
 func TestComponentBuildRegistryTLSPolicyCommandLive(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH_REGISTRY") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH_REGISTRY for live Buildah registry tests")
+	if testing.Short() {
+		t.Skip("skipping _REGISTRY for live Buildah registry tests in short mode")
 	}
 	server := httptest.NewServer(registry.New())
 	defer server.Close()
@@ -205,8 +205,8 @@ func TestComponentBuildRegistryTLSPolicyCommandLive(t *testing.T) {
 }
 
 func TestComponentBuildArchiveCommandLive(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH for live Buildah tests")
+	if testing.Short() {
+		t.Skip("skipping live Buildah tests in short mode")
 	}
 	file := definitionFile(t, "package as=\"payload\"\ncopy \"source\" \"/payload\"\nextend as=\"base\"\ncopy \"/payload\" \"/installed\" from=\"payload\"\n")
 	if err := os.WriteFile(filepath.Join(filepath.Dir(file), "source"), []byte("archived\n"), 0600); err != nil {
@@ -226,8 +226,8 @@ func TestComponentBuildArchiveCommandLive(t *testing.T) {
 }
 
 func TestComponentBuildLocalThenInvokeCommandLive(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH for live Buildah tests")
+	if testing.Short() {
+		t.Skip("skipping live Buildah tests in short mode")
 	}
 	dataDir := t.TempDir()
 	t.Cleanup(func() {

@@ -127,7 +127,6 @@ func TestInsecureRuntimeReexecDispatchesNonCreateCommands(t *testing.T) {
 	command := exec.Command(testWorkerBinary(t), insecureRuntimeMarker, echo, "state", "wrapper-ok")
 	// Dispatch uses the private first argument even with this synthetic argv[0].
 	command.Args[0] = insecureRuntimeExecutable
-	command.Env = append(os.Environ(), "COOPR_TEST_BUILDAH=1")
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("runtime wrapper: %v: %s", err, output)

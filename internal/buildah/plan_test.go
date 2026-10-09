@@ -488,8 +488,8 @@ func TestRequestFromPlanPreservesNoNetworkRun(t *testing.T) {
 }
 
 func TestRequestFromPlanBuildsScratchCopy(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah build")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah build in short mode")
 	}
 	root := t.TempDir()
 	contextDir := filepath.Join(root, "context")

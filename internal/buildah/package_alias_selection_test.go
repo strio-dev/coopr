@@ -2,10 +2,11 @@ package buildah
 
 import (
 	"context"
-	"go.podman.io/image/v5/types"
-	orasoci "oras.land/oras-go/v2/content/oci"
 	"runtime"
 	"testing"
+
+	"go.podman.io/image/v5/types"
+	orasoci "oras.land/oras-go/v2/content/oci"
 
 	"coopr/internal/oci"
 	"coopr/internal/planner"

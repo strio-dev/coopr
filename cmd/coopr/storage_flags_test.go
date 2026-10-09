@@ -102,8 +102,8 @@ func TestCommandsDefaultToEffectiveNativeStorage(t *testing.T) {
 }
 
 func TestBuildConsumesLocalImageWithGlobalStorageOverrides(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for native CLI storage builds")
+	if testing.Short() {
+		t.Skip("skipping native CLI storage builds in short mode")
 	}
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "config"))

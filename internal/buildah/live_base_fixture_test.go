@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"go.podman.io/storage"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -14,6 +13,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"go.podman.io/storage"
 
 	"coopr/internal/oci"
 	registryserver "github.com/google/go-containerregistry/pkg/registry"
@@ -200,8 +201,8 @@ func liveBusyBoxLayer(t *testing.T, binary []byte) []byte {
 }
 
 func TestLiveBusyBoxRegistryFixtureResolvesWithoutExternalRegistry(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for the live registry fixture")
+	if testing.Short() {
+		t.Skip("skipping the live registry fixture in short mode")
 	}
 	ctx := context.Background()
 	reference, authority := newLiveBusyBoxRegistry(t, ctx)

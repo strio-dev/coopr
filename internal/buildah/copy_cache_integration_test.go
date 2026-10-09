@@ -198,8 +198,8 @@ func TestBuildDefinitionCachesExternalImageCopy(t *testing.T) {
 
 func requireLiveInstructionCache(t *testing.T) {
 	t.Helper()
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless instruction cache test")
+	if testing.Short() {
+		t.Skip("skipping a live rootless instruction cache test in short mode")
 	}
 }
 

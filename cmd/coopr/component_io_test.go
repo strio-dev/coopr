@@ -93,8 +93,8 @@ func TestComponentIOCommandsRoundTripWithoutNativeImageStore(t *testing.T) {
 		t.Fatalf("restored bytes changed: %v", err)
 	}
 	t.Run("build consumes loaded component", func(t *testing.T) {
-		if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-			t.Skip("set COOPR_TEST_BUILDAH=1 for the native user namespace")
+		if testing.Short() {
+			t.Skip("skipping the native user namespace in short mode")
 		}
 		store := maintenanceStoreOptions(t.TempDir())
 		file := filepath.Join(t.TempDir(), "container.coopr")

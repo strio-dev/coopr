@@ -1,10 +1,11 @@
-package build
+//go:build dockerintegration
+
+package acceptance
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,16 +14,18 @@ import (
 	"testing"
 	"time"
 
+	"coopr/internal/build"
 	"coopr/internal/oci"
 	"coopr/internal/transfer"
+
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-// Opt-in because this writes images into the Docker daemon selected by
-// DOCKER_HOST. Every name is unique to this test and removed afterward.
+// This writes images into the Docker daemon selected by DOCKER_HOST.
+// Every name is unique to this test and removed afterward.
 func TestBuildAndCopyToDockerEngine(t *testing.T) {
-	if testing.Short() || os.Getenv("COOPR_TEST_DOCKER") != "1" || os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_DOCKER=1 and COOPR_TEST_BUILDAH=1 for a live Docker Engine transfer")
+	if testing.Short() {
+		t.Skip("live Docker Engine transfer")
 	}
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Fatalf("Docker CLI is required for independent runtime verification: %v", err)
@@ -30,7 +33,7 @@ func TestBuildAndCopyToDockerEngine(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	work := dockerEngineWorkspace(t)
-	file := loadTestDefinition(t, ctx, work)
+	file := loadDockerTestDefinition(t, ctx, work)
 	storeDir := filepath.Join(work, "images")
 	marker := fmt.Sprintf("docker-%d-%d", os.Getpid(), time.Now().UnixNano())
 	if err := os.WriteFile(filepath.Join(work, "marker"), []byte(marker+"\n"), 0o600); err != nil {
@@ -42,25 +45,25 @@ func TestBuildAndCopyToDockerEngine(t *testing.T) {
 			copiedName := name + "-copy"
 			var created []string
 			t.Cleanup(func() { removeDockerEngineImages(t, created) })
-			options := Options{
+			options := build.Options{
 				File: file, Platform: "linux/" + runtime.GOARCH,
-				Tag: "docker:" + name, Format: format, BuildStore: nativeBuildTestStore(storeDir),
+				Tag: "docker:" + name, Format: format, BuildStore: dockerTestStore(storeDir),
 			}
-			got, err := Run(ctx, options)
+			got, err := build.Run(ctx, options)
 			if err != nil || got != "docker:"+name {
 				t.Fatalf("build directly into Docker: result=%q error=%v", got, err)
 			}
 			created = append(created, name)
 			localName := "coopr-docker-source-" + marker + "-" + format + ":latest"
 			options.Tag = localName
-			if _, err := Run(ctx, options); err != nil {
+			if _, err := build.Run(ctx, options); err != nil {
 				t.Fatalf("build local image for later Docker copy: %v", err)
 			}
 			destination, err := transfer.ParseDestination("docker:"+copiedName, oci.Image)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := transfer.Copy(ctx, oci.Image, localName, destination, transfer.Options{BuildStore: nativeBuildTestStore(storeDir)}); err != nil {
+			if _, err := transfer.Copy(ctx, oci.Image, localName, destination, transfer.Options{BuildStore: dockerTestStore(storeDir)}); err != nil {
 				t.Fatalf("copy stored image into Docker: %v", err)
 			}
 			created = append(created, copiedName)
@@ -95,27 +98,6 @@ func TestBuildAndCopyToDockerEngine(t *testing.T) {
 	}
 }
 
-func dockerEngineWorkspace(t *testing.T) string {
-	t.Helper()
-	work := t.TempDir()
-	// Committed storage layers can retain read-only root-directory modes.
-	// Restore owner permissions before testing.TempDir removes this owned graph.
-	t.Cleanup(func() {
-		if err := filepath.WalkDir(work, func(path string, entry fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if entry.IsDir() {
-				return os.Chmod(path, 0o700)
-			}
-			return nil
-		}); err != nil {
-			t.Errorf("prepare test graph cleanup: %v", err)
-		}
-	})
-	return work
-}
-
 func removeDockerEngineImages(t *testing.T, names []string) {
 	t.Helper()
 	if len(names) == 0 {
@@ -129,23 +111,12 @@ func removeDockerEngineImages(t *testing.T, names []string) {
 }
 
 func TestBuildAndCopyMultiPlatformToDockerEngine(t *testing.T) {
-	if testing.Short() || os.Getenv("COOPR_TEST_DOCKER") != "1" || os.Getenv("COOPR_TEST_DOCKER_MULTIPLATFORM") != "1" || os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_DOCKER=1, COOPR_TEST_DOCKER_MULTIPLATFORM=1, and COOPR_TEST_BUILDAH=1 for live Docker multi-platform transfer")
+	if testing.Short() {
+		t.Skip("live Docker multi-platform transfer")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	info, err := exec.CommandContext(ctx, "docker", "info", "--format", "{{json .DriverStatus}}").CombinedOutput()
-	if err != nil {
-		t.Fatalf("inspect Docker image store: %v: %s", err, info)
-	}
-	var driverStatus [][2]string
-	if err := json.Unmarshal(info, &driverStatus); err != nil {
-		t.Fatal(err)
-	}
-	modern := false
-	for _, entry := range driverStatus {
-		modern = modern || entry == [2]string{"driver-type", "io.containerd.snapshotter.v1"}
-	}
+	modern := dockerEngineSupportsIndexes(t, ctx)
 	work := dockerEngineWorkspace(t)
 	source := filepath.Join(work, "proof.go")
 	program := `package main
@@ -185,9 +156,9 @@ cmd { exec "/proof" }
 			name := "localhost/coopr-docker-" + marker + "-" + format + ":latest"
 			var created []string
 			t.Cleanup(func() { removeDockerEngineImages(t, created) })
-			options := Options{File: file, BuildStore: nativeBuildTestStore(storeDir), Format: format,
+			options := build.Options{File: file, BuildStore: dockerTestStore(storeDir), Format: format,
 				Platforms: []string{"linux/amd64", "linux/arm64"}, Tag: "docker:" + name}
-			got, err := Run(ctx, options)
+			got, err := build.Run(ctx, options)
 			if !modern {
 				if err == nil || !strings.Contains(err.Error(), "classic image store") {
 					t.Fatalf("classic Docker must reject a complete index: %q, %v", got, err)
@@ -199,15 +170,12 @@ cmd { exec "/proof" }
 			}
 			created = append(created, name)
 			options.Tag = "coopr-docker-source-" + marker + "-" + format + ":latest"
-			if _, err := Run(ctx, options); err != nil {
+			if _, err := build.Run(ctx, options); err != nil {
 				t.Fatal(err)
 			}
-			root, _, _, found, err := testStoredImageIndex(ctx, nativeBuildTestStore(storeDir), options.Tag)
-			if err != nil || !found {
-				t.Fatalf("lookup local source index: found=%t error=%v", found, err)
-			}
+			root := exportDockerTestImage(t, ctx, dockerTestStore(storeDir), options.Tag)
 			copiedName := name + "-copy"
-			if _, err := transfer.Copy(ctx, oci.Image, options.Tag, transfer.Destination{Transport: "docker", Name: copiedName}, transfer.Options{BuildStore: nativeBuildTestStore(storeDir)}); err != nil {
+			if _, err := transfer.Copy(ctx, oci.Image, options.Tag, transfer.Destination{Transport: "docker", Name: copiedName}, transfer.Options{BuildStore: dockerTestStore(storeDir)}); err != nil {
 				t.Fatalf("copy complete local index into Docker: %v", err)
 			}
 			created = append(created, copiedName)
@@ -229,4 +197,21 @@ cmd { exec "/proof" }
 			}
 		})
 	}
+}
+
+func dockerEngineSupportsIndexes(t *testing.T, ctx context.Context) bool {
+	t.Helper()
+	info, err := exec.CommandContext(ctx, "docker", "info", "--format", "{{json .DriverStatus}}").CombinedOutput()
+	if err != nil {
+		t.Fatalf("inspect Docker image store: %v: %s", err, info)
+	}
+	var driverStatus [][2]string
+	if err := json.Unmarshal(info, &driverStatus); err != nil {
+		t.Fatal(err)
+	}
+	modern := false
+	for _, entry := range driverStatus {
+		modern = modern || entry == [2]string{"driver-type", "io.containerd.snapshotter.v1"}
+	}
+	return modern
 }

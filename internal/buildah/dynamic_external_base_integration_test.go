@@ -3,7 +3,6 @@ package buildah
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -15,8 +14,8 @@ import (
 )
 
 func TestDynamicComponentOnbuildMaterializesLateExternalImageAndContext(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for late image binding")
+	if testing.Short() {
+		t.Skip("skipping late image binding in short mode")
 	}
 	for _, named := range []bool{false, true} {
 		t.Run(fmt.Sprintf("named-context-%t", named), func(t *testing.T) {

@@ -18,8 +18,8 @@ func TestHTTPDefinitionErrorsRedactCredentialsAcrossBuildModes(t *testing.T) {
 	for _, failure := range []string{"download", "parse", "build"} {
 		for _, component := range []bool{false, true} {
 			t.Run(failure+map[bool]string{false: "/image", true: "/component"}[component], func(t *testing.T) {
-				if failure == "build" && os.Getenv("COOPR_TEST_BUILDAH") == "" {
-					t.Skip("set COOPR_TEST_BUILDAH for late native failure")
+				if failure == "build" && testing.Short() {
+					t.Skip("requires native build integration")
 				}
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					switch failure {

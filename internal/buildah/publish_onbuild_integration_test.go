@@ -17,8 +17,8 @@ import (
 )
 
 func TestSupervisedRawPublicationPlansExternalOnBuildBeforePackageProduction(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah publication")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah publication in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -127,8 +127,8 @@ component "local:bundle-onbuild"
 }
 
 func TestPublishedPackageOnBuildArgumentPlansInvocationFromPackage(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless package ONBUILD invocation")
+	if testing.Short() {
+		t.Skip("skipping a live rootless package ONBUILD invocation in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -195,8 +195,8 @@ component "local:package-onbuild"
 }
 
 func TestPublishedPackageOnBuildRetainsHiddenPackageStage(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless package ONBUILD stage reference")
+	if testing.Short() {
+		t.Skip("skipping a live rootless package ONBUILD stage reference in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()

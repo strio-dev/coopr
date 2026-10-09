@@ -21,8 +21,8 @@ import (
 )
 
 func TestPinnedVariantAliasSharesLayersAndSurvivesSourceRemoval(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live native alias coverage")
+	if testing.Short() {
+		t.Skip("skipping live native alias coverage in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()

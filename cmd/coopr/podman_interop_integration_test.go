@@ -17,8 +17,8 @@ import (
 )
 
 func TestConfiguredStoreInteroperatesWithPodmanNativeNames(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live Podman store interoperability")
+	if testing.Short() {
+		t.Skip("skipping live Podman store interoperability in short mode")
 	}
 	if _, err := exec.LookPath("podman"); err != nil {
 		t.Fatal("live Podman store proof requires podman in the Nix development shell")

@@ -16,8 +16,8 @@ import (
 )
 
 func TestPublishComponentServiceFromSourceAndConsume(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH_REGISTRY") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH_REGISTRY for live Buildah registry tests")
+	if testing.Short() {
+		t.Skip("requires native build integration")
 	}
 	server := httptest.NewServer(registry.New())
 	defer server.Close()
@@ -61,8 +61,8 @@ func TestPublishComponentServiceFromSourceAndConsume(t *testing.T) {
 }
 
 func TestBuildComponentDefaultLocalStoreThenInvoke(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH for live Buildah tests")
+	if testing.Short() {
+		t.Skip("requires native build integration")
 	}
 	publisher := t.TempDir()
 	component := filepath.Join(publisher, "component.coopr")
@@ -96,8 +96,8 @@ func TestBuildComponentDefaultLocalStoreThenInvoke(t *testing.T) {
 }
 
 func TestPublishComponentDoesNotRunInvocationSteps(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH_REGISTRY") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH_REGISTRY for live Buildah registry tests")
+	if testing.Short() {
+		t.Skip("requires native build integration")
 	}
 	server := httptest.NewServer(registry.New())
 	defer server.Close()
@@ -119,8 +119,8 @@ func TestPublishComponentDoesNotRunInvocationSteps(t *testing.T) {
 }
 
 func TestPublishIndependentPackages(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH_REGISTRY") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH_REGISTRY for live Buildah registry tests")
+	if testing.Short() {
+		t.Skip("requires native build integration")
 	}
 	server := httptest.NewServer(registry.New())
 	defer server.Close()
@@ -161,8 +161,8 @@ func TestPublishIndependentPackages(t *testing.T) {
 }
 
 func TestPublishCopyDotExcludesPackageStagingInsideContext(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH_REGISTRY") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH_REGISTRY for live Buildah registry tests")
+	if testing.Short() {
+		t.Skip("requires native build integration")
 	}
 	server := httptest.NewServer(registry.New())
 	defer server.Close()

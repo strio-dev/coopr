@@ -10,6 +10,11 @@
   sourceUrl,
 }:
 let
+  testTags = coopr.tags ++ [
+    "dockerintegration"
+    "cosignintegration"
+    "examplesintegration"
+  ];
   goCheck =
     name: command: inputs:
     coopr.overrideAttrs {
@@ -40,17 +45,17 @@ let
       '';
       env = {
         inherit (coopr) CGO_ENABLED;
-        GOFLAGS = "-tags=${lib.concatStringsSep "," coopr.tags}";
+        GOFLAGS = "-tags=${lib.concatStringsSep "," testTags}";
       };
       installPhase = ''touch "$out"'';
       postInstall = "";
     };
-  goTests = goCheck "test" "go test ./..." [ ];
+  goTests = goCheck "test" "go test -short ./..." [ ];
   nativeGoCheck = if pkgs.stdenv.hostPlatform.isx86_64 then goChecks else goTests;
   goChecks = goCheck "go-check" ''
-    go test ./...
+    go test -short ./...
     go vet ./...
-    golangci-lint run --build-tags=${lib.concatStringsSep "," coopr.tags}
+    golangci-lint run --build-tags=${lib.concatStringsSep "," testTags}
   '' [ pkgs.golangci-lint ];
   rootlessChecks = lib.optionalAttrs pkgs.stdenv.hostPlatform.isx86_64 (
     import ./tests/rootless.nix {
@@ -73,7 +78,7 @@ in
     if pkgs.stdenv.hostPlatform.isx86_64 then
       goChecks
     else
-      goCheck "lint" "golangci-lint run --build-tags=${lib.concatStringsSep "," coopr.tags}" [
+      goCheck "lint" "golangci-lint run --build-tags=${lib.concatStringsSep "," testTags}" [
         pkgs.golangci-lint
       ];
   inherit docs;
@@ -118,7 +123,7 @@ in
   release-source = release.sourceCheck;
   docs-examples =
     (goCheck "docs-examples"
-      "COOPR_TEST_DOCS=1 go test -count=1 ./internal/definition -run '^TestDocumentationKDLExamples$'"
+      "go test -count=1 ./internal/definition -run '^TestDocumentationKDLExamples$'"
       [ ]
     ).overrideAttrs
       (oldAttrs: {

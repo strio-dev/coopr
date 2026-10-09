@@ -144,8 +144,8 @@ func TestNativeRetagChangesDefaultSignaturesWithSelectedManifest(t *testing.T) {
 }
 
 func TestNativeTagCopyPreservesRecordAndPodmanImageName(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") != "1" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live native copy workers")
+	if testing.Short() {
+		t.Skip("skipping live native copy workers in short mode")
 	}
 	ctx := context.Background()
 	work := t.TempDir()

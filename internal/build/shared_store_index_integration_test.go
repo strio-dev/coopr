@@ -20,10 +20,9 @@ import (
 )
 
 func TestSharedStoreMultiPlatformLocalIndex(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") != "1" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for offline shared-store index coverage")
+	if testing.Short() {
+		t.Skip("requires native build integration")
 	}
-	t.Setenv("COOPR_TEST_CONTAINER_STORAGE", "1")
 	loadTestBackend(t)
 	for _, format := range []string{"oci", "docker"} {
 		for _, tagged := range []bool{true, false} {

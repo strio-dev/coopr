@@ -218,8 +218,8 @@ func TestPromoteCompleteOutputNeverReplacesExistingDestination(t *testing.T) {
 }
 
 func TestBuildPlanSupervisedPromotesCompleteLayout(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah worker")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah worker in short mode")
 	}
 	root := t.TempDir()
 	contextDir := filepath.Join(root, "context")
@@ -250,8 +250,8 @@ func TestBuildPlanSupervisedPromotesCompleteLayout(t *testing.T) {
 }
 
 func TestBuildDefinitionSupervisedMatchesPlannedBuildBehavior(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah worker")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah worker in short mode")
 	}
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "proof"), []byte("raw supervised\n"), 0o600); err != nil {
@@ -280,8 +280,8 @@ func TestBuildDefinitionSupervisedMatchesPlannedBuildBehavior(t *testing.T) {
 }
 
 func TestPublishPlanSupervisedPromotesSortedComponentLayout(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah worker")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah worker in short mode")
 	}
 	root := t.TempDir()
 	contextDir := filepath.Join(root, "context")
@@ -327,8 +327,8 @@ copy "/a" "/a" from="a-first"
 }
 
 func TestPublishDefinitionSupervisedMatchesPlannedPublicationBehavior(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah worker")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah worker in short mode")
 	}
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "proof"), []byte("raw publication\n"), 0o600); err != nil {
@@ -399,8 +399,8 @@ func readComponentMetadata(t *testing.T, ctx context.Context, layout string, roo
 }
 
 func TestBuildPlanSupervisedCopyDotExcludesCooprArtifacts(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless context build")
+	if testing.Short() {
+		t.Skip("skipping a live rootless context build in short mode")
 	}
 	root := t.TempDir()
 	images := filepath.Join(root, "images")
@@ -482,8 +482,8 @@ func TestBuildPlanSupervisedCopyDotExcludesCooprArtifacts(t *testing.T) {
 }
 
 func TestBuildPlanSupervisedCancelsRunAndCleansBuilder(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live worker cancellation")
+	if testing.Short() {
+		t.Skip("skipping live worker cancellation in short mode")
 	}
 	root := t.TempDir()
 	fixtureContext := context.Background()
@@ -539,8 +539,8 @@ run "trap '' TERM; sleep 60" network="none"
 }
 
 func TestVerifyStoredImageSupervisedRejectsMissingImage(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live Buildah storage checks")
+	if testing.Short() {
+		t.Skip("skipping live Buildah storage checks in short mode")
 	}
 	root := t.TempDir()
 	options := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
@@ -550,8 +550,8 @@ func TestVerifyStoredImageSupervisedRejectsMissingImage(t *testing.T) {
 }
 
 func TestCleanupNamedBuildersOnlyRemovesItsJob(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live Buildah cleanup")
+	if testing.Short() {
+		t.Skip("skipping live Buildah cleanup in short mode")
 	}
 	root := t.TempDir()
 	options := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
@@ -609,8 +609,8 @@ func TestCleanupNamedBuildersOnlyRemovesItsJob(t *testing.T) {
 }
 
 func TestBuildPlanSupervisedCancelsStalledRemoteAdd(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live stalled ADD cancellation")
+	if testing.Short() {
+		t.Skip("skipping live stalled ADD cancellation in short mode")
 	}
 	started := make(chan struct{})
 	var once sync.Once
@@ -667,8 +667,8 @@ func TestBuildPlanSupervisedCancelsStalledRemoteAdd(t *testing.T) {
 }
 
 func TestPublishPlanSupervisedCancelsStalledRemoteAdd(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live stalled component ADD cancellation")
+	if testing.Short() {
+		t.Skip("skipping live stalled component ADD cancellation in short mode")
 	}
 	started := make(chan struct{})
 	var once sync.Once

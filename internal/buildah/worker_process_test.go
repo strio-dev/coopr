@@ -66,7 +66,7 @@ func testWorkerBinary(t *testing.T) string {
 
 func startWorkerProcessGrandchild(t *testing.T) {
 	t.Helper()
-	grandchild := exec.Command(testWorkerBinary(t), "-test.run=^TestWorkerProcessHelper$")
+	grandchild := exec.Command(testWorkerBinary(t), "-test.run=^TestWorkerProcessHelper$", "-test.short="+strconv.FormatBool(testing.Short()))
 	grandchild.Env = replaceEnv(os.Environ(), workerProcessHelperMode, "grandchild")
 	grandchildReady := os.Getenv("COOPR_TEST_WORKER_READY") + ".grandchild"
 	grandchild.Env = replaceEnv(grandchild.Env, "COOPR_TEST_WORKER_READY", grandchildReady)
@@ -79,7 +79,7 @@ func startWorkerProcessGrandchild(t *testing.T) {
 }
 
 func TestRunWorkerProcessReturnsSuccessfulExit(t *testing.T) {
-	cmd := exec.Command(testWorkerBinary(t), "-test.run=^TestWorkerProcessHelper$")
+	cmd := exec.Command(testWorkerBinary(t), "-test.run=^TestWorkerProcessHelper$", "-test.short="+strconv.FormatBool(testing.Short()))
 	cmd.Env = replaceEnv(os.Environ(), workerProcessHelperMode, "success")
 	if err := runWorkerProcess(context.Background(), cmd, 50*time.Millisecond); err != nil {
 		t.Fatal(err)
@@ -96,7 +96,7 @@ func TestRunWorkerProcessKillsTermIgnoringGroup(t *testing.T) {
 	ready := filepath.Join(t.TempDir(), "parent")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	cmd := exec.Command(testWorkerBinary(t), "-test.run=^TestWorkerProcessHelper$")
+	cmd := exec.Command(testWorkerBinary(t), "-test.run=^TestWorkerProcessHelper$", "-test.short="+strconv.FormatBool(testing.Short()))
 	cmd.Env = replaceEnv(os.Environ(), workerProcessHelperMode, "parent")
 	cmd.Env = replaceEnv(cmd.Env, "COOPR_TEST_WORKER_READY", ready)
 
@@ -129,7 +129,7 @@ func TestRunWorkerProcessKillsTermIgnoringGroup(t *testing.T) {
 func TestRunWorkerProcessKillsRemainingGroupAfterWorkerExitsOnTerm(t *testing.T) {
 	ready := filepath.Join(t.TempDir(), "parent")
 	ctx, cancel := context.WithCancel(context.Background())
-	cmd := exec.Command(testWorkerBinary(t), "-test.run=^TestWorkerProcessHelper$")
+	cmd := exec.Command(testWorkerBinary(t), "-test.run=^TestWorkerProcessHelper$", "-test.short="+strconv.FormatBool(testing.Short()))
 	cmd.Env = replaceEnv(os.Environ(), workerProcessHelperMode, "cooperative-parent")
 	cmd.Env = replaceEnv(cmd.Env, "COOPR_TEST_WORKER_READY", ready)
 
@@ -160,7 +160,7 @@ func TestRunWorkerProcessKillsRemainingGroupAfterWorkerExitsOnTerm(t *testing.T)
 func TestRunWorkerProcessBoundsSignalAndDirectKillFailures(t *testing.T) {
 	ready := filepath.Join(t.TempDir(), "parent")
 	ctx, cancel := context.WithCancel(context.Background())
-	cmd := exec.Command(testWorkerBinary(t), "-test.run=^TestWorkerProcessHelper$")
+	cmd := exec.Command(testWorkerBinary(t), "-test.run=^TestWorkerProcessHelper$", "-test.short="+strconv.FormatBool(testing.Short()))
 	cmd.Env = replaceEnv(os.Environ(), workerProcessHelperMode, "parent")
 	cmd.Env = replaceEnv(cmd.Env, "COOPR_TEST_WORKER_READY", ready)
 

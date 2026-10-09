@@ -25,8 +25,8 @@ import (
 )
 
 func TestBuildPlanRunsIndependentStagesInOneRootlessGraph(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live parallel Buildah graph")
+	if testing.Short() {
+		t.Skip("skipping a live parallel Buildah graph in short mode")
 	}
 	previous := runtime.GOMAXPROCS(2)
 	defer runtime.GOMAXPROCS(previous)
@@ -95,8 +95,8 @@ copy "/right" "/right" from="right"
 }
 
 func TestBuildPlanStartsReadyDescendantBeforeIndependentStageFinishes(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live dependency-ready Buildah graph")
+	if testing.Short() {
+		t.Skip("skipping a live dependency-ready Buildah graph in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -182,8 +182,8 @@ copy "/b" "/b" from="b"
 }
 
 func TestBuildPlanOverlapsIndependentRemoteAddStages(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live parallel ADD coverage")
+	if testing.Short() {
+		t.Skip("skipping live parallel ADD coverage in short mode")
 	}
 	arrived := make(chan struct{}, 2)
 	release := make(chan struct{})
@@ -225,8 +225,8 @@ copy "/proof" "/right" from="right"
 }
 
 func TestBuildPlanSupervisedCancelsIndependentStagesAndCleansBuilders(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live parallel stage cancellation")
+	if testing.Short() {
+		t.Skip("skipping live parallel stage cancellation in short mode")
 	}
 	t.Setenv("GOMAXPROCS", "2")
 	root := t.TempDir()
@@ -285,8 +285,8 @@ copy "/right" "/right" from="right"
 }
 
 func TestBuildPlanSupervisedStopsSiblingRunAfterStageFailure(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live sibling failure cancellation")
+	if testing.Short() {
+		t.Skip("skipping live sibling failure cancellation in short mode")
 	}
 	t.Setenv("GOMAXPROCS", "2")
 	root := t.TempDir()

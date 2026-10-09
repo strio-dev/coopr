@@ -28,8 +28,8 @@ const (
 )
 
 func TestDockerFormatSurvivesCatalogCopyToArchiveAndRegistry(t *testing.T) {
-	if testing.Short() || os.Getenv("COOPR_TEST_BUILDAH_REGISTRY") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH_REGISTRY=1 for a live rootless Buildah registry test")
+	if testing.Short() {
+		t.Skip("requires native build integration")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()

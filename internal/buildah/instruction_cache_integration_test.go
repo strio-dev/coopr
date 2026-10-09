@@ -15,8 +15,8 @@ import (
 )
 
 func TestBuildPlanReusesFinalRunWithoutChangingImage(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live final instruction cache build")
+	if testing.Short() {
+		t.Skip("skipping a live final instruction cache build in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -109,8 +109,8 @@ label cached="yes"
 }
 
 func TestWarmHostNetworkRunCacheStillRequiresEntitlement(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live instruction cache build")
+	if testing.Short() {
+		t.Skip("skipping a live instruction cache build in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -147,8 +147,8 @@ func TestWarmHostNetworkRunCacheStillRequiresEntitlement(t *testing.T) {
 }
 
 func TestWarmInsecureRunCacheStillRequiresEntitlement(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live insecure instruction cache build")
+	if testing.Short() {
+		t.Skip("skipping a live insecure instruction cache build in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -183,8 +183,8 @@ func TestWarmInsecureRunCacheStillRequiresEntitlement(t *testing.T) {
 }
 
 func TestWarmDeviceRunCacheStillRequiresEntitlement(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live CDI instruction cache build")
+	if testing.Short() {
+		t.Skip("skipping a live CDI instruction cache build in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -239,8 +239,8 @@ run "test \"$COOPR_CDI_PROOF\" = available && printf cached-device-run >/proof" 
 }
 
 func TestBuildPlanReusesClosedRunInstruction(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live instruction cache build")
+	if testing.Short() {
+		t.Skip("skipping a live instruction cache build in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()

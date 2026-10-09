@@ -11,8 +11,8 @@ import (
 )
 
 func TestBuildCommandConsumesLocalComponentsFromDirectoryAndArchiveContexts(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for local component builds")
+	if testing.Short() {
+		t.Skip("skipping local component builds in short mode")
 	}
 	root := t.TempDir()
 	contextDir := filepath.Join(root, "context")
@@ -72,8 +72,8 @@ func TestBuildCommandConsumesLocalComponentsFromDirectoryAndArchiveContexts(t *t
 }
 
 func TestBuildCommandTwoDefinitionsShareLocalComponentFromExplicitContext(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for local component builds")
+	if testing.Short() {
+		t.Skip("skipping local component builds in short mode")
 	}
 	root := t.TempDir()
 	contextDir := filepath.Join(root, "context")

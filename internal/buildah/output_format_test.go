@@ -73,8 +73,8 @@ func TestComponentCacheSemanticsIncludeGraphDriverOptions(t *testing.T) {
 }
 
 func TestBuildPlanSupervisedPreservesOutputManifestFormat(t *testing.T) {
-	if testing.Short() || os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live Buildah format test")
+	if testing.Short() {
+		t.Skip("skipping live Buildah format test in short mode")
 	}
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "proof"), []byte("format\n"), 0o600); err != nil {
@@ -127,8 +127,8 @@ func TestBuildPlanSupervisedPreservesOutputManifestFormat(t *testing.T) {
 }
 
 func TestDockerGzipMetadataTailPreservesFormatColdAndWarm(t *testing.T) {
-	if testing.Short() || os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live Docker metadata-tail coverage")
+	if testing.Short() {
+		t.Skip("skipping live Docker metadata-tail coverage in short mode")
 	}
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "proof"), []byte("format\n"), 0o600); err != nil {
@@ -164,8 +164,8 @@ func TestDockerGzipMetadataTailPreservesFormatColdAndWarm(t *testing.T) {
 }
 
 func TestDockerOutputInstructionCacheIsFormatScoped(t *testing.T) {
-	if testing.Short() || os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live Buildah format cache test")
+	if testing.Short() {
+		t.Skip("skipping live Buildah format cache test in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -209,8 +209,8 @@ run "od -An -N16 -tx1 /dev/urandom | tr -d ' \n' >/proof" network="none"
 }
 
 func TestDockerOutputInvokesAndCachesComponent(t *testing.T) {
-	if testing.Short() || os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live Docker component cache test")
+	if testing.Short() {
+		t.Skip("skipping live Docker component cache test in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

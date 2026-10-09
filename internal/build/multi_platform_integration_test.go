@@ -24,8 +24,8 @@ import (
 )
 
 func TestRunBuildsAndCopiesMultiPlatformIndex(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH_REGISTRY") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH_REGISTRY for live Buildah registry tests")
+	if testing.Short() {
+		t.Skip("requires native build integration")
 	}
 	ctx := context.Background()
 	work := t.TempDir()
@@ -236,8 +236,8 @@ func assertPodmanIndexDigest(t *testing.T, ctx context.Context, tag string, want
 }
 
 func TestRunBuildsDockerManifestList(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH for live Buildah tests")
+	if testing.Short() {
+		t.Skip("requires native build integration")
 	}
 	ctx := context.Background()
 	work := t.TempDir()

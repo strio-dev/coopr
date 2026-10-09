@@ -17,8 +17,8 @@ import (
 )
 
 func TestPublishPlanReusesRegistryPackageCacheAcrossBuildStores(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah package cache")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah package cache in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -111,8 +111,8 @@ copy "/payload" "/payload" from="payload"
 }
 
 func TestPublishPlanReusesNetworkedPackageFromRegistryCache(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah package cache")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah package cache in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()

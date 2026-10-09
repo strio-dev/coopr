@@ -15,8 +15,8 @@ import (
 )
 
 func TestBuildCommandsReadExplicitHTTPDefinitionWithLocalAndRemoteContexts(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for remote definitions")
+	if testing.Short() {
+		t.Skip("skipping remote definitions in short mode")
 	}
 	root := t.TempDir()
 	localContext := filepath.Join(root, "context")
@@ -87,8 +87,8 @@ func TestBuildCommandsReadExplicitHTTPDefinitionWithLocalAndRemoteContexts(t *te
 }
 
 func TestBuildCommandsReadExplicitDefinitionInsideExtractedContext(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for context-contained definitions")
+	if testing.Short() {
+		t.Skip("skipping context-contained definitions in short mode")
 	}
 	root := t.TempDir()
 	files := map[string]string{

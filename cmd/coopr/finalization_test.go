@@ -48,8 +48,8 @@ func TestNativeCompressionAndConfidentialWorkloadFlags(t *testing.T) {
 }
 
 func TestBuildFlatTarStdoutLive(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH for live rootfs stdout export")
+	if testing.Short() {
+		t.Skip("skipping live rootfs stdout export in short mode")
 	}
 	file := definitionFile(t, "from \"scratch\"\ncopy \"marker\" \"/marker\"\n")
 	if err := os.WriteFile(filepath.Join(filepath.Dir(file), "marker"), []byte("flat output\n"), 0600); err != nil {

@@ -171,8 +171,8 @@ copy "/second" "/second" from="second"
 }
 
 func TestPublishPlanSnapshotsMultiplePackages(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah component publication")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah component publication in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -218,8 +218,8 @@ copy "/bundle" "/two" from="bundle"
 }
 
 func TestPublishPlanBuildsUnusedPackagesWithoutInvocationStages(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah component publication")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah component publication in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -262,8 +262,8 @@ run "exit 79"
 }
 
 func TestPublishPlanOverlapsIndependentPackageProducers(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live parallel package coverage")
+	if testing.Short() {
+		t.Skip("skipping live parallel package coverage in short mode")
 	}
 	busybox, err := exec.LookPath("busybox")
 	if err != nil {
@@ -362,8 +362,8 @@ func TestPackageCacheEligibilityRejectsUndeclaredInputs(t *testing.T) {
 }
 
 func TestPublishPlanReusesPortablePackageAcrossBuildStores(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah package cache")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah package cache in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -422,8 +422,8 @@ copy "/payload" "/payload" from="payload"
 }
 
 func TestPackageCacheInvalidatesChangedFixedArgument(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah package cache")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah package cache in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -474,8 +474,8 @@ copy "/payload" "/payload" from="payload"
 }
 
 func TestPublishPlanRunsProducerWithStageMount(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah component publication")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah component publication in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -517,8 +517,8 @@ copy "/proof" "/proof" from="payload"
 }
 
 func TestPublishPlanConsumesLocalNamedContext(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless named-context publication")
+	if testing.Short() {
+		t.Skip("skipping a live rootless named-context publication in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -555,8 +555,8 @@ copy "/proof" "/proof" from="payload"
 }
 
 func TestPublishDefinitionSupervisedConsumesPlanningSelectedNamedContext(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless named-context publication worker")
+	if testing.Short() {
+		t.Skip("skipping a live rootless named-context publication worker in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

@@ -1,8 +1,9 @@
 package buildah
 
 import (
-	"go.podman.io/buildah/define"
 	"testing"
+
+	"go.podman.io/buildah/define"
 )
 
 func TestParseFilesystemOutput(t *testing.T) {

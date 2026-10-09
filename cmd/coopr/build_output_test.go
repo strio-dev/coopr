@@ -13,8 +13,8 @@ import (
 )
 
 func TestBuildArchiveCommandLive(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH for live Buildah tests")
+	if testing.Short() {
+		t.Skip("skipping live Buildah tests in short mode")
 	}
 	file := definitionFile(t, "from \"scratch\"\nlabel from_cli=\"yes\"\n")
 	archive := filepath.Join(t.TempDir(), "image.oci.tar")
@@ -31,8 +31,8 @@ func TestBuildArchiveCommandLive(t *testing.T) {
 }
 
 func TestBuildCommandRunsDefaultNetworkInConcurrentStageWorker(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH for live Buildah tests")
+	if testing.Short() {
+		t.Skip("skipping live Buildah tests in short mode")
 	}
 	busybox, err := exec.LookPath("busybox")
 	if err != nil {
@@ -132,8 +132,8 @@ func TestBuildHelpExplainsOutputModes(t *testing.T) {
 }
 
 func TestBuildPushCommandLive(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH_REGISTRY") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH_REGISTRY for live Buildah registry tests")
+	if testing.Short() {
+		t.Skip("skipping _REGISTRY for live Buildah registry tests in short mode")
 	}
 	server := httptest.NewServer(registry.New())
 	defer server.Close()

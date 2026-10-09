@@ -87,8 +87,8 @@ func TestInstructionCacheRootMetadataSidecar(t *testing.T) {
 }
 
 func TestCheckpointPreservingPackageRootRestoresMetadata(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless package checkpoint")
+	if testing.Short() {
+		t.Skip("skipping a live rootless package checkpoint in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -148,8 +148,8 @@ func TestCheckpointPreservingPackageRootRestoresMetadata(t *testing.T) {
 }
 
 func TestPackageRootCacheWithInheritedSELinuxAndEmptyMountLabel(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live inherited SELinux cache coverage")
+	if testing.Short() {
+		t.Skip("skipping live inherited SELinux cache coverage in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

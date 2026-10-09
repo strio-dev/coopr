@@ -11,8 +11,8 @@ import (
 )
 
 func TestDocumentationKDLExamples(t *testing.T) {
-	// Package-only Nix builds omit Markdown; docs-check enables this repository check.
-	if os.Getenv("COOPR_TEST_DOCS") != "1" {
+	// Package-only Nix builds omit Markdown; docs-check runs this repository check.
+	if testing.Short() {
 		t.Skip("run just docs-check to validate the public Markdown examples")
 	}
 	paths := []string{"../../README.md", "../../CONTRIBUTING.md"}

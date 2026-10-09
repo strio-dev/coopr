@@ -21,8 +21,8 @@ import (
 )
 
 func TestBuildUsesRemotePrimaryHTTPContext(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH for live Buildah tests")
+	if testing.Short() {
+		t.Skip("requires native build integration")
 	}
 	archive := &bytes.Buffer{}
 	tarWriter := tar.NewWriter(archive)
@@ -61,8 +61,8 @@ func TestBuildUsesRemotePrimaryHTTPContext(t *testing.T) {
 }
 
 func TestBuildUsesNamedLocalContextsForFromAndCopy(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH for live Buildah tests")
+	if testing.Short() {
+		t.Skip("requires native build integration")
 	}
 	root := t.TempDir()
 	base := filepath.Join(root, "base")
@@ -109,8 +109,8 @@ func TestBuildUsesNamedLocalContextsForFromAndCopy(t *testing.T) {
 }
 
 func TestBuildCopyDotExcludesStagingInsideContext(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH for live Buildah tests")
+	if testing.Short() {
+		t.Skip("requires native build integration")
 	}
 	contextDir := t.TempDir()
 	t.Setenv("TMPDIR", contextDir)
@@ -137,8 +137,8 @@ func TestBuildCopyDotExcludesStagingInsideContext(t *testing.T) {
 }
 
 func TestCopyURLFailsWithoutNetworkRequest(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH for live Buildah tests")
+	if testing.Short() {
+		t.Skip("requires native build integration")
 	}
 	var sourceRequests atomic.Int32
 	var requestDetails struct {
@@ -175,8 +175,8 @@ func TestCopyURLFailsWithoutNetworkRequest(t *testing.T) {
 }
 
 func TestBuiltBaseAndFromShareCanonicalStore(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH for live Buildah tests")
+	if testing.Short() {
+		t.Skip("requires native build integration")
 	}
 	root := t.TempDir()
 	baseDefinition := filepath.Join(root, "base.coopr")

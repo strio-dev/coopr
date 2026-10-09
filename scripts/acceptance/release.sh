@@ -64,7 +64,6 @@ if [[ ${COOPR_ACCEPTANCE_CLI+x} ]]; then
   export COOPR_ACCEPTANCE_RUN_IMAGE="$artifact_image"
   export COOPR_ACCEPTANCE_ENTRYPOINT=/coopr-acceptance-cli
 fi
-export COOPR_TEST_PACKAGED_ACCEPTANCE=1
 export COOPR_ACCEPTANCE_REPO_ROOT="$repo_root"
 if [[ ${COOPR_ACCEPTANCE_TEST_BINARY+x} ]]; then
   [[ $COOPR_ACCEPTANCE_TEST_BINARY == /* && -f $COOPR_ACCEPTANCE_TEST_BINARY && -x $COOPR_ACCEPTANCE_TEST_BINARY ]] || {
@@ -78,5 +77,5 @@ if [[ ${COOPR_ACCEPTANCE_TEST_BINARY+x} ]]; then
   }
   "$COOPR_ACCEPTANCE_TEST_BINARY" -test.v -test.count=1 -test.timeout=30m -test.run '^TestPackagedAcceptance$'
 else
-  go test -count=1 -v -timeout=30m ./internal/build -run '^TestPackagedAcceptance$'
+  go test -count=1 -v -timeout=30m ./internal/acceptance -run '^TestPackagedAcceptance$'
 fi

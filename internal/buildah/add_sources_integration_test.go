@@ -19,8 +19,8 @@ import (
 )
 
 func TestBuildMultipleCopyAndAddSourcesUseNativeDestinationSemantics(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah COPY/ADD build")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah COPY/ADD build in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -93,8 +93,8 @@ func TestBuildMultipleCopyAndAddSourcesUseNativeDestinationSemantics(t *testing.
 }
 
 func TestBuildSplitMultipleSourcesUseNativeDestinationSemantics(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah mixed COPY/ADD build")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah mixed COPY/ADD build in short mode")
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		_, _ = writer.Write([]byte(strings.TrimPrefix(request.URL.Path, "/") + "\n"))
@@ -184,8 +184,8 @@ func TestBuildSplitMultipleSourcesUseNativeDestinationSemantics(t *testing.T) {
 }
 
 func TestBuildPlanUnpacksRemoteArchive(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah remote ADD build")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah remote ADD build in short mode")
 	}
 	archive := tarBytes(t, "proof", "remote unpack\n")
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -215,8 +215,8 @@ func TestBuildPlanUnpacksRemoteArchive(t *testing.T) {
 }
 
 func TestBuildPlanAddsAuthenticatedRemoteFile(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah remote ADD build")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah remote ADD build in short mode")
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Header.Get("Authorization") != "Bearer build-token" {
@@ -252,8 +252,8 @@ func TestBuildPlanAddsAuthenticatedRemoteFile(t *testing.T) {
 }
 
 func TestBuildPlanAddsGitDefaultRefChecksumAndMetadata(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah Git ADD build")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah Git ADD build in short mode")
 	}
 	source, commit := gitProtocolFixture(t)
 	plan := testPlan(t, `
@@ -291,8 +291,8 @@ add "`+source+`" "/with/" checksum="`+commit[:12]+`" keep-git-dir="true"
 }
 
 func TestBuildPlanAddsRecursiveGitSubmodulesWithoutMetadata(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah Git submodule ADD build")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah Git submodule ADD build in short mode")
 	}
 	source, _ := gitHTTPSubmoduleFixture(t, "")
 	plan := testPlan(t, "from \"scratch\"\nadd \""+source+"\" \"/source/\"\n")
@@ -384,8 +384,8 @@ func readLayerHeader(t *testing.T, blobPath, wanted string) *tar.Header {
 }
 
 func TestBuildRemoteRootURLUsesNativeDestinationTyping(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for isolated Buildah root URL destinations")
+	if testing.Short() {
+		t.Skip("skipping isolated Buildah root URL destinations in short mode")
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("download\n")) }))
 	defer server.Close()
@@ -444,8 +444,8 @@ func TestBuildRemoteRootURLUsesNativeDestinationTyping(t *testing.T) {
 }
 
 func TestBuildRemoteAddMissingLastModifiedCopiesEpoch(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for copied HTTP metadata")
+	if testing.Short() {
+		t.Skip("skipping copied HTTP metadata in short mode")
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("download\n")) }))
 	defer server.Close()

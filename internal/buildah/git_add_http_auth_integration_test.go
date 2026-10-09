@@ -11,8 +11,8 @@ import (
 )
 
 func TestBuildPlanAddsAuthenticatedGitRepository(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah authenticated Git ADD build")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah authenticated Git ADD build in short mode")
 	}
 	const token = "supervised-git-token"
 	source, _ := gitHTTPFixture(t, "basic eC1hY2Nlc3MtdG9rZW46c3VwZXJ2aXNlZC1naXQtdG9rZW4=")

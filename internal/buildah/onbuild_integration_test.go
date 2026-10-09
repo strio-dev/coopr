@@ -21,8 +21,8 @@ import (
 )
 
 func TestOCIOutputRetainsHealthcheckAndOnBuild(t *testing.T) {
-	if testing.Short() || os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah OCI metadata test")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah OCI metadata test in short mode")
 	}
 	root := t.TempDir()
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
@@ -66,8 +66,8 @@ onbuild { env FROM_PARENT="yes" }
 }
 
 func TestDockerBaseHealthcheckAndOnBuildSurviveNativeStorage(t *testing.T) {
-	if testing.Short() || os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah Docker-base test")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah Docker-base test in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -220,8 +220,8 @@ func assertDockerMetadata(t *testing.T, data []byte, wantTrigger bool) {
 }
 
 func TestBuildPlanConsumesInheritedOnBuildBeforeChildInstructions(t *testing.T) {
-	if testing.Short() || os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah ONBUILD test")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah ONBUILD test in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -270,8 +270,8 @@ env ORDER="child"
 }
 
 func TestInheritedInsecureRunRequiresEntitlementAndExecutes(t *testing.T) {
-	if testing.Short() || os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live inherited insecure RUN test")
+	if testing.Short() {
+		t.Skip("skipping a live inherited insecure RUN test in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

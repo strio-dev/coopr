@@ -15,8 +15,8 @@ import (
 )
 
 func TestBuildAndCopyUseExplicitNativeStoreOptions(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for live native-store coverage")
+	if testing.Short() {
+		t.Skip("requires native build integration")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()

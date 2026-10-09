@@ -153,7 +153,7 @@ func TestManifestNativeLifecycleAndCooprMutationVisibility(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if os.Getenv("COOPR_TEST_BUILDAH") != "" {
+	if !testing.Short() {
 		copiedArchive := filepath.Join(t.TempDir(), "mutated.tar")
 		out.Reset()
 		errs.Reset()

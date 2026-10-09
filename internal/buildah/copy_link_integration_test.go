@@ -12,8 +12,8 @@ import (
 )
 
 func TestBuildPlanCopyFromLinkProducesIndependentLayer(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah linked COPY build")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah linked COPY build in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -60,8 +60,8 @@ copy "/producer" "/linked" from="producer" link="true"
 }
 
 func TestBuildPlanLinkedCopyIsVisibleToFollowingRun(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah linked COPY and RUN build")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah linked COPY and RUN build in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -94,8 +94,8 @@ run network="none" { exec "/input/busybox" "sh" "-c" "read value </input/proof; 
 }
 
 func TestDirectBuildLinkedCopyIsVisibleToFollowingRun(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live direct Buildah linked COPY and RUN build")
+	if testing.Short() {
+		t.Skip("skipping a live direct Buildah linked COPY and RUN build in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -129,8 +129,8 @@ run network="none" { exec "/input/busybox" "sh" "-c" "read value </input/proof; 
 }
 
 func TestDirectBuildFinalLinkedCopyPreservesEarlierCopyLayer(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live direct Buildah final linked COPY build")
+	if testing.Short() {
+		t.Skip("skipping a live direct Buildah final linked COPY build in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -175,8 +175,8 @@ copy "linked" "/linked" link="true"
 }
 
 func TestDirectBuildConfigBeforeLinkedCopyDoesNotAddLayer(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live direct Buildah linked COPY build")
+	if testing.Short() {
+		t.Skip("skipping a live direct Buildah linked COPY build in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -218,8 +218,8 @@ copy "payload" "/payload" link="true"
 }
 
 func TestBuildPlanLinkedAddExtractsArchiveIntoIndependentLayer(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1 for a live rootless Buildah linked ADD build")
+	if testing.Short() {
+		t.Skip("skipping a live rootless Buildah linked ADD build in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

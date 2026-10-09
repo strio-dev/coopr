@@ -61,8 +61,8 @@ func TestParseTransientRunMountsLeavesImplicitCacheIDForGraph(t *testing.T) {
 }
 
 func TestGlobalMountStageContextAndImageSources(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1")
+	if testing.Short() {
+		t.Skip("skipping native integration in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -111,8 +111,8 @@ func TestGlobalMountStageContextAndImageSources(t *testing.T) {
 }
 
 func TestGlobalWritableContextMountUsesNativeOwnershipAndNoexec(t *testing.T) {
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
-		t.Skip("set COOPR_TEST_BUILDAH=1")
+	if testing.Short() {
+		t.Skip("skipping native integration in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()

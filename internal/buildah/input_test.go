@@ -101,7 +101,7 @@ func TestImportSelectedImageCanBeOpenedByBuildahWithPullNever(t *testing.T) {
 	if err != nil || stored.ID != imageID {
 		t.Fatalf("stored image = %+v, %v", stored, err)
 	}
-	if os.Getenv("COOPR_TEST_BUILDAH") == "" {
+	if testing.Short() {
 		return
 	}
 	builder, err := upstream.NewBuilder(ctx, store, upstream.BuilderOptions{
