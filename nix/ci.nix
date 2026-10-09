@@ -27,10 +27,12 @@ let
           "container"
           "release-binary"
         ]
-        ++ lib.optional (system == "x86_64-linux") "rootless"
         ++ lib.optional (system == "aarch64-linux") "test"
       ) self.checks.${system}
     );
+    rootless.x86_64-linux = lib.filterAttrs (
+      name: _: lib.hasPrefix "rootless-" name
+    ) self.checks.x86_64-linux;
   };
   matrices = lib.mapAttrs (
     name: checks:
@@ -39,19 +41,35 @@ let
         inherit checks;
         attrPrefix = "checks";
       };
+      include =
+        if name == "rootless" then
+          map (row: {
+            inherit name;
+            inherit (row) system os;
+            attrs = [ row.attr ];
+            check = builtins.fromJSON (lib.last (lib.splitString "." row.attr));
+          }) generated.matrix.include
+        else
+          map (
+            system:
+            let
+              rows = builtins.filter (row: row.system == system) generated.matrix.include;
+            in
+            {
+              inherit name system;
+              os = (builtins.head rows).os;
+              attrs = map (row: row.attr) rows;
+            }
+          ) (builtins.attrNames checks);
     in
     {
-      include = map (
-        system:
-        let
-          rows = builtins.filter (row: row.system == system) generated.matrix.include;
-        in
-        {
-          inherit name system;
-          os = (builtins.head rows).os;
-          attrs = map (row: row.attr) rows;
-        }
-      ) (builtins.attrNames checks);
+      inherit include;
+    }
+    // lib.optionalAttrs (name == "native") {
+      system = builtins.attrNames checks;
+    }
+    // lib.optionalAttrs (name == "rootless") {
+      check = map (row: row.check) include;
     }
   ) categories;
 in

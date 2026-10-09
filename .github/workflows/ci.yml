@@ -29,6 +29,7 @@ jobs:
       quality: ${{ steps.matrix.outputs.quality }}
       docs: ${{ steps.matrix.outputs.docs }}
       native: ${{ steps.matrix.outputs.native }}
+      rootless: ${{ steps.matrix.outputs.rootless }}
       published: ${{ steps.release.outputs.published }}
       prerelease: ${{ steps.release.outputs.prerelease }}
       image: ${{ steps.release.outputs.image }}
@@ -51,7 +52,7 @@ jobs:
       - id: matrix
         run: |
           matrices=$(nix eval --json --no-update-lock-file path:.#githubActions.matrices)
-          for category in quality docs native; do
+          for category in quality docs native rootless; do
             printf '%s=%s\n' "$category" "$(jq -c --arg category "$category" '.[$category]' <<< "$matrices")" >> "$GITHUB_OUTPUT"
           done
       - name: Read release metadata
@@ -113,8 +114,8 @@ jobs:
         with:
           path: ${{ steps.site.outputs.path }}
 
-  native:
-    name: Native checks (${{ matrix.system }})
+  native-build:
+    name: Native build checks
     if: github.event_name != 'push' || github.ref_type != 'tag'
     needs: matrix
     runs-on: ${{ matrix.os }}
@@ -130,10 +131,48 @@ jobs:
       - *nix-cache
       - *check
 
+  rootless:
+    name: Rootless
+    needs: matrix
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.matrix.outputs.rootless) }}
+    env:
+      NIX_ATTRS: ${{ toJSON(matrix.attrs) }}
+    steps:
+      - *checkout
+      - &release-version
+        name: Set release version
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        run: printf '%s\n' "$GITHUB_REF_NAME" > nix/release-version
+      - *nix
+      - *nix-cache
+      - *check
+
+  native:
+    name: Native checks
+    if: always() && (github.event_name != 'push' || github.ref_type != 'tag')
+    needs: [matrix, native-build, rootless]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.matrix.outputs.native) }}
+    env:
+      NATIVE_RESULT: ${{ needs.native-build.result }}
+      ROOTLESS_RESULT: ${{ needs.rootless.result }}
+    steps:
+      - name: Require all native and rootless checks
+        run: |
+          test "$NATIVE_RESULT" = success
+          test "$ROOTLESS_RESULT" = success
+
   release-native:
-    name: Native release checks (${{ matrix.system }})
+    name: Native release checks
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: [matrix, quality, documentation]
+    needs: [matrix, quality, documentation, rootless]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     permissions:
@@ -148,9 +187,7 @@ jobs:
       BUILD_TAG: build-${{ github.run_id }}
     steps:
       - *checkout
-      - &release-version
-        name: Set release version
-        run: printf '%s\n' "$GITHUB_REF_NAME" > nix/release-version
+      - *release-version
       - *nix
       - *nix-cache
       - *check
@@ -203,7 +240,7 @@ jobs:
   release:
     name: Publish binaries and containers
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: [matrix, quality, documentation, release-native]
+    needs: [matrix, quality, documentation, rootless, release-native]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     concurrency:

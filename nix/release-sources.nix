@@ -52,9 +52,20 @@ let
             path = inputs.${name}.outPath;
             name = "${name}-source";
           };
+          inputArchive =
+            pkgs.runCommand "${name}-source.tar.gz"
+              {
+                nativeBuildInputs = [
+                  pkgs.gnutar
+                  pkgs.gzip
+                ];
+              }
+              ''
+                tar --mode=u+w -C ${inputSource} -czf "$out" .
+              '';
         in
         ''
-          tar --mode=u+w -C ${inputSource} -czf "$out/build-inputs/${name}.tar.gz" .
+          cp ${inputArchive} "$out/build-inputs/${name}.tar.gz"
         ''
       )
       [
@@ -65,21 +76,14 @@ let
       ]
   );
 in
-pkgs.runCommand "coopr-release-sources"
-  {
-    nativeBuildInputs = [
-      pkgs.gnutar
-      pkgs.gzip
-    ];
-  }
-  ''
-    mkdir -p "$out/build-inputs" "$out/sources"
-    cp -r ${source} "$out/coopr"
-    cp -r ${coopr-static.goModules} "$out/vendor"
-    cp -r ${container.licenseSources}/. "$out/"
-    ${copyLibraries}
-    ${copyInputs}
-    substitute ${./REBUILD.txt.in} "$out/REBUILD.txt" \
-      --replace-fail '@hostSystem@' ${lib.escapeShellArg pkgs.stdenv.hostPlatform.system} \
-      --replace-fail '@gpgmeVersion@' ${lib.escapeShellArg coopr-static.releaseLibraries.gpgme.version}
-  ''
+pkgs.runCommand "coopr-release-sources" { } ''
+  mkdir -p "$out/build-inputs" "$out/sources"
+  cp -r ${source} "$out/coopr"
+  cp -r ${coopr-static.goModules} "$out/vendor"
+  cp -r ${container.licenseSources}/. "$out/"
+  ${copyLibraries}
+  ${copyInputs}
+  substitute ${./REBUILD.txt.in} "$out/REBUILD.txt" \
+    --replace-fail '@hostSystem@' ${lib.escapeShellArg pkgs.stdenv.hostPlatform.system} \
+    --replace-fail '@gpgmeVersion@' ${lib.escapeShellArg coopr-static.releaseLibraries.gpgme.version}
+''

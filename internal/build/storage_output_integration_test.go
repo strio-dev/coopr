@@ -202,18 +202,25 @@ func runStorageCLI(ctx context.Context, binary, definition, tag string, extraEnv
 
 func loadTestDefinition(t *testing.T, ctx context.Context, work string) string {
 	t.Helper()
-	source := filepath.Join(work, "runner.go")
-	program := "package main\nimport (\"fmt\"; \"os\"; \"strings\")\nfunc main() { data, err := os.ReadFile(\"/marker\"); if err != nil { panic(err) }; fmt.Print(\"loaded:\", strings.TrimSpace(string(data))) }\n"
-	if err := os.WriteFile(source, []byte(program), 0600); err != nil {
+	fixture, err := storageRunnerFixture()
+	if err != nil {
 		t.Fatal(err)
 	}
-	command := exec.CommandContext(ctx, "go", "build", "-trimpath", "-o", filepath.Join(work, "runner"), source)
-	command.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH="+runtime.GOARCH)
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("build static runner: %v: %s", err, output)
-	}
-	if err := os.Remove(source); err != nil {
-		t.Fatal(err)
+	runner := filepath.Join(work, "runner")
+	if fixture != "" {
+		data, err := os.ReadFile(fixture)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(runner, data, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		command := exec.CommandContext(ctx, "go", "build", "-trimpath", "-o", runner, "./testdata/storage-runner/main.go")
+		command.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH="+runtime.GOARCH)
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("build static runner: %v: %s", err, output)
+		}
 	}
 	if err := os.WriteFile(filepath.Join(work, "marker"), []byte("ready\n"), 0600); err != nil {
 		t.Fatal(err)
@@ -224,6 +231,57 @@ func loadTestDefinition(t *testing.T, ctx context.Context, work string) string {
 		t.Fatal(err)
 	}
 	return definition
+}
+
+func storageRunnerFixture() (string, error) {
+	root, supplied := os.LookupEnv("COOPR_TEST_FIXTURES")
+	if !supplied {
+		return "", nil
+	}
+	if !filepath.IsAbs(root) {
+		return "", fmt.Errorf("COOPR_TEST_FIXTURES must be an absolute directory")
+	}
+	info, err := os.Stat(root)
+	if err != nil {
+		return "", fmt.Errorf("COOPR_TEST_FIXTURES: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("COOPR_TEST_FIXTURES must be a directory: %s", root)
+	}
+	path := filepath.Join(root, "storage-runner")
+	if err := validateStorageTestCLI(path); err != nil {
+		return "", fmt.Errorf("COOPR_TEST_FIXTURES: %w", err)
+	}
+	return path, nil
+}
+
+func TestStorageRunnerFixtureOverride(t *testing.T) {
+	root := t.TempDir()
+	for _, directory := range []string{"", "fixtures", filepath.Join(root, "missing"), root} {
+		t.Run(directory, func(t *testing.T) {
+			t.Setenv("COOPR_TEST_FIXTURES", directory)
+			if path, err := storageRunnerFixture(); err == nil {
+				t.Fatalf("accepted unusable fixture directory %q: %q", directory, path)
+			}
+		})
+	}
+	fixture := filepath.Join(root, "storage-runner")
+	if err := os.WriteFile(fixture, []byte("prebuilt runner"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("COOPR_TEST_FIXTURES", root)
+	if _, err := storageRunnerFixture(); err == nil {
+		t.Fatal("accepted a non-executable fixture")
+	}
+	if err := os.Chmod(fixture, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	work := t.TempDir()
+	loadTestDefinition(t, context.Background(), work)
+	data, err := os.ReadFile(filepath.Join(work, "runner"))
+	if err != nil || string(data) != "prebuilt runner" {
+		t.Fatalf("fixture was not copied: data=%q error=%v", data, err)
+	}
 }
 
 func loadPodman(t *testing.T, ctx context.Context, args ...string) []byte {

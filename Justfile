@@ -12,6 +12,10 @@ vet:
 lint:
     nix develop path:. -c golangci-lint run
 
+# Run the pinned security rules without building Coopr.
+scan:
+    nix develop --no-update-lock-file path:.#security -c semgrep scan --no-error --strict --jobs 2 . nix/tests/installer.py
+
 # Format Go, Nix, and Justfile sources with pinned tools.
 fmt:
     nix develop path:. -c gofmt -w cmd internal
@@ -34,7 +38,7 @@ container:
 release-check:
     nix flake check . --no-update-lock-file
 
-# Run rootless integration and packaged acceptance in an AMD64 NixOS VM with KVM.
+# Run rootless integration and packaged acceptance in AMD64 NixOS VMs with KVM.
 integration:
     nix build --no-link --no-update-lock-file --print-build-logs path:.#checks.x86_64-linux.rootless
 

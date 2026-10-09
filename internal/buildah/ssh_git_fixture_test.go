@@ -34,11 +34,17 @@ func gitSSHFixture(t *testing.T) (source, privateKey string, knownHosts []byte) 
 	runCommand(t, "ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", privateKey)
 	runCommand(t, "ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", hostKey)
 
-	helper := filepath.Join(root, "sshgitserver")
-	build := exec.Command("go", "build", "-o", helper, "./testdata/sshgitserver")
-	build.Dir = packageDirectory(t)
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build SSH Git fixture server: %v\n%s", err, output)
+	helper, err := runtimeFixtureBinary("sshgitserver")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if helper == "" {
+		helper = filepath.Join(root, "sshgitserver")
+		build := exec.Command("go", "build", "-trimpath", "-o", helper, "./testdata/sshgitserver")
+		build.Dir = packageDirectory(t)
+		if output, err := build.CombinedOutput(); err != nil {
+			t.Fatalf("build SSH Git fixture server: %v\n%s", err, output)
+		}
 	}
 
 	serverContext, cancel := context.WithCancel(context.Background())
