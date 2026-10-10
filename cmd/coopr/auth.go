@@ -5,6 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"go.podman.io/common/pkg/auth"
+	"go.podman.io/common/pkg/completion"
 	"go.podman.io/image/v5/types"
 )
 
@@ -20,6 +21,7 @@ func newLoginCommand() *cobra.Command {
 		return auth.Login(cmd.Context(), system, &options, args)
 	}}
 	cmd.Flags().AddFlagSet(auth.GetLoginFlags(&options))
+	completion.CompleteCommandFlags(cmd, auth.GetLoginFlagsCompletions())
 	cmd.Flags().BoolVar(&tlsVerify, "tls-verify", true, "verify registry TLS certificates (default: registry configuration)")
 	return cmd
 }
@@ -31,5 +33,6 @@ func newLogoutCommand() *cobra.Command {
 		return auth.Logout(nil, &options, args)
 	}}
 	cmd.Flags().AddFlagSet(auth.GetLogoutFlags(&options))
+	completion.CompleteCommandFlags(cmd, auth.GetLogoutFlagsCompletions())
 	return cmd
 }

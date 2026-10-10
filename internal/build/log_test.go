@@ -76,7 +76,7 @@ func TestCompletedTagProgressRespectsQuietAndLogfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(data), "Successfully tagged app:latest\n"; got != want {
+	if got, want := string(data), ""; got != want {
 		t.Fatalf("logfile tags = %q, want %q", got, want)
 	}
 	if terminal.Len() != 0 {
@@ -146,6 +146,39 @@ func TestVariantLogsPassImageFinalizationAndRetainEachPlatform(t *testing.T) {
 		}
 		if string(data) != platform {
 			t.Fatalf("platform %s lost its log: %q", platform, data)
+		}
+	}
+}
+
+func TestBuildLogResultAppendsEvenWhenQuiet(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "build.log")
+	if err := os.WriteFile(path, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := logBuildResult(path, false, nil, "image-id"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != "image-id\n" {
+		t.Fatalf("result=%q err=%v", got, err)
+	}
+}
+
+func TestBuildLogResultKeepsEachPlatformLog(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "build.log")
+	platforms := []string{"linux/amd64", "linux/arm64"}
+	for _, platform := range platforms {
+		if err := os.WriteFile(platformLogPath(path, platform), []byte(platform+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := logBuildResult(path, true, platforms, "index-id"); err != nil {
+		t.Fatal(err)
+	}
+	for _, platform := range platforms {
+		got, err := os.ReadFile(platformLogPath(path, platform))
+		if err != nil || string(got) != platform+"\nindex-id\n" {
+			t.Fatalf("result=%q err=%v", got, err)
 		}
 	}
 }

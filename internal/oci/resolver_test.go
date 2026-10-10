@@ -23,8 +23,10 @@ import (
 	digest "github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"go.podman.io/image/v5/pkg/compression"
 	"go.podman.io/storage"
 	"oras.land/oras-go/v2"
+	orasoci "oras.land/oras-go/v2/content/oci"
 	"oras.land/oras-go/v2/registry/remote"
 	"oras.land/oras-go/v2/registry/remote/auth"
 )
@@ -263,7 +265,88 @@ func TestResolveIndexByDigestAndDownload(t *testing.T) {
 	}
 }
 
-func TestIndexAmbiguityAndWrongConfig(t *testing.T) {
+func TestResolveImageCompressionVariants(t *testing.T) {
+	ctx := context.Background()
+	_, repo, resolver, name := testRepository(t, registry.New())
+	platform := v1.Platform{OS: "linux", Architecture: "amd64"}
+	tarData := packageTar(t, "same filesystem in both compression variants")
+	configData, err := json.Marshal(v1.Image{Platform: platform, RootFS: v1.RootFS{Type: "layers", DiffIDs: []digest.Digest{digest.FromBytes(tarData)}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := push(t, repo, v1.MediaTypeImageConfig, configData)
+	var members []v1.Descriptor
+	for _, algorithm := range []compression.Algorithm{compression.Gzip, compression.Zstd} {
+		var data bytes.Buffer
+		compressor, err := compression.CompressStream(&data, algorithm, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := compressor.Write(tarData); err != nil {
+			t.Fatal(err)
+		}
+		if err := compressor.Close(); err != nil {
+			t.Fatal(err)
+		}
+		mediaType := v1.MediaTypeImageLayerGzip
+		if algorithm.Name() == "zstd" {
+			mediaType = v1.MediaTypeImageLayerZstd
+		}
+		layer := push(t, repo, mediaType, data.Bytes())
+		member := pushManifest(t, repo, VersionedManifest(config, []v1.Descriptor{layer}, ""), algorithm.Name())
+		member.Platform = &platform
+		if algorithm.Name() == "zstd" {
+			member.Annotations = map[string]string{"io.github.containers.compression.zstd": "true", "example.com/retained": "yes"}
+		}
+		members = append(members, member)
+	}
+	root := pushIndex(t, repo, "compression-variants", members...)
+	layout := t.TempDir()
+	store, err := orasoci.NewWithContext(ctx, layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := oras.CopyGraph(ctx, repo, store, root, oras.DefaultCopyGraphOptions); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Tag(ctx, root, "variants"); err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{"remote", "layout-tag", "layout-digest"} {
+		t.Run(source, func(t *testing.T) {
+			var resolved *Resolved
+			var err error
+			switch source {
+			case "remote":
+				resolved, err = resolver.Resolve(ctx, name+":compression-variants", platform, Image)
+			case "layout-tag":
+				resolved, err = ResolveLayoutImage(ctx, layout, "variants", platform)
+			case "layout-digest":
+				resolved, err = ResolveLayoutImage(ctx, layout, root.Digest.String(), platform)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Native image selection prefers an annotated zstd instance even when gzip appears first.
+			if resolved.Selected.Digest != members[1].Digest || resolved.Config.Digest != config.Digest || resolved.Selected.Annotations["example.com/retained"] != "yes" {
+				t.Fatalf("wrong compression instance or lost descriptor metadata: %+v", resolved)
+			}
+			if resolved.Root.Digest != root.Digest {
+				t.Fatalf("rewrote root index: %+v", resolved.Root)
+			}
+			original, err := fetchMetadata(ctx, repo, root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			retained, err := fetchMetadata(ctx, resolved.Source(), resolved.Root)
+			if err != nil || !bytes.Equal(original, retained) {
+				t.Fatalf("lost complete root index: %s, %v", retained, err)
+			}
+		})
+	}
+}
+
+func TestIndexSelectionRejectsWrongConfig(t *testing.T) {
 	_, repo, resolver, name := testRepository(t, registry.New())
 	amd := v1.Platform{OS: "linux", Architecture: "amd64"}
 	arm := v1.Platform{OS: "linux", Architecture: "arm64"}
@@ -276,11 +359,11 @@ func TestIndexAmbiguityAndWrongConfig(t *testing.T) {
 	}
 	pushIndex(t, repo, "duplicate", manifest, manifest)
 	_, err = resolver.Resolve(context.Background(), name+":duplicate", amd, Image)
-	if err == nil || !strings.Contains(err.Error(), "2 manifests") {
-		t.Fatalf("duplicate platform accepted: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "config platform") {
+		t.Fatalf("duplicate platform bypassed config validation: %v", err)
 	}
 	_, err = resolver.Resolve(context.Background(), name+":duplicate", arm, Image)
-	if err == nil || !strings.Contains(err.Error(), "0 manifests") {
+	if err == nil || !strings.Contains(err.Error(), "no image found") {
 		t.Fatalf("missing platform accepted: %v", err)
 	}
 }
@@ -341,6 +424,10 @@ func TestComponentArtifactAndBlobVerification(t *testing.T) {
 				t.Fatalf("arm64/v8 invocation failed: %v", err)
 			}
 		}
+	}
+	duplicate := pushIndex(t, repo, "component-duplicate", manifests[0], manifests[0])
+	if _, err := resolver.Resolve(context.Background(), name+"@"+duplicate.Digest.String(), platforms[0], Component); err == nil || !strings.Contains(err.Error(), "2 manifests") {
+		t.Fatalf("accepted duplicate component instances: %v", err)
 	}
 	if _, err := resolver.Resolve(context.Background(), ref, v1.Platform{OS: "linux", Architecture: "riscv64"}, Component); err == nil {
 		t.Fatal("component resolved for unpublished platform")
@@ -585,12 +672,13 @@ func TestNormalizePullPolicy(t *testing.T) {
 }
 
 func TestRegistryOptionsReturnsIndependentWorkerCopy(t *testing.T) {
+	var progress bytes.Buffer
 	resolver, err := NewResolver(Options{
 		TLSVerify: boolOption(false), PullPolicy: "always",
 		Credentials: "user:pass", Retry: 0, RetrySet: true, RetryDelay: 2 * time.Second,
 		DecryptionKeys: []string{"provider:key"}, SignaturePolicyPath: "/tmp/policy.json",
-		ComponentStoreDir: t.TempDir(),
-		NativeStore:       storage.StoreOptions{RunRoot: "/run/coopr", GraphRoot: "/var/lib/coopr", ImageStore: "/var/lib/coopr-images", GraphDriverName: "vfs", GraphDriverOptions: []string{"vfs.ignore_chown_errors=true"}, TransientStore: true},
+		ComponentStoreDir: t.TempDir(), ProgressWriter: &progress,
+		NativeStore: storage.StoreOptions{RunRoot: "/run/coopr", GraphRoot: "/var/lib/coopr", ImageStore: "/var/lib/coopr-images", GraphDriverName: "vfs", GraphDriverOptions: []string{"vfs.ignore_chown_errors=true"}, TransientStore: true},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -598,6 +686,20 @@ func TestRegistryOptionsReturnsIndependentWorkerCopy(t *testing.T) {
 	options := resolver.RegistryOptions()
 	if !options.RetrySet || options.Retry != 0 || options.PullPolicy != "always" || options.Credentials != "user:pass" || options.SignaturePolicyPath != "/tmp/policy.json" {
 		t.Fatalf("worker registry options = %+v", options)
+	}
+	if options.ProgressWriter != &progress {
+		t.Fatal("resolver lost process-local progress writer")
+	}
+	data, err := json.Marshal(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Options
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.ProgressWriter != nil || bytes.Contains(data, []byte("ProgressWriter")) {
+		t.Fatal("serialized process-local progress writer")
 	}
 	*options.TLSVerify = true
 	options.DecryptionKeys[0] = "changed"

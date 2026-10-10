@@ -124,21 +124,24 @@ func TestCacheBindingsPreserveIndependentReadAndWritePermissions(t *testing.T) {
 	}
 }
 
-func TestParseCacheSpecCanonicalizesLocalPathsAndRejectsInvalidSpecs(t *testing.T) {
-	spec, err := ParseCacheSpec("oci-layout:cache")
+func TestNormalizeCacheSpecCanonicalizesLocalPathsAndRejectsInvalidSpecs(t *testing.T) {
+	root := t.TempDir()
+	spec, err := normalizeCacheSpec(CacheSpec{Transport: "oci-layout", Reference: root + "/nested/../cache"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, err := filepath.Abs("cache")
-	if err != nil {
-		t.Fatal(err)
-	}
+	want := filepath.Join(root, "cache")
 	if spec.Transport != "oci-layout" || spec.Reference != want {
 		t.Fatalf("spec = %+v, want oci-layout:%s", spec, want)
 	}
-	for _, value := range []string{"registry:", "registry:example.org", "unknown:value"} {
-		if _, err := ParseCacheSpec(value); err == nil {
-			t.Fatalf("ParseCacheSpec(%q) succeeded", value)
+	for _, spec := range []CacheSpec{
+		{Transport: "registry"},
+		{Transport: "oci-layout"},
+		{Transport: "oci-layout", Reference: "relative"},
+		{Transport: "unknown", Reference: "value"},
+	} {
+		if _, err := normalizeCacheSpec(spec); err == nil {
+			t.Fatalf("normalizeCacheSpec(%+v) succeeded", spec)
 		}
 	}
 }
@@ -155,5 +158,28 @@ func TestCacheArtifactPathsIncludeEveryLocalBindingOnce(t *testing.T) {
 	}
 	if len(paths) != 1 || paths[0] != path {
 		t.Fatalf("artifact paths = %#v", paths)
+	}
+}
+
+func TestCacheBindingsNormalizeRegistryRepositories(t *testing.T) {
+	bindings, err := cacheBindings(PlanOptions{
+		CacheFrom: []CacheSpec{{Transport: "registry", Reference: "example/cache"}},
+		CacheTo:   []CacheSpec{{Transport: "registry", Reference: "docker.io/example/cache"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bindings) != 1 || bindings[0].spec.Reference != "docker.io/example/cache" || !bindings[0].read || !bindings[0].write {
+		t.Fatalf("registry aliases did not share a directional binding: %#v", bindings)
+	}
+	for _, value := range []string{"localhost:5000/team/cache", "build-cache"} {
+		if _, err := normalizeCacheSpec(CacheSpec{Transport: "registry", Reference: value}); err != nil {
+			t.Fatalf("valid Buildah cache repository %q rejected: %v", value, err)
+		}
+	}
+	for _, value := range []string{"ghcr.io/team/cache:latest", "ghcr.io/team/cache@sha256:" + strings.Repeat("a", 64)} {
+		if _, err := normalizeCacheSpec(CacheSpec{Transport: "registry", Reference: value}); err == nil {
+			t.Fatalf("tagged or digested cache repository %q accepted", value)
+		}
 	}
 }

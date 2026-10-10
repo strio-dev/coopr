@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -317,7 +318,28 @@ func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retEr
 	for i := range builds {
 		variants[i] = builds[i].variant
 	}
-	return finishOutputs(opts.MetadataFile, "", root, variants, nil, report, publicationErr, "")
+	if err := finishOutputs(opts.MetadataFile, "", root, variants, nil, report, publicationErr, "", ""); err != nil {
+		return "", err
+	}
+	if opts.LogSplit && !opts.Quiet {
+		for _, platform := range targets {
+			log, err := os.OpenFile(platformLogPath(opts.LogFile, platform), os.O_WRONLY|os.O_APPEND, 0)
+			if err != nil {
+				return "", err
+			}
+			warnUnusedBuildArguments(log, def, opts.Args)
+			if err := log.Close(); err != nil {
+				return "", err
+			}
+		}
+	} else {
+		warnUnusedBuildArguments(stdout, def, opts.Args)
+	}
+	ref := strings.Join(report.References, "\n")
+	if err := logBuildResult(opts.LogFile, opts.LogSplit, targets, ref); err != nil {
+		return "", err
+	}
+	return ref, nil
 }
 
 type PublishOptions struct {

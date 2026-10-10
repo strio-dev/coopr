@@ -139,7 +139,7 @@ func newComponentLoadCommand() *cobra.Command {
 		return err
 	}}
 	cmd.Flags().StringVarP(&input, "input", "i", "", "read an OCI archive from a file (default: stdin)")
-	cmd.Flags().StringVarP(&tag, "tag", "t", "", "assign a local component name; otherwise print its digest")
+	cmd.Flags().StringVarP(&tag, "tag", "t", "", "assign a local component name (default: archived name, or digest if unnamed)")
 	return cmd
 }
 

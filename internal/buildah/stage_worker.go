@@ -117,6 +117,7 @@ type stageWorkerResponse struct {
 	ComponentCacheStats   CacheStats                      `json:"component_cache_stats"`
 	InstructionCacheStats CacheStats                      `json:"instruction_cache_stats"`
 	Error                 string                          `json:"error,omitempty"`
+	Failure               *workerError                    `json:"failure,omitempty"`
 }
 
 // executeGraphStageIsolated runs one parallel stage in a separately supervised
@@ -267,7 +268,13 @@ func (executor *graphExecutor) completeStageWorkerResponse(ctx context.Context, 
 		}
 	}
 	if response.Error != "" {
-		responseErr = errors.Join(responseErr, errors.New(response.Error))
+		failure := error(response.Failure)
+		if response.Failure == nil {
+			failure = errors.New(response.Error)
+		}
+		responseErr = errors.Join(responseErr, failure)
+		// The response describes the RUN failure; the worker exit is only its transport.
+		processErr = nil
 	}
 	if err := errors.Join(processErr, ctx.Err(), responseErr, cleanupErr); err != nil {
 		return finished, err
@@ -337,7 +344,9 @@ func runStageWorker() {
 		os.Exit(2)
 	}
 	if err := executeStageWorker(os.Args[1]); err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, err)
+		if !workerFailureReported(err) {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+		}
 		os.Exit(1)
 	}
 	os.Exit(0)
@@ -359,11 +368,12 @@ func executeStageWorker(requestPath string) error {
 	response, stageErr := executeStageWorkerRequest(workerCtx, request)
 	if stageErr != nil {
 		response.Error = stageErr.Error()
+		response.Failure = workerFailure(stageErr)
 	}
 	if err := writeWorkerJSON(request.ResultPath, response); err != nil {
 		return err
 	}
-	return stageErr
+	return reportedWorkerFailure(stageErr)
 }
 
 func executeStageWorkerRequest(ctx context.Context, request stageWorkerRequest) (response stageWorkerResponse, retErr error) {
@@ -391,6 +401,7 @@ func executeStageWorkerRequest(ctx context.Context, request stageWorkerRequest) 
 	var resolver *oci.Resolver
 	if request.ResolverEnabled {
 		registry := request.RegistryOptions
+		registry.ProgressWriter = os.Stderr
 		registry.Pull, registry.PullPolicy = request.Pull, request.PullPolicy
 		registry.AuthFile, registry.CertDir, registry.TLSVerify = request.AuthFile, request.CertDir, request.TLSVerify
 		registry.SignaturePolicyPath = request.SignaturePolicy

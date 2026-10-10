@@ -4,9 +4,9 @@ Coopr uses native `containers/storage` configuration for images and keeps compon
 
 ## Native storage
 
-These global flags override the effective native settings:
+These global options override the effective native settings:
 
-| Flag | Purpose |
+| Option | Purpose |
 | --- | --- |
 | `--root` | Native graph root. |
 | `--runroot` | Runtime root. |
@@ -22,7 +22,6 @@ Coopr loads effective `storage.conf`, including rootless/user settings. Images b
 | --- | --- |
 | `--module`, `--cgroup-manager`, `--cdi-spec-dir`, `--network-config-dir` | Configure supervised execution. |
 | `--authfile`, `--cert-dir`, `--creds`, `--tls-verify`, `--retry`, `--retry-delay` | Registry authentication, trust, and retries. |
-| `--signature-policy` | Image signature policy override on both build commands and image copy. |
 | `--decryption-key` | Image-input decryption on both build commands. |
 
 Native `containers.conf`, registry settings, credentials, and signature policy apply at their respective boundaries. Credential helpers must be available in the execution environment.

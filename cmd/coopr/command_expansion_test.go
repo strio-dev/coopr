@@ -31,7 +31,7 @@ func TestExistsReportsNamespaceAndArgumentErrorsAs125(t *testing.T) {
 	var out, errs bytes.Buffer
 	if status := runContextWithStorageNamespace(context.Background(), []string{"exists", "anything"}, &out, &errs, func() error {
 		return errors.New("namespace unavailable")
-	}); status != 125 || errs.String() != "namespace unavailable\n" {
+	}); status != 125 || errs.String() != "Error: namespace unavailable\n" {
 		t.Fatalf("namespace failure status=%d stderr=%q", status, &errs)
 	}
 }

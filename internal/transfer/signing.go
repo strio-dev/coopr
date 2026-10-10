@@ -95,7 +95,11 @@ func publishImage(ctx context.Context, layout string, root v1.Descriptor, destin
 	return publishImageReference(ctx, src, root, destination, opts)
 }
 
-func publishImageReference(ctx context.Context, src types.ImageReference, root v1.Descriptor, destination string, opts Options) (_ string, retErr error) {
+func publishImageReference(ctx context.Context, src types.ImageReference, root v1.Descriptor, destination string, opts Options) (string, error) {
+	return publishImageReferenceSelection(ctx, src, root, destination, opts, imagecopy.CopyAllImages)
+}
+
+func publishImageReferenceSelection(ctx context.Context, src types.ImageReference, root v1.Descriptor, destination string, opts Options, selection imagecopy.ImageListSelection) (_ string, retErr error) {
 	dst, err := docker.ParseReference("//" + destination)
 	if err != nil {
 		return "", fmt.Errorf("open registry destination %q: %w", destination, err)
@@ -133,19 +137,27 @@ func publishImageReference(ctx context.Context, src types.ImageReference, root v
 	}
 	defer func() { retErr = errors.Join(retErr, policyContext.Destroy()) }()
 	copyOptions := &imagecopy.Options{
-		SourceCtx: system, DestinationCtx: system, PreserveDigests: true,
-		ImageListSelection:               imagecopy.CopyAllImages,
+		ReportWriter: opts.ProgressWriter,
+		SourceCtx:    system, DestinationCtx: system, PreserveDigests: true,
+		ImageListSelection:               selection,
 		SignBy:                           opts.Signing.SignBy,
 		SignPassphrase:                   gpgPassphrase,
 		SignBySigstorePrivateKeyFile:     opts.Signing.SigstorePrivateKeyFile,
 		SignSigstorePrivateKeyPassphrase: sigstorePassphrase,
 	}
+	if err := opts.Push.Apply(copyOptions); err != nil {
+		return "", err
+	}
+	var copiedDigest digest.Digest
 	retryOptions, err := nativeRetryOptions(opts)
 	if err != nil {
 		return "", err
 	}
 	err = retry.IfNecessary(ctx, func() error {
-		_, copyErr := imagecopy.Image(ctx, policyContext, dst, src, copyOptions)
+		data, copyErr := imagecopy.Image(ctx, policyContext, dst, src, copyOptions)
+		if copyErr == nil {
+			copiedDigest = digest.FromBytes(data)
+		}
 		return copyErr
 	}, retryOptions)
 	if err != nil {
@@ -155,7 +167,7 @@ func publishImageReference(ctx context.Context, src types.ImageReference, root v
 	if err != nil {
 		return "", err
 	}
-	return reference.TrimNamed(named).String() + "@" + root.Digest.String(), nil
+	return reference.TrimNamed(named).String() + "@" + copiedDigest.String(), nil
 }
 
 func nativeRetryOptions(opts Options) (*retry.Options, error) {
@@ -175,7 +187,7 @@ func publishStoredImage(ctx context.Context, imageID string, root v1.Descriptor,
 	if err != nil {
 		return "", fmt.Errorf("publish stored image: %w", err)
 	}
-	return repository + "@" + root.Digest.String(), nil
+	return repository, nil
 }
 
 func signedTransferSystemContext(authFile, certDir, registriesDir string, opts Options) (*types.SystemContext, error) {
@@ -242,6 +254,8 @@ func storedTransferOptions(imageID string, manifest digest.Digest, opts Options)
 		}
 	}
 	return buildah.StoredTransferOptions{
+		ProgressWriter:         opts.ProgressWriter,
+		Push:                   opts.Push,
 		Store:                  storeOptions,
 		ImageID:                imageID,
 		ExpectedManifest:       manifest,
@@ -303,4 +317,14 @@ func sigstoreAttachmentsConfig() (string, error) {
 		return "", fmt.Errorf("write signature registry configuration: %w", err)
 	}
 	return dir, nil
+}
+
+func publishStoredImageInstance(ctx context.Context, imageID string, root v1.Descriptor, destination string, opts Options) (buildah.StoredTransferResult, error) {
+	options, cleanup, err := storedTransferOptions(imageID, root.Digest, opts)
+	if err != nil {
+		return buildah.StoredTransferResult{}, err
+	}
+	defer cleanup()
+	options.RegistryDestination, options.RegistryInstance = destination, true
+	return buildah.TransferStoredImageResultSupervised(ctx, options)
 }

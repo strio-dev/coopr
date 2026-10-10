@@ -120,11 +120,11 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			cacheSources, err := parseCacheSpecs(cacheFrom)
+			cacheSources, err := parseCacheSpecs(cacheFrom, "src")
 			if err != nil {
 				return fmt.Errorf("cache-from: %w", err)
 			}
-			cacheDestinations, err := parseCacheSpecs(cacheTo)
+			cacheDestinations, err := parseCacheSpecs(cacheTo, "dest")
 			if err != nil {
 				return fmt.Errorf("cache-to: %w", err)
 			}
@@ -189,6 +189,9 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if iidFile != "" || iidFileRaw != "" || logFile != "" {
+				return nil
+			}
 			resultWriter := cmd.OutOrStdout()
 			for _, filesystem := range filesystems {
 				if filesystem.Path == "-" {
@@ -196,7 +199,7 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 					break
 				}
 			}
-			_, err = fmt.Fprintln(resultWriter, result)
+			_, err = fmt.Fprintln(resultWriter, result.ImageID)
 			return err
 		},
 	}
@@ -228,7 +231,7 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 	addSBOMFlags(cmd)
 	signing.addTo(cmd)
 	f.StringVar(&metadataFile, "metadata-file", "", "write result, index, platform, and image configuration digests as JSON")
-	f.StringVar(&iidFile, "iidfile", "", "write the image ID (index digest for multiple platforms)")
+	f.StringVar(&iidFile, "iidfile", "", "write the image or manifest-list ID")
 	f.StringVar(&iidFileRaw, "iidfile-raw", "", "write the image ID without its algorithm prefix")
 	f.StringVar(&iidFileRaw, "raw-iidfile", "", "alias for --iidfile-raw")
 	f.StringVar(&ignoreFile, "ignorefile", "", "context ignore file (default: first of .cooprignore, .containerignore, .dockerignore at the context root)")
@@ -250,8 +253,8 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 	f.StringArrayVar(&buildArgFiles, "build-arg-file", nil, "read build arguments from a file (repeatable; --build-arg wins)")
 	f.BoolVar(&runStdin, "stdin", false, "pass stdin to RUN instructions")
 	f.StringArrayVar(&buildContexts, "build-context", nil, "additional build context: NAME=PATH|URL|docker-image://REFERENCE|oci-layout://PATH:TAG (repeatable)")
-	f.StringArrayVar(&cacheFrom, "cache-from", nil, "read cached results from oci-layout:PATH or registry:HOST/REPOSITORY (repeatable)")
-	f.StringArrayVar(&cacheTo, "cache-to", nil, "write cached results to oci-layout:PATH or registry:HOST/REPOSITORY (repeatable)")
+	f.StringArrayVar(&cacheFrom, "cache-from", nil, "read cached results from a repository or type=local,src=PATH (repeatable)")
+	f.StringArrayVar(&cacheTo, "cache-to", nil, "write cached results to a repository or type=local,dest=PATH (repeatable)")
 	f.StringArrayVar(&secrets, "secret", nil, "secret source for RUN mounts: id=ID[,src=PATH|env=NAME] (repeatable)")
 	f.StringArrayVar(&ssh, "ssh", nil, "SSH agent or key source for RUN mounts: ID[=PATH] (repeatable)")
 	f.StringArrayVar(&allow, "allow", nil, "allow an elevated build entitlement (repeatable: network.host, security.insecure, device, or device=SELECTOR)")

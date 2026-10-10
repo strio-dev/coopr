@@ -1,14 +1,20 @@
 package main
 
 import (
-	"coopr/internal/buildah"
-	"coopr/internal/oci"
-	"coopr/internal/transfer"
+	"encoding/csv"
+	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"coopr/internal/buildah"
+	"coopr/internal/oci"
+	"coopr/internal/transfer"
+
 	"github.com/spf13/cobra"
+	buildahparse "go.podman.io/buildah/pkg/parse"
 )
 
 type buildControlFlags struct {
@@ -176,14 +182,48 @@ func (flags registryFlags) resolverOptions(command *cobra.Command) oci.Options {
 	return flags.transferOptions(command).RegistryOptions()
 }
 
-func parseCacheSpecs(values []string) ([]buildah.CacheSpec, error) {
+func parseCacheSpecs(values []string, localPathKey string) ([]buildah.CacheSpec, error) {
 	result := make([]buildah.CacheSpec, 0, len(values))
 	for _, value := range values {
-		spec, err := buildah.ParseCacheSpec(value)
-		if err != nil {
-			return nil, err
+		if !strings.Contains(value, "=") {
+			repositories, err := buildahparse.RepoNamesToNamedReferences([]string{value})
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, buildah.CacheSpec{Transport: "registry", Reference: repositories[0].Name()})
+			continue
 		}
-		result = append(result, spec)
+		reader := csv.NewReader(strings.NewReader(value))
+		fields, err := reader.Read()
+		if err != nil {
+			return nil, fmt.Errorf("invalid cache %q: %w", value, err)
+		}
+		if _, err := reader.Read(); err != io.EOF {
+			return nil, fmt.Errorf("invalid cache %q: expected one CSV record", value)
+		}
+		var cacheType, path string
+		for _, field := range fields {
+			key, fieldValue, ok := strings.Cut(field, "=")
+			if !ok {
+				return nil, fmt.Errorf("invalid cache option %q: expected KEY=VALUE", field)
+			}
+			switch strings.ToLower(key) {
+			case "type":
+				cacheType = fieldValue
+			case localPathKey:
+				path = fieldValue
+			default:
+				return nil, fmt.Errorf("unsupported cache option %q: expected type=local,%s=PATH", key, localPathKey)
+			}
+		}
+		if cacheType != "local" || path == "" {
+			return nil, fmt.Errorf("invalid cache %q: expected type=local,%s=PATH", value, localPathKey)
+		}
+		absolute, err := filepath.Abs(path)
+		if err != nil {
+			return nil, fmt.Errorf("cache layout path: %w", err)
+		}
+		result = append(result, buildah.CacheSpec{Transport: "oci-layout", Reference: absolute})
 	}
 	return result, nil
 }

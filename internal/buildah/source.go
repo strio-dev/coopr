@@ -217,6 +217,7 @@ func materializeImageSource(ctx context.Context, resolver *oci.Resolver, referen
 		return ResolvedImageSource{}, err
 	}
 	pullOptions := &libimage.PullOptions{CopyOptions: libimage.CopyOptions{
+		Writer:       registryOptions.ProgressWriter,
 		Architecture: platform.Architecture, OS: platform.OS, Variant: platform.Variant,
 		Credentials: registryOptions.Credentials, OciDecryptConfig: decryptConfig,
 		SignaturePolicyPath: pullSystem.SignaturePolicyPath,

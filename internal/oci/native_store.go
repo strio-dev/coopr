@@ -14,6 +14,7 @@ import (
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	dockerreference "go.podman.io/image/v5/docker/reference"
+	"go.podman.io/image/v5/manifest"
 	"go.podman.io/image/v5/pkg/shortnames"
 	imagestorage "go.podman.io/image/v5/storage"
 	"go.podman.io/image/v5/types"
@@ -63,10 +64,26 @@ func ResolveStoredImage(ctx context.Context, backend storage.Store, name string,
 				matches = append(matches, candidate)
 			}
 		}
-		if len(matches) != 1 {
-			return nil, fmt.Errorf("%w: image %q index has %d manifests for platform %s/%s/%s; expected one", ErrStoredPlatformUnavailable, name, len(matches), platform.OS, platform.Architecture, platform.Variant)
+		if len(matches) == 0 {
+			return nil, fmt.Errorf("%w: image %q has no manifest for %s", ErrStoredPlatformUnavailable, name, platforms.Format(platform))
 		}
 		selected = matches[0]
+		if len(matches) > 1 {
+			list, err := manifest.ListFromBlob(rootData, rootType)
+			if err != nil {
+				return nil, err
+			}
+			chosen, err := list.ChooseInstance(system)
+			if err != nil {
+				return nil, err
+			}
+			for _, candidate := range matches {
+				if candidate.Digest == chosen {
+					selected = candidate
+					break
+				}
+			}
+		}
 		selectedImages, err := backend.ImagesByDigest(selected.Digest)
 		if err != nil {
 			return nil, err
@@ -313,6 +330,19 @@ type StoredSelection struct {
 	ConfigData     []byte
 }
 
+// Platform returns the selected descriptor's platform, or its verified config
+// platform for single-image records whose manifest descriptor has no platform.
+func (selection StoredSelection) Platform() (v1.Platform, error) {
+	if selection.Manifest.Platform != nil {
+		return platforms.Normalize(*selection.Manifest.Platform), nil
+	}
+	var config v1.Image
+	if err := json.Unmarshal(selection.ConfigData, &config); err != nil {
+		return v1.Platform{}, err
+	}
+	return platforms.Normalize(config.Platform), nil
+}
+
 func storedReferenceDigest(name string) *digest.Digest {
 	value := name
 	if at := strings.LastIndexByte(name, '@'); at >= 0 {
@@ -331,6 +361,51 @@ func StoredImageSelections(ctx context.Context, backend storage.Store, name stri
 	root, data, indexed, err := StoredImageIndex(ctx, backend, name)
 	if err != nil {
 		return v1.Descriptor{}, nil, nil, err
+	}
+	if indexed {
+		var index v1.Index
+		if err := json.Unmarshal(data, &index); err != nil {
+			return v1.Descriptor{}, nil, nil, err
+		}
+		list, err := manifest.ListFromBlob(data, root.MediaType)
+		if err != nil {
+			return v1.Descriptor{}, nil, nil, err
+		}
+		result := map[string]StoredSelection{}
+		for _, child := range index.Manifests {
+			if child.Platform == nil || child.Platform.OS == "unknown" || child.Platform.Architecture == "unknown" || child.ArtifactType != "" {
+				continue
+			}
+			resolved, err := ResolveStoredImage(ctx, backend, child.Digest.String(), *child.Platform)
+			if errors.Is(err, storage.ErrImageUnknown) || os.IsNotExist(err) {
+				continue
+			}
+			if err != nil {
+				return v1.Descriptor{}, nil, nil, err
+			}
+			if resolved.Selected.Digest != child.Digest && (resolved.SourceManifest == nil || resolved.SourceManifest.Digest != child.Digest) {
+				return v1.Descriptor{}, nil, nil, fmt.Errorf("stored child %s differs from index", child.Digest)
+			}
+			key := platforms.Format(platforms.Normalize(*child.Platform))
+			if existing, exists := result[key]; exists {
+				chosen, err := list.ChooseInstance(&types.SystemContext{OSChoice: child.Platform.OS, ArchitectureChoice: child.Platform.Architecture, VariantChoice: child.Platform.Variant})
+				if err != nil {
+					return v1.Descriptor{}, nil, nil, err
+				}
+				if child.Digest == chosen {
+					result[existing.Manifest.Digest.String()] = existing
+				} else {
+					key = child.Digest.String()
+				}
+			}
+			selected := child
+			if resolved.Selected.Digest != child.Digest {
+				selected = resolved.Selected
+				selected.Platform = child.Platform
+			}
+			result[key] = StoredSelection{Root: root, Manifest: selected, SourceManifest: resolved.SourceManifest, ImageID: resolved.StorageImageID, ConfigData: append([]byte(nil), resolved.ConfigData...)}
+		}
+		return root, data, result, nil
 	}
 	available, err := StoredImagePlatforms(ctx, backend, name)
 	if err != nil {

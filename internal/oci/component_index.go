@@ -12,11 +12,11 @@ import (
 // several Linux platforms. Each child remains an ordinary component manifest,
 // so existing component resolution selects and verifies it by platform.
 func AssembleComponentIndex(ctx context.Context, outputPath string, variants []IndexVariant) (v1.Descriptor, []byte, error) {
-	normalized, err := normalizeImageVariants(variants)
+	normalized, err := normalizeImageVariants(variants, false)
 	if err != nil {
 		return v1.Descriptor{}, nil, err
 	}
-	root, indexData, err := assembleIndexDescriptor(normalized, v1.MediaTypeImageIndex)
+	root, indexData, err := assembleIndexDescriptor(normalized, v1.MediaTypeImageIndex, false)
 	if err != nil {
 		return v1.Descriptor{}, nil, err
 	}

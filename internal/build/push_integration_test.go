@@ -27,13 +27,14 @@ func TestRunPushPublishesAndReturnsImmutableReference(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	immutable, err := Run(context.Background(), Options{
+	result, err := Run(context.Background(), Options{
 		File: file, Platform: "linux/amd64",
 		Tag: target, Push: true, TLSVerify: new(false),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	immutable := result.References[0]
 	if !strings.HasPrefix(immutable, strings.TrimSuffix(target, ":stable")+"@sha256:") {
 		t.Fatalf("push result %q is not an immutable reference for %q", immutable, target)
 	}

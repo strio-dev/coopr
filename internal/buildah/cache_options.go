@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"coopr/internal/oci"
+	"go.podman.io/buildah/pkg/parse"
 )
 
 type CacheSpec struct {
@@ -35,22 +35,6 @@ func sameCacheStore(a, b any) bool {
 	return false
 }
 
-func ParseCacheSpec(value string) (CacheSpec, error) {
-	transport, reference, ok := strings.Cut(value, ":")
-	if !ok || reference == "" {
-		return CacheSpec{}, fmt.Errorf("invalid cache %q: expected oci-layout:PATH or registry:HOST/REPOSITORY", value)
-	}
-	spec := CacheSpec{Transport: transport, Reference: reference}
-	if spec.Transport == "oci-layout" {
-		absolute, err := filepath.Abs(spec.Reference)
-		if err != nil {
-			return CacheSpec{}, fmt.Errorf("cache layout path: %w", err)
-		}
-		spec.Reference = absolute
-	}
-	return normalizeCacheSpec(spec)
-}
-
 func normalizeCacheSpec(spec CacheSpec) (CacheSpec, error) {
 	switch spec.Transport {
 	case "oci-layout":
@@ -62,10 +46,11 @@ func normalizeCacheSpec(spec CacheSpec) (CacheSpec, error) {
 		}
 		spec.Reference = filepath.Clean(spec.Reference)
 	case "registry":
-		ref, err := oci.ParseReference(spec.Reference + ":coopr-cache")
-		if err != nil || ref.Registry+"/"+ref.Repository != spec.Reference {
-			return CacheSpec{}, fmt.Errorf("invalid cache repository %q", spec.Reference)
+		repositories, err := parse.RepoNamesToNamedReferences([]string{spec.Reference})
+		if err != nil {
+			return CacheSpec{}, err
 		}
+		spec.Reference = repositories[0].Name()
 	default:
 		return CacheSpec{}, fmt.Errorf("unsupported cache transport %q", spec.Transport)
 	}

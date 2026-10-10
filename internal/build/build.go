@@ -120,44 +120,51 @@ func (w lockedWriter) Write(p []byte) (int, error) {
 	return w.w.Write(p)
 }
 
+// Result identifies the retained native image or manifest list independently of
+// the references created by exporting or tagging it.
+type Result struct {
+	ImageID    string
+	References []string
+}
+
 // Run builds each requested platform, stores the result locally as a manifest
 // or index, then applies the requested destination through coopr copy's path.
-func Run(ctx context.Context, opts Options) (_ string, retErr error) {
+func Run(ctx context.Context, opts Options) (_ Result, retErr error) {
 	if opts.Squash && opts.SquashAll {
-		return "", errors.New("--squash and --squash-all are mutually exclusive")
+		return Result{}, errors.New("--squash and --squash-all are mutually exclusive")
 	}
 	if opts.Jobs < 0 {
-		return "", errors.New("jobs must be nonnegative")
+		return Result{}, errors.New("jobs must be nonnegative")
 	}
 	if opts.AllPlatforms && (len(opts.Platforms) != 0 || opts.Platform != "") {
-		return "", errors.New("all-platforms and platform are mutually exclusive")
+		return Result{}, errors.New("all-platforms and platform are mutually exclusive")
 	}
 	var err error
 	opts.LogFile, err = normalizeBuildLog(opts.LogFile, opts.LogSplit)
 	if err != nil {
-		return "", err
+		return Result{}, err
 	}
 	if opts.BlobDirectory != "" {
 		opts.BlobDirectory, err = filepath.Abs(opts.BlobDirectory)
 		if err != nil {
-			return "", err
+			return Result{}, err
 		}
 	}
 	if opts.RusageLogFile != "" {
 		opts.RusageLogFile, err = filepath.Abs(opts.RusageLogFile)
 		if err != nil {
-			return "", err
+			return Result{}, err
 		}
 	}
 	if opts.Manifest != "" {
 		var err error
 		opts.Manifest, err = localstore.NormalizeImageTag(opts.Manifest)
 		if err != nil {
-			return "", fmt.Errorf("invalid manifest name: %w", err)
+			return Result{}, fmt.Errorf("invalid manifest name: %w", err)
 		}
 	}
 	if opts.Timestamp != nil && opts.SourceDateEpoch != nil {
-		return "", errors.New("timestamp and source-date-epoch are mutually exclusive")
+		return Result{}, errors.New("timestamp and source-date-epoch are mutually exclusive")
 	}
 	if opts.SourceDateEpoch != nil {
 		opts.Args = maps.Clone(opts.Args)
@@ -170,20 +177,20 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 	}
 	targets, err := requestedPlatforms(opts.Platform, opts.Platforms)
 	if err != nil {
-		return "", err
+		return Result{}, err
 	}
 	if opts.Format != "" && opts.Format != "oci" && opts.Format != "docker" {
-		return "", fmt.Errorf("unsupported image format %q: expected oci or docker", opts.Format)
+		return Result{}, fmt.Errorf("unsupported image format %q: expected oci or docker", opts.Format)
 	}
 	opts.Network, opts.AddHosts, err = buildah.NormalizeBuildNetworkOptions(opts.Network, opts.AddHosts)
 	if err != nil {
-		return "", err
+		return Result{}, err
 	}
 	if len(opts.Files) != 0 {
 		opts.File = opts.Files[0]
 	}
 	if opts.File == "" {
-		return "", errors.New("definition is required")
+		return Result{}, errors.New("definition is required")
 	}
 	files, contained := definitionFiles(opts.File, opts.Files, opts.DefinitionInContext, opts.DefinitionsInContext)
 	stdinFiles := 0
@@ -193,21 +200,21 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 		}
 	}
 	if stdinFiles > 1 {
-		return "", errors.New("definition stdin can only be read once")
+		return Result{}, errors.New("definition stdin can only be read once")
 	}
 	if stdinFiles != 0 && opts.Context == "-" {
-		return "", errors.New("definition and context cannot both use stdin")
+		return Result{}, errors.New("definition and context cannot both use stdin")
 	}
 	destinations, err := outputDestinations(oci.Image, opts.Tag, opts.Tags, opts.Push)
 	if err != nil {
-		return "", err
+		return Result{}, err
 	}
 	if err := validateFinalization(&opts, targets, destinations); err != nil {
-		return "", err
+		return Result{}, err
 	}
 	outputArtifacts, err := validateOutputArtifacts(destinations, opts.File, opts.MetadataFile, opts.IIDFile, opts.IIDFileRaw)
 	if err != nil {
-		return "", err
+		return Result{}, err
 	}
 	if opts.LogFile != "" {
 		if opts.LogSplit {
@@ -223,12 +230,12 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 	}
 	finalArtifacts, err := finalizationArtifacts(opts, outputArtifacts)
 	if err != nil {
-		return "", err
+		return Result{}, err
 	}
 	outputArtifacts = append(outputArtifacts, finalArtifacts...)
 	def, primary, definitionFile, cleanupPrimary, err := prepareDefinitionsContext(ctx, files, opts.Context, contained, opts.Secrets, opts.SSH, opts.Stdin)
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", definitionDisplayName(opts.File), err)
+		return Result{}, fmt.Errorf("%s: %w", definitionDisplayName(opts.File), err)
 	}
 	defer func() { _ = cleanupPrimary() }()
 	opts.File, opts.Context = definitionFile, primary.Path
@@ -237,29 +244,29 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 		if i < len(contained) && contained[i] {
 			file, err = contextDefinitionPath(primary.Path, file)
 			if err != nil {
-				return "", err
+				return Result{}, err
 			}
 		}
 		resolvedFiles = append(resolvedFiles, file)
 	}
 	if err := validateArtifactOverlaps(outputArtifacts, resolvedFiles); err != nil {
-		return "", err
+		return Result{}, err
 	}
 
 	applyFromOverride(def, opts.From)
 	for _, inst := range def.Instructions {
 		if inst.Name == "extend" {
-			return "", fmt.Errorf("component definition %s requires coopr component build", definitionDisplayName(opts.File))
+			return Result{}, fmt.Errorf("component definition %s requires coopr component build", definitionDisplayName(opts.File))
 		}
 	}
 	for i, inst := range def.Instructions {
 		if inst.Name == "package" {
-			return "", fmt.Errorf("instruction %d %q requires a component definition with extend", i+1, inst.Name)
+			return Result{}, fmt.Errorf("instruction %d %q requires a component definition with extend", i+1, inst.Name)
 		}
 	}
 	opts.IgnoreFile, err = selectIgnoreFile(opts.Context, opts.IgnoreFile)
 	if err != nil {
-		return "", err
+		return Result{}, err
 	}
 	for i := range opts.SBOM {
 		for _, named := range opts.BuildContexts {
@@ -276,26 +283,26 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 	if buildStore.RunRoot == "" && buildStore.GraphRoot == "" {
 		buildStore, err = buildah.DefaultStoreOptions()
 		if err != nil {
-			return "", err
+			return Result{}, err
 		}
 	}
 	buildStore, err = buildah.NormalizeStoreOptions(buildStore)
 	if err != nil {
-		return "", err
+		return Result{}, err
 	}
 	opts.BuildStore = buildStore
 	storeRoots := buildah.ActivityRoots(buildStore, "")
 	componentStoreDir, err := componentstore.DefaultDir()
 	if err != nil {
-		return "", err
+		return Result{}, err
 	}
 	if opts.AllPlatforms {
 		targets, err = discoverBuildPlatforms(ctx, def, planning, opts, componentStoreDir)
 		if err != nil {
-			return "", err
+			return Result{}, err
 		}
 		if err := validateFinalization(&opts, targets, destinations); err != nil {
-			return "", err
+			return Result{}, err
 		}
 	}
 	fileArtifacts := outputArtifacts
@@ -305,28 +312,28 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 			fileArtifacts = slices.DeleteFunc(slices.Clone(fileArtifacts), func(path string) bool { return path == filesystem.Path })
 		}
 		if err := preflightFilesystemOutput(filesystem, opts.File, append(storeRoots, componentStoreDir)...); err != nil {
-			return "", err
+			return Result{}, err
 		}
 		if len(targets) > 1 {
 			for _, target := range targets {
 				if err := preflightFilesystemOutput(platformFilesystemOutput(filesystem, target, len(targets)), opts.File, append(storeRoots, componentStoreDir)...); err != nil {
-					return "", err
+					return Result{}, err
 				}
 			}
 		}
 	}
 	if err := preflightOutputArtifacts(fileArtifacts, append(storeRoots, componentStoreDir)...); err != nil {
-		return "", err
+		return Result{}, err
 	}
 	activity, err := storeactivity.AcquireShared(ctx, append(storeRoots, componentStoreDir)...)
 	if err != nil {
-		return "", fmt.Errorf("acquire build store activity lease: %w", err)
+		return Result{}, fmt.Errorf("acquire build store activity lease: %w", err)
 	}
 	defer func() { retErr = errors.Join(retErr, activity.Close()) }()
 	ctx = storeactivity.ContextWithLease(ctx, activity)
 	signingArtifacts, err := opts.Signing.ContextArtifacts()
 	if err != nil {
-		return "", err
+		return Result{}, err
 	}
 	contextArtifacts := append(slices.Clone(storeRoots), signingArtifacts...)
 	if opts.BlobDirectory != "" {
@@ -339,7 +346,7 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 	}
 	layout, cleanup, err := stageLayout(stagingAnchor)
 	if err != nil {
-		return "", err
+		return Result{}, err
 	}
 	defer cleanup()
 	contextArtifacts = append(contextArtifacts, filepath.Dir(layout))
@@ -348,7 +355,7 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 	if opts.LogFile != "" && !opts.LogSplit {
 		sharedLog, err = openBuildLog(opts.LogFile)
 		if err != nil {
-			return "", err
+			return Result{}, err
 		}
 		defer func() { retErr = errors.Join(retErr, sharedLog.Close()) }()
 	}
@@ -471,18 +478,19 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 		}, nil
 	})
 	if err != nil {
-		return "", err
+		return Result{}, err
 	}
 	selections := make(map[string]oci.StoredSelection, len(targets))
 	variants := make([]oci.ImageVariant, 0, len(targets))
 	for _, built := range builds {
 		key := platforms.Format(built.variant.Platform)
 		if _, duplicate := selections[key]; duplicate {
-			return "", fmt.Errorf("build targets produced duplicate output platform %s", key)
+			return Result{}, fmt.Errorf("build targets produced duplicate output platform %s", key)
 		}
 		selections[key] = built.selection
 		variants = append(variants, built.variant)
 	}
+	imageID := builds[0].selection.ImageID
 	root := variants[0].Manifest
 	outputLayout := variants[0].Layout
 	if len(variants) > 1 {
@@ -490,7 +498,7 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 		indexData := []byte(nil)
 		root, indexData, err = oci.ImageIndexDescriptor(variants, opts.Format)
 		if err != nil {
-			return "", fmt.Errorf("assemble multi-platform image: %w", err)
+			return Result{}, fmt.Errorf("assemble multi-platform image: %w", err)
 		}
 		for key, selection := range selections {
 			selection.Root = root
@@ -501,23 +509,24 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 			imageIDs[selection.Manifest.Digest] = selection.ImageID
 		}
 		if err := buildah.WithStore(buildStore, func(backend storage.Store) error {
-			_, err := imagestore.FromStore(backend).WriteStoredIndex(ctx, root, indexData, imageIDs, "")
+			var err error
+			imageID, err = imagestore.FromStore(backend).WriteStoredIndex(ctx, root, indexData, imageIDs, "")
 			return err
 		}); err != nil {
-			return "", fmt.Errorf("store multi-platform image: %w", err)
+			return Result{}, fmt.Errorf("store multi-platform image: %w", err)
 		}
 	}
 	if opts.Manifest != "" {
 		outputLayout = filepath.Join(filepath.Dir(layout), "manifest")
-		root, _, selections, err = appendManifest(ctx, opts.Manifest, opts.Format, buildStore, selections)
+		root, _, selections, imageID, err = appendManifest(ctx, opts.Manifest, opts.Format, buildStore, selections)
 		if err != nil {
-			return "", fmt.Errorf("append image to manifest %s: %w", opts.Manifest, err)
+			return Result{}, fmt.Errorf("append image to manifest %s: %w", opts.Manifest, err)
 		}
 		variants = make([]oci.ImageVariant, 0, len(selections))
-		for key, selection := range selections {
-			platform, err := platforms.Parse(key)
+		for _, selection := range selections {
+			platform, err := selection.Platform()
 			if err != nil {
-				return "", err
+				return Result{}, err
 			}
 			variants = append(variants, oci.ImageVariant{Manifest: selection.Manifest, Platform: platform})
 		}
@@ -531,11 +540,11 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 		// Platform workers take shared leases in separate processes. Upgrade
 		// only after every worker has joined, before the signing transaction.
 		if err := activity.Close(); err != nil {
-			return "", err
+			return Result{}, err
 		}
 		activity, err = storeactivity.AcquireExclusive(ctx, append(storeRoots, componentStoreDir)...)
 		if err != nil {
-			return "", fmt.Errorf("acquire signing store activity lease: %w", err)
+			return Result{}, fmt.Errorf("acquire signing store activity lease: %w", err)
 		}
 		ctx = storeactivity.ContextWithLease(ctx, activity)
 	}
@@ -550,7 +559,10 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 				publicationErr = errors.Join(publicationErr, err)
 				continue
 			}
-			logCompletedTags(log, destinations, report)
+			if !opts.Quiet {
+				warnUnusedBuildArguments(log, def, opts.Args)
+				logCompletedTags(log, destinations, report)
+			}
 			publicationErr = errors.Join(publicationErr, log.Close())
 		}
 	} else {
@@ -558,6 +570,7 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 		if progressWriter == nil {
 			progressWriter = os.Stderr
 		}
+		warnUnusedBuildArguments(stdout, def, opts.Args)
 		logCompletedTags(progressWriter, destinations, report)
 	}
 	if stdoutTar >= 0 {
@@ -573,7 +586,15 @@ func Run(ctx context.Context, opts Options) (_ string, retErr error) {
 			publicationErr = errors.Join(publicationErr, copyErr, stream.Close())
 		}
 	}
-	return finishOutputs(opts.MetadataFile, opts.IIDFile, root, variants, selections, report, publicationErr, opts.IIDFileRaw)
+	if err := finishOutputs(opts.MetadataFile, opts.IIDFile, root, variants, selections, report, publicationErr, opts.IIDFileRaw, imageID); err != nil {
+		return Result{}, err
+	}
+	if opts.IIDFile == "" && opts.IIDFileRaw == "" {
+		if err := logBuildResult(opts.LogFile, opts.LogSplit, targets, imageID); err != nil {
+			return Result{}, err
+		}
+	}
+	return Result{ImageID: imageID, References: report.References}, nil
 }
 
 // runPlatformBuildsWithLimit bounds platform workers, preserves request order,

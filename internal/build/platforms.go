@@ -95,8 +95,8 @@ func availableImagePlatforms(ctx context.Context, resolver *oci.Resolver, store 
 		if nativeErr != nil {
 			return nativeErr
 		}
-		for key := range selections {
-			platform, err := platforms.Parse(key)
+		for _, selection := range selections {
+			platform, err := selection.Platform()
 			if err != nil {
 				return err
 			}

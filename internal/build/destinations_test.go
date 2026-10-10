@@ -59,7 +59,7 @@ func TestDestinationFailureReportsCommittedAndPendingResults(t *testing.T) {
 				t.Fatalf("destination states = %+v", report.Destinations)
 			}
 			metadata := filepath.Join(t.TempDir(), "result.json")
-			_, err := finishOutputs(metadata, "", root, nil, nil, report, publicationErr, "")
+			err := finishOutputs(metadata, "", root, nil, nil, report, publicationErr, "", "")
 			if err == nil {
 				t.Fatal("partial publication returned success")
 			}
@@ -96,7 +96,7 @@ func TestResultOutputPreflightAndFinalizationFailures(t *testing.T) {
 	}
 	descriptor := v1.Descriptor{Digest: digest.FromString("retained")}
 	report := outputReport{References: []string{"app:latest"}}
-	if _, err := finishOutputs(metadata, iid, descriptor, nil, nil, report, nil, ""); err == nil || !strings.Contains(err.Error(), descriptor.Digest.String()) || !strings.Contains(err.Error(), "app:latest") {
+	if err := finishOutputs(metadata, iid, descriptor, nil, nil, report, nil, "", descriptor.Digest.Encoded()); err == nil || !strings.Contains(err.Error(), descriptor.Digest.String()) || !strings.Contains(err.Error(), "app:latest") {
 		t.Fatalf("metadata finalization failure = %v", err)
 	}
 	if data, err := os.ReadFile(iid); err != nil || strings.TrimSpace(string(data)) != descriptor.Digest.String() {
@@ -111,7 +111,7 @@ func TestResultOutputPreflightAndFinalizationFailures(t *testing.T) {
 	if err := os.Mkdir(iid, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := finishOutputs(metadata, iid, descriptor, nil, nil, report, nil, ""); err == nil || !strings.Contains(err.Error(), descriptor.Digest.String()) {
+	if err := finishOutputs(metadata, iid, descriptor, nil, nil, report, nil, "", descriptor.Digest.Encoded()); err == nil || !strings.Contains(err.Error(), descriptor.Digest.String()) {
 		t.Fatalf("IID finalization failure = %v", err)
 	}
 }
@@ -162,7 +162,7 @@ func TestMetadataIncludesIndexAndPlatformConfigurationDigests(t *testing.T) {
 	selections := map[string]oci.StoredSelection{"linux/amd64": {Manifest: manifest, ImageID: nativeID, ConfigData: configData}}
 	directory := t.TempDir()
 	metadata, iid := filepath.Join(directory, "result.json"), filepath.Join(directory, "iid")
-	if err := writeOutputMetadata(metadata, iid, root, variants, selections, outputReport{References: []string{"app:latest"}}, nil, ""); err != nil {
+	if err := writeOutputMetadata(metadata, iid, root, variants, selections, outputReport{References: []string{"app:latest"}}, nil, "", nativeID); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(metadata)
@@ -185,7 +185,7 @@ func TestMetadataIncludesIndexAndPlatformConfigurationDigests(t *testing.T) {
 	}
 }
 
-func TestMetadataMultiPlatformIIDUsesIndexDigest(t *testing.T) {
+func TestMetadataMultiPlatformIIDUsesNativeIndexID(t *testing.T) {
 	root := v1.Descriptor{MediaType: v1.MediaTypeImageIndex, Digest: digest.FromString("index")}
 	variants := []oci.IndexVariant{
 		{Manifest: v1.Descriptor{Digest: digest.FromString("amd64 manifest")}, Platform: v1.Platform{OS: "linux", Architecture: "amd64"}},
@@ -196,12 +196,14 @@ func TestMetadataMultiPlatformIIDUsesIndexDigest(t *testing.T) {
 		"linux/arm64": []byte(`{"architecture":"arm64","os":"linux"}`),
 	}
 	selections := map[string]oci.StoredSelection{}
-	for platform, data := range configs {
-		selections[platform] = oci.StoredSelection{ImageID: digest.FromString(platform + " native record").Encoded(), ConfigData: data}
+	for _, variant := range variants {
+		platform := variant.Platform.OS + "/" + variant.Platform.Architecture
+		selections[platform] = oci.StoredSelection{Manifest: variant.Manifest, ImageID: digest.FromString(platform + " native record").Encoded(), ConfigData: configs[platform]}
 	}
 	directory := t.TempDir()
 	metadata, iid := filepath.Join(directory, "metadata.json"), filepath.Join(directory, "iid")
-	if err := writeOutputMetadata(metadata, iid, root, variants, selections, outputReport{}, nil, ""); err != nil {
+	nativeID := digest.FromString("native index record").Encoded()
+	if err := writeOutputMetadata(metadata, iid, root, variants, selections, outputReport{}, nil, "", nativeID); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(metadata)
@@ -227,7 +229,7 @@ func TestMetadataMultiPlatformIIDUsesIndexDigest(t *testing.T) {
 		}
 	}
 	data, err = os.ReadFile(iid)
-	if err != nil || strings.TrimSpace(string(data)) != root.Digest.String() {
+	if err != nil || strings.TrimSpace(string(data)) != "sha256:"+nativeID {
 		t.Fatalf("index iid = %s, %v", data, err)
 	}
 }
@@ -238,7 +240,7 @@ func TestOutputMetadataWritesRawNativeID(t *testing.T) {
 	platform := v1.Platform{OS: "linux", Architecture: "amd64"}
 	variants := []oci.IndexVariant{{Platform: platform, Manifest: root}}
 	selections := map[string]oci.StoredSelection{"linux/amd64": {ImageID: strings.Repeat("a", 64)}}
-	if err := writeOutputMetadata("", "", root, variants, selections, outputReport{}, nil, rawPath); err != nil {
+	if err := writeOutputMetadata("", "", root, variants, selections, outputReport{}, nil, rawPath, strings.Repeat("a", 64)); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(rawPath)
@@ -258,7 +260,7 @@ func TestRawIIDFailurePreservesMetadata(t *testing.T) {
 	if err := os.Mkdir(rawIID, 0700); err != nil {
 		t.Fatal(err)
 	}
-	err := writeOutputMetadata(metadata, "", root, nil, nil, outputReport{}, nil, rawIID)
+	err := writeOutputMetadata(metadata, "", root, nil, nil, outputReport{}, nil, rawIID, strings.Repeat("b", 64))
 	if err == nil || !strings.Contains(err.Error(), "write raw image ID") {
 		t.Fatalf("raw IID failure = %v", err)
 	}
@@ -272,5 +274,38 @@ func TestRawIIDFailurePreservesMetadata(t *testing.T) {
 	}
 	if diagnostic, ok := result["coopr.outputError"].(string); !ok || !strings.Contains(diagnostic, "write raw image ID") {
 		t.Fatalf("metadata diagnostic = %s", data)
+	}
+}
+
+func TestMetadataPairsDuplicatePlatformMembersWithOwnConfigs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "metadata.json")
+	platform := v1.Platform{OS: "linux", Architecture: "amd64"}
+	first, second := oci.Descriptor(v1.MediaTypeImageManifest, []byte("first")), oci.Descriptor(v1.MediaTypeImageManifest, []byte("second"))
+	configs := map[digest.Digest][]byte{first.Digest: []byte("first config"), second.Digest: []byte("second config")}
+	variants := []oci.IndexVariant{{Manifest: first, Platform: platform}, {Manifest: second, Platform: platform}}
+	selections := map[string]oci.StoredSelection{"linux/amd64": {Manifest: first, ConfigData: configs[first.Digest]}, second.Digest.String(): {Manifest: second, ConfigData: configs[second.Digest]}}
+	if err := writeOutputMetadata(path, "", first, variants, selections, outputReport{}, nil, "", "native"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Platforms []struct {
+			Digest       digest.Digest `json:"digest"`
+			ConfigDigest string        `json:"configDigest"`
+		} `json:"coopr.platforms"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Platforms) != 2 {
+		t.Fatalf("metadata=%s", data)
+	}
+	for _, entry := range result.Platforms {
+		if entry.ConfigDigest != digest.FromBytes(configs[entry.Digest]).String() {
+			t.Fatalf("wrong config pairing: metadata=%s", data)
+		}
 	}
 }

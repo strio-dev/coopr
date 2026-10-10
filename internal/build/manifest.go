@@ -11,7 +11,6 @@ import (
 	"coopr/internal/buildah"
 	"coopr/internal/imagestore"
 	"coopr/internal/oci"
-	"github.com/containerd/platforms"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/common/libimage/manifests"
@@ -20,10 +19,10 @@ import (
 
 // appendManifest reads and publishes lists under native locks. Children already
 // reside in containers/storage; updating a list copies no filesystem layers.
-func appendManifest(ctx context.Context, name, format string, store buildah.StoreOptions, selections map[string]oci.StoredSelection) (root v1.Descriptor, data []byte, result map[string]oci.StoredSelection, err error) {
+func appendManifest(ctx context.Context, name, format string, store buildah.StoreOptions, selections map[string]oci.StoredSelection) (root v1.Descriptor, data []byte, result map[string]oci.StoredSelection, imageID string, err error) {
 	name, err = imagestore.NormalizeTag(name)
 	if err != nil {
-		return root, nil, nil, err
+		return root, nil, nil, "", err
 	}
 	err = buildah.WithStore(store, func(backend storage.Store) error {
 		// Serialize Coopr appends even before a named list exists. Existing
@@ -38,6 +37,7 @@ func appendManifest(ctx context.Context, name, format string, store buildah.Stor
 			return err
 		}
 		var previous map[string]oci.StoredSelection
+		var previousIndex *v1.Index
 		var existingID string
 		for {
 			if err := ctx.Err(); err != nil {
@@ -94,6 +94,7 @@ func appendManifest(ctx context.Context, name, format string, store buildah.Stor
 			}
 			existingID = image.ID
 			previous = existing
+			previousIndex = &index
 			break
 		}
 		result = make(map[string]oci.StoredSelection, len(previous)+len(selections))
@@ -111,28 +112,46 @@ func appendManifest(ctx context.Context, name, format string, store buildah.Stor
 		combined := make([]oci.ImageVariant, 0, len(result))
 		imageIDs := make(map[digest.Digest]string, len(result))
 		for _, key := range keys {
-			platform, err := platforms.Parse(key)
+			platform, err := result[key].Platform()
 			if err != nil {
 				return err
 			}
 			selection := result[key]
+			if selection.Manifest.Platform == nil {
+				selection.Manifest.Platform = &platform
+			}
+			result[key] = selection
 			combined = append(combined, oci.ImageVariant{Manifest: selection.Manifest, Platform: platform})
 			imageIDs[selection.Manifest.Digest] = selection.ImageID
 		}
-		root, data, err = oci.ImageIndexDescriptor(combined, format)
+		root, data, err = oci.RetainedImageIndexDescriptor(combined, format)
 		if err != nil {
 			return err
+		}
+		if previousIndex != nil {
+			var combinedIndex v1.Index
+			if err := json.Unmarshal(data, &combinedIndex); err != nil {
+				return err
+			}
+			combinedIndex.Annotations = previousIndex.Annotations
+			combinedIndex.Subject = previousIndex.Subject
+			combinedIndex.ArtifactType = previousIndex.ArtifactType
+			data, err = json.Marshal(combinedIndex)
+			if err != nil {
+				return err
+			}
+			root = oci.Descriptor(combinedIndex.MediaType, data)
 		}
 		for key, selection := range result {
 			selection.Root = root
 			result[key] = selection
 		}
 		if existingID != "" {
-			_, err = imagestore.FromStore(backend).UpdateStoredIndex(ctx, existingID, root, data, imageIDs, name)
+			imageID, err = imagestore.FromStore(backend).UpdateStoredIndex(ctx, existingID, root, data, imageIDs, name)
 		} else {
-			_, err = imagestore.FromStore(backend).WriteStoredIndex(ctx, root, data, imageIDs, name)
+			imageID, err = imagestore.FromStore(backend).WriteStoredIndex(ctx, root, data, imageIDs, name)
 		}
 		return err
 	})
-	return root, data, result, err
+	return root, data, result, imageID, err
 }

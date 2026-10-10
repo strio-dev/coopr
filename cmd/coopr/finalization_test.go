@@ -3,6 +3,7 @@ package main
 import (
 	"archive/tar"
 	"bytes"
+	"encoding/hex"
 	"io"
 	"os"
 	"path/filepath"
@@ -81,8 +82,14 @@ func TestBuildFlatTarStdoutLive(t *testing.T) {
 		if !found {
 			t.Fatal("tar missing marker")
 		}
-		if !strings.Contains(diagnostics.String(), "sha256:") {
-			t.Fatalf("missing result on stderr: %s", diagnostics.String())
+		lines := strings.Split(strings.TrimSpace(diagnostics.String()), "\n")
+		imageID := lines[len(lines)-1]
+		if decoded, err := hex.DecodeString(imageID); err != nil || len(decoded) != 32 {
+			t.Fatalf("final stderr line is not a native image ID: %q", imageID)
+		}
+		var inspected, inspectErrors bytes.Buffer
+		if code := run([]string{"image", "inspect", imageID}, &inspected, &inspectErrors); code != 0 {
+			t.Fatalf("exported result is not retained in native storage: %s", &inspectErrors)
 		}
 	}
 }

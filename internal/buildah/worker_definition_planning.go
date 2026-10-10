@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"coopr/internal/buildcontext"
@@ -44,7 +45,8 @@ func planDefinitionInWorker(ctx context.Context, request planWorkerRequest) (*pl
 		if resolver == nil {
 			var err error
 			resolver, err = oci.NewResolver(oci.Options{
-				AuthFile: request.AuthFile, CertDir: request.CertDir, TLSVerify: request.TLSVerify,
+				ProgressWriter: os.Stderr,
+				AuthFile:       request.AuthFile, CertDir: request.CertDir, TLSVerify: request.TLSVerify,
 				Credentials: request.Credentials, Retry: request.Retry, RetrySet: request.RetrySet, RetryDelay: request.RetryDelay, DecryptionKeys: request.DecryptionKeys, SignaturePolicyPath: request.SignaturePolicyPath,
 				Pull: request.Pull, PullPolicy: request.PullPolicy, ComponentStoreDir: request.ComponentStoreDir, NativeStore: NativeStoreOptions(request.Store),
 			})

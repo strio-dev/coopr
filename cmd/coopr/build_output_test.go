@@ -1,7 +1,11 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
+	"context"
+	"encoding/hex"
+	"io"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -9,7 +13,10 @@ import (
 	"strings"
 	"testing"
 
+	"coopr/internal/buildah"
+	"coopr/internal/oci"
 	"github.com/google/go-containerregistry/pkg/registry"
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 func TestBuildArchiveCommandLive(t *testing.T) {
@@ -22,11 +29,91 @@ func TestBuildArchiveCommandLive(t *testing.T) {
 	if code := run([]string{"build", file, "--tag", "oci-archive:" + archive, "--platform", "linux/amd64"}, &output, &stderr); code != 0 {
 		t.Fatalf("CLI image archive failed: %s", stderr.String())
 	}
-	if got := strings.TrimSpace(output.String()); got != archive {
-		t.Fatalf("CLI image archive printed %q, want %q", got, archive)
+	config, err := oci.ArchiveImageConfigDigest(context.Background(), archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(output.String()); got != config.Encoded() {
+		t.Fatalf("CLI image archive printed %q, want native image ID %q", got, config.Encoded())
 	}
 	if info, err := os.Stat(archive); err != nil || info.Size() == 0 {
 		t.Fatalf("image archive is missing or empty: %v", err)
+	}
+}
+
+func TestBuildCommandResultAndIIDFiles(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live Buildah tests in short mode")
+	}
+	file := definitionFile(t, "from \"scratch\"\nlabel result=\"native\"\n")
+	for _, option := range []string{"", "--iidfile", "--iidfile-raw", "--raw-iidfile"} {
+		t.Run(option, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			args := []string{"build", file, "--quiet", "--platform", "linux/amd64"}
+			iid := filepath.Join(t.TempDir(), "iid")
+			if option != "" {
+				args = append(args, option, iid)
+			}
+			if code := run(args, &stdout, &stderr); code != 0 {
+				t.Fatalf("build status=%d stderr=%s", code, &stderr)
+			}
+			value := strings.TrimSpace(stdout.String())
+			if option != "" {
+				if stdout.Len() != 0 {
+					t.Fatalf("iidfile build printed result %q", &stdout)
+				}
+				data, err := os.ReadFile(iid)
+				if err != nil {
+					t.Fatal(err)
+				}
+				value = strings.TrimPrefix(string(data), "sha256:")
+			}
+			if decoded, err := hex.DecodeString(value); err != nil || len(decoded) != 32 {
+				t.Fatalf("not a native image ID: %q", value)
+			}
+			var inspected bytes.Buffer
+			if code := run([]string{"image", "inspect", value}, &inspected, &stderr); code != 0 {
+				t.Fatalf("result is not a stored image: %s", &stderr)
+			}
+		})
+	}
+}
+
+func TestBuildCommandTarStdoutKeepsResultOnStderr(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live Buildah tests in short mode")
+	}
+	file := definitionFile(t, "from \"scratch\"\ncopy \"payload\" \"/payload\"\n")
+	if err := os.WriteFile(filepath.Join(filepath.Dir(file), "payload"), []byte("archive payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"build", file, "--quiet", "--output", "type=tar,dest=-", "--platform", "linux/amd64"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("tar build status=%d: %s", code, &stderr)
+	}
+	reader := tar.NewReader(&stdout)
+	found := false
+	for {
+		header, err := reader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.TrimPrefix(header.Name, "./") == "payload" {
+			data, err := io.ReadAll(reader)
+			if err != nil || string(data) != "archive payload" {
+				t.Fatalf("tar payload=%s err=%v", data, err)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("stdout tar omitted payload")
+	}
+	if decoded, err := hex.DecodeString(strings.TrimSpace(stderr.String())); err != nil || len(decoded) != 32 {
+		t.Fatalf("stderr is not raw result ID: %q", &stderr)
 	}
 }
 
@@ -144,7 +231,165 @@ func TestBuildPushCommandLive(t *testing.T) {
 	if status := run(args, &out, &errOut); status != 0 {
 		t.Fatalf("CLI image push failed: %s", errOut.String())
 	}
-	if got := strings.TrimSpace(out.String()); !strings.HasPrefix(got, strings.TrimSuffix(target, ":stable")+"@sha256:") {
-		t.Fatalf("CLI image push did not print an immutable reference: %q", got)
+	resolver, err := oci.NewResolver(oci.Options{TLSVerify: new(false), NativeStore: buildah.NativeStoreOptions(maintenanceStoreOptions(t.TempDir()))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolver.Resolve(context.Background(), target, v1.Platform{OS: "linux", Architecture: "amd64"}, oci.Image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.TrimSpace(out.String())
+	if got != resolved.Config.Digest.Encoded() {
+		t.Fatalf("CLI push result %q, want native image ID %s", got, resolved.Config.Digest.Encoded())
+	}
+	var inspected bytes.Buffer
+	if status := run([]string{"image", "inspect", got}, &inspected, &errOut); status != 0 {
+		t.Fatalf("pushed result not retained in native storage: %s", &errOut)
+	}
+}
+
+func TestBuildCommandQuietLogfileContainsOnlyResult(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live Buildah tests in short mode")
+	}
+	file := definitionFile(t, "from \"scratch\"\nlabel result=\"logfile\"\n")
+	for _, iidOption := range []string{"", "--iidfile", "--iidfile-raw"} {
+		t.Run(iidOption, func(t *testing.T) {
+			log := filepath.Join(t.TempDir(), "build.log")
+			var stdout, stderr bytes.Buffer
+			args := []string{"build", file, "--quiet", "--logfile", log}
+			if iidOption != "" {
+				args = append(args, iidOption, filepath.Join(t.TempDir(), "iid"))
+			}
+			if code := run(args, &stdout, &stderr); code != 0 {
+				t.Fatalf("status=%d stderr=%s", code, &stderr)
+			}
+			if stdout.Len() != 0 || stderr.Len() != 0 {
+				t.Fatalf("logfile build leaked terminal output: stdout=%q stderr=%q", &stdout, &stderr)
+			}
+			data, err := os.ReadFile(log)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if iidOption != "" {
+				if len(data) != 0 {
+					t.Fatalf("IID build logged final ID: %q", data)
+				}
+			} else if decoded, err := hex.DecodeString(strings.TrimSpace(string(data))); err != nil || len(decoded) != 32 {
+				t.Fatalf("logfile is not final image ID only: %q", data)
+			}
+		})
+	}
+}
+
+func TestBuildCommandPreservesRUNFailureExitAndSingleDiagnostic(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live Buildah tests in short mode")
+	}
+	busybox, err := exec.LookPath("busybox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := definitionFile(t, "from \"scratch\"\ncopy \"busybox\" \"/busybox\"\nrun { exec \"/busybox\" \"sh\" \"-c\" \"exit 42\" }\n")
+	data, err := os.ReadFile(busybox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(file), "busybox"), data, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, jobs := range []string{"1", "2"} {
+		t.Run("jobs="+jobs, func(t *testing.T) {
+			if jobs == "2" {
+				source := `from "scratch" as="failure"
+copy "busybox" "/busybox"
+run { exec "/busybox" "sh" "-c" "exit 42" }
+from "scratch" as="sibling"
+copy "busybox" "/busybox"
+run { exec "/busybox" "sleep" "2" }
+from "scratch"
+copy "/busybox" "/failure" from="failure"
+copy "/busybox" "/sibling" from="sibling"
+`
+				if err := os.WriteFile(file, []byte(source), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var stdout, stderr bytes.Buffer
+			code := run([]string{"build", file, "--quiet", "--no-cache", "--network=none", "--isolation=rootless", "--jobs", jobs}, &stdout, &stderr)
+			if code != 42 {
+				t.Fatalf("status=%d stdout=%q stderr=%q", code, &stdout, &stderr)
+			}
+			if stdout.Len() != 0 || strings.Count(stderr.String(), "Error: ") != 1 || strings.Count(stderr.String(), "exit status 42") != 1 {
+				t.Fatalf("duplicated failure diagnostic: stdout=%q stderr=%q", &stdout, &stderr)
+			}
+		})
+	}
+}
+
+func TestBuildCommandUnusedArgumentsFollowQuietAndLogRouting(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live Buildah tests in short mode")
+	}
+	file := definitionFile(t, "arg \"used\"\nfrom \"scratch\"\nlabel result=\"arguments\"\n")
+	for _, mode := range []string{"terminal", "log", "quiet", "split"} {
+		t.Run(mode, func(t *testing.T) {
+			log := filepath.Join(t.TempDir(), "build.log")
+			args := []string{"build", file, "--build-arg", "used=private", "--build-arg", "unused=private", "--build-arg", "HTTP_PROXY=private"}
+			if mode == "log" || mode == "split" {
+				args = append(args, "--logfile", log)
+			}
+			if mode == "quiet" {
+				args = append(args, "--quiet")
+			}
+			if mode == "split" {
+				args = append(args, "--logsplit", "--platform", "linux/amd64")
+			}
+			var stdout, stderr bytes.Buffer
+			if code := run(args, &stdout, &stderr); code != 0 {
+				t.Fatalf("status=%d stderr=%s", code, &stderr)
+			}
+			output := stdout.String() + stderr.String()
+			if mode == "log" || mode == "split" {
+				if output != "" {
+					t.Fatalf("logfile build leaked terminal output: %q", output)
+				}
+				if mode == "split" {
+					log += "_linux_amd64"
+				}
+				data, err := os.ReadFile(log)
+				if err != nil {
+					t.Fatal(err)
+				}
+				output = string(data)
+			}
+			want := mode != "quiet"
+			if strings.Contains(output, "[Warning] one or more build args were not consumed: [unused]") != want || strings.Contains(output, "private") {
+				t.Fatalf("warning routing or value exposure: %q", output)
+			}
+		})
+	}
+}
+
+func TestComponentBuildCommandQuietLogfileContainsReference(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live Buildah tests in short mode")
+	}
+	file := definitionFile(t, "extend\nenv proof=\"component\"\n")
+	log := filepath.Join(t.TempDir(), "component.log")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"component", "build", file, "--quiet", "--logfile", log}, &stdout, &stderr); code != 0 {
+		t.Fatalf("status=%d stderr=%s", code, &stderr)
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("component logfile leaked terminal output: stdout=%q stderr=%q", &stdout, &stderr)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(data), "sha256:") || strings.Count(string(data), "\n") != 1 {
+		t.Fatalf("component reference not retained: %q", data)
 	}
 }

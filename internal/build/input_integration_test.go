@@ -65,7 +65,7 @@ func TestBuildArchiveAndDefinitionStdinWithMultipleDestinations(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(strings.Split(result, "\n")) != 3 {
+			if len(result.References) != 3 {
 				t.Fatalf("multiple result references = %q", result)
 			}
 			platform := v1.Platform{OS: "linux", Architecture: runtime.GOARCH}
