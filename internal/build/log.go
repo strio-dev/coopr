@@ -1,6 +1,7 @@
 package build
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -32,11 +33,11 @@ func openBuildLog(path string) (*os.File, error) {
 }
 
 func buildWriters(stdout, stderr io.Writer, quiet bool, log *os.File) (io.Writer, io.Writer) {
-	if log != nil {
-		return log, log
-	}
 	if quiet {
 		return io.Discard, io.Discard
+	}
+	if log != nil {
+		return log, log
 	}
 	return stdout, stderr
 }
@@ -59,4 +60,29 @@ func logCompletedTags(writer io.Writer, destinations []transfer.Destination, rep
 			_, _ = fmt.Fprintf(writer, "Successfully tagged %s\n", destination.Name)
 		}
 	}
+}
+
+// Final results are independent of progress suppression, just as Buildah's IID output is.
+func logBuildResult(path string, split bool, platforms []string, result string) error {
+	if path == "" {
+		return nil
+	}
+	paths := []string{path}
+	if split {
+		paths = nil
+		for _, platform := range platforms {
+			paths = append(paths, platformLogPath(path, platform))
+		}
+	}
+	var resultErr error
+	for _, path := range paths {
+		log, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+		if err != nil {
+			resultErr = errors.Join(resultErr, err)
+			continue
+		}
+		_, err = fmt.Fprintln(log, result)
+		resultErr = errors.Join(resultErr, err, log.Close())
+	}
+	return resultErr
 }

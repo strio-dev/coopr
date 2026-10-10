@@ -55,7 +55,7 @@ func TestSharedStoreMultiPlatformLocalIndex(t *testing.T) {
 				}
 				copyOptions := transfer.Options{BuildStore: storeOptions}
 				if !tagged {
-					if got, err := transfer.Copy(ctx, oci.Image, built, transfer.Destination{Transport: "local", Name: tag}, copyOptions); err != nil || got != tag {
+					if got, err := transfer.Copy(ctx, oci.Image, built.References[0], transfer.Destination{Transport: "local", Name: tag}, copyOptions); err != nil || got != tag {
 						t.Fatalf("tag untagged index by digest: got=%q err=%v", got, err)
 					}
 				}

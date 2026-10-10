@@ -189,6 +189,9 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if iidFile != "" || iidFileRaw != "" || logFile != "" {
+				return nil
+			}
 			resultWriter := cmd.OutOrStdout()
 			for _, filesystem := range filesystems {
 				if filesystem.Path == "-" {
@@ -196,7 +199,7 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 					break
 				}
 			}
-			_, err = fmt.Fprintln(resultWriter, result)
+			_, err = fmt.Fprintln(resultWriter, result.ImageID)
 			return err
 		},
 	}
@@ -228,7 +231,7 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 	addSBOMFlags(cmd)
 	signing.addTo(cmd)
 	f.StringVar(&metadataFile, "metadata-file", "", "write result, index, platform, and image configuration digests as JSON")
-	f.StringVar(&iidFile, "iidfile", "", "write the image ID (index digest for multiple platforms)")
+	f.StringVar(&iidFile, "iidfile", "", "write the image or manifest-list ID")
 	f.StringVar(&iidFileRaw, "iidfile-raw", "", "write the image ID without its algorithm prefix")
 	f.StringVar(&iidFileRaw, "raw-iidfile", "", "alias for --iidfile-raw")
 	f.StringVar(&ignoreFile, "ignorefile", "", "context ignore file (default: first of .cooprignore, .containerignore, .dockerignore at the context root)")

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"coopr/internal/oci"
 
@@ -41,6 +42,9 @@ func newRootCommandWithStorageNamespace(prepareNamespace func() error) *cobra.Co
 		SilenceErrors: true,
 	}
 	root.SetUsageTemplate(usageTemplate)
+	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
+		return fmt.Errorf("%w\nSee '%s --help'", err, cmd.CommandPath())
+	})
 	root.AddCommand(newBuildCommandWithGlobals(false))
 	root.AddCommand(newCopyCommand(oci.Image))
 	root.AddCommand(newImageCommand())
@@ -50,6 +54,9 @@ func newRootCommandWithStorageNamespace(prepareNamespace func() error) *cobra.Co
 	root.AddCommand(newSystemCommand())
 	root.AddCommand(newLoginCommand(), newLogoutCommand())
 	root.AddCommand(newManifestCommand(), newInfoCommand())
+	remove := newImageRemoveCommand()
+	remove.Use = "rmi [image...]"
+	root.AddCommand(remove, newImageInspectCommand(), newCompletionCommand())
 	root.AddCommand(newImagePullCommand(), newImagePushCommand(), newImageTagCommand(), newImageSaveCommand(), newImageLoadCommand(), newImageExistsCommand(), newImageHistoryCommand())
 	addGlobalFlags(root, prepareNamespace)
 	return root
@@ -68,27 +75,19 @@ func runContextWithStorageNamespace(ctx context.Context, args []string, stdout, 
 	root.SetArgs(args)
 	root.SetOut(stdout)
 	root.SetErr(stderr)
-	root.InitDefaultCompletionCmd()
-	for _, command := range root.Commands() {
-		if command.Name() == "completion" {
-			// Make the shell group validate Cobra's NoArgs contract before showing help.
-			command.RunE = helpOnNoArgs
-			break
-		}
-	}
-	command, err := root.ExecuteContextC(ctx)
+	err := root.ExecuteContext(ctx)
 	if err != nil {
-		if err.Error() != "" {
-			_, _ = fmt.Fprintln(stderr, err)
+		if message := err.Error(); message != "" {
+			if !strings.HasPrefix(message, "Error: ") {
+				message = "Error: " + message
+			}
+			_, _ = fmt.Fprintln(stderr, message)
 		}
 		var exit interface{ ExitCode() int }
 		if errors.As(err, &exit) {
 			return exit.ExitCode()
 		}
-		if command != nil && command.Name() == "exists" {
-			return 125
-		}
-		return 1
+		return 125
 	}
 	return 0
 }

@@ -494,13 +494,18 @@ func (s *Store) WriteIndexLayout(ctx context.Context, layoutPath string, root v1
 		}
 		imageIDs[child.Digest] = imageID.Encoded()
 	}
-	return s.WriteStoredIndex(ctx, root, indexData, imageIDs, name)
+	result, err := s.WriteStoredIndex(ctx, root, indexData, imageIDs, name)
+	if err != nil || name == "" {
+		return result, err
+	}
+	return name, nil
 }
 
 var errStoredIndexRetry = errors.New("stored image index appeared during creation")
 
 // WriteStoredIndex saves an exact index referencing child images already in the
-// native store. An existing exact list is retagged without rewriting its data.
+// native store and returns its native image ID. An existing exact list is
+// retagged without rewriting its data.
 func (s *Store) WriteStoredIndex(ctx context.Context, root v1.Descriptor, indexData []byte, imageIDs map[digest.Digest]string, tag string) (string, error) {
 	for {
 		result, err := s.writeStoredIndex(ctx, "", root, indexData, imageIDs, tag)
@@ -511,7 +516,8 @@ func (s *Store) WriteStoredIndex(ctx context.Context, root v1.Descriptor, indexD
 }
 
 // UpdateStoredIndex updates a native manifest list without replacing its ID.
-// The caller must hold the native manifest-list locker for imageID.
+// It returns the native image ID. The caller must hold the native
+// manifest-list locker for imageID.
 func (s *Store) UpdateStoredIndex(ctx context.Context, imageID string, root v1.Descriptor, indexData []byte, imageIDs map[digest.Digest]string, tag string) (string, error) {
 	if imageID == "" {
 		return "", errors.New("native image index ID is required")
@@ -579,7 +585,7 @@ func (s *Store) reuseStoredIndex(ctx context.Context, root v1.Descriptor, indexD
 			if err := s.backend.AddNames(image.ID, []string{name}); err != nil {
 				return "", false, err
 			}
-			return name, true, nil
+			return image.ID, true, nil
 		}()
 		rootLock.Unlock()
 		lock.Unlock()
@@ -764,10 +770,7 @@ func (s *Store) writeStoredIndex(ctx context.Context, existingID string, root v1
 	}
 	keepIndex = true
 	keepNames = true
-	if name == "" {
-		return indexID, nil
-	}
-	return name, nil
+	return indexID, nil
 }
 
 func (s *Store) writeImage(ctx context.Context, imageID digest.Digest, name string, source func() (types.ImageReference, error)) (string, error) {

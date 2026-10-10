@@ -50,7 +50,7 @@ func TestBuildAndCopyToDockerEngine(t *testing.T) {
 				Tag: "docker:" + name, Format: format, BuildStore: dockerTestStore(storeDir),
 			}
 			got, err := build.Run(ctx, options)
-			if err != nil || got != "docker:"+name {
+			if err != nil || (len(got.References) != 1 || got.References[0] != "docker:"+name) {
 				t.Fatalf("build directly into Docker: result=%q error=%v", got, err)
 			}
 			created = append(created, name)
@@ -165,7 +165,7 @@ cmd { exec "/proof" }
 				}
 				return
 			}
-			if err != nil || got != "docker:"+name {
+			if err != nil || (len(got.References) != 1 || got.References[0] != "docker:"+name) {
 				t.Fatalf("build multi-platform image into Docker: %q, %v", got, err)
 			}
 			created = append(created, name)

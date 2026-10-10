@@ -46,7 +46,7 @@ func TestManifestAppendPreservesNativeHandleAndHistoricalDigest(t *testing.T) {
 			return oci.StoredSelection{Root: manifest, Manifest: manifest, ImageID: id, ConfigData: config}
 		}
 		amd, arm, ppc := makeSelection("amd64"), makeSelection("arm64"), makeSelection("ppc64le")
-		oldRoot, _, _, err := appendManifest(ctx, "combined", "oci", options, map[string]oci.StoredSelection{"linux/amd64": amd})
+		oldRoot, _, _, _, err := appendManifest(ctx, "combined", "oci", options, map[string]oci.StoredSelection{"linux/amd64": amd})
 		if err != nil {
 			return err
 		}
@@ -64,7 +64,7 @@ func TestManifestAppendPreservesNativeHandleAndHistoricalDigest(t *testing.T) {
 		if _, err := imagestore.FromStore(store).TagExisting("combined", "combined-alias"); err != nil {
 			return err
 		}
-		if _, _, _, err := appendManifest(ctx, "combined", "oci", options, map[string]oci.StoredSelection{"linux/arm64": arm}); err != nil {
+		if _, _, _, _, err := appendManifest(ctx, "combined", "oci", options, map[string]oci.StoredSelection{"linux/arm64": arm}); err != nil {
 			return err
 		}
 		external, err := imagestorage.Transport.NewStoreReference(store, nil, ppc.ImageID)

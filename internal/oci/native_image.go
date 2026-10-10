@@ -18,7 +18,32 @@ import (
 	"go.podman.io/image/v5/pkg/shortnames"
 	"go.podman.io/image/v5/signature"
 	"go.podman.io/image/v5/types"
+	"oras.land/oras-go/v2/content"
 )
+
+// PreparedImagePolicy permits only an operation-owned reference. Callers must
+// first verify its original source and pin the selected content.
+func PreparedImagePolicy(reference types.ImageReference) *signature.Policy {
+	return &signature.Policy{
+		Default: signature.PolicyRequirements{signature.NewPRReject()},
+		Transports: map[string]signature.PolicyTransportScopes{
+			reference.Transport().Name(): {
+				reference.PolicyConfigurationIdentity(): {signature.NewPRInsecureAcceptAnything()},
+			},
+		},
+	}
+}
+
+// RemoteImageManifest reads the root manifest without selecting or pulling an
+// image. Registry resolution and retries share the image input transport.
+func (r *Resolver) RemoteImageManifest(ctx context.Context, reference string) ([]byte, string, error) {
+	source, root, _, _, err := r.openNativeImage(ctx, reference, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	data, err := content.FetchAll(ctx, source, root)
+	return data, root.MediaType, err
+}
 
 // resolveNativeImage keeps image inputs on the containers/image Docker
 // transport. That transport applies registries.conf mirrors, remapping,

@@ -49,7 +49,7 @@ onbuild { env FROM_PARENT="yes" }
 		BuildStore: nativeBuildTestStore(storeDir),
 	}); err != nil {
 		t.Fatalf("build Docker-format image: %v", err)
-	} else if got != tag {
+	} else if len(got.References) != 1 || got.References[0] != tag {
 		t.Fatalf("build result = %q, want %q", got, tag)
 	}
 

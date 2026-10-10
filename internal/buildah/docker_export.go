@@ -14,8 +14,13 @@ import (
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	buildahdocker "go.podman.io/buildah/docker"
+	imagecopy "go.podman.io/image/v5/copy"
+	"go.podman.io/image/v5/image"
+	"go.podman.io/image/v5/manifest"
+	"go.podman.io/image/v5/oci/layout"
 	"go.podman.io/image/v5/pkg/blobinfocache"
 	"go.podman.io/image/v5/pkg/blobinfocache/none"
+	"go.podman.io/image/v5/signature"
 	imagestorage "go.podman.io/image/v5/storage"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/storage"
@@ -26,6 +31,37 @@ import (
 const dockerImageConfigMediaType = "application/vnd.docker.container.image.v1+json"
 
 var errRetainedStorageBlobUnavailable = errors.New("exact compressed storage blob is unavailable")
+
+// Approve the selected original before exporting either retained or normalized
+// bytes. Generated layouts cannot carry the original source's signature identity.
+func approveStoredImageExport(ctx context.Context, store storage.Store, imageID string, system *types.SystemContext, selected *digest.Digest) (retErr error) {
+	reference, err := imagestorage.Transport.NewStoreReference(store, nil, imageID)
+	if err != nil {
+		return err
+	}
+	source, err := reference.NewImageSource(ctx, system)
+	if err != nil {
+		return err
+	}
+	defer func() { retErr = errors.Join(retErr, source.Close()) }()
+	policy, err := signature.DefaultPolicy(system)
+	if err != nil {
+		return err
+	}
+	policyContext, err := signature.NewPolicyContext(policy)
+	if err != nil {
+		return err
+	}
+	defer func() { retErr = errors.Join(retErr, policyContext.Destroy()) }()
+	allowed, err := policyContext.IsRunningImageAllowed(ctx, image.UnparsedInstance(source, selected))
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return errors.New("signature policy rejects stored image")
+	}
+	return nil
+}
 
 // exportStoredImageRaw exports a Docker schema-2 image without asking
 // containers/image to convert its manifest or configuration to OCI media
@@ -67,7 +103,83 @@ func exportStoredImageVariantRaw(ctx context.Context, store storage.Store, image
 	if err != nil {
 		return Result{}, err
 	}
-	return exportRawImageSource(ctx, source, imageID, output, selected, false, blobinfocache.DefaultCache(system), store, retained)
+	result, err = exportRawImageSource(ctx, source, imageID, output, selected, false, blobinfocache.DefaultCache(system), store, retained)
+	if !errors.Is(err, errRetainedStorageBlobUnavailable) {
+		return result, err
+	}
+	// Native storage retains filesystem layers, not every compressed source
+	// representation. Let the native copier describe the bytes it can export.
+	return exportStoredImageNative(ctx, store, reference, source, imageID, output, system, selected)
+}
+
+func exportStoredImageNative(ctx context.Context, store storage.Store, reference types.ImageReference, source types.ImageSource, imageID string, output Output, system *types.SystemContext, selected *digest.Digest) (_ Result, retErr error) {
+	original, mediaType, err := source.GetManifest(ctx, selected)
+	if err != nil {
+		return Result{}, err
+	}
+	var before v1.Manifest
+	if err := json.Unmarshal(original, &before); err != nil {
+		return Result{}, err
+	}
+	staging, err := os.MkdirTemp(filepath.Dir(output.Path), ".coopr-native-layout-*")
+	if err != nil {
+		return Result{}, err
+	}
+	defer func() {
+		if staging != "" {
+			retErr = errors.Join(retErr, os.RemoveAll(staging))
+		}
+	}()
+	destination, err := layout.NewReference(staging, output.Reference)
+	if err != nil {
+		return Result{}, err
+	}
+	copySystem := types.SystemContext{}
+	if system != nil {
+		copySystem = *system
+	}
+	copySystem.OCIAcceptUncompressedLayers = true
+	selectedDigest := digest.FromBytes(original)
+	var cleanup func() error
+	var policy *signature.PolicyContext
+	reference, policy, cleanup, err = verifiedStoredCopySourceReference(ctx, store, reference, &copySystem, imageID, selectedDigest)
+	defer func() { retErr = errors.Join(retErr, cleanup()) }()
+	if err != nil {
+		return Result{}, err
+	}
+	// Internal layouts do not carry registry signatures. Verify the native
+	// source policy, then omit signatures tied to the old representation.
+	data, err := imagecopy.Image(ctx, policy, destination, reference, &imagecopy.Options{SourceCtx: &copySystem, DestinationCtx: &copySystem, ForceManifestMIMEType: mediaType, ImageListSelection: imagecopy.CopySystemImage, RemoveSignatures: true})
+	if err != nil {
+		return Result{}, fmt.Errorf("export native image: %w", err)
+	}
+	var after v1.Manifest
+	if err := json.Unmarshal(data, &after); err != nil {
+		return Result{}, err
+	}
+	if after.Config.Digest != before.Config.Digest || after.Config.Size != before.Config.Size || len(after.Layers) != len(before.Layers) {
+		return Result{}, errors.New("native export changed image configuration or layer count")
+	}
+	root, err := oci.LayoutRoot(staging)
+	if err != nil {
+		return Result{}, err
+	}
+	if root.Digest != digest.FromBytes(data) || root.MediaType != mediaType {
+		return Result{}, errors.New("native export layout differs from copied manifest")
+	}
+	// Register the emitted representation for subsequent stage/cache consumers.
+	// This stores manifest metadata only; native filesystem layers already exist.
+	if err := store.SetImageBigData(imageID, storage.ImageDigestManifestBigDataNamePrefix+"-"+root.Digest.String(), data, manifest.Digest); err != nil {
+		return Result{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
+	if err := os.Rename(staging, output.Path); err != nil {
+		return Result{}, err
+	}
+	staging = ""
+	return Result{ImageID: imageID, ManifestDigest: root.Digest.String(), Layout: output.Path, Reference: output.Reference}, nil
 }
 
 func exportRawDockerSource(ctx context.Context, source types.ImageSource, imageID string, output Output) (result Result, retErr error) {
@@ -200,7 +312,7 @@ func pushRawSourceBlob(ctx context.Context, target *orasoci.Store, source types.
 	stream, reportedSize, err := source.GetBlob(ctx, types.BlobInfo{
 		Digest: descriptor.Digest, Size: descriptor.Size, MediaType: descriptor.MediaType,
 	}, cache)
-	if err != nil && store != nil {
+	if errors.Is(err, os.ErrNotExist) && store != nil {
 		stream, reportedSize, err = retainedLayerBlob(store, descriptor, retained)
 	}
 	if err != nil {

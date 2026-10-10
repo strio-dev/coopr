@@ -1,6 +1,6 @@
 # Execution
 
-Definitions contain ordered KDL v2 instructions in `.coopr` files. A definition without `extend` builds an image; one with `extend` builds a component. See [definition syntax](definition.md) for authored forms, [CLI](cli.md) for flags, and [storage](../guides/storage.md) for stores and transfers.
+Definitions contain ordered KDL v2 instructions in `.coopr` files. A definition without `extend` builds an image; one with `extend` builds a component. See [definition syntax](definition.md) for authored forms, [CLI](cli.md) for options, and [storage](../guides/storage.md) for stores and transfers.
 
 ## State and stages
 
@@ -152,11 +152,13 @@ Image `--env` prepends values to every stage; authored ENV wins. Bare names impo
 
 Repeatable `--tag` applies local names or transfers to one retained immutable result, in requested order. Plain names are local; explicit transports are `local:`, `registry:`, `oci-archive:`, and `docker:`. Components support only the first three. `--push --tag NAME` selects registry publication.
 
-`--metadata-file` records `containerimage.digest`, `containerimage.config.digest`, `containerimage.descriptor`, `coopr.platforms`, `coopr.references`, and per-destination `coopr.outputs`. Image `--iidfile` writes the algorithm-prefixed native image ID for one platform or index digest for several. `--iidfile-raw` (alias `--raw-iidfile`) writes the unprefixed ID and requires one platform. Both files omit a trailing newline. File-output parents are checked before execution.
+`--metadata-file` records `containerimage.digest`, `containerimage.config.digest`, `containerimage.descriptor`, `coopr.platforms`, `coopr.references`, and per-destination `coopr.outputs`. Image `--iidfile` writes the algorithm-prefixed native image or manifest-list ID. `--iidfile-raw` (alias `--raw-iidfile`) writes the unprefixed image ID and requires one platform. Both files omit a trailing newline and suppress the final build ID line, including in logfiles. File-output parents are checked before execution.
 
-Successful execution retains the result/checkpoints before transfers. Destinations commit independently; there is no cross-engine/registry transaction. Transfer failure/cancellation reports the retained digest and completed destinations. Metadata records complete/failed/pending destinations and `coopr.outputError`; result-file finalization failures also report retained outputs. An interrupted transfer may have committed remotely: check its destination, then retry with `coopr copy`. Execution failure publishes neither newly staged portable-cache candidates nor final output names.
+Successful execution retains the result/checkpoints before transfers. Destinations commit independently; there is no cross-engine/registry transaction. Transfer failure/cancellation reports the retained digest and completed destinations. Metadata records complete/failed/pending destinations and `coopr.outputError`; result-file finalization failures also report retained outputs. An interrupted transfer may have committed remotely: check its destination, then retry with `coopr copy`. Execution failure publishes neither newly staged portable-cache candidates nor final output names. A failed RUN preserves its process exit status through worker execution and produces one command diagnostic.
 
 Registry resolution, caches, and publication share the request's [authentication and trust configuration](configuration.md#runtime-and-trust).
+
+Signature policies apply to original image sources. Native image exports and index pushes verify each stored image before preparing private output. Continuing from that output does not require allowing directory or OCI-layout inputs in your policy. Caller-supplied layouts and directories remain subject to the configured policy.
 
 ## Resolution, compatibility, execution, and caching
 
@@ -210,11 +212,11 @@ Ordinary image commits have a Buildah/Podman limitation: changes to root-directo
 
 ### Layers, storage, and copying
 
-Default `--format oci` preserves original base layers/configuration; Docker format selects schema 2 config/manifests and manifest lists. Ordinary filesystem changes produce one layer per instruction, including instructions within components. Component invocation preserves the selected output’s layers. Explicit `layer { ... }` groups publish their ordered net change as one layer; nested groups are absorbed by the outer group. Configuration-only/empty changes add none. `--layers=false` takes precedence and combines newly executed filesystem instructions into one layer. Groups reject independently based replacement component outputs to preserve the starting image lineage. Packages are invocation inputs, not appended consumer layers.
+Default `--format oci` preserves the base filesystem layers and configuration; native export may change their compression and manifest digest. Docker format selects schema 2 config/manifests and manifest lists. Ordinary filesystem changes produce one layer per instruction, including instructions within components. Component invocation preserves the selected output’s layers. Explicit `layer { ... }` groups publish their ordered net change as one layer; nested groups are absorbed by the outer group. Configuration-only/empty changes add none. `--layers=false` takes precedence and combines newly executed filesystem instructions into one layer. Groups reject independently based replacement component outputs to preserve the starting image lineage. Packages are invocation inputs, not appended consumer layers.
 
 `--save-stages` retains completed intermediate stage images; instruction-cache snapshots follow their separate cache lifecycle. `--stage-labels` requires saved stages and adds `io.buildah.stage.name` and `io.buildah.stage.base` to stages with instructions. FROM-only stages reuse their base without adding labels.
 
-Without a tag, builds return a manifest/index digest; local tags return their name. See [storage](../guides/storage.md) for stores and transfers.
+Image builds print the native image or manifest-list ID, whether or not a tag was supplied. `--logfile` redirects that result and progress to the file; `--logsplit` records them per platform. `--quiet` removes progress from both terminal and logfiles, while retaining the final result unless an IID-file option suppresses it. Component builds print their local reference when tagged, or their artifact digest otherwise. See [storage](../guides/storage.md) for stores and transfers.
 
 `coopr copy` accepts a local tag/digest or explicit engine source. Complete locally built indexes copy as complete indexes by default; `--platform` selects one child. Docker's classic store requires that selection; its containerd store accepts indexes, with capability/digest/platform checks. Engine-imported indexes must contain exactly one runnable Linux manifest per platform; auxiliary descriptors and duplicate platforms fail. Engine conversion may change representation; `--format docker` avoids relying on Docker's OCI conversion.
 

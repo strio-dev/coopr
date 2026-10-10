@@ -55,6 +55,6 @@ func newInfoCommand() *cobra.Command {
 		}
 		return writeJSON(cmd, info)
 	})
-	cmd.Flags().StringVar(&format, "format", "json", "output format: json or a Go template")
+	cmd.Flags().StringVarP(&format, "format", "f", "json", "output format: json or a Go template")
 	return cmd
 }

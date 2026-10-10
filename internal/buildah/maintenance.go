@@ -35,19 +35,28 @@ type StoreMaintenanceRequest struct {
 	BuildCache        bool                 `json:"build_cache,omitempty"`
 	DryRun            bool                 `json:"dry_run,omitempty"`
 	ActivityLeaseHeld bool                 `json:"activity_lease_held,omitempty"`
+	Filters           []string             `json:"filters,omitempty"`
 	ResultPath        string               `json:"result_path"`
 }
 
 type StoreMaintenanceResult struct {
-	Images         int    `json:"images"`
-	Containers     int    `json:"containers"`
-	Layers         int    `json:"layers"`
-	Bytes          int64  `json:"bytes"`
-	CacheImages    int    `json:"cache_images"`
-	CacheBytes     int64  `json:"cache_bytes"`
-	RemovedImages  int    `json:"removed_images"`
-	PrunableImages int    `json:"prunable_images"`
-	Error          string `json:"error,omitempty"`
+	ImageUsage          []libimage.ImageDiskUsage     `json:"image_usage,omitempty"`
+	Images              int                           `json:"images"`
+	Containers          int                           `json:"containers"`
+	Layers              int                           `json:"layers"`
+	Bytes               int64                         `json:"bytes"`
+	CacheImages         int                           `json:"cache_images"`
+	CacheBytes          int64                         `json:"cache_bytes"`
+	CacheBytesKnown     bool                          `json:"cache_bytes_known"`
+	RemovedImages       int                           `json:"removed_images"`
+	PrunableImages      int                           `json:"prunable_images"`
+	ActiveImages        int                           `json:"active_images"`
+	ReclaimableBytes    int64                         `json:"reclaimable_bytes"`
+	ReclaimedBytes      int64                         `json:"reclaimed_bytes"`
+	RemovalReports      []*libimage.RemoveImageReport `json:"removal_reports,omitempty"`
+	ReclaimedBytesKnown bool                          `json:"reclaimed_bytes_known"`
+	UsageError          string                        `json:"usage_error,omitempty"`
+	Error               string                        `json:"error,omitempty"`
 }
 
 func init() {
@@ -101,17 +110,21 @@ func MaintainStoreSupervised(ctx context.Context, request StoreMaintenanceReques
 		}
 		command.Env = append(os.Environ(), "TMPDIR="+workerTemp)
 	}
-	if err := runWorkerProcess(ctx, command, workerGrace); err != nil {
-		return StoreMaintenanceResult{}, err
-	}
+	processErr := runWorkerProcess(ctx, command, workerGrace)
+	return readMaintenanceResult(ctx, request.ResultPath, processErr)
+}
+
+func readMaintenanceResult(ctx context.Context, resultPath string, processErr error) (StoreMaintenanceResult, error) {
 	var result StoreMaintenanceResult
-	if err := readWorkerJSON(request.ResultPath, &result); err != nil {
-		return StoreMaintenanceResult{}, err
+	if err := readWorkerJSON(resultPath, &result); err != nil {
+		return StoreMaintenanceResult{}, errors.Join(processErr, err)
 	}
 	if result.Error != "" {
-		return result, errors.New(result.Error)
+		// A persisted response describes the actual operation failure. Preserve
+		// cancellation separately instead of replacing it with an exit status.
+		return result, errors.Join(ctx.Err(), errors.New(result.Error))
 	}
-	return result, nil
+	return result, errors.Join(processErr, ctx.Err())
 }
 
 func runMaintenanceWorker() {
@@ -163,17 +176,51 @@ func maintainStore(ctx context.Context, request StoreMaintenanceRequest) (_ Stor
 	if err != nil {
 		return StoreMaintenanceResult{}, err
 	}
-	result := storeUsage(images, layers, containers)
-	if request.Mode == StoreMaintenanceDF {
-		return result, ctx.Err()
-	}
 	runtime, err := libimage.RuntimeFromStore(instructionCachePruneStore{backend}, nil)
 	if err != nil {
-		return result, err
+		return StoreMaintenanceResult{}, err
 	}
+	usage, totalBytes, usageErr := runtime.DiskUsage(ctx)
+	if usageErr != nil && request.Mode == StoreMaintenanceDF {
+		return StoreMaintenanceResult{}, usageErr
+	}
+	result := storeUsage(images, layers, containers)
+	if usageErr == nil {
+		result.Bytes = totalBytes
+	} else {
+		result.UsageError = usageErr.Error()
+	}
+	seen := make(map[string]bool)
+	readOnly := make(map[string]bool, len(images))
+	for _, image := range images {
+		readOnly[image.ID] = image.ReadOnly
+	}
+	for _, entry := range usage {
+		if seen[entry.ID] {
+			continue
+		}
+		seen[entry.ID] = true
+		if entry.Containers > 0 {
+			result.ActiveImages++
+		} else if !readOnly[entry.ID] {
+			result.ReclaimableBytes += entry.UniqueSize
+		}
+	}
+	if request.Mode == StoreMaintenanceDF {
+		result.ImageUsage = usage
+		return result, ctx.Err()
+	}
+
 	// Match Podman's image-prune filters, including native manifest-list and
 	// parent/child checks. Never force deletion of containers using an image.
 	filters := []string{"readonly=false", "containers=false"}
+	for _, filter := range request.Filters {
+		key, _, found := strings.Cut(filter, "=")
+		if !found || (key != "label" && key != "label!" && key != "until") {
+			return result, fmt.Errorf("unsupported prune filter %q", filter)
+		}
+		filters = append(filters, filter)
+	}
 	if !request.All {
 		filters = append(filters, "dangling=true")
 	}
@@ -195,6 +242,7 @@ func maintainStore(ctx context.Context, request StoreMaintenanceRequest) (_ Stor
 			}
 		}
 		result.RemovedImages += removed
+		result.RemovalReports = append(result.RemovalReports, reports...)
 		if err := errors.Join(removalErrors...); err != nil {
 			return result, err
 		}
@@ -208,6 +256,14 @@ func maintainStore(ctx context.Context, request StoreMaintenanceRequest) (_ Stor
 			return result, err
 		}
 	}
+	_, remainingBytes, remainingErr := runtime.DiskUsage(ctx)
+	if err := errors.Join(usageErr, remainingErr); err != nil {
+		result.UsageError = err.Error()
+	} else {
+		result.ReclaimedBytes = max(int64(0), totalBytes-remainingBytes)
+		result.ReclaimedBytesKnown = true
+	}
+
 	return result, ctx.Err()
 }
 
@@ -231,41 +287,38 @@ func (store instructionCachePruneStore) MultiList(options storage.MultiListOptio
 }
 
 func storeUsage(images []storage.Image, layers []storage.Layer, containers []storage.Container) StoreMaintenanceResult {
-	result := StoreMaintenanceResult{Images: len(images), Layers: len(layers), Containers: len(containers)}
+	result := StoreMaintenanceResult{Images: len(images), Layers: len(layers), Containers: len(containers), CacheBytesKnown: true}
 	layerByID := make(map[string]storage.Layer, len(layers))
 	for _, layer := range layers {
 		layerByID[layer.ID] = layer
-		size := layer.CompressedSize
-		if size < 0 || layer.CompressedDigest == "" {
-			size = layer.UncompressedSize
-		}
-		if size > 0 {
-			result.Bytes += size
-		}
 	}
+
 	cacheLayers := make(map[string]bool)
 	for _, image := range images {
 		if len(instructionCacheNames(image.Names)) == 0 {
 			continue
 		}
 		result.CacheImages++
-		for layerID := image.TopLayer; layerID != ""; layerID = layerByID[layerID].Parent {
-			if cacheLayers[layerID] {
-				break
-			}
-			cacheLayers[layerID] = true
-			layer, ok := layerByID[layerID]
-			if !ok {
-				break
-			}
-			size := layer.CompressedSize
-			if size < 0 || layer.CompressedDigest == "" {
-				size = layer.UncompressedSize
-			}
-			if size > 0 {
-				result.CacheBytes += size
+		roots := append([]string{image.TopLayer}, image.MappedTopLayers...)
+		for _, root := range roots {
+			for layerID := root; layerID != ""; layerID = layerByID[layerID].Parent {
+				if cacheLayers[layerID] {
+					break
+				}
+				cacheLayers[layerID] = true
+				layer, ok := layerByID[layerID]
+				if !ok {
+					result.CacheBytesKnown = false
+					break
+				}
+				if layer.UncompressedSize < 0 {
+					result.CacheBytesKnown = false
+				} else {
+					result.CacheBytes += layer.UncompressedSize
+				}
 			}
 		}
+
 	}
 	return result
 }

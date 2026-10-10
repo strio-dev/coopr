@@ -3,6 +3,7 @@ package build
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -67,8 +68,8 @@ func TestNativeStorageMatchesArchiveAndRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("native storage build: %v", err)
 	}
-	if storedName != tag {
-		t.Fatalf("stored name %q, want %s", storedName, tag)
+	if decoded, err := hex.DecodeString(storedName); err != nil || len(decoded) != 32 {
+		t.Fatalf("build did not return raw native ID: %q", storedName)
 	}
 	t.Cleanup(func() {
 		command := exec.Command("podman", "rmi", tag)
@@ -77,6 +78,9 @@ func TestNativeStorageMatchesArchiveAndRuns(t *testing.T) {
 		}
 	})
 	loadedID := strings.TrimSpace(string(loadPodman(t, ctx, "image", "inspect", "--format", "{{.Id}}", tag)))
+	if strings.TrimPrefix(loadedID, "sha256:") != storedName {
+		t.Fatalf("build ID %s differs from stored ID %s", storedName, loadedID)
+	}
 	if digest.Digest("sha256:"+strings.TrimPrefix(loadedID, "sha256:")).Validate() != nil {
 		t.Fatalf("Podman returned invalid stored image ID %q", loadedID)
 	}
@@ -109,8 +113,8 @@ func TestDefaultNativeStoreRetagRunsWithoutContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store default image: %v", err)
 	}
-	if !strings.HasPrefix(localRef, "sha256:") {
-		t.Fatalf("default build returned %q, want manifest digest", localRef)
+	if decoded, err := hex.DecodeString(localRef); err != nil || len(decoded) != 32 {
+		t.Fatalf("default build returned invalid native ID %q", localRef)
 	}
 	storeOptions, err := buildah.DefaultStoreOptions()
 	if err != nil {

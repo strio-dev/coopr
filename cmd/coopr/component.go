@@ -148,6 +148,9 @@ func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if logFile != "" {
+				return nil
+			}
 			_, err = fmt.Fprintln(cmd.OutOrStdout(), ref)
 			return err
 		},

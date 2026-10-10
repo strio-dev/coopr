@@ -196,6 +196,9 @@ func TestManifestNativeLifecycleAndCooprMutationVisibility(t *testing.T) {
 		t.Fatalf("removed list=%s", &out)
 	}
 	execute("rm", "empty", "original")
+	if !strings.Contains(out.String(), "Untagged:") || !strings.Contains(out.String(), "Deleted:") {
+		t.Fatalf("manifest removal omitted untagging/deletion reports: %s", &out)
+	}
 	out.Reset()
 	errs.Reset()
 	if status := run(manifestTestArgs(options, "exists", "empty"), &out, &errs); status != 1 || out.Len() != 0 || errs.Len() != 0 {
@@ -252,17 +255,31 @@ func TestManifestPushFetchesRemoteMembersAndCopiesAllByDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	destination := host + "/destination/all:test"
+	digestFile := filepath.Join(t.TempDir(), "pushed.digest")
 	out.Reset()
 	errs.Reset()
-	if status := run(manifestTestArgs(options, "push", "--tls-verify=false", "remote", destination), &out, &errs); status != 0 {
+	if status := run(manifestTestArgs(options, "push", "--tls-verify=false", "--digestfile", digestFile, "remote", destination), &out, &errs); status != 0 {
 		t.Fatalf("push remote list status=%d: %s", status, &errs)
+	}
+	if out.Len() != 0 || !strings.Contains(errs.String(), "Writing manifest") {
+		t.Fatalf("push streams stdout=%q stderr=%q", &out, &errs)
+	}
+	encodedDigest, err := os.ReadFile(digestFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := digest.Parse(string(encodedDigest)); err != nil {
+		t.Fatalf("invalid digest file %q: %v", encodedDigest, err)
 	}
 	indexOnly := host + "/destination/all:index-only"
 	recording.Store(true)
 	out.Reset()
 	errs.Reset()
-	if status := run(manifestTestArgs(options, "push", "--tls-verify=false", "--all=false", "remote", indexOnly), &out, &errs); status != 0 {
+	if status := run(manifestTestArgs(options, "push", "--tls-verify=false", "--quiet", "--all=false", "remote", indexOnly), &out, &errs); status != 0 {
 		t.Fatalf("push index only status=%d: %s", status, &errs)
+	}
+	if out.Len() != 0 || errs.Len() != 0 {
+		t.Fatalf("quiet push streams stdout=%q stderr=%q", &out, &errs)
 	}
 	response, err := http.Get(server.URL + "/v2/destination/all/manifests/index-only")
 	if err != nil {

@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -278,15 +280,103 @@ func TestSignStoredImageWithGPGKey(t *testing.T) {
 	t.Cleanup(func() { _ = exec.Command("gpgconf", "--homedir", gpgHome, "--kill", "gpg-agent").Run() })
 	passphrase := "local signing passphrase"
 	fingerprint, publicKey := generateGPGKey(t, ctx, gpgHome, "Coopr Local Signing Test <local-signing@example.invalid>", passphrase)
+	_, wrongPublicKey := generateGPGKey(t, ctx, gpgHome, "Coopr Wrong Local Signing Key <wrong-local-signing@example.invalid>", "wrong passphrase")
 	passphraseFile := filepath.Join(t.TempDir(), "passphrase")
 	if err := os.WriteFile(passphraseFile, []byte(passphrase+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	lookaside := filepath.Join(t.TempDir(), "lookaside")
 	configureTestSignatureLookaside(t, lookaside)
-	server := httptest.NewServer(registry.New())
+	var registryWrites atomic.Int32
+	registryHandler := registry.New()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			registryWrites.Add(1)
+		}
+		registryHandler.ServeHTTP(w, r)
+	}))
 	defer server.Close()
 	name := strings.TrimPrefix(server.URL, "http://") + "/coopr/signed:latest"
+	identity, err := signature.NewPRMExactReference(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policies := make(map[string]string, 2)
+	for label, key := range map[string]string{"valid": publicKey, "wrong": wrongPublicKey} {
+		requirement, err := signature.NewPRSignedByKeyPath(signature.SBKeyTypeGPGKeys, key, identity)
+		if err != nil {
+			t.Fatal(err)
+		}
+		policyData, err := json.Marshal(&signature.Policy{
+			Default: signature.PolicyRequirements{signature.NewPRReject()},
+			Transports: map[string]signature.PolicyTransportScopes{
+				"containers-storage": {"": signature.PolicyRequirements{requirement}},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		policies[label] = filepath.Join(t.TempDir(), "policy.json")
+		if err := os.WriteFile(policies[label], policyData, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	checkNativeExports := func(selector, policy string, allowed bool) {
+		t.Helper()
+		for _, transport := range []string{"oci-dir", "oci-archive"} {
+			for _, input := range []struct {
+				selector string
+				root     v1.Descriptor
+			}{
+				{selector: selector, root: root},
+				{selector: manifests[0].Digest.String(), root: manifests[0]},
+			} {
+				output := filepath.Join(t.TempDir(), "output")
+				_, err := Copy(ctx, oci.Image, input.selector, Destination{Transport: transport, Name: output}, Options{
+					BuildStore: storeOptions, SignaturePolicyPath: policy,
+				})
+				if !allowed {
+					if err == nil || !strings.Contains(strings.ToLower(err.Error()), "signature") {
+						t.Fatalf("%s export of %s accepted or failed outside signature policy: %v", transport, input.selector, err)
+					}
+					if _, statErr := os.Stat(output); !os.IsNotExist(statErr) {
+						t.Fatalf("rejected %s export created destination: %v", transport, statErr)
+					}
+					continue
+				}
+				if err != nil {
+					t.Fatalf("signed original %s export of %s rejected: %v", transport, input.selector, err)
+				}
+				var exported v1.Descriptor
+				if transport == "oci-dir" {
+					exported, err = oci.LayoutRoot(output)
+					if err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					exported = selectedCopyArchiveRoot(t, output)
+				}
+				if exported.Digest != input.root.Digest || exported.MediaType != input.root.MediaType {
+					t.Fatalf("signed original %s export changed root: %+v -> %+v", transport, input.root, exported)
+				}
+			}
+		}
+	}
+	checkNativeExports("source:latest", policies["valid"], false)
+	if _, err := Copy(ctx, oci.Image, "source:latest", Destination{Transport: "registry", Name: name}, Options{
+		BuildStore: storeOptions, TLSVerify: new(false), SignaturePolicyPath: policies["valid"],
+	}); err == nil || !strings.Contains(strings.ToLower(err.Error()), "signature") {
+		t.Fatalf("unsigned original accepted or failed outside signature policy: %v", err)
+	}
+	if writes := registryWrites.Load(); writes != 0 {
+		t.Fatalf("unsigned original caused %d registry writes before policy rejection", writes)
+	}
+	syntheticSignature := []byte("\x00sigstore-json\n{\"mimeType\":\"application/vnd.dev.cosign.simplesigning.v1+json\",\"payload\":\"cGF5bG9hZA==\",\"annotations\":{\"coopr.test\":\"preserve\"}}")
+	for _, selected := range selections {
+		if selected.Manifest.Digest == manifests[0].Digest {
+			injectStoredSignatureFixture(t, storeOptions, selected.ImageID, selected.Manifest.Digest, syntheticSignature, json.RawMessage(`{"preserve":true}`))
+		}
+	}
 	if _, err := Copy(ctx, oci.Image, "source:latest", Destination{Transport: "local", Name: name}, Options{
 
 		BuildStore: storeOptions,
@@ -294,13 +384,25 @@ func TestSignStoredImageWithGPGKey(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	checkNativeExports(name, policies["wrong"], false)
+	checkNativeExports(name, policies["valid"], true)
+	if _, err := Copy(ctx, oci.Image, name, Destination{Transport: "registry", Name: name}, Options{
+		BuildStore: storeOptions, TLSVerify: new(false), SignaturePolicyPath: policies["wrong"],
+	}); err == nil || !strings.Contains(strings.ToLower(err.Error()), "signature") {
+		t.Fatalf("wrong required key accepted or failed outside signature policy: %v", err)
+	}
+	if writes := registryWrites.Load(); writes != 0 {
+		t.Fatalf("wrong required key caused %d registry writes before policy rejection", writes)
+	}
 	if _, err := Copy(ctx, oci.Image, name, Destination{Transport: "registry", Name: name}, Options{
 
-		BuildStore: storeOptions,
-		TLSVerify:  new(false),
+		BuildStore:          storeOptions,
+		TLSVerify:           new(false),
+		SignaturePolicyPath: policies["valid"],
 	}); err != nil {
 		t.Fatal(err)
 	}
+	assertRemoteSyntheticSigstore(t, ctx, server.Client(), server.URL, "coopr/signed", manifests[0].Digest)
 	assertRemoteManifestDigests(t, ctx, name, root, manifests)
 	for _, manifest := range manifests {
 		digestReference := strings.TrimSuffix(name, ":latest") + "@" + manifest.Digest.String()

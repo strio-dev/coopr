@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -18,8 +19,11 @@ import (
 	"go.podman.io/common/libimage"
 	"go.podman.io/common/pkg/retry"
 	imagereference "go.podman.io/image/v5/docker/reference"
+	imageapi "go.podman.io/image/v5/image"
+	"go.podman.io/image/v5/manifest"
 	imagestorage "go.podman.io/image/v5/storage"
 	"go.podman.io/image/v5/transports"
+	"go.podman.io/image/v5/transports/alltransports"
 	"go.podman.io/storage"
 )
 
@@ -156,7 +160,12 @@ func addManifestMember(cmd *cobra.Command, backend storage.Store, list *libimage
 func newManifestCreateCommand() *cobra.Command {
 	var registry registryFlags
 	var all, amend bool
+	var annotations []string
 	cmd := imageIOCommand("create <list> [image...]", "Create a local manifest list", cobra.MinimumNArgs(1), func(cmd *cobra.Command, args []string) error {
+		parsed, err := parseManifestAnnotations(annotations)
+		if err != nil {
+			return err
+		}
 		return withManifestStore(cmd, registry.resolverOptions(cmd), true, func(backend storage.Store, native *libimage.Runtime) error {
 			list, err := native.LookupManifestList(args[0])
 			if err != nil && !errors.Is(err, storage.ErrImageUnknown) {
@@ -176,27 +185,8 @@ func newManifestCreateCommand() *cobra.Command {
 					return err
 				}
 			}
-			_, err = fmt.Fprintln(cmd.OutOrStdout(), list.ID())
-			return err
-		})
-	})
-	registry.addTo(cmd)
-	cmd.Flags().BoolVar(&all, "all", false, "add every instance from source manifest lists")
-	cmd.Flags().BoolVarP(&amend, "amend", "a", false, "add to an existing local list")
-	return cmd
-}
-
-func newManifestAddCommand() *cobra.Command {
-	var registry registryFlags
-	var all bool
-	cmd := imageIOCommand("add <list> <image>...", "Add images to a local manifest list", cobra.MinimumNArgs(2), func(cmd *cobra.Command, args []string) error {
-		return withManifestStore(cmd, registry.resolverOptions(cmd), true, func(backend storage.Store, native *libimage.Runtime) error {
-			list, err := native.LookupManifestList(args[0])
-			if err != nil {
-				return err
-			}
-			for _, name := range args[1:] {
-				if _, err := addManifestMember(cmd, backend, list, name, all, registry.resolverOptions(cmd)); err != nil {
+			if len(parsed) > 0 {
+				if err := list.AnnotateInstance("", &libimage.ManifestListAnnotateOptions{IndexAnnotations: parsed}); err != nil {
 					return err
 				}
 			}
@@ -206,36 +196,130 @@ func newManifestAddCommand() *cobra.Command {
 	})
 	registry.addTo(cmd)
 	cmd.Flags().BoolVar(&all, "all", false, "add every instance from source manifest lists")
+	cmd.Flags().BoolVarP(&amend, "amend", "a", false, "add to an existing local list")
+	cmd.Flags().StringArrayVar(&annotations, "annotation", nil, "set index annotation KEY=VALUE (repeatable)")
 	return cmd
+}
+
+func newManifestAddCommand() *cobra.Command {
+	var registry registryFlags
+	var all bool
+	var annotations []string
+	var annotationOptions libimage.ManifestListAnnotateOptions
+	cmd := imageIOCommand("add <list> <image>...", "Add images to a local manifest list", cobra.MinimumNArgs(2), func(cmd *cobra.Command, args []string) error {
+		parsed, err := parseManifestAnnotations(annotations)
+		if err != nil {
+			return err
+		}
+		annotationOptions.Annotations = parsed
+		return withManifestStore(cmd, registry.resolverOptions(cmd), true, func(backend storage.Store, native *libimage.Runtime) error {
+			list, err := native.LookupManifestList(args[0])
+			if err != nil {
+				return err
+			}
+			for _, name := range args[1:] {
+				added, err := addManifestMember(cmd, backend, list, name, all, registry.resolverOptions(cmd))
+				if err != nil {
+					return err
+				}
+				if err := list.AnnotateInstance(added, &annotationOptions); err != nil {
+					return err
+				}
+			}
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), list.ID())
+			return err
+		})
+	})
+	registry.addTo(cmd)
+	cmd.Flags().BoolVar(&all, "all", false, "add every instance from source manifest lists")
+	addManifestAnnotationFlags(cmd, &annotationOptions, &annotations)
+	return cmd
+}
+
+func parseManifestAnnotations(values []string) (map[string]string, error) {
+	parsed := make(map[string]string, len(values))
+	for _, value := range values {
+		key, text, ok := strings.Cut(value, "=")
+		if !ok || key == "" {
+			return nil, fmt.Errorf("invalid annotation %q (expected KEY=VALUE)", value)
+		}
+		parsed[key] = text
+	}
+	return parsed, nil
+}
+
+func addManifestAnnotationFlags(cmd *cobra.Command, options *libimage.ManifestListAnnotateOptions, annotations *[]string) {
+	flags := cmd.Flags()
+	flags.StringVar(&options.OS, "os", "", "set instance operating system")
+	flags.StringVar(&options.Architecture, "arch", "", "set instance architecture")
+	flags.StringVar(&options.Variant, "variant", "", "set instance variant")
+	flags.StringVar(&options.OSVersion, "os-version", "", "set instance OS version")
+	flags.StringSliceVar(&options.OSFeatures, "os-features", nil, "set instance OS features")
+	flags.StringSliceVar(&options.Features, "features", nil, "set instance CPU features")
+	flags.StringArrayVar(annotations, "annotation", nil, "set instance annotation KEY=VALUE (repeatable)")
+}
+
+func manifestMemberDigest(cmd *cobra.Command, backend storage.Store, name string) (result digest.Digest, retErr error) {
+	if parsed, err := digest.Parse(name); err == nil {
+		return parsed, nil
+	}
+	name, err := manifestMemberReference(cmd.Context(), backend, name)
+	if err != nil {
+		return "", err
+	}
+	if !strings.HasPrefix(name, "containers-storage:") && !strings.Contains(name, "://") && !strings.HasPrefix(name, "oci:") && !strings.HasPrefix(name, "oci-archive:") {
+		resolver, err := oci.NewResolver(oci.Options{})
+		if err != nil {
+			return "", err
+		}
+		raw, _, err := resolver.RemoteImageManifest(cmd.Context(), name)
+		if err != nil {
+			return "", err
+		}
+		return manifest.Digest(raw)
+	}
+	ref, err := alltransports.ParseImageName(name)
+	if err != nil {
+		return "", err
+	}
+	resolver, err := oci.NewResolver(oci.Options{})
+	if err != nil {
+		return "", err
+	}
+	source, err := ref.NewImageSource(cmd.Context(), resolver.SystemContext())
+	if err != nil {
+		return "", err
+	}
+	defer func() { retErr = errors.Join(retErr, source.Close()) }()
+	raw, _, err := imageapi.UnparsedInstance(source, nil).Manifest(cmd.Context())
+	if err != nil {
+		return "", err
+	}
+	return manifest.Digest(raw)
 }
 
 func newManifestAnnotateCommand() *cobra.Command {
 	var options libimage.ManifestListAnnotateOptions
 	var annotations []string
 	var index bool
-	cmd := imageIOCommand("annotate <list> [instance-digest]", "Annotate a local manifest list or an instance", cobra.RangeArgs(1, 2), func(cmd *cobra.Command, args []string) error {
-		var instance digest.Digest
-		if len(args) == 2 {
-			var err error
-			instance, err = digest.Parse(args[1])
-			if err != nil {
-				return err
-			}
-		}
+	cmd := imageIOCommand("annotate <list> [image-or-digest]", "Annotate a local manifest list or an instance", cobra.RangeArgs(1, 2), func(cmd *cobra.Command, args []string) error {
 		if len(args) == 1 && !index && options.Subject == "" {
 			return errors.New("annotate requires an instance digest, --index, or --subject")
 		}
-		if instance == "" && (options.OS != "" || options.Architecture != "" || options.Variant != "" || options.OSVersion != "" || len(options.OSFeatures) > 0 || len(options.Features) > 0) {
+		if len(args) == 1 && (options.OS != "" || options.Architecture != "" || options.Variant != "" || options.OSVersion != "" || len(options.OSFeatures) > 0 || len(options.Features) > 0) {
 			return errors.New("platform annotations require an instance digest")
 		}
 
-		options.Annotations = map[string]string{}
-		for _, annotation := range annotations {
-			key, value, ok := strings.Cut(annotation, "=")
-			if !ok || key == "" {
-				return fmt.Errorf("invalid annotation %q (expected KEY=VALUE)", annotation)
-			}
-			options.Annotations[key] = value
+		var err error
+		options.Annotations, err = parseManifestAnnotations(annotations)
+		if err != nil {
+			return err
+		}
+		if index && len(args) == 2 {
+			return errors.New("--index requires no instance selector")
+		}
+		if options.Subject != "" && len(args) == 2 {
+			return errors.New("--subject requires no instance selector")
 		}
 		if index {
 			options.IndexAnnotations = options.Annotations
@@ -245,6 +329,13 @@ func newManifestAnnotateCommand() *cobra.Command {
 			list, err := native.LookupManifestList(args[0])
 			if err != nil {
 				return err
+			}
+			var instance digest.Digest
+			if len(args) == 2 {
+				instance, err = manifestMemberDigest(cmd, backend, args[1])
+				if err != nil {
+					return err
+				}
 			}
 			if options.Subject != "" {
 				subject, err := manifestMemberReference(cmd.Context(), backend, options.Subject)
@@ -263,20 +354,36 @@ func newManifestAnnotateCommand() *cobra.Command {
 	flags := cmd.Flags()
 	flags.BoolVar(&index, "index", false, "apply annotations to the index itself")
 	flags.StringVar(&options.Subject, "subject", "", "set the image index subject")
-	flags.StringVar(&options.OS, "os", "", "set instance operating system")
-	flags.StringVar(&options.Architecture, "arch", "", "set instance architecture")
-	flags.StringVar(&options.Variant, "variant", "", "set instance variant")
-	flags.StringVar(&options.OSVersion, "os-version", "", "set instance OS version")
-	flags.StringSliceVar(&options.OSFeatures, "os-features", nil, "set instance OS features")
-	flags.StringSliceVar(&options.Features, "features", nil, "set instance CPU features")
-	flags.StringArrayVar(&annotations, "annotation", nil, "set instance annotation KEY=VALUE (repeatable)")
+	addManifestAnnotationFlags(cmd, &options, &annotations)
 	return cmd
 }
 
 func newManifestInspectCommand() *cobra.Command {
-	return imageIOCommand("inspect <list>", "Inspect a local manifest list", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
-		return withManifestStore(cmd, oci.Options{}, false, func(_ storage.Store, native *libimage.Runtime) error {
+	var registry registryFlags
+	cmd := imageIOCommand("inspect <list>", "Inspect a local or registry manifest list", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
+		return withManifestStore(cmd, registry.resolverOptions(cmd), false, func(_ storage.Store, native *libimage.Runtime) error {
 			list, err := native.LookupManifestList(args[0])
+			if errors.Is(err, storage.ErrImageUnknown) || errors.Is(err, libimage.ErrNotAManifestList) {
+				resolver, err := oci.NewResolver(registry.resolverOptions(cmd))
+				if err != nil {
+					return err
+				}
+				raw, mediaType, err := resolver.RemoteImageManifest(cmd.Context(), strings.TrimPrefix(args[0], "docker://"))
+				if err != nil {
+					return err
+				}
+				if mediaType == manifest.DockerV2Schema2MediaType {
+					if _, err := manifest.Schema2FromManifest(raw); err != nil {
+						return err
+					}
+					if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "Warning: The manifest type %s is not a manifest list but a single image.\n", mediaType); err != nil {
+						return err
+					}
+				} else if _, err := manifest.ListFromBlob(raw, mediaType); err != nil {
+					return err
+				}
+				return writeJSON(cmd, json.RawMessage(raw))
+			}
 			if err != nil {
 				return err
 			}
@@ -287,12 +394,16 @@ func newManifestInspectCommand() *cobra.Command {
 			return writeJSON(cmd, data)
 		})
 	})
+	registry.addTo(cmd)
+	return cmd
 }
 
 func newManifestPushCommand() *cobra.Command {
 	var registry registryFlags
 	var signing signingFlags
+	var pushOptions pushTransferFlags
 	var all, quiet bool
+	var remove bool
 	var digestFile string
 	cmd := imageIOCommand("push <list> [destination]", "Push a manifest list and its images to a registry", cobra.RangeArgs(1, 2), func(cmd *cobra.Command, args []string) error {
 		target := args[0]
@@ -305,6 +416,9 @@ func newManifestPushCommand() *cobra.Command {
 			return err
 		}
 		options := registry.transferOptions(cmd)
+		if err := pushOptions.apply(cmd, &options); err != nil {
+			return err
+		}
 		options.Signing = signing.options()
 		if err := transfer.ValidateSigningDestination(oci.Image, destination, options.Signing); err != nil {
 			return err
@@ -313,11 +427,21 @@ func newManifestPushCommand() *cobra.Command {
 		if err != nil {
 			return err
 		}
+		var listID string
+		if err := withManifestStore(cmd, registry.resolverOptions(cmd), false, func(_ storage.Store, native *libimage.Runtime) error {
+			list, err := native.LookupManifestList(args[0])
+			if err == nil {
+				listID = list.ID()
+			}
+			return err
+		}); err != nil {
+			return err
+		}
 		progress := cmd.ErrOrStderr()
 		if quiet {
 			progress = nil
 		}
-		pushed, err := transfer.PushManifestList(cmd.Context(), args[0], destination, options, all, progress)
+		pushed, err := transfer.PushManifestList(cmd.Context(), listID, destination, options, all, progress)
 		if err != nil {
 			return err
 		}
@@ -326,17 +450,23 @@ func newManifestPushCommand() *cobra.Command {
 				return err
 			}
 		}
-		if !quiet {
-			_, err = fmt.Fprintln(cmd.OutOrStdout(), pushed)
+		if remove {
+			return withManifestStore(cmd, registry.resolverOptions(cmd), true, func(_ storage.Store, native *libimage.Runtime) error {
+				_, errs := native.RemoveImages(cmd.Context(), []string{listID}, &libimage.RemoveImagesOptions{LookupManifest: true})
+				return errors.Join(errs...)
+			})
 		}
-		return err
+		return nil
 	})
 	registry.addTo(cmd)
 	signing.addTo(cmd)
+	pushOptions.addTo(cmd, true)
+	cmd.Flags().StringSliceVar(&pushOptions.options.AddCompression, "add-compression", nil, "add variants using the requested compression formats")
 	addSignaturePolicyFlag(cmd.Flags())
 	cmd.Flags().BoolVar(&all, "all", true, "push every image in the manifest list")
 	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "suppress push progress and output")
 	cmd.Flags().StringVar(&digestFile, "digestfile", "", "write pushed manifest digest to a file")
+	cmd.Flags().BoolVar(&remove, "rm", false, "remove the local list after a successful push")
 	return cmd
 }
 
@@ -361,22 +491,15 @@ func newManifestRemoveCommand() *cobra.Command {
 }
 
 func newManifestRMCommand() *cobra.Command {
-	return imageIOCommand("rm <list>...", "Remove local manifest lists", cobra.MinimumNArgs(1), func(cmd *cobra.Command, args []string) error {
+	var ignore bool
+	cmd := imageIOCommand("rm <list>...", "Remove local manifest lists", cobra.MinimumNArgs(1), func(cmd *cobra.Command, args []string) error {
 		return withManifestStore(cmd, oci.Options{}, true, func(_ storage.Store, native *libimage.Runtime) error {
-			for _, name := range args {
-				if _, err := native.LookupManifestList(name); err != nil {
-					return err
-				}
-			}
-			reports, errs := native.RemoveImages(cmd.Context(), args, &libimage.RemoveImagesOptions{LookupManifest: true})
-			for _, report := range reports {
-				if _, err := fmt.Fprintln(cmd.OutOrStdout(), report.ID); err != nil {
-					return err
-				}
-			}
-			return errors.Join(errs...)
+			reports, errs := native.RemoveImages(cmd.Context(), args, &libimage.RemoveImagesOptions{LookupManifest: true, Ignore: ignore})
+			return imageRemovalError(errors.Join(writeImageRemovalReports(cmd.OutOrStdout(), reports), errors.Join(errs...)))
 		})
 	})
+	cmd.Flags().BoolVarP(&ignore, "ignore", "i", false, "ignore missing manifest lists")
+	return cmd
 }
 
 func newManifestExistsCommand() *cobra.Command {

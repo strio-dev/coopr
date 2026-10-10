@@ -168,6 +168,14 @@ type planWorkerResponse struct {
 	Result      Result            `json:"result"`
 	Publication PublicationResult `json:"publication"`
 	Error       string            `json:"error,omitempty"`
+	Failure     *workerError      `json:"failure,omitempty"`
+}
+
+func (response planWorkerResponse) failure() error {
+	if response.Failure != nil {
+		return response.Failure
+	}
+	return errors.New(response.Error)
 }
 
 // PublicationResult identifies a complete component OCI layout produced by a
@@ -228,12 +236,14 @@ func BuildDefinitionSupervised(ctx context.Context, def *definition.Definition, 
 // ExportStoredImageSupervised exports one committed image in the same rootless
 // storage namespace used by builds. The layout at output is caller-owned.
 func ExportStoredImageSupervised(ctx context.Context, store StoreOptions, imageID, output string) (Result, error) {
-	return ExportStoredImageSelectedSupervised(ctx, store, imageID, "", output)
+	return ExportStoredImageSelectedSupervised(ctx, store, imageID, "", output, "")
 }
 
-// ExportStoredImageSelectedSupervised exports the exact stored manifest named
-// by manifestDigest. An empty digest retains the legacy default-manifest path.
-func ExportStoredImageSelectedSupervised(ctx context.Context, store StoreOptions, imageID string, manifestDigest digest.Digest, output string) (Result, error) {
+// ExportStoredImageSelectedSupervised exports the selected stored image. Native
+// storage may rewrite its layer representation; Result names the emitted manifest.
+// The source must pass the signature policy; an empty path uses the default policy.
+// An empty digest selects the default stored manifest.
+func ExportStoredImageSelectedSupervised(ctx context.Context, store StoreOptions, imageID string, manifestDigest digest.Digest, output, signaturePolicyPath string) (Result, error) {
 	if ctx == nil {
 		return Result{}, errors.New("export context is nil")
 	}
@@ -245,6 +255,7 @@ func ExportStoredImageSelectedSupervised(ctx context.Context, store StoreOptions
 	}
 	response, err := runPlanSupervised(ctx, nil, SupervisedPlanOptions{
 		Store: store, ImageID: imageID, ManifestDigest: manifestDigest, Output: Output{Path: output},
+		SignaturePolicyPath: signaturePolicyPath,
 	}, "export")
 	if err != nil {
 		return Result{}, err
@@ -493,7 +504,7 @@ func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition
 			if ctx.Err() != nil {
 				return planWorkerResponse{}, errors.Join(ctx.Err(), fmt.Errorf("build worker exited after cleanup: %s", response.Error), cleanupErr)
 			}
-			return planWorkerResponse{}, errors.Join(errors.New(response.Error), cleanupErr)
+			return planWorkerResponse{}, errors.Join(response.failure(), cleanupErr)
 		}
 		return planWorkerResponse{}, errors.Join(processErr, cleanupErr)
 	}
@@ -506,7 +517,7 @@ func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition
 		return planWorkerResponse{}, errors.Join(err, cleanupErr)
 	}
 	if response.Error != "" {
-		return planWorkerResponse{}, errors.New(response.Error)
+		return planWorkerResponse{}, response.failure()
 	}
 	if err := ctx.Err(); err != nil {
 		return planWorkerResponse{}, err
@@ -549,7 +560,9 @@ func runPlanWorker() {
 		os.Exit(2)
 	}
 	if err := executePlanWorker(os.Args[1]); err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, err)
+		if !workerFailureReported(err) {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+		}
 		os.Exit(1)
 	}
 	os.Exit(0)
@@ -589,11 +602,12 @@ func executePlanWorker(requestPath string) error {
 		response := planWorkerResponse{Result: Result{ImageID: imageID, ManifestDigest: request.ManifestDescriptor.Digest.String()}}
 		if importErr != nil {
 			response.Error = importErr.Error()
+			response.Failure = workerFailure(importErr)
 		}
 		if err := writeWorkerJSON(request.ResultPath, response); err != nil {
 			return err
 		}
-		return importErr
+		return reportedWorkerFailure(importErr)
 	}
 	if request.Mode == "export" || request.Mode == "verify" {
 		if request.ImageID == "" {
@@ -629,10 +643,14 @@ func executePlanWorker(requestPath string) error {
 				}
 			}
 		} else {
-			result, exportErr = exportStoredImageVariantRaw(context.Background(), lease.store, request.ImageID, request.Output, &types.SystemContext{
+			system := &types.SystemContext{
 				SignaturePolicyPath:  request.SignaturePolicyPath,
 				BigFilesTemporaryDir: filepath.Dir(request.ResultPath),
-			}, optionalDigest(request.ManifestDigest))
+			}
+			exportErr = approveStoredImageExport(context.Background(), lease.store, request.ImageID, system, optionalDigest(request.ManifestDigest))
+			if exportErr == nil {
+				result, exportErr = exportStoredImageVariantRaw(context.Background(), lease.store, request.ImageID, request.Output, system, optionalDigest(request.ManifestDigest))
+			}
 		}
 		closeErr := lease.Close()
 		if exportErr == nil {
@@ -641,11 +659,12 @@ func executePlanWorker(requestPath string) error {
 		response := planWorkerResponse{Result: result}
 		if exportErr != nil {
 			response.Error = exportErr.Error()
+			response.Failure = workerFailure(exportErr)
 		}
 		if err := writeWorkerJSON(request.ResultPath, response); err != nil {
 			return err
 		}
-		return exportErr
+		return reportedWorkerFailure(exportErr)
 	}
 	// Resolution and planning can read a registry or import an image. Keep both
 	// under the same cancellation scope as filesystem execution.
@@ -660,10 +679,11 @@ func executePlanWorker(requestPath string) error {
 		if err != nil {
 			buildErr := fmt.Errorf("plan raw definition: %w", err)
 			response.Error = buildErr.Error()
+			response.Failure = workerFailure(buildErr)
 			if writeErr := writeWorkerJSON(request.ResultPath, response); writeErr != nil {
 				return errors.Join(buildErr, writeErr)
 			}
-			return buildErr
+			return reportedWorkerFailure(buildErr)
 		}
 		request.Plan = plan
 		resolver = preparedResolver
@@ -680,7 +700,8 @@ func executePlanWorker(requestPath string) error {
 		if input.Kind == "image" || input.Kind == "component" {
 			var err error
 			resolver, err = oci.NewResolver(oci.Options{
-				AuthFile: request.AuthFile, CertDir: request.CertDir, TLSVerify: request.TLSVerify,
+				ProgressWriter: os.Stderr,
+				AuthFile:       request.AuthFile, CertDir: request.CertDir, TLSVerify: request.TLSVerify,
 				Credentials: request.Credentials, Retry: request.Retry, RetrySet: request.RetrySet, RetryDelay: request.RetryDelay, DecryptionKeys: request.DecryptionKeys, SignaturePolicyPath: request.SignaturePolicyPath,
 				Pull: request.Pull, PullPolicy: request.PullPolicy, ComponentStoreDir: request.ComponentStoreDir, NativeStore: NativeStoreOptions(request.Store),
 			})
@@ -696,7 +717,8 @@ func executePlanWorker(requestPath string) error {
 	if resolver == nil && (len(request.Output.SBOM) > 0 || hasRegistryCache) {
 		var err error
 		resolver, err = oci.NewResolver(oci.Options{
-			AuthFile: request.AuthFile, CertDir: request.CertDir, TLSVerify: request.TLSVerify,
+			ProgressWriter: os.Stderr,
+			AuthFile:       request.AuthFile, CertDir: request.CertDir, TLSVerify: request.TLSVerify,
 			Credentials: request.Credentials, Retry: request.Retry, RetrySet: request.RetrySet, RetryDelay: request.RetryDelay, DecryptionKeys: request.DecryptionKeys, SignaturePolicyPath: request.SignaturePolicyPath,
 			Pull: request.Pull, PullPolicy: request.PullPolicy, ComponentStoreDir: request.ComponentStoreDir, NativeStore: NativeStoreOptions(request.Store),
 		})
@@ -711,7 +733,8 @@ func executePlanWorker(requestPath string) error {
 			}
 			var err error
 			resolver, err = oci.NewResolver(oci.Options{
-				AuthFile: request.AuthFile, CertDir: request.CertDir, TLSVerify: request.TLSVerify,
+				ProgressWriter: os.Stderr,
+				AuthFile:       request.AuthFile, CertDir: request.CertDir, TLSVerify: request.TLSVerify,
 				Credentials: request.Credentials, Retry: request.Retry, RetrySet: request.RetrySet, RetryDelay: request.RetryDelay, DecryptionKeys: request.DecryptionKeys, SignaturePolicyPath: request.SignaturePolicyPath,
 				Pull: request.Pull, PullPolicy: request.PullPolicy, ComponentStoreDir: request.ComponentStoreDir, NativeStore: NativeStoreOptions(request.Store),
 			})
@@ -816,11 +839,12 @@ func executePlanWorker(requestPath string) error {
 	}
 	if buildErr != nil {
 		response.Error = buildErr.Error()
+		response.Failure = workerFailure(buildErr)
 	}
 	if err := writeWorkerJSON(request.ResultPath, response); err != nil {
 		return err
 	}
-	return buildErr
+	return reportedWorkerFailure(buildErr)
 }
 
 func validatePlanWorkerRequest(request planWorkerRequest) error {

@@ -22,6 +22,7 @@ import (
 	specs "github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/common/pkg/retry"
+	nativemanifest "go.podman.io/image/v5/manifest"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/storage"
 	"oras.land/oras-go/v2/content"
@@ -72,12 +73,13 @@ type Package struct {
 }
 
 type Options struct {
-	TLSVerify           *bool  // nil inherits native registry configuration.
-	Pull                bool   // Resolve mutable image tags from their registry instead of the local image store.
-	PullPolicy          string // always, missing, never, or newer; Pull=true is an alias for always.
-	AuthFile            string // Explicit containers-auth.json or Docker config.json credentials file.
-	CertDir             string // Direct certificate directory containing ca.crt and optional client certificates.
-	Credentials         string // Explicit username[:password], overriding credential files for image pulls.
+	ProgressWriter      io.Writer `json:"-"`
+	TLSVerify           *bool     // nil inherits native registry configuration.
+	Pull                bool      // Resolve mutable image tags from their registry instead of the local image store.
+	PullPolicy          string    // always, missing, never, or newer; Pull=true is an alias for always.
+	AuthFile            string    // Explicit containers-auth.json or Docker config.json credentials file.
+	CertDir             string    // Direct certificate directory containing ca.crt and optional client certificates.
+	Credentials         string    // Explicit username[:password], overriding credential files for image pulls.
 	Retry               uint
 	RetrySet            bool
 	RetryDelay          time.Duration
@@ -88,6 +90,7 @@ type Options struct {
 }
 
 type Resolver struct {
+	progressWriter    io.Writer
 	pullPolicy        PullPolicy
 	componentStoreDir string
 	system            *types.SystemContext
@@ -155,6 +158,7 @@ func NewResolver(opts Options) (*Resolver, error) {
 		return nil, err
 	}
 	return &Resolver{
+		progressWriter:    opts.ProgressWriter,
 		pullPolicy:        pullPolicy,
 		componentStoreDir: componentStoreDir,
 		system:            system, credentials: opts.Credentials, retry: opts.Retry, retrySet: opts.RetrySet,
@@ -279,16 +283,17 @@ func (r *Resolver) SystemContext() *types.SystemContext {
 	return &copy
 }
 
-// RegistryOptions returns a serialization-safe copy of the resolver's input
-// policy for worker processes.
+// RegistryOptions returns a copy of the resolver's input policy. The progress
+// writer is process-local and excluded when options are serialized for workers.
 func (r *Resolver) RegistryOptions() Options {
 	if r == nil {
 		return Options{}
 	}
 	system := r.SystemContext()
 	return Options{
-		TLSVerify:  tlsVerifyOption(system.DockerInsecureSkipTLSVerify),
-		PullPolicy: string(r.pullPolicy), AuthFile: system.AuthFilePath, CertDir: system.DockerCertPath,
+		ProgressWriter: r.progressWriter,
+		TLSVerify:      tlsVerifyOption(system.DockerInsecureSkipTLSVerify),
+		PullPolicy:     string(r.pullPolicy), AuthFile: system.AuthFilePath, CertDir: system.DockerCertPath,
 		Credentials: r.credentials, Retry: r.retry, RetrySet: r.retrySet, RetryDelay: r.retryDelay,
 		DecryptionKeys: slices.Clone(r.decryptionKeys), SignaturePolicyPath: system.SignaturePolicyPath,
 		ComponentStoreDir: r.componentStoreDir,
@@ -466,16 +471,40 @@ func (r *Resolver) resolveRoot(ctx context.Context, source content.ReadOnlyStora
 		if err := json.Unmarshal(data, &index); err != nil || index.SchemaVersion != 2 || index.MediaType != "" && index.MediaType != root.MediaType {
 			return nil, fmt.Errorf("invalid OCI index: %v", err)
 		}
-		var matches []v1.Descriptor
-		for _, desc := range index.Manifests {
-			if desc.Platform != nil && platformEqual(*desc.Platform, platform) {
-				matches = append(matches, desc)
+		if kind == Image {
+			list, err := nativemanifest.ListFromBlob(data, root.MediaType)
+			if err != nil {
+				return nil, fmt.Errorf("parse image index: %w", err)
 			}
+			system := r.SystemContext()
+			system.OSChoice, system.ArchitectureChoice, system.VariantChoice = platform.OS, platform.Architecture, platform.Variant
+			chosen, err := list.ChooseInstance(system)
+			if err != nil {
+				return nil, fmt.Errorf("select image index instance: %w", err)
+			}
+			found := false
+			for _, desc := range index.Manifests {
+				if desc.Digest == chosen {
+					selected = desc
+					found = true
+					break
+				}
+			}
+			if !found {
+				return nil, fmt.Errorf("selected image instance %s is absent from index", chosen)
+			}
+		} else {
+			var matches []v1.Descriptor
+			for _, desc := range index.Manifests {
+				if desc.Platform != nil && platformEqual(*desc.Platform, platform) {
+					matches = append(matches, desc)
+				}
+			}
+			if len(matches) != 1 {
+				return nil, fmt.Errorf("index has %d manifests for platform %s/%s/%s; expected one", len(matches), platform.OS, platform.Architecture, platform.Variant)
+			}
+			selected = matches[0]
 		}
-		if len(matches) != 1 {
-			return nil, fmt.Errorf("index has %d manifests for platform %s/%s/%s; expected one", len(matches), platform.OS, platform.Architecture, platform.Variant)
-		}
-		selected = matches[0]
 	case v1.MediaTypeImageManifest, dockerManifestType:
 	default:
 		return nil, fmt.Errorf("unsupported root media type %q", root.MediaType)

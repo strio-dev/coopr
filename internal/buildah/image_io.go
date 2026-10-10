@@ -15,8 +15,12 @@ import (
 	"github.com/containerd/platforms"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"go.podman.io/buildah/pkg/cli"
 	"go.podman.io/common/libimage"
+	"go.podman.io/common/pkg/config"
+	imagecopy "go.podman.io/image/v5/copy"
 	"go.podman.io/image/v5/manifest"
+	"go.podman.io/image/v5/signature"
 	imagestorage "go.podman.io/image/v5/storage"
 	"go.podman.io/image/v5/transports/alltransports"
 	"go.podman.io/image/v5/types"
@@ -48,6 +52,42 @@ func PullImage(ctx context.Context, store StoreOptions, registry oci.Options, re
 	return id, err
 }
 
+// PullAllTags lets libimage apply native short-name, registry and tag-list policy.
+func PullAllTags(ctx context.Context, store StoreOptions, options oci.Options, reference string, platform v1.Platform) (ids []string, err error) {
+	err = WithImageStore(ctx, store, func(backend storage.Store) error {
+		resolver, err := oci.NewResolver(options)
+		if err != nil {
+			return err
+		}
+		system := resolver.SystemContext()
+		system.OSChoice = platform.OS
+		system.ArchitectureChoice = platform.Architecture
+		system.VariantChoice = platform.Variant
+		native, err := libimage.RuntimeFromStore(backend, &libimage.RuntimeOptions{SystemContext: system})
+		if err != nil {
+			return err
+		}
+		policy, err := config.ParsePullPolicy(options.PullPolicy)
+		if err != nil {
+			return err
+		}
+		copied := imageCopyOptions(options, options.ProgressWriter)
+		copied.OS = platform.OS
+		copied.Architecture = platform.Architecture
+		copied.Variant = platform.Variant
+		copied.OciDecryptConfig, err = cli.DecryptConfig(options.DecryptionKeys)
+		if err != nil {
+			return err
+		}
+		images, pullErr := native.Pull(ctx, reference, policy, &libimage.PullOptions{CopyOptions: copied, AllTags: true})
+		for _, image := range images {
+			ids = append(ids, image.ID())
+		}
+		return pullErr
+	})
+	return ids, err
+}
+
 func imageCopyOptions(options oci.Options, writer io.Writer) libimage.CopyOptions {
 	copied := libimage.CopyOptions{AuthFilePath: options.AuthFile, CertDirPath: options.CertDir, Credentials: options.Credentials, SignaturePolicyPath: options.SignaturePolicyPath, Writer: writer}
 	if options.TLSVerify != nil {
@@ -73,6 +113,7 @@ func LoadImages(ctx context.Context, store StoreOptions, path string, options oc
 
 		var root v1.Descriptor
 		var rootData []byte
+		var archiveReference types.ImageReference
 		// Native source readers can expose index metadata before native.Load tries
 		// to select the host platform. This also permits foreign-only indexes.
 		for _, transport := range []string{"oci:", "oci-archive:"} {
@@ -95,6 +136,7 @@ func LoadImages(ctx context.Context, store StoreOptions, path string, options oc
 			if manifest.MIMETypeIsMultiImage(mediaType) {
 				root = oci.Descriptor(mediaType, data)
 				rootData = data
+				archiveReference = ref
 			}
 			break
 		}
@@ -146,18 +188,11 @@ func LoadImages(ctx context.Context, store StoreOptions, path string, options oc
 			selectedCopy.OS = child.Platform.OS
 			selectedCopy.Architecture = child.Platform.Architecture
 			selectedCopy.Variant = child.Platform.Variant
-			selectedRuntime, err := libimage.RuntimeFromStore(backend, &libimage.RuntimeOptions{SystemContext: &types.SystemContext{OSChoice: child.Platform.OS, ArchitectureChoice: child.Platform.Architecture, VariantChoice: child.Platform.Variant}})
-			if err != nil {
-				return err
-			}
-			loaded, err := selectedRuntime.Load(ctx, path, &libimage.LoadOptions{CopyOptions: selectedCopy})
+			loadedID, err := loadArchiveInstance(ctx, backend, archiveReference, child, selectedCopy)
 			if err != nil {
 				return fmt.Errorf("load archived platform %s: %w", platforms.Format(*child.Platform), err)
 			}
-			if len(loaded) != 1 {
-				return fmt.Errorf("load indexed archive returned %d images", len(loaded))
-			}
-			selected, err := oci.ResolveStoredImage(ctx, backend, strings.TrimPrefix(loaded[0], "sha256:"), *child.Platform)
+			selected, err := oci.ResolveStoredImage(ctx, backend, loadedID, *child.Platform)
 			if err != nil {
 				return err
 			}
@@ -192,7 +227,7 @@ func LoadImages(ctx context.Context, store StoreOptions, path string, options oc
 
 // SaveImages uses native archive writers; OCI archive exports use transfer.Copy
 // instead so Coopr's selected manifest and complete index remain authoritative.
-func SaveImages(ctx context.Context, store StoreOptions, names []string, format, path string, options oci.Options, platform v1.Platform, explicit bool, writer io.Writer) error {
+func SaveImages(ctx context.Context, store StoreOptions, names []string, format, path string, options oci.Options, platform v1.Platform, explicit bool, writer io.Writer, saveOptions libimage.SaveOptions) error {
 	return WithImageStore(ctx, store, func(backend storage.Store) error {
 		requested := append([]string(nil), names...)
 		selectedByID := map[string]*oci.Resolved{}
@@ -250,7 +285,11 @@ func SaveImages(ctx context.Context, store StoreOptions, names []string, format,
 			// responsible for Docker format conversion, archive tags and serialization.
 			return selectedStorageReference{ImageReference: ref, manifest: selected.Selected.Digest}, nil
 		}
-		return native.Save(ctx, requested, format, path, &libimage.SaveOptions{CopyOptions: copied})
+		saved := saveOptions
+		copied.DirForceCompress = saved.DirForceCompress
+		copied.OciAcceptUncompressedLayers = saved.OciAcceptUncompressedLayers
+		saved.CopyOptions = copied
+		return native.Save(ctx, requested, format, path, &saved)
 	})
 }
 
@@ -315,4 +354,54 @@ func ImageExists(ctx context.Context, store StoreOptions, name string) (exists b
 		return nil
 	})
 	return exists, err
+}
+
+// loadArchiveInstance pins the source manifest digest, not just its platform.
+// Native loader platform selection cannot distinguish two variants for one OS/arch.
+func loadArchiveInstance(ctx context.Context, backend storage.Store, ref types.ImageReference, child v1.Descriptor, options libimage.CopyOptions) (_ string, retErr error) {
+	system := &types.SystemContext{OSChoice: options.OS, ArchitectureChoice: options.Architecture, VariantChoice: options.Variant, SignaturePolicyPath: options.SignaturePolicyPath}
+	if child.Platform != nil {
+		system.OSChoice, system.ArchitectureChoice, system.VariantChoice = child.Platform.OS, child.Platform.Architecture, child.Platform.Variant
+	}
+	source, err := ref.NewImageSource(ctx, system)
+	if err != nil {
+		return "", err
+	}
+	defer func() { retErr = errors.Join(retErr, source.Close()) }()
+	data, mediaType, err := source.GetManifest(ctx, &child.Digest)
+	if err != nil {
+		return "", err
+	}
+	if actual := oci.Descriptor(mediaType, data); actual.Digest != child.Digest || actual.Size != child.Size || actual.MediaType != child.MediaType {
+		return "", errors.New("archive manifest differs from index descriptor")
+	}
+	var encoded v1.Manifest
+	if err := json.Unmarshal(data, &encoded); err != nil {
+		return "", err
+	}
+	if err := encoded.Config.Digest.Validate(); err != nil {
+		return "", err
+	}
+	id := encoded.Config.Digest.Encoded()
+	destination, err := imagestorage.Transport.NewStoreReference(backend, nil, id)
+	if err != nil {
+		return "", err
+	}
+	policy, err := signature.DefaultPolicy(system)
+	if err != nil {
+		return "", err
+	}
+	policyContext, err := signature.NewPolicyContext(policy)
+	if err != nil {
+		return "", err
+	}
+	defer func() { retErr = errors.Join(retErr, policyContext.Destroy()) }()
+	copied, err := imagecopy.Image(ctx, policyContext, destination, selectedStorageReference{ImageReference: ref, manifest: child.Digest}, &imagecopy.Options{SourceCtx: system, DestinationCtx: system, PreserveDigests: true, ReportWriter: options.Writer})
+	if err != nil {
+		return "", err
+	}
+	if digest.FromBytes(copied) != child.Digest {
+		return "", errors.New("loaded platform manifest differs from archived index")
+	}
+	return id, nil
 }

@@ -55,11 +55,20 @@ func PushManifestList(ctx context.Context, name string, destination Destination,
 	if all {
 		selection = imagecopy.CopyAllImages
 	}
+	copyOptions := &imagecopy.Options{DestinationCtx: system}
+	if err := opts.Push.Apply(copyOptions); err != nil {
+		return "", err
+	}
 	options := &libimage.ManifestListPushOptions{ImageListSelection: selection, CopyOptions: libimage.CopyOptions{
 		Writer: writer, SignaturePolicyPath: opts.SignaturePolicyPath,
-		SignBy: opts.Signing.SignBy, SignPassphrase: gpgPassphrase,
+		ManifestMIMEType:  copyOptions.ForceManifestMIMEType,
+		CompressionFormat: system.CompressionFormat, CompressionLevel: system.CompressionLevel,
+		ForceCompressionFormat: copyOptions.ForceCompressionFormat,
+		RemoveSignatures:       copyOptions.RemoveSignatures,
+		SignBy:                 opts.Signing.SignBy, SignPassphrase: gpgPassphrase,
 		SignBySigstorePrivateKeyFile: opts.Signing.SigstorePrivateKeyFile, SignSigstorePrivateKeyPassphrase: sigstorePassphrase,
 	}}
+	options.AddCompression = opts.Push.AddCompression
 	if opts.RetrySet {
 		options.MaxRetries = &opts.Retry
 	}

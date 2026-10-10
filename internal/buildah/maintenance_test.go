@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"go.podman.io/common/libimage"
 	"go.podman.io/common/libimage/manifests"
 	imagestorage "go.podman.io/image/v5/storage"
 	"go.podman.io/storage"
@@ -398,5 +400,171 @@ func TestMaintainStoreSupervisedWaitsForActiveBuildLease(t *testing.T) {
 	}
 	if err != nil {
 		t.Fatalf("maintenance under caller-held exclusive lease: %v", err)
+	}
+}
+
+func TestMaintenanceUsageAndReclamationUseNativeUniqueAccounting(t *testing.T) {
+	options := StoreOptions{RunRoot: filepath.Join(t.TempDir(), "run"), GraphRoot: filepath.Join(t.TempDir(), "graph"), GraphDriverName: "vfs"}
+	var wantBytes, wantReclaimable int64
+	if err := WithStore(options, func(backend storage.Store) error {
+		createMaintenanceTestImage(t, backend, "", "localhost/one:latest", "localhost/two:latest")
+		createMaintenanceTestImage(t, backend, "")
+		runtime, err := libimage.RuntimeFromStore(backend, nil)
+		if err != nil {
+			return err
+		}
+		usage, total, err := runtime.DiskUsage(context.Background())
+		if err != nil {
+			return err
+		}
+		wantBytes = total
+		seen := map[string]bool{}
+		for _, entry := range usage {
+			if !seen[entry.ID] {
+				seen[entry.ID] = true
+				wantReclaimable += entry.UniqueSize
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := maintainStore(context.Background(), StoreMaintenanceRequest{Store: options, Mode: StoreMaintenanceDF})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Images != 2 || before.ActiveImages != 0 || before.Bytes != wantBytes || before.ReclaimableBytes != wantReclaimable {
+		t.Fatalf("native usage deduplication: got=%+v wantBytes=%d wantReclaimable=%d", before, wantBytes, wantReclaimable)
+	}
+	removed, err := maintainStore(context.Background(), StoreMaintenanceRequest{Store: options, Mode: StoreMaintenancePrune})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := maintainStore(context.Background(), StoreMaintenanceRequest{Store: options, Mode: StoreMaintenanceDF})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed.RemovedImages != 1 || len(removed.RemovalReports) != 1 || !removed.RemovalReports[0].Removed || removed.ReclaimedBytes != before.Bytes-after.Bytes || removed.ReclaimedBytes <= 0 {
+		t.Fatalf("native reclaimed bytes: before=%+v removed=%+v after=%+v", before, removed, after)
+	}
+}
+
+func TestPruneDoesNotRequireHealthyUsageMetadata(t *testing.T) {
+	for _, dryRun := range []bool{true, false} {
+		t.Run(fmt.Sprintf("dry-run=%t", dryRun), func(t *testing.T) {
+			t.Setenv("TMPDIR", t.TempDir())
+			options := StoreOptions{RunRoot: filepath.Join(t.TempDir(), "run"), GraphRoot: filepath.Join(t.TempDir(), "graph"), GraphDriverName: "vfs"}
+			if err := WithStore(options, func(backend storage.Store) error {
+				createMaintenanceTestImage(t, backend, "")
+				id := createMaintenanceTestImage(t, backend, "")
+				return backend.SetImageBigData(id, storage.ImageDigestBigDataKey, []byte("broken manifest"), func(data []byte) (digest.Digest, error) { return digest.FromBytes(data), nil })
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := maintainStore(context.Background(), StoreMaintenanceRequest{Store: options, Mode: StoreMaintenanceDF}); err == nil {
+				t.Fatal("df concealed corrupted metadata")
+			}
+			result, err := maintainStore(context.Background(), StoreMaintenanceRequest{Store: options, Mode: StoreMaintenancePrune, All: true, DryRun: dryRun})
+			if err != nil {
+				t.Fatalf("usage metadata blocked native prune: %v", err)
+			}
+			if result.UsageError == "" || result.ReclaimedBytesKnown {
+				t.Fatalf("fabricated complete usage: %+v", result)
+			}
+			if dryRun && result.PrunableImages != 2 {
+				t.Fatalf("missing preview candidates: %+v", result)
+			}
+			if !dryRun && (result.RemovedImages != 2 || len(result.RemovalReports) != 2) {
+				t.Fatalf("missing native removals: %+v", result)
+			}
+		})
+	}
+}
+
+func TestCacheLayerUsageReportsUnknownMetadataAndMappedRoots(t *testing.T) {
+	cacheName := instructionCacheName(digest.FromString("usage"))
+	for _, test := range []struct {
+		name   string
+		images []storage.Image
+		layers []storage.Layer
+		known  bool
+		bytes  int64
+	}{
+		{"empty", nil, nil, true, 0},
+		{"unknown size", []storage.Image{{TopLayer: "a", Names: []string{cacheName}}}, []storage.Layer{{ID: "a", UncompressedSize: -1}}, false, 0},
+		{"missing parent", []storage.Image{{TopLayer: "a", Names: []string{cacheName}}}, []storage.Layer{{ID: "a", Parent: "missing", UncompressedSize: 5}}, false, 0},
+		{"mapped root deduplicates ancestry", []storage.Image{{TopLayer: "a", MappedTopLayers: []string{"b"}, Names: []string{cacheName}}}, []storage.Layer{{ID: "a", UncompressedSize: 5}, {ID: "b", Parent: "a", UncompressedSize: 7}}, true, 12},
+		{"missing mapped root", []storage.Image{{TopLayer: "a", MappedTopLayers: []string{"missing"}, Names: []string{cacheName}}}, []storage.Layer{{ID: "a", UncompressedSize: 5}}, false, 0},
+		{"unknown mapped size", []storage.Image{{MappedTopLayers: []string{"a"}, Names: []string{cacheName}}}, []storage.Layer{{ID: "a", UncompressedSize: -1}}, false, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := storeUsage(test.images, test.layers, nil)
+			if got.CacheBytesKnown != test.known || (test.known && got.CacheBytes != test.bytes) {
+				t.Fatalf("cache layer usage=%+v want known=%t bytes=%d", got, test.known, test.bytes)
+			}
+		})
+	}
+}
+
+func TestMaintenanceWorkerResponsePreservesPartialResultsAndErrors(t *testing.T) {
+	resultPath := filepath.Join(t.TempDir(), "result.json")
+	partial := StoreMaintenanceResult{RemovedImages: 1, RemovalReports: []*libimage.RemoveImageReport{{ID: "deleted-image", Removed: true}}, Error: "native prune failed after one removal"}
+	if err := writeWorkerJSON(resultPath, partial); err != nil {
+		t.Fatal(err)
+	}
+	processErr := errors.New("worker exited with status 1")
+	result, err := readMaintenanceResult(context.Background(), resultPath, processErr)
+	if err == nil || err.Error() != partial.Error || result.RemovedImages != 1 || len(result.RemovalReports) != 1 || result.RemovalReports[0].ID != "deleted-image" || result.ReclaimedBytesKnown {
+		t.Fatalf("partial worker response lost: result=%+v err=%v", result, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if result, err := readMaintenanceResult(ctx, resultPath, processErr); !errors.Is(err, context.Canceled) || result.RemovedImages != 1 || !strings.Contains(err.Error(), partial.Error) {
+		t.Fatalf("cancellation lost partial result or error: result=%+v err=%v", result, err)
+	}
+	if _, err := readMaintenanceResult(context.Background(), filepath.Join(t.TempDir(), "missing"), processErr); !errors.Is(err, processErr) || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("startup/read failure masked: %v", err)
+	}
+	if err := os.WriteFile(resultPath, []byte("invalid response"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readMaintenanceResult(context.Background(), resultPath, processErr); !errors.Is(err, processErr) || !strings.Contains(err.Error(), "decode build worker message") {
+		t.Fatalf("malformed response masked process failure: %v", err)
+	}
+	if err := writeWorkerJSON(resultPath, StoreMaintenanceResult{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readMaintenanceResult(context.Background(), resultPath, processErr); !errors.Is(err, processErr) {
+		t.Fatalf("unreported process failure masked: %v", err)
+	}
+}
+
+func TestPruneNativeFilters(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		filters  []string
+		expected int
+	}{
+		{"matching-label", []string{"label=fixture"}, 2},
+		{"missing-label", []string{"label=absent"}, 0},
+		{"negated-label", []string{"label!=fixture"}, 0},
+		{"before-epoch", []string{"until=1970-01-01T00:00:00Z"}, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			options := StoreOptions{RunRoot: filepath.Join(t.TempDir(), "run"), GraphRoot: filepath.Join(t.TempDir(), "graph"), GraphDriverName: "vfs"}
+			lease, err := acquireStore(options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			createMaintenanceTestImage(t, lease.store, "")
+			createMaintenanceTestImage(t, lease.store, "")
+			if err := lease.Close(); err != nil {
+				t.Fatal(err)
+			}
+			result, err := maintainStore(context.Background(), StoreMaintenanceRequest{Store: options, Mode: StoreMaintenancePrune, DryRun: true, Filters: test.filters})
+			if err != nil || result.PrunableImages != test.expected {
+				t.Fatalf("filtered prune %+v: %v", result, err)
+			}
+		})
 	}
 }

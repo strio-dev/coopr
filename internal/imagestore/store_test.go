@@ -607,19 +607,23 @@ func TestWriteStoredIndexPreservesExactChildrenAndRetags(t *testing.T) {
 				return v1.Descriptor{MediaType: indexType, Digest: digest.FromBytes(data), Size: int64(len(data))}, data
 			}
 			root, data := makeIndex("original")
-			if _, err := store.WriteStoredIndex(ctx, root, data, imageIDs, "current:latest"); err != nil {
+			nativeID, err := store.WriteStoredIndex(ctx, root, data, imageIDs, "current:latest")
+			if err != nil {
 				t.Fatal(err)
 			}
 			first, err := store.backend.Image("localhost/current:latest")
 			if err != nil {
 				t.Fatal(err)
 			}
+			if nativeID != first.ID {
+				t.Fatalf("tagged index returned %s, native ID %s", nativeID, first.ID)
+			}
 			if err := store.backend.SetImageBigData(first.ID, "test-preserved", []byte("existing metadata"), nil); err != nil {
 				t.Fatal(err)
 			}
 			for _, name := range []string{"alias:latest", "alias:latest", "another:latest"} {
-				if _, err := store.WriteStoredIndex(ctx, root, data, imageIDs, name); err != nil {
-					t.Fatal(err)
+				if got, err := store.WriteStoredIndex(ctx, root, data, imageIDs, name); err != nil || got != first.ID {
+					t.Fatalf("reused index ID=%s err=%v want=%s", got, err, first.ID)
 				}
 				image, err := store.backend.Image("localhost/" + name)
 				if err != nil || image.ID != first.ID {

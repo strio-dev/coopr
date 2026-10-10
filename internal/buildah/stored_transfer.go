@@ -23,6 +23,7 @@ import (
 	"go.podman.io/common/libimage/manifests"
 	"go.podman.io/common/pkg/retry"
 	imagecopy "go.podman.io/image/v5/copy"
+	"go.podman.io/image/v5/directory"
 	"go.podman.io/image/v5/docker"
 	imagereference "go.podman.io/image/v5/docker/reference"
 	"go.podman.io/image/v5/manifest"
@@ -46,11 +47,14 @@ func init() {
 // publication preserves signatures already attached to the storage image and
 // may add a new GPG or sigstore signature in the same operation.
 type StoredTransferOptions struct {
+	Push                   PushOptions
+	ProgressWriter         io.Writer `json:"-"`
 	Store                  StoreOptions
 	ImageID                string
 	ExpectedManifest       digest.Digest
 	LocalName              string
 	RegistryDestination    string
+	RegistryInstance       bool
 	AuthFile               string
 	CertDir                string
 	TLSVerify              *bool
@@ -65,52 +69,66 @@ type StoredTransferOptions struct {
 }
 
 type storedTransferRequest struct {
+	Progress   bool                  `json:"progress,omitempty"`
 	Options    StoredTransferOptions `json:"options"`
 	ResultPath string                `json:"result_path"`
 }
 
+type StoredTransferResult struct {
+	Reference    string        `json:"reference,omitempty"`
+	Manifest     v1.Descriptor `json:"manifest"`
+	ManifestData []byte        `json:"manifest_data,omitempty"`
+}
+
 type storedTransferResponse struct {
-	Reference string `json:"reference,omitempty"`
-	Error     string `json:"error,omitempty"`
+	StoredTransferResult
+	Error string `json:"error,omitempty"`
 }
 
 // TransferStoredImageSupervised runs the native copy inside the same user
 // namespace model as builds, so overlay-backed stores are never opened from
 // the parent namespace.
 func TransferStoredImageSupervised(ctx context.Context, options StoredTransferOptions) (string, error) {
+	result, err := TransferStoredImageResultSupervised(ctx, options)
+	return result.Reference, err
+}
+
+// TransferStoredImageResultSupervised returns the actual native copied manifest.
+func TransferStoredImageResultSupervised(ctx context.Context, options StoredTransferOptions) (StoredTransferResult, error) {
 	if ctx == nil {
-		return "", errors.New("stored transfer context is nil")
+		return StoredTransferResult{}, errors.New("stored transfer context is nil")
 	}
 	if err := ctx.Err(); err != nil {
-		return "", err
+		return StoredTransferResult{}, err
 	}
 	if options.ImageID == "" || (options.LocalName == "") == (options.RegistryDestination == "") {
-		return "", errors.New("stored transfer requires an image ID and exactly one destination")
+		return StoredTransferResult{}, errors.New("stored transfer requires an image ID and exactly one destination")
 	}
 	jobDir, err := os.MkdirTemp("", ".coopr-stored-transfer-*")
 	if err != nil {
-		return "", err
+		return StoredTransferResult{}, err
 	}
 	defer func() { _ = os.RemoveAll(jobDir) }()
-	request := storedTransferRequest{Options: options, ResultPath: filepath.Join(jobDir, "result.json")}
+	request := storedTransferRequest{Options: options, Progress: options.ProgressWriter != nil, ResultPath: filepath.Join(jobDir, "result.json")}
 	requestPath := filepath.Join(jobDir, "request.json")
 	if err := writeWorkerJSON(requestPath, request); err != nil {
-		return "", err
+		return StoredTransferResult{}, err
 	}
 	command := reexec.Command(storedTransferWorkerName, requestPath)
+	command.Stderr = options.ProgressWriter
 	command.Env = append(withoutSigningPassword(os.Environ()), "TMPDIR="+jobDir)
 	processErr := runWorkerProcess(ctx, command, workerGrace)
 	var response storedTransferResponse
 	if err := readWorkerJSON(request.ResultPath, &response); err != nil {
-		return "", errors.Join(processErr, err)
+		return StoredTransferResult{}, errors.Join(processErr, err)
 	}
 	if response.Error != "" {
-		return "", errors.New(response.Error)
+		return StoredTransferResult{}, errors.New(response.Error)
 	}
 	if processErr != nil {
-		return "", processErr
+		return StoredTransferResult{}, processErr
 	}
-	return response.Reference, nil
+	return response.StoredTransferResult, nil
 }
 
 func runStoredTransferWorker() {
@@ -133,117 +151,200 @@ func executeStoredTransferWorker(requestPath string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+	if request.Progress {
+		request.Options.ProgressWriter = os.Stderr
+	}
 	result, transferErr := transferStoredImage(ctx, request.Options)
-	response := storedTransferResponse{Reference: result}
+	response := storedTransferResponse{StoredTransferResult: result}
 	if transferErr != nil {
 		response.Error = transferErr.Error()
 	}
 	if err := writeWorkerJSON(request.ResultPath, response); err != nil {
 		return errors.Join(transferErr, err)
 	}
-	return transferErr
+	// The parent reports operation errors from the response. Only failures to
+	// read the request or write the response belong on the worker's stderr.
+	return nil
 }
 
-func transferStoredImage(ctx context.Context, options StoredTransferOptions) (_ string, retErr error) {
+func transferStoredImage(ctx context.Context, options StoredTransferOptions) (_ StoredTransferResult, retErr error) {
 	lease, err := acquireStore(options.Store)
 	if err != nil {
-		return "", err
+		return StoredTransferResult{}, err
 	}
 	defer func() { retErr = errors.Join(retErr, lease.Close()) }()
 	baseSource, err := imagestorage.Transport.NewStoreReference(lease.store, nil, options.ImageID)
 	if err != nil {
-		return "", err
+		return StoredTransferResult{}, err
 	}
 	var src types.ImageReference = baseSource
+
 	var dst types.ImageReference
 	localIdentity := ""
 	if options.LocalName != "" {
 		named, err := imagereference.ParseNormalizedNamed(options.LocalName)
 		if err != nil {
-			return "", fmt.Errorf("parse local signing identity %q: %w", options.LocalName, err)
+			return StoredTransferResult{}, fmt.Errorf("parse local signing identity %q: %w", options.LocalName, err)
 		}
 		localIdentity = named.String()
 	} else {
 		dst, err = docker.ParseReference("//" + options.RegistryDestination)
 		if err != nil {
-			return "", fmt.Errorf("open registry destination %q: %w", options.RegistryDestination, err)
+			return StoredTransferResult{}, fmt.Errorf("open registry destination %q: %w", options.RegistryDestination, err)
 		}
 	}
 	passphrase, err := readStoredTransferPassphrase(options.SigningPassphraseFile)
 	if err != nil {
-		return "", err
+		return StoredTransferResult{}, err
 	}
 	system, err := storedTransferSystemContext(options, "")
 	if err != nil {
-		return "", err
+		return StoredTransferResult{}, err
 	}
 	if options.RegistryDestination != "" {
 		registriesDir, err := storedSigstoreAttachmentsConfig(system, dst)
 		if err != nil {
-			return "", err
+			return StoredTransferResult{}, err
 		}
 		defer func() { retErr = errors.Join(retErr, os.RemoveAll(registriesDir)) }()
 		system.RegistriesDirPath = registriesDir
 	}
 	sourceCleanup := func() error { return nil }
+	var policyContext *signature.PolicyContext
 	if localIdentity == "" && options.ExpectedManifest != "" {
-		src, sourceCleanup, err = storedCopySourceReference(ctx, lease.store, baseSource, system, options.ImageID, options.ExpectedManifest)
+		src, policyContext, sourceCleanup, err = verifiedStoredCopySourceReference(ctx, lease.store, baseSource, system, options.ImageID, options.ExpectedManifest)
 		defer func() { retErr = errors.Join(retErr, sourceCleanup()) }()
 		if err != nil {
-			return "", err
+			return StoredTransferResult{}, err
 		}
 	}
 	if localIdentity != "" {
 		if options.ExpectedManifest == "" {
-			return "", errors.New("local stored-image signing requires an expected manifest")
+			return StoredTransferResult{}, errors.New("local stored-image signing requires an expected manifest")
 		}
 		if options.SignBy == "" || options.SigstorePrivateKeyFile != "" {
-			return "", errors.New("local stored-image signing requires exactly one GPG key")
+			return StoredTransferResult{}, errors.New("local stored-image signing requires exactly one GPG key")
 		}
 		if err := signStoredManifest(ctx, lease.store, baseSource, system, options.ImageID, options.ExpectedManifest, localIdentity, options.SignBy, string(passphrase)); err != nil {
-			return "", fmt.Errorf("sign stored image: %w", err)
+			return StoredTransferResult{}, fmt.Errorf("sign stored image: %w", err)
 		}
-		return options.LocalName, nil
+		return StoredTransferResult{Reference: options.LocalName}, nil
 	}
-	policy, err := signature.DefaultPolicy(system)
-	if err != nil {
-		return "", fmt.Errorf("load image policy: %w", err)
+	if policyContext == nil {
+		policy, err := signature.DefaultPolicy(system)
+		if err != nil {
+			return StoredTransferResult{}, fmt.Errorf("load image policy: %w", err)
+		}
+		policyContext, err = signature.NewPolicyContext(policy)
+		if err != nil {
+			return StoredTransferResult{}, fmt.Errorf("initialize image policy: %w", err)
+		}
+		defer func() { retErr = errors.Join(retErr, policyContext.Destroy()) }()
 	}
-	policyContext, err := signature.NewPolicyContext(policy)
-	if err != nil {
-		return "", fmt.Errorf("initialize image policy: %w", err)
-	}
-	defer func() { retErr = errors.Join(retErr, policyContext.Destroy()) }()
 	copyOptions := &imagecopy.Options{
-		SourceCtx: system, DestinationCtx: system, PreserveDigests: true,
+		ReportWriter: options.ProgressWriter,
+		SourceCtx:    system, DestinationCtx: system,
 		ImageListSelection:           imagecopy.CopySystemImage,
 		SignBy:                       options.SignBy,
 		SignBySigstorePrivateKeyFile: options.SigstorePrivateKeyFile,
 	}
+
 	if options.SignBy != "" {
 		copyOptions.SignPassphrase = string(passphrase)
 	} else if options.SigstorePrivateKeyFile != "" {
 		copyOptions.SignSigstorePrivateKeyPassphrase = passphrase
 	}
+	if err := options.Push.Apply(copyOptions); err != nil {
+		return StoredTransferResult{}, err
+	}
+	var copiedData []byte
 	retryOptions, err := oci.RegistryRetryOptions(oci.Options{Retry: options.Retry, RetrySet: options.RetrySet, RetryDelay: options.RetryDelay})
 	if err != nil {
-		return "", err
+		return StoredTransferResult{}, err
+	}
+
+	publicationPolicy := policyContext
+	if options.RegistryInstance {
+		// A native directory carries every signature format along with the
+		// transformed bytes. Stage once, then publish that exact graph by digest.
+		stage, err := os.MkdirTemp("", "coopr-native-instance-*")
+		if err != nil {
+			return StoredTransferResult{}, err
+		}
+		defer func() { retErr = errors.Join(retErr, os.RemoveAll(stage)) }()
+		prepared, err := directory.NewReference(stage)
+		if err != nil {
+			return StoredTransferResult{}, err
+		}
+		copyOptions.SignIdentity = dst.DockerReference()
+		stageSystem := *system
+		stageSystem.DirForceCompress = true
+		copyOptions.DestinationCtx = &stageSystem
+		err = retry.IfNecessary(ctx, func() error {
+			data, copyErr := imagecopy.Image(ctx, policyContext, prepared, src, copyOptions)
+			if copyErr == nil {
+				copiedData = data
+			}
+			return copyErr
+		}, retryOptions)
+		if err != nil {
+			return StoredTransferResult{}, fmt.Errorf("prepare stored instance: %w", err)
+		}
+		pinned, err := imagereference.WithDigest(imagereference.TrimNamed(dst.DockerReference()), digest.FromBytes(copiedData))
+		if err != nil {
+			return StoredTransferResult{}, err
+		}
+		dst, err = docker.NewReference(pinned)
+		if err != nil {
+			return StoredTransferResult{}, err
+		}
+		// The original source passed the user's policy above. Trust only this
+		// private, prepared output for the digest-preserving publication step.
+		stagedPolicy, err := signature.NewPolicyContext(oci.PreparedImagePolicy(prepared))
+		if err != nil {
+			return StoredTransferResult{}, fmt.Errorf("initialize prepared image policy: %w", err)
+		}
+		defer func() { retErr = errors.Join(retErr, stagedPolicy.Destroy()) }()
+		publicationPolicy = stagedPolicy
+		src = prepared
+		copyOptions = &imagecopy.Options{
+			ReportWriter: options.ProgressWriter, SourceCtx: system, DestinationCtx: system,
+			PreserveDigests: true, ImageListSelection: imagecopy.CopySystemImage,
+		}
 	}
 	err = retry.IfNecessary(ctx, func() error {
-		manifest, copyErr := imagecopy.Image(ctx, policyContext, dst, src, copyOptions)
-		if copyErr == nil && options.ExpectedManifest != "" && digest.FromBytes(manifest) != options.ExpectedManifest {
-			copyErr = fmt.Errorf("copied stored manifest %s, want %s", digest.FromBytes(manifest), options.ExpectedManifest)
+		data, copyErr := imagecopy.Image(ctx, publicationPolicy, dst, src, copyOptions)
+		if copyErr == nil {
+			copiedData = data
 		}
 		return copyErr
 	}, retryOptions)
 	if err != nil {
-		return "", fmt.Errorf("copy stored image: %w", err)
+		return StoredTransferResult{}, fmt.Errorf("copy stored image: %w", err)
 	}
 	named, err := reference.ParseNormalizedNamed(options.RegistryDestination)
 	if err != nil {
-		return "", err
+		return StoredTransferResult{}, err
 	}
-	return reference.TrimNamed(named).String(), nil
+	copiedDigest := digest.FromBytes(copiedData)
+	return StoredTransferResult{Reference: reference.TrimNamed(named).String() + "@" + copiedDigest.String(), Manifest: v1.Descriptor{Digest: copiedDigest, Size: int64(len(copiedData)), MediaType: manifest.GuessMIMEType(copiedData)}, ManifestData: copiedData}, nil
+}
+
+// The original source is approved before introducing a temporary selection
+// alias. Re-evaluating the caller's policy against that alias changes its scope.
+func verifiedStoredCopySourceReference(ctx context.Context, store storage.Store, base types.ImageReference, system *types.SystemContext, imageID string, selected digest.Digest) (types.ImageReference, *signature.PolicyContext, func() error, error) {
+	if err := approveStoredImageExport(ctx, store, imageID, system, &selected); err != nil {
+		return nil, nil, func() error { return nil }, err
+	}
+	reference, cleanup, err := storedCopySourceReference(ctx, store, base, system, imageID, selected)
+	if err != nil {
+		return nil, nil, cleanup, err
+	}
+	policy, err := signature.NewPolicyContext(oci.PreparedImagePolicy(reference))
+	if err != nil {
+		return nil, nil, cleanup, err
+	}
+	return reference, policy, func() error { return errors.Join(policy.Destroy(), cleanup()) }, nil
 }
 
 func storedCopySourceReference(ctx context.Context, store storage.Store, base types.ImageReference, system *types.SystemContext, imageID string, selected digest.Digest) (_ types.ImageReference, cleanup func() error, retErr error) {

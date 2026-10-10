@@ -62,10 +62,11 @@ func TestConfiguredStoreInteroperatesWithPodmanNativeNames(t *testing.T) {
 	}
 	const nativeBase = "docker.io/library/external-base:latest"
 	buildNativeBase(nativeBase, "first")
-	var inspected libimage.ImageData
-	if err := json.Unmarshal([]byte(runPodmanCompatibilityCLI(t, "image", "inspect", "external-base")), &inspected); err != nil {
-		t.Fatal(err)
+	var inspectedRows []libimage.ImageData
+	if err := json.Unmarshal([]byte(runPodmanCompatibilityCLI(t, "image", "inspect", "external-base")), &inspectedRows); err != nil || len(inspectedRows) != 1 {
+		t.Fatalf("Coopr inspection: %+v, %v", inspectedRows, err)
 	}
+	inspected := inspectedRows[0]
 	var nativeInspected []libimage.ImageData
 	if err := json.Unmarshal([]byte(podman("image", "inspect", nativeBase)), &nativeInspected); err != nil || len(nativeInspected) != 1 {
 		t.Fatalf("native inspection: %+v, %v", nativeInspected, err)
@@ -91,16 +92,22 @@ func TestConfiguredStoreInteroperatesWithPodmanNativeNames(t *testing.T) {
 		}
 	}
 	listing := runPodmanCompatibilityCLI(t, "image", "ls")
+	nativeListing := podman("images")
+	cooprHeader, _, _ := strings.Cut(listing, "\n")
+	nativeHeader, _, _ := strings.Cut(nativeListing, "\n")
+	if strings.Join(strings.Fields(cooprHeader), " ") != strings.Join(strings.Fields(nativeHeader), " ") {
+		t.Fatalf("image columns differ: Coopr=%q Podman=%q", cooprHeader, nativeHeader)
+	}
 	rows := 0
 	for _, line := range strings.Split(listing, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) == 0 {
 			continue
 		}
-		if fields[0] == "localhost/coopr-output:latest" {
+		if len(fields) >= 2 && fields[0] == "localhost/coopr-output" && fields[1] == "latest" {
 			rows++
 		}
-		if fields[0] == "coopr-output:latest" || fields[0] == "external-base:latest" {
+		if fields[0] == "coopr-output" || fields[0] == "external-base" {
 			t.Fatalf("synthetic lookup alias was listed as a native tag:\n%s", listing)
 		}
 	}
@@ -146,19 +153,23 @@ func TestConfiguredStoreInteroperatesWithPodmanNativeNames(t *testing.T) {
 	if len(original.Manifests) != 2 || len(copied.Manifests) != 2 {
 		t.Fatalf("native index copy lost a platform: original=%+v copied=%+v", original.Manifests, copied.Manifests)
 	}
-	var cooprList v1.Index
-	if err := json.Unmarshal([]byte(runPodmanCompatibilityCLI(t, "image", "inspect", "external-list-copy")), &cooprList); err != nil {
-		t.Fatal(err)
+	var cooprImages, podmanImages []libimage.ImageData
+	if err := json.Unmarshal([]byte(runPodmanCompatibilityCLI(t, "image", "inspect", "external-list-copy")), &cooprImages); err != nil || len(cooprImages) != 1 {
+		t.Fatalf("Coopr selected index inspection: %+v, %v", cooprImages, err)
 	}
-	if len(cooprList.Manifests) != len(copied.Manifests) {
-		t.Fatalf("Coopr inspection lost native index platforms: %+v", cooprList)
+	if err := json.Unmarshal([]byte(podman("image", "inspect", "external-list-copy")), &podmanImages); err != nil || len(podmanImages) != 1 {
+		t.Fatalf("Podman selected index inspection: %+v, %v", podmanImages, err)
+	}
+	if cooprImages[0].ID != podmanImages[0].ID || cooprImages[0].Digest != podmanImages[0].Digest || cooprImages[0].Architecture != podmanImages[0].Architecture {
+		t.Fatalf("index inspection differs: Coopr=%+v Podman=%+v", cooprImages[0], podmanImages[0])
+	}
+	var cooprIndex v1.Index
+	if err := json.Unmarshal([]byte(runPodmanCompatibilityCLI(t, "manifest", "inspect", "external-list-copy")), &cooprIndex); err != nil || len(cooprIndex.Manifests) != len(copied.Manifests) {
+		t.Fatalf("Coopr raw index inspection: %+v, %v", cooprIndex, err)
 	}
 	for i, descriptor := range original.Manifests {
-		if descriptor.Digest != copied.Manifests[i].Digest {
-			t.Fatalf("native index copy changed child %d: original=%s copied=%s", i, descriptor.Digest, copied.Manifests[i].Digest)
-		}
-		if cooprList.Manifests[i].Digest != descriptor.Digest || cooprList.Manifests[i].Platform == nil || cooprList.Manifests[i].Platform.Architecture != descriptor.Platform.Architecture {
-			t.Fatalf("Coopr inspection changed native index child %d: %+v", i, cooprList.Manifests[i])
+		if descriptor.Digest != copied.Manifests[i].Digest || cooprIndex.Manifests[i].Digest != descriptor.Digest {
+			t.Fatalf("native index copy/inspection changed child %d", i)
 		}
 	}
 

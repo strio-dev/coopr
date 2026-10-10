@@ -19,6 +19,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/registry"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"go.podman.io/storage"
 	"oras.land/oras-go/v2/content"
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
@@ -35,9 +36,27 @@ func TestRunBuildsAndCopiesMultiPlatformIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	const tag = "multi:latest"
-	if got, err := Run(ctx, Options{File: file, BuildStore: nativeBuildTestStore(storeDir), Tag: tag, Platforms: []string{"linux/arm64", "linux/amd64"}}); err != nil || got != tag {
-		t.Fatalf("multi-platform build = %q, %v", got, err)
+	iid := filepath.Join(work, "iid")
+	built, err := Run(ctx, Options{File: file, BuildStore: nativeBuildTestStore(storeDir), Tag: tag, IIDFile: iid, Platforms: []string{"linux/arm64", "linux/amd64"}})
+	if err != nil || len(built.References) != 1 || built.References[0] != tag {
+		t.Fatalf("multi-platform build = %+v, %v", built, err)
 	}
+	if err := buildah.WithStore(nativeBuildTestStore(storeDir), func(store storage.Store) error {
+		stored, err := store.Image("localhost/" + tag)
+		if err != nil {
+			return err
+		}
+		if built.ImageID != stored.ID {
+			t.Fatalf("build ID %s differs from native index ID %s", built.ImageID, stored.ID)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(iid); err != nil || string(data) != "sha256:"+built.ImageID {
+		t.Fatalf("index iid=%s err=%v", data, err)
+	}
+
 	root, indexData, selections, found, err := testStoredImageIndex(ctx, nativeBuildTestStore(storeDir), tag)
 	if err != nil || !found || len(selections) != 2 {
 		t.Fatalf("cataloged index = %s, %t, %d platforms, %v", root.Digest, found, len(selections), err)
@@ -87,8 +106,12 @@ func TestRunBuildsAndCopiesMultiPlatformIndex(t *testing.T) {
 		}
 	}
 	directRemote := strings.TrimPrefix(server.URL, "http://") + "/coopr/direct:latest"
-	immutable, err := Run(ctx, Options{File: file, BuildStore: nativeBuildTestStore(storeDir), Tag: directRemote, Push: true, TLSVerify: new(false), Platforms: []string{"linux/arm64", "linux/amd64"}})
-	if err != nil || !strings.HasPrefix(immutable, strings.TrimSuffix(directRemote, ":latest")+"@sha256:") {
+	result, err := Run(ctx, Options{File: file, BuildStore: nativeBuildTestStore(storeDir), Tag: directRemote, Push: true, TLSVerify: new(false), Platforms: []string{"linux/arm64", "linux/amd64"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	immutable := result.References[0]
+	if !strings.HasPrefix(immutable, strings.TrimSuffix(directRemote, ":latest")+"@sha256:") {
 		t.Fatalf("direct multi-platform push = %q, %v", immutable, err)
 	}
 	for _, arch := range []string{"arm64", "amd64"} {

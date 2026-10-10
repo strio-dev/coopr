@@ -49,18 +49,34 @@ func ImageIndexDescriptor(variants []ImageVariant, format string) (v1.Descriptor
 	if err != nil {
 		return v1.Descriptor{}, nil, err
 	}
-	normalized, err := normalizeImageVariants(variants)
+	normalized, err := normalizeImageVariants(variants, false)
 	if err != nil {
 		return v1.Descriptor{}, nil, err
 	}
-	return assembleIndexDescriptor(normalized, mediaType)
+	return assembleIndexDescriptor(normalized, mediaType, false)
 }
 
-func assembleIndexDescriptor(variants []ImageVariant, mediaType string) (v1.Descriptor, []byte, error) {
+// RetainedImageIndexDescriptor appends to an existing native index without
+// discarding distinct image instances which share a platform (e.g. compression variants).
+func RetainedImageIndexDescriptor(variants []ImageVariant, format string) (v1.Descriptor, []byte, error) {
+	mediaType, err := imageIndexMediaType(format)
+	if err != nil {
+		return v1.Descriptor{}, nil, err
+	}
+	normalized, err := normalizeImageVariants(variants, true)
+	if err != nil {
+		return v1.Descriptor{}, nil, err
+	}
+	return assembleIndexDescriptor(normalized, mediaType, true)
+}
+
+func assembleIndexDescriptor(variants []ImageVariant, mediaType string, preserveInstances bool) (v1.Descriptor, []byte, error) {
 	children := make([]v1.Descriptor, len(variants))
 	for i, variant := range variants {
 		children[i] = variant.Manifest
-		children[i].Platform = platformPointer(variant.Platform)
+		if !preserveInstances || children[i].Platform == nil {
+			children[i].Platform = platformPointer(variant.Platform)
+		}
 	}
 	indexData, err := json.Marshal(v1.Index{
 		Versioned: specs.Versioned{SchemaVersion: 2},
@@ -78,7 +94,7 @@ func assembleIndexDescriptor(variants []ImageVariant, mediaType string) (v1.Desc
 // independently stored child image graphs. It never re-marshals indexData, so
 // the returned layout preserves root's digest exactly.
 func RestoreImageIndex(ctx context.Context, outputPath string, root v1.Descriptor, indexData []byte, variants []ImageVariant) (retErr error) {
-	normalized, err := normalizeImageVariants(variants)
+	normalized, err := normalizeImageVariants(variants, true)
 	if err != nil {
 		return err
 	}
@@ -165,7 +181,7 @@ func imageIndexMediaType(format string) (string, error) {
 	}
 }
 
-func normalizeImageVariants(variants []ImageVariant) ([]ImageVariant, error) {
+func normalizeImageVariants(variants []ImageVariant, preserveInstances bool) ([]ImageVariant, error) {
 	if len(variants) == 0 {
 		return nil, errors.New("image index requires at least one variant")
 	}
@@ -177,7 +193,7 @@ func normalizeImageVariants(variants []ImageVariant) ([]ImageVariant, error) {
 			return nil, fmt.Errorf("image variant %d: %w", i, err)
 		}
 		key := platformKey(variant.Platform)
-		if _, exists := seen[key]; exists {
+		if _, exists := seen[key]; exists && !preserveInstances {
 			return nil, fmt.Errorf("duplicate image platform %s", key)
 		}
 		seen[key] = struct{}{}
@@ -242,7 +258,12 @@ func validateImageIndex(root v1.Descriptor, indexData []byte, variants []ImageVa
 				continue
 			}
 			expected := variant.Manifest
-			expected.Platform = platformPointer(variant.Platform)
+			if expected.Platform == nil {
+				expected.Platform = platformPointer(variant.Platform)
+			}
+			if child.Platform != nil && !platformEqual(normalizeImagePlatform(*child.Platform), variant.Platform) {
+				continue
+			}
 			if descriptorJSONEqual(child, expected) {
 				matched[j] = true
 				found = true
