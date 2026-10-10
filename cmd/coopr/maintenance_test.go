@@ -992,7 +992,7 @@ func TestImageRemoveMissingManifestUsesNativeRecovery(t *testing.T) {
 
 func TestPruneConfirmationPreventsMutation(t *testing.T) {
 	for _, system := range []bool{false, true} {
-		for _, input := range []string{"n\n", "\n", "", "y"} {
+		for _, input := range []string{"n\n", "n", "\n", ""} {
 			t.Run(fmt.Sprintf("system=%t/input=%q", system, input), func(t *testing.T) {
 				command := newPruneCommand(system)
 				var out bytes.Buffer
@@ -1001,7 +1001,7 @@ func TestPruneConfirmationPreventsMutation(t *testing.T) {
 				command.SetContext(context.WithValue(context.Background(), storageSelectionKey{}, storageSelection{store: maintenanceStoreOptions(t.TempDir())}))
 				// A declined prompt must return before touching storage.
 				err := command.RunE(command, nil)
-				if input == "" || input == "y" {
+				if input == "" {
 					if !errors.Is(err, io.EOF) {
 						t.Fatalf("expected EOF without mutation, got %v", err)
 					}
@@ -1021,12 +1021,15 @@ func TestPruneConfirmationPreventsMutation(t *testing.T) {
 
 func TestPruneConfirmationErrors(t *testing.T) {
 	want := errors.New("confirmation stream failed")
-	for _, outputFailure := range []bool{false, true} {
+	for _, mode := range []string{"read", "partial-read", "write"} {
 		command := newPruneCommand(false)
 		command.SetContext(context.Background())
 		command.SetIn(iotest.ErrReader(want))
 		command.SetOut(&bytes.Buffer{})
-		if outputFailure {
+		if mode == "partial-read" {
+			command.SetIn(io.MultiReader(strings.NewReader("y"), iotest.ErrReader(want)))
+		}
+		if mode == "write" {
 			command.SetOut(&maintenanceFailingWriter{err: want})
 		}
 		if err := command.RunE(command, nil); !errors.Is(err, want) {
@@ -1092,7 +1095,7 @@ func TestPruneConfirmationExecution(t *testing.T) {
 		t.Skip("supervised pruning requires rootless runtime")
 	}
 	for _, system := range []bool{false, true} {
-		for _, mode := range []string{"yes", "force", "dry-run", "decline", "eof"} {
+		for _, mode := range []string{"yes", "yes-eof", "force", "dry-run", "decline", "decline-eof", "eof"} {
 			t.Run(fmt.Sprintf("system=%t/%s", system, mode), func(t *testing.T) {
 				t.Setenv("XDG_DATA_HOME", t.TempDir())
 				options := maintenanceStoreOptions(t.TempDir())
@@ -1109,13 +1112,19 @@ func TestPruneConfirmationExecution(t *testing.T) {
 				command.SetErr(&bytes.Buffer{})
 				command.SetIn(strings.NewReader("Y\n"))
 				command.SetContext(context.WithValue(context.Background(), storageSelectionKey{}, storageSelection{store: options}))
-				for _, flag := range []string{"all", map[string]string{"yes": "all", "force": "force", "dry-run": "dry-run", "decline": "all", "eof": "all"}[mode]} {
+				for _, flag := range []string{"all", map[string]string{"yes": "all", "yes-eof": "all", "force": "force", "dry-run": "dry-run", "decline": "all", "decline-eof": "all", "eof": "all"}[mode]} {
 					if err := command.Flags().Set(flag, "true"); err != nil {
 						t.Fatal(err)
 					}
 				}
 				if mode == "decline" {
 					command.SetIn(strings.NewReader("n\n"))
+				}
+				if mode == "yes-eof" {
+					command.SetIn(strings.NewReader("y"))
+				}
+				if mode == "decline-eof" {
+					command.SetIn(strings.NewReader("n"))
 				}
 				if mode == "eof" {
 					command.SetIn(strings.NewReader(""))
@@ -1126,15 +1135,15 @@ func TestPruneConfirmationExecution(t *testing.T) {
 				if err := command.RunE(command, nil); (mode == "eof" && !errors.Is(err, io.EOF)) || (mode != "eof" && err != nil) {
 					t.Fatal(err)
 				}
-				if strings.Contains(stdout.String(), "[y/N]") != (mode == "yes" || mode == "decline" || mode == "eof") {
+				if strings.Contains(stdout.String(), "[y/N]") != (mode == "yes" || mode == "yes-eof" || mode == "decline" || mode == "decline-eof" || mode == "eof") {
 					t.Fatalf("unexpected confirmation output: %s", &stdout)
 				}
 				if err := buildah.WithStore(options, func(backend storage.Store) error {
 					_, err := backend.Image(imageID.Encoded())
-					if (mode == "dry-run" || mode == "decline" || mode == "eof") && err != nil {
+					if (mode == "dry-run" || mode == "decline" || mode == "decline-eof" || mode == "eof") && err != nil {
 						t.Fatalf("dry run deleted image: %v", err)
 					}
-					if (mode == "yes" || mode == "force") && !errors.Is(err, storage.ErrImageUnknown) {
+					if (mode == "yes" || mode == "yes-eof" || mode == "force") && !errors.Is(err, storage.ErrImageUnknown) {
 						t.Fatalf("accepted prune did not delete image: %v", err)
 					}
 					return nil

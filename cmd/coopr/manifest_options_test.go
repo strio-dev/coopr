@@ -163,6 +163,35 @@ func TestManifestRemoteInspectAndPushRemoval(t *testing.T) {
 	}
 }
 
+func TestManifestRemoteInspectSingleOCIImage(t *testing.T) {
+	ctx := context.Background()
+	server := httptest.NewServer(registry.New())
+	defer server.Close()
+	remote := strings.TrimPrefix(server.URL, "http://") + "/test/single:latest"
+	layout, child, imageID := maintenanceImageLayout(t, v1.Platform{OS: "linux", Architecture: runtime.GOARCH}, "single-inspect")
+	resolver, err := oci.NewResolver(oci.Options{TLSVerify: new(false)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolver.PublishLayout(ctx, remote, layout, child); err != nil {
+		t.Fatal(err)
+	}
+	var out, errs bytes.Buffer
+	if status := run(manifestTestArgs(maintenanceStoreOptions(t.TempDir()), "inspect", "--tls-verify=false", remote), &out, &errs); status != 0 {
+		t.Fatalf("inspect status=%d %s", status, &errs)
+	}
+	var inspected v1.Manifest
+	if err := json.Unmarshal(out.Bytes(), &inspected); err != nil {
+		t.Fatal(err)
+	}
+	if inspected.MediaType != v1.MediaTypeImageManifest || inspected.Config.Digest != imageID || len(inspected.Layers) != 0 {
+		t.Fatalf("remote manifest=%s", &out)
+	}
+	if !strings.Contains(errs.String(), "Warning: The manifest type "+v1.MediaTypeImageManifest+" is not a manifest list but a single image.") {
+		t.Fatalf("missing single-image warning: %s", &errs)
+	}
+}
+
 func TestManifestPushUsesNativeListOptionSurface(t *testing.T) {
 	cmd := newManifestPushCommand()
 	for _, option := range []string{"format", "compression-format", "compression-level", "force-compression", "add-compression", "remove-signatures", "rm"} {

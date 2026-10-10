@@ -372,8 +372,8 @@ func newManifestInspectCommand() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				if mediaType == manifest.DockerV2Schema2MediaType {
-					if _, err := manifest.Schema2FromManifest(raw); err != nil {
+				if !manifest.MIMETypeIsMultiImage(mediaType) {
+					if _, err := manifest.FromBlob(raw, mediaType); err != nil {
 						return err
 					}
 					if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "Warning: The manifest type %s is not a manifest list but a single image.\n", mediaType); err != nil {

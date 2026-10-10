@@ -747,7 +747,7 @@ func newPruneCommand(pruneComponents bool) *cobra.Command {
 					return err
 				}
 				answer, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
-				if err != nil {
+				if err != nil && (!errors.Is(err, io.EOF) || len(answer) == 0) {
 					return err
 				}
 				if err := cmd.Context().Err(); err != nil {
