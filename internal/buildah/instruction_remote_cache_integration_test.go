@@ -295,9 +295,9 @@ from "` + base + `" {
 			}
 			t.Run(name, func(t *testing.T) {
 				planText := "from \"" + base + `" {
-    add "` + source + "#" + commit + "\" \"/source/\" checksum=\"" + commit[:12] + `"
+    add "` + source + "#" + commit + "\" \"/source/\" checksum=\"" + commit[:12] + "\"" + keep + `
 }
-` + keep + "\n"
+`
 				cold := build(name+"-cold", name, planText)
 				warm := build(name+"-warm", name, planText)
 				if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 1 || warm.CacheStats.Hits != 1 || warm.ManifestDigest != cold.ManifestDigest {

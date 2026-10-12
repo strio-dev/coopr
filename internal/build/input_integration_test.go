@@ -136,10 +136,14 @@ func TestBuildCombinesDefinitionsAndWritesRawIID(t *testing.T) {
     copy "payload" "/payload"
 }
 `
-			secondSource := "label second=\"present\"\n"
+			secondSource := `from "base" as="final" {
+    label second="present"
+}
+`
 			if secondFrom {
 				secondSource = `from "scratch" as="final" {
-    ` + secondSource + `copy "/payload" "/payload" from="base"
+    label second="present"
+    copy "/payload" "/payload" from="base"
 }
 `
 			}

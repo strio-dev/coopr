@@ -47,15 +47,14 @@ func testRunPullRefresh(t *testing.T, withLayers bool) {
 	baseArchive := filepath.Join(dir, "base.oci.tar")
 	produceBase := func(revision string) {
 		t.Helper()
-		definition := `from "scratch" {}
-`
+		definition := "from \"scratch\" {\n"
 		if withLayers {
 			if err := os.WriteFile(filepath.Join(dir, "base-marker"), []byte(revision), 0600); err != nil {
 				t.Fatal(err)
 			}
-			definition += "copy \"base-marker\" \"/base-marker\"\n"
+			definition += "    copy \"base-marker\" \"/base-marker\"\n"
 		}
-		definition += fmt.Sprintf("label revision=\"%s\"\n", revision)
+		definition += fmt.Sprintf("    label revision=\"%s\"\n}\n", revision)
 		if err := os.WriteFile(baseFile, []byte(definition), 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -80,11 +79,11 @@ func testRunPullRefresh(t *testing.T, withLayers bool) {
 	}
 	writeConsumer := func(from string) {
 		t.Helper()
-		definition := "from \"" + from + `" {}
-`
+		definition := "from \"" + from + "\" {\n"
 		if withLayers {
-			definition += "copy \"consumer-marker\" \"/consumer-marker\"\n"
+			definition += "    copy \"consumer-marker\" \"/consumer-marker\"\n"
 		}
+		definition += "}\n"
 		if err := os.WriteFile(consumerFile, []byte(definition), 0600); err != nil {
 			t.Fatal(err)
 		}

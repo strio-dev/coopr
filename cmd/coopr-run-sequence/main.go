@@ -62,6 +62,8 @@ func run(args []string) int {
 			return signalStatus(sig)
 		default:
 		}
+		// RUN deliberately executes caller-authored argv inside Buildah's target environment.
+		// nosemgrep: cache.semgrep-rules.go.lang.security.audit.dangerous-exec-command
 		command := exec.Command(argv[0], argv[1:]...)
 		// A caller's explicit PATH may include its working directory, as in a shell.
 		if errors.Is(command.Err, exec.ErrDot) {

@@ -105,6 +105,8 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(subprocess.check_output([prefix / "bin/coopr"], text=True), "coopr fixture\n")
         self.assertEqual((prefix / "share/licenses/coopr/LICENSE").read_text(), "MIT license fixture\n")
         helper = prefix / "libexec/coopr/coopr-run-sequence"
+        # write_assets() authors this helper in our private temporary installation.
+        # nosemgrep: cache.semgrep-rules.python.lang.security.audit.dangerous-subprocess-use-audit
         self.assertEqual(subprocess.check_output([helper], text=True), "sequence fixture\n")
         self.assertEqual(helper.stat().st_mode & 0o777, 0o755)
         self.assertEqual((prefix / "share/licenses/coopr/third-party/NOTICE").read_text(), "Dependency notices fixture\n")
@@ -127,6 +129,8 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse(helper.exists())
         self.write_assets()
         self.run_installer()
+        # write_assets() authors this helper in our private temporary installation.
+        # nosemgrep: cache.semgrep-rules.python.lang.security.audit.dangerous-subprocess-use-audit
         self.assertEqual(subprocess.check_output([helper], text=True), "sequence fixture\n")
         self.assertEqual(helper.stat().st_mode & 0o777, 0o755)
         self.run_installer()
@@ -173,6 +177,8 @@ class InstallerTests(unittest.TestCase):
         self.run_installer("1.2.3")
         self.assertTrue((self.root / "custom prefix/bin/coopr").is_file())
         helper = self.root / "custom prefix/libexec/coopr/coopr-run-sequence"
+        # write_assets() authors this helper in our private temporary installation.
+        # nosemgrep: cache.semgrep-rules.python.lang.security.audit.dangerous-subprocess-use-audit
         self.assertEqual(subprocess.check_output([helper], text=True), "sequence fixture\n")
         self.assertEqual(helper.stat().st_mode & 0o777, 0o755)
         self.assertIn("coopr-linux-arm64.tar.gz", (self.root / "requests").read_text())

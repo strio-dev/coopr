@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -279,7 +280,8 @@ func awaitStopped(t *testing.T, pids []int) {
 		alive := false
 		for _, pid := range pids {
 			data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-			if os.IsNotExist(err) {
+			// A process reaped after ReadFile opens stat makes the read return ESRCH.
+			if os.IsNotExist(err) || errors.Is(err, syscall.ESRCH) {
 				continue
 			}
 			if err != nil {
