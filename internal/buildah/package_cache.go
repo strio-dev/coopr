@@ -26,7 +26,7 @@ import (
 	"go.podman.io/storage"
 )
 
-const packageCacheLoweringVersion = "coopr-buildah-package-v1"
+const packageCacheLoweringVersion = "coopr-buildah-package-v2"
 
 var errPackageCacheDriverUnknown = errors.New("package cache storage driver is unknown")
 var errPackageContextUnselected = errors.New("named context was not selected during planning")
@@ -215,7 +215,10 @@ func packagePlanDigest(plan *planner.Plan, closure []planner.Stage, options Plan
 		SourceDateEpoch  *int64            `json:"source_date_epoch,omitempty"`
 		Timestamp        *int64            `json:"timestamp,omitempty"`
 		RewriteTimestamp bool              `json:"rewrite_timestamp,omitempty"`
-	}{plan.DefinitionType, plan.Platform, closure, plan.PackageArguments, options.SourceDateEpoch, options.Timestamp, options.RewriteTimestamp}
+		NoLayers         bool              `json:"no_layers"`
+		CompatVolumes    bool              `json:"compat_volumes"`
+		StageLabels      bool              `json:"stage_labels"`
+	}{plan.DefinitionType, plan.Platform, closure, plan.PackageArguments, options.SourceDateEpoch, options.Timestamp, options.RewriteTimestamp, options.Lifecycle.NoLayers, options.Lifecycle.CompatVolumes, options.Lifecycle.StageLabels}
 	data, err := json.Marshal(document)
 	if err != nil {
 		return "", err

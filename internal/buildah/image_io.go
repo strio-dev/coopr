@@ -19,12 +19,14 @@ import (
 	"go.podman.io/common/libimage"
 	"go.podman.io/common/pkg/config"
 	imagecopy "go.podman.io/image/v5/copy"
+	imageapi "go.podman.io/image/v5/image"
 	"go.podman.io/image/v5/manifest"
 	"go.podman.io/image/v5/signature"
 	imagestorage "go.podman.io/image/v5/storage"
 	"go.podman.io/image/v5/transports/alltransports"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/storage"
+	"go.podman.io/storage/pkg/stringid"
 )
 
 // WithImageStore holds a store activity lease throughout a native image operation.
@@ -113,7 +115,9 @@ func LoadImages(ctx context.Context, store StoreOptions, path string, options oc
 
 		var root v1.Descriptor
 		var rootData []byte
+		var index v1.Index
 		var archiveReference types.ImageReference
+		runnable := map[digest.Digest]v1.Platform{}
 		// Native source readers can expose index metadata before native.Load tries
 		// to select the host platform. This also permits foreign-only indexes.
 		for _, transport := range []string{"oci:", "oci-archive:"} {
@@ -141,25 +145,33 @@ func LoadImages(ctx context.Context, store StoreOptions, path string, options oc
 			break
 		}
 		if rootData != nil {
-			var index v1.Index
 			if err := json.Unmarshal(rootData, &index); err != nil {
 				return err
 			}
 			for _, child := range index.Manifests {
-				if child.Platform == nil || child.Platform.OS == "unknown" || child.Platform.Architecture == "unknown" {
+				platform, err := archiveInstancePlatform(ctx, archiveReference, child, native.SystemContext())
+				if err != nil {
+					return fmt.Errorf("read archived platform %s: %w", child.Digest, err)
+				}
+				if platform != nil {
+					runnable[child.Digest] = *platform
+				}
+			}
+			if len(runnable) == 0 {
+				return errors.New("archived index contains no runnable image")
+			}
+			for _, child := range index.Manifests {
+				platform, found := runnable[child.Digest]
+				if !found {
 					continue
 				}
 				system := native.SystemContext()
-				system.OSChoice = child.Platform.OS
-				system.ArchitectureChoice = child.Platform.Architecture
-				system.VariantChoice = child.Platform.Variant
+				system.OSChoice, system.ArchitectureChoice, system.VariantChoice = platform.OS, platform.Architecture, platform.Variant
 				native, err = libimage.RuntimeFromStore(backend, &libimage.RuntimeOptions{SystemContext: system})
 				if err != nil {
 					return err
 				}
-				copied.OS = child.Platform.OS
-				copied.Architecture = child.Platform.Architecture
-				copied.Variant = child.Platform.Variant
+				copied.OS, copied.Architecture, copied.Variant = platform.OS, platform.Architecture, platform.Variant
 				break
 			}
 		}
@@ -170,29 +182,24 @@ func LoadImages(ctx context.Context, store StoreOptions, path string, options oc
 		}
 		// Import each runnable platform through the native loader, then publish an
 		// index of the imported children with the existing native index writer.
-		var index v1.Index
-		if err := json.Unmarshal(rootData, &index); err != nil {
-			return err
-		}
 		imageIDs := map[digest.Digest]string{}
 		tag := ""
-		if len(names) == 1 && !strings.HasPrefix(names[0], "sha256:") {
+		if len(names) == 1 && !strings.HasPrefix(names[0], "sha256:") && stringid.ValidateID(names[0]) != nil {
 			tag = names[0]
 		}
 		imported := make([]v1.Descriptor, 0, len(index.Manifests))
 		for _, child := range index.Manifests {
-			if child.Platform == nil || child.Platform.OS == "unknown" || child.Platform.Architecture == "unknown" {
+			platform, found := runnable[child.Digest]
+			if !found {
 				continue
 			}
 			selectedCopy := copied
-			selectedCopy.OS = child.Platform.OS
-			selectedCopy.Architecture = child.Platform.Architecture
-			selectedCopy.Variant = child.Platform.Variant
+			selectedCopy.OS, selectedCopy.Architecture, selectedCopy.Variant = platform.OS, platform.Architecture, platform.Variant
 			loadedID, err := loadArchiveInstance(ctx, backend, archiveReference, child, selectedCopy)
 			if err != nil {
-				return fmt.Errorf("load archived platform %s: %w", platforms.Format(*child.Platform), err)
+				return fmt.Errorf("load archived platform %s: %w", platforms.Format(platform), err)
 			}
-			selected, err := oci.ResolveStoredImage(ctx, backend, loadedID, *child.Platform)
+			selected, err := oci.ResolveStoredImage(ctx, backend, loadedID, platform)
 			if err != nil {
 				return err
 			}
@@ -404,4 +411,58 @@ func loadArchiveInstance(ctx context.Context, backend storage.Store, ref types.I
 		return "", errors.New("loaded platform manifest differs from archived index")
 	}
 	return id, nil
+}
+
+// archiveInstancePlatform uses native manifest/config verification when an index
+// omits its optional platform. Descriptors remain unchanged in the stored index.
+func archiveInstancePlatform(ctx context.Context, ref types.ImageReference, child v1.Descriptor, system *types.SystemContext) (_ *v1.Platform, retErr error) {
+	if child.ArtifactType != "" || child.Platform != nil && (child.Platform.OS == "unknown" || child.Platform.Architecture == "unknown") {
+		return nil, nil
+	}
+	if child.Platform != nil {
+		return child.Platform, nil
+	}
+	source, err := ref.NewImageSource(ctx, system)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { retErr = errors.Join(retErr, source.Close()) }()
+	unparsed := imageapi.UnparsedInstance(source, &child.Digest)
+	data, mediaType, err := unparsed.Manifest(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if actual := oci.Descriptor(mediaType, data); actual.Size != child.Size || actual.MediaType != child.MediaType {
+		return nil, errors.New("archive manifest differs from index descriptor")
+	}
+	if manifest.MIMETypeIsMultiImage(mediaType) {
+		return nil, errors.New("nested archived indexes cannot be loaded as image instances")
+	}
+	var encoded v1.Manifest
+	if err := json.Unmarshal(data, &encoded); err != nil {
+		return nil, err
+	}
+	if encoded.ArtifactType != "" {
+		return nil, nil
+	}
+	parsed, err := imageapi.FromUnparsedImage(ctx, system, unparsed)
+	if err != nil {
+		return nil, err
+	}
+	config, err := parsed.OCIConfig(ctx)
+	var artifact manifest.NonImageArtifactError
+	if errors.As(err, &artifact) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if config.OS == "unknown" || config.Architecture == "unknown" {
+		return nil, nil
+	}
+	if config.OS == "" || config.Architecture == "" {
+		return nil, errors.New("archived image configuration has no OS or architecture")
+	}
+	platform := platforms.Normalize(config.Platform)
+	return &platform, nil
 }

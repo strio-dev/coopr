@@ -54,6 +54,12 @@ func planDefinitionWithExternalBases(ctx context.Context, def *definition.Defini
 }
 
 func planDefinitionWithExternalBaseState(ctx context.Context, def *definition.Definition, opts planner.Options, resolve imageBaseResolver, resolveContext ...namedContextResolver) (*planner.Plan, *selectedBaseState, error) {
+	return planDefinitionWithInitialBindings(ctx, def, opts, false, resolve, resolveContext...)
+}
+
+// suppliedRecipe admits already validated caller bindings from a supplied Plan.
+// Raw definitions retain the guard against replacing external image metadata.
+func planDefinitionWithInitialBindings(ctx context.Context, def *definition.Definition, opts planner.Options, suppliedRecipe bool, resolve imageBaseResolver, resolveContext ...namedContextResolver) (*planner.Plan, *selectedBaseState, error) {
 	if opts.Mode != planner.Build && opts.Mode != planner.Publish {
 		return nil, nil, fmt.Errorf("external base binding requires build or publish mode, got %q", opts.Mode)
 	}
@@ -65,7 +71,7 @@ func planDefinitionWithExternalBaseState(ctx context.Context, def *definition.De
 			return nil, nil, fmt.Errorf("build platform: %w", err)
 		}
 	}
-	if len(opts.StageBinds) != 0 {
+	if len(opts.StageBinds) != 0 && !suppliedRecipe {
 		from, err := planner.ResolveFromSources(def, opts)
 		if err != nil {
 			return nil, nil, err

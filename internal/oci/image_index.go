@@ -259,7 +259,7 @@ func validateImageIndex(root v1.Descriptor, indexData []byte, variants []ImageVa
 				continue
 			}
 			expected := variant.Manifest
-			if expected.Platform == nil {
+			if expected.Platform == nil && child.Platform != nil {
 				expected.Platform = platformPointer(variant.Platform)
 			}
 			if child.Platform != nil && !platformEqual(normalizeImagePlatform(*child.Platform), variant.Platform) {

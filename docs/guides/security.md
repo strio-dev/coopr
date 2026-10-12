@@ -97,6 +97,6 @@ Separate RUN network namespaces or cgroup controls require `--isolation=rootless
 - Foreign-architecture RUNs need host `binfmt_misc` emulation. Coopr supports Linux targets and neither registers emulators nor bundles QEMU.
 - Root-directory mode, ownership, and portable xattrs may be lost by upstream image commits, even though package/cache snapshots capture them. See [filesystem metadata](../reference/execution.md#state-identity-and-metadata-limits).
 - Healthcheck and ONBUILD extensions are preserved with OCI/Docker output; receiving runtimes decide whether to honor them.
-- Docker's classic store requires a selected child for multi-platform transfer. OCI archive loading omits descriptors with missing or `unknown` platforms. See [image transfers](../reference/execution.md#layers-storage-and-copying) and [archive loading](../reference/cli.md#archives-and-directories).
+- Docker's classic store requires a selected child for multi-platform transfer. OCI archive loading omits non-image artifacts and `unknown` platforms; an omitted image descriptor platform is read from its verified configuration. See [image transfers](../reference/execution.md#layers-storage-and-copying) and [archive loading](../reference/cli.md#archives-and-directories).
 
 Context and image archives have no size quota: expansion can exhaust disk, memory, or CPU. Use trusted sources and bound the Coopr process or its outer container when needed. RUN resource options do not limit input preparation. Kernel features and runtime policy also determine which CI environments can run Coopr.

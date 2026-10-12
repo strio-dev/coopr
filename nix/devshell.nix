@@ -35,6 +35,7 @@ pkgs.mkShell {
       podman
       cacert
     ]
+    ++ lib.optionals (builtins.elem "cosignintegration" testTags) [ cosign ]
     ++ lib.optionals withDevelopmentTools [
       gopls
       gotools

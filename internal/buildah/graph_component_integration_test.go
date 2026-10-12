@@ -25,6 +25,7 @@ import (
 	"coopr/internal/planner"
 
 	registryserver "github.com/google/go-containerregistry/pkg/registry"
+	buildkitsystem "github.com/moby/buildkit/util/system"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/image/v5/types"
@@ -62,7 +63,7 @@ func TestBuildPlanInvokesComponentPreservingCopyLayer(t *testing.T) {
 	if len(manifest.Layers) != 1 || len(image.RootFS.DiffIDs) != 1 {
 		t.Fatalf("component output layers=%d diffIDs=%d, want the component COPY layer", len(manifest.Layers), len(image.RootFS.DiffIDs))
 	}
-	if !reflect.DeepEqual(image.Config.Env, []string{"CHANNEL=stable"}) {
+	if !reflect.DeepEqual(image.Config.Env, []string{"PATH=" + buildkitsystem.DefaultPathEnvUnix, "CHANNEL=stable"}) {
 		t.Fatalf("component output env = %#v", image.Config.Env)
 	}
 }
@@ -393,7 +394,7 @@ from "base" as="final" {
 			t.Fatal(err)
 		}
 		manifest, image := readPlanImage(t, layout)
-		want := []string{"COMPONENT_VALUE=ready", "TRIGGERED=ready", "RESULT=ready"}
+		want := []string{"PATH=" + buildkitsystem.DefaultPathEnvUnix, "COMPONENT_VALUE=ready", "TRIGGERED=ready", "RESULT=ready"}
 		if !reflect.DeepEqual(image.Config.Env, want) {
 			t.Fatalf("build %d inherited config env=%v, want %v", attempt+1, image.Config.Env, want)
 		}
@@ -468,7 +469,7 @@ func TestBuildPlanReusesPortableFilesystemComponentCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, differentImage := readPlanImage(t, differentOptions.Output.Path)
-	if differentResult.CacheStats.Misses < 1 || differentResult.CacheStats.Hits != 0 || !reflect.DeepEqual(differentImage.Config.Env, []string{"CHANNEL=other"}) {
+	if differentResult.CacheStats.Misses < 1 || differentResult.CacheStats.Hits != 0 || !reflect.DeepEqual(differentImage.Config.Env, []string{"PATH=" + buildkitsystem.DefaultPathEnvUnix, "CHANNEL=other"}) {
 		t.Fatalf("different parameter reused cached output: stats=%+v env=%v", differentResult.CacheStats, differentImage.Config.Env)
 	}
 	if len(coldManifest.Layers) != 1 || len(warmManifest.Layers) != 1 ||
@@ -588,7 +589,7 @@ func TestBuildPlanInvokesConfigOnlyComponentFromScratch(t *testing.T) {
 	if len(manifest.Layers) != 0 || len(image.RootFS.DiffIDs) != 0 {
 		t.Fatalf("config-only component layers=%d diffIDs=%d, want no synthetic filesystem layer", len(manifest.Layers), len(image.RootFS.DiffIDs))
 	}
-	if !reflect.DeepEqual(image.Config.Env, []string{"CONFIG_ONLY=yes"}) {
+	if !reflect.DeepEqual(image.Config.Env, []string{"PATH=" + buildkitsystem.DefaultPathEnvUnix, "CONFIG_ONLY=yes"}) {
 		t.Fatalf("config-only component env = %#v", image.Config.Env)
 	}
 }
@@ -725,7 +726,7 @@ func TestSupervisedBuildReusesComponentCacheAcrossWorkers(t *testing.T) {
 		t.Fatalf("supervised cache stats: cold=%+v warm=%+v", cold.CacheStats, warm.CacheStats)
 	}
 	_, image := readPlanImage(t, filepath.Join(root, "warm"))
-	if !reflect.DeepEqual(image.Config.Env, []string{"WORKER_CACHE=yes"}) {
+	if !reflect.DeepEqual(image.Config.Env, []string{"PATH=" + buildkitsystem.DefaultPathEnvUnix, "WORKER_CACHE=yes"}) {
 		t.Fatalf("cached worker image env = %v", image.Config.Env)
 	}
 }
@@ -783,7 +784,7 @@ func TestBuildPlanReusesRegistryComponentCacheAcrossStores(t *testing.T) {
 		t.Fatalf("registry hit did not seed the local cache: %v", err)
 	}
 	manifest, image := readPlanImage(t, filepath.Join(root, "warm"))
-	if !reflect.DeepEqual(image.Config.Env, []string{"CHANNEL=stable"}) || len(manifest.Layers) != 1 {
+	if !reflect.DeepEqual(image.Config.Env, []string{"PATH=" + buildkitsystem.DefaultPathEnvUnix, "CHANNEL=stable"}) || len(manifest.Layers) != 1 {
 		t.Fatalf("cached registry image env = %v", image.Config.Env)
 	}
 	if got := readLayerFile(t, filepath.Join(root, "warm", "blobs", "sha256", manifest.Layers[0].Digest.Encoded()), "artifact"); got != "package payload\n" {
@@ -797,7 +798,7 @@ func TestBuildPlanReusesRegistryComponentCacheAcrossStores(t *testing.T) {
 	}
 	unavailable := build(filepath.Join(root, "unavailable"), "fourth-store", false)
 	_, unavailableImage := readPlanImage(t, filepath.Join(root, "unavailable"))
-	if unavailable.CacheStats.Hits != 0 || unavailable.CacheStats.Errors == 0 || !reflect.DeepEqual(unavailableImage.Config.Env, []string{"CHANNEL=stable"}) {
+	if unavailable.CacheStats.Hits != 0 || unavailable.CacheStats.Errors == 0 || !reflect.DeepEqual(unavailableImage.Config.Env, []string{"PATH=" + buildkitsystem.DefaultPathEnvUnix, "CHANNEL=stable"}) {
 		t.Fatalf("unavailable optional registry changed build: stats=%+v env=%v", unavailable.CacheStats, unavailableImage.Config.Env)
 	}
 }
@@ -903,7 +904,7 @@ func TestBuildPlanInvokesNestedComponentsAndRejectsCycles(t *testing.T) {
 		t.Fatal(err)
 	}
 	manifest, image := readPlanImage(t, layout)
-	if len(manifest.Layers) != 0 || !reflect.DeepEqual(image.Config.Env, []string{"INNER=yes", "OUTER=yes"}) {
+	if len(manifest.Layers) != 0 || !reflect.DeepEqual(image.Config.Env, []string{"PATH=" + buildkitsystem.DefaultPathEnvUnix, "INNER=yes", "OUTER=yes"}) {
 		t.Fatalf("nested component layers=%d env=%#v", len(manifest.Layers), image.Config.Env)
 	}
 

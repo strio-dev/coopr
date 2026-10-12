@@ -214,7 +214,7 @@ func TestBuildPlatformFlagAcceptsRepeatedTargets(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	values, err := cmd.Flags().GetStringArray("platform")
+	values, err := cmd.Flags().GetStringSlice("platform")
 	if err != nil || strings.Join(values, ",") != "linux/amd64,linux/arm64" {
 		t.Fatalf("repeated --platform = %v, %v", values, err)
 	}

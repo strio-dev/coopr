@@ -19,6 +19,7 @@ import (
 	"coopr/internal/oci"
 	"coopr/internal/planner"
 
+	buildkitsystem "github.com/moby/buildkit/util/system"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/image/v5/types"
 	orasoci "oras.land/oras-go/v2/content/oci"
@@ -248,7 +249,7 @@ from "scratch" as="unused" {
 	if len(manifest.Layers) != 3 {
 		t.Fatalf("OCI layer count = %d, want 3", len(manifest.Layers))
 	}
-	if !reflect.DeepEqual(image.Config.Env, []string{"COOPR_GRAPH=yes"}) {
+	if !reflect.DeepEqual(image.Config.Env, []string{"PATH=" + buildkitsystem.DefaultPathEnvUnix, "COOPR_GRAPH=yes"}) {
 		t.Fatalf("OCI image env = %#v", image.Config.Env)
 	}
 }
@@ -476,7 +477,7 @@ from "source" {
 	if len(manifest.Layers) != 1 || len(image.RootFS.DiffIDs) != 1 {
 		t.Fatalf("metadata-only final stage added a filesystem layer: layers=%d diffIDs=%d", len(manifest.Layers), len(image.RootFS.DiffIDs))
 	}
-	if !reflect.DeepEqual(image.Config.Env, []string{"FLAG=yes"}) {
+	if !reflect.DeepEqual(image.Config.Env, []string{"PATH=" + buildkitsystem.DefaultPathEnvUnix, "FLAG=yes"}) {
 		t.Fatalf("OCI image env = %#v", image.Config.Env)
 	}
 }
@@ -524,7 +525,7 @@ func TestBuildPlanUsesSelectedLocalImageAsBase(t *testing.T) {
 	if len(manifest.Layers) != 0 {
 		t.Fatalf("metadata-only image gained %d filesystem layers", len(manifest.Layers))
 	}
-	if !reflect.DeepEqual(image.Config.Env, []string{"SOURCE=selected", "COOPR_GRAPH=yes"}) {
+	if !reflect.DeepEqual(image.Config.Env, []string{"SOURCE=selected", "PATH=" + buildkitsystem.DefaultPathEnvUnix, "COOPR_GRAPH=yes"}) {
 		t.Fatalf("OCI image env = %#v", image.Config.Env)
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	buildkitsystem "github.com/moby/buildkit/util/system"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -465,7 +466,7 @@ from "scratch" {
 		if len(manifest.Layers) != 1 || image.Config.Labels["final"] != "yes" {
 			t.Fatalf("build %d component metadata tail: layers=%d labels=%v", attempt+1, len(manifest.Layers), image.Config.Labels)
 		}
-		if len(image.Config.Env) != 1 || image.Config.Env[0] != "CHANNEL=stable" {
+		if len(image.Config.Env) != 2 || image.Config.Env[0] != "PATH="+buildkitsystem.DefaultPathEnvUnix || image.Config.Env[1] != "CHANNEL=stable" {
 			t.Fatalf("build %d component environment = %v", attempt+1, image.Config.Env)
 		}
 		if attempt == 0 {

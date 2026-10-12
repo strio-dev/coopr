@@ -30,12 +30,11 @@ func TestStageBindARGAndEnvironmentOrder(t *testing.T) {
 	for _, test := range []struct {
 		name       string
 		arguments  map[string]string
-		argValue   string
 		seenValue  string
 		afterValue string
 	}{
-		{name: "defaults", argValue: "child", seenValue: "base-inherited", afterValue: "child-base-inherited"},
-		{name: "override", arguments: map[string]string{"flavor": "cli"}, argValue: "cli", seenValue: "base-cli", afterValue: "cli-base-cli"},
+		{name: "defaults", seenValue: "base-base-image", afterValue: "base-image-env-base-base-image"},
+		{name: "override", arguments: map[string]string{"flavor": "cli"}, seenValue: "base-base-image", afterValue: "base-image-env-base-base-image"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			plan, err := Create(parse(t, source), Options{
@@ -61,8 +60,8 @@ func TestStageBindARGAndEnvironmentOrder(t *testing.T) {
 			if got := operations[3].Properties["AFTER"]; got != test.afterValue {
 				t.Fatalf("authored ENV = %q, want %q", got, test.afterValue)
 			}
-			if got := operations[4].ArgumentsInScope["flavor"]; got != test.argValue {
-				t.Fatalf("redeclared ARG = %q, want %q", got, test.argValue)
+			if _, exists := operations[4].ArgumentsInScope["flavor"]; exists {
+				t.Fatalf("redeclared ARG overrode image ENV: %v", operations[4].ArgumentsInScope)
 			}
 			if _, ok := operations[6].ArgumentsInScope["flavor"]; ok {
 				t.Fatalf("later ENV did not shadow ARG: %v", operations[6].ArgumentsInScope)

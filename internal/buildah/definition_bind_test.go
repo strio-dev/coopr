@@ -313,3 +313,25 @@ from "base" {}
 		t.Fatalf("selection delta was not consumed: %+v", next)
 	}
 }
+
+func TestSuppliedRecipeAllowsExplicitExternalBindingsOnly(t *testing.T) {
+	def, err := definition.Parse(strings.NewReader(`from "registry.invalid/base:tag" { env captured="${value}"; }`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := planner.Options{Mode: planner.Build, StageBinds: map[string]planner.StageBind{"0": {BaseEnvironment: map[string]string{"value": "supplied"}}}}
+	resolve := func(context.Context, string, v1.Platform) (ResolvedImageSource, error) {
+		t.Fatal("explicit bind unexpectedly re-resolved")
+		return ResolvedImageSource{}, nil
+	}
+	if _, _, err := planDefinitionWithExternalBaseState(context.Background(), def, options, resolve); err == nil {
+		t.Fatal("raw definition accepted external metadata injection")
+	}
+	plan, _, err := planDefinitionWithInitialBindings(context.Background(), def, options, true, resolve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := plan.Stages[0].Operations[0].Properties["captured"]; got != "supplied" {
+		t.Fatalf("trusted supplied binding lost: %q", got)
+	}
+}

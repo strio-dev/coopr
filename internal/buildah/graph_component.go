@@ -52,7 +52,7 @@ func componentSelectionKey(reference string, target v1.Platform) (string, error)
 // parameterized plans. Repeated identical calls avoid another mutable tag
 // lookup; a tag that changes while resolving a second parameter set aborts the
 // build before two artifact digests can be mixed.
-func (executor *graphExecutor) resolveComponentInvocation(ctx context.Context, reference string, parameters map[string]string, target v1.Platform, progressPrefix string) (*ResolvedComponentPlan, error) {
+func (executor *graphExecutor) resolveComponentInvocation(ctx context.Context, reference string, parameters map[string]string, target v1.Platform, progressPrefix string, environment map[string]string) (*ResolvedComponentPlan, error) {
 	selectionKey, err := componentInvocationSelectionKey(reference, parameters, target)
 	if err != nil {
 		return nil, err
@@ -61,7 +61,14 @@ func (executor *graphExecutor) resolveComponentInvocation(ctx context.Context, r
 	if err != nil {
 		return nil, fmt.Errorf("normalize component parameters: %w", err)
 	}
-	variantKey := string(normalized)
+	variantData, err := json.Marshal(struct {
+		Parameters  json.RawMessage
+		Environment map[string]string
+	}{normalized, environment})
+	if err != nil {
+		return nil, fmt.Errorf("normalize component caller environment: %w", err)
+	}
+	variantKey := string(variantData)
 	state := executor.resolvedComponents[selectionKey]
 	if state != nil {
 		if resolved := state.variants[variantKey]; resolved != nil {
@@ -75,14 +82,26 @@ func (executor *graphExecutor) resolveComponentInvocation(ctx context.Context, r
 	if resolve == nil {
 		resolve = ResolveComponentPlan
 	}
+	if executor.componentSelectionHandler != nil {
+		reply, err := executor.componentSelectionHandler(ctx, componentSelectionRequest{Reference: reference, Parameters: maps.Clone(parameters), Platform: target, ProgressPrefix: progressPrefix, CallerEnvironment: maps.Clone(environment), ActiveComponents: maps.Clone(executor.activeComponents), ActiveLocalComponents: maps.Clone(executor.activeLocalComponents)})
+		if err != nil {
+			return nil, fmt.Errorf("select component %q: %w", reference, err)
+		}
+		if err := executor.adoptComponentContinuation(componentReturnReply{ResolvedBases: reply.ResolvedBases, ComponentPins: reply.ComponentPins, ComponentSources: reply.ComponentSources}, nil, nil); err != nil {
+			return nil, err
+		}
+		if executor.componentPins[selectionKey] == "" {
+			return nil, fmt.Errorf("component %q was not pinned by coordinator", reference)
+		}
+	}
 	resolveReference := reference
 	if pinned := executor.componentPins[selectionKey]; pinned != "" {
 		resolveReference = pinned
 	}
 	local := definition.IsLocalComponentReference(reference)
-	localSource := ""
+	localSource := executor.componentSources[selectionKey]
 	if local && resolveReference == reference {
-		if executor.componentPins != nil {
+		if executor.componentSelectionHandler != nil {
 			return nil, fmt.Errorf("local component %q was not frozen before stage execution", reference)
 		}
 		resolveReference, localSource, err = executor.materializeLocalComponent(ctx, reference, parameters, target, progressPrefix)
@@ -90,10 +109,14 @@ func (executor *graphExecutor) resolveComponentInvocation(ctx context.Context, r
 			return nil, err
 		}
 	}
+	if local && localSource == "" {
+		return nil, fmt.Errorf("local component %q has no frozen source identity", reference)
+	}
 	resolved, err := resolve(ctx, ComponentPlanRequest{
 		Resolver: executor.options.Resolver, Reference: resolveReference,
 		Parameters: maps.Clone(parameters), Platform: target, LocalParameters: local,
-		DeferImageSource: deferredPolicySource(executor.sourcePolicy), ResolveBase: executor.resolveBaseImage, TransientRunMounts: executor.options.TransientRunMounts,
+		CallerEnvironment: maps.Clone(environment),
+		DeferImageSource:  deferredPolicySource(executor.sourcePolicy), ResolveBase: executor.resolveBaseImage, TransientRunMounts: executor.options.TransientRunMounts,
 		BuildContexts: executor.options.BuildContexts,
 		ResolveContext: func(ctx context.Context, spec buildcontext.Spec, target v1.Platform) (ResolvedImageSource, error) {
 			platform, err := componentPlatformString(target)
@@ -109,6 +132,12 @@ func (executor *graphExecutor) resolveComponentInvocation(ctx context.Context, r
 	})
 	if err != nil {
 		return nil, err
+	}
+	if localSource != "" {
+		if executor.componentSources == nil {
+			executor.componentSources = make(map[string]string)
+		}
+		executor.componentSources[selectionKey] = localSource
 	}
 	resolved.localSourceIdentity = localSource
 	if err := executor.retainComponentBases(reference, resolved); err != nil {
@@ -140,81 +169,88 @@ func pinnedComponentReference(resolved *ResolvedComponentPlan) (string, error) {
 	return resolved.Artifact.Repository + "@" + resolved.Identity.String(), nil
 }
 
-// prepareIsolatedStageComponents selects every component reachable from a
-// stage before it is launched in another process. Workers resolve only these
-// immutable references, so parallel stages cannot observe different values of
-// the same mutable component tag.
+// prepareIsolatedStageComponents freezes immediate artifact selections without
+// instantiating EXTEND. Its caller environment exists only at execution time;
+// nested calls and invocation-only bases are selected at that boundary.
 func (executor *graphExecutor) prepareIsolatedStageComponents(ctx context.Context, prepared *preparedGraphStage) error {
 	if prepared == nil {
 		return errors.New("prepared stage is nil")
-	}
-	pins := make(map[string]string)
-	active := make(map[digest.Digest]bool)
-	var visitOperations func([]planner.Operation, v1.Platform, string) error
-	visitOperations = func(operations []planner.Operation, target v1.Platform, prefix string) error {
-		for _, operation := range operations {
-			if operation.Name != "component" {
-				continue
-			}
-			if len(operation.Arguments) != 1 || operation.Arguments[0] == "" {
-				return errors.New("component invocation requires one reference")
-			}
-			reference := operation.Arguments[0]
-			parameters, err := operation.ComponentArguments()
-			if err != nil {
-				return err
-			}
-			resolved, err := executor.resolveComponentInvocation(ctx, reference, parameters, target, prefix)
-			if err != nil {
-				return err
-			}
-			key, err := componentInvocationSelectionKey(reference, parameters, target)
-			if err != nil {
-				return err
-			}
-			pinned, err := pinnedComponentReference(resolved)
-			if err != nil {
-				return err
-			}
-			if existing := pins[key]; existing != "" && existing != pinned {
-				return fmt.Errorf("component reference %q changed immutable selection", reference)
-			}
-			pins[key] = pinned
-			if err := func() error {
-				release, err := executor.enterLocalComponent(resolved.localSourceIdentity)
-				if err != nil {
-					return err
-				}
-				defer release()
-				if active[resolved.Identity] {
-					return fmt.Errorf("component invocation cycle at %s", resolved.Identity)
-				}
-				active[resolved.Identity] = true
-				defer delete(active, resolved.Identity)
-				for _, stage := range resolved.Plan.Stages {
-					platform, err := componentPlatformFromString(stage.Platform)
-					if err != nil {
-						return err
-					}
-					if err := visitOperations(stage.Operations, platform, graphProgressPrefix(stage, prefix+"[component "+progressText(reference)+"] ", 0)); err != nil {
-						return err
-					}
-				}
-				return nil
-			}(); err != nil {
-				return err
-			}
-		}
-		return nil
 	}
 	target, err := componentPlatformFromString(prepared.stage.Platform)
 	if err != nil {
 		return err
 	}
-	if err := visitOperations(prepared.operations, target, prepared.progressPrefix); err != nil {
-		return err
+	pins := maps.Clone(executor.componentPins)
+	sources := maps.Clone(executor.componentSources)
+	if sources == nil {
+		sources = make(map[string]string)
+	}
+	if pins == nil {
+		pins = make(map[string]string)
+	}
+	for _, operation := range prepared.operations {
+		if operation.Name != "component" {
+			continue
+		}
+		if len(operation.Arguments) != 1 || operation.Arguments[0] == "" {
+			return errors.New("component invocation requires one reference")
+		}
+		reference := operation.Arguments[0]
+		parameters, err := operation.ComponentArguments()
+		if err != nil {
+			return err
+		}
+		key, err := componentInvocationSelectionKey(reference, parameters, target)
+		if err != nil {
+			return err
+		}
+		if pins[key] != "" || executor.componentSelectionHandler != nil {
+			// Isolated nested graphs ask the ancestor at actual invocation, when
+			// caller ENV is known. They never look up mutable artifacts here.
+			continue
+		}
+		resolveReference := reference
+		if definition.IsLocalComponentReference(reference) {
+			var identity string
+			resolveReference, identity, err = executor.materializeLocalComponent(ctx, reference, parameters, target, prepared.progressPrefix)
+			sources[key] = identity
+			if err != nil {
+				return err
+			}
+		}
+		if executor.options.Resolver == nil {
+			return errors.New("component selection requires a Coopr component resolver")
+		}
+		artifact, err := executor.options.Resolver.Resolve(ctx, resolveReference, target, oci.Component)
+		if err != nil {
+			return fmt.Errorf("freeze component %q: %w", reference, err)
+		}
+		if artifact.Component == nil || artifact.Selected.Digest.Algorithm() != digest.SHA256 || artifact.Selected.Digest.Validate() != nil {
+			return fmt.Errorf("component %q has no verified immutable publication", reference)
+		}
+		resolved := &ResolvedComponentPlan{Artifact: artifact, Identity: artifact.Selected.Digest}
+		pinned, err := pinnedComponentReference(resolved)
+		if err != nil {
+			return err
+		}
+		state := executor.resolvedComponents[key]
+		if state != nil && state.identity != resolved.Identity {
+			return fmt.Errorf("component reference %q changed immutable selection", reference)
+		}
+		if state == nil {
+			if executor.resolvedComponents == nil {
+				executor.resolvedComponents = make(map[string]*componentResolutionState)
+			}
+			executor.resolvedComponents[key] = &componentResolutionState{identity: resolved.Identity, variants: make(map[string]*ResolvedComponentPlan)}
+		}
+		pins[key] = pinned
 	}
 	prepared.componentPins = pins
+	prepared.componentSources = sources
+	if executor.componentSelectionHandler == nil {
+		executor.componentPins = maps.Clone(pins)
+		executor.componentSources = maps.Clone(sources)
+	}
 	return nil
 }
 
@@ -236,7 +272,11 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 	if err != nil {
 		return nil, err
 	}
-	resolved, err := executor.resolveComponentInvocation(ctx, operation.Arguments[0], parameters, platform, progress.prefix)
+	environment, err := imageEnvironment(logical)
+	if err != nil {
+		return nil, fmt.Errorf("component caller environment: %w", err)
+	}
+	resolved, err := executor.resolveComponentInvocation(ctx, operation.Arguments[0], parameters, platform, progress.prefix, environment)
 	if err != nil {
 		return nil, err
 	}
@@ -378,6 +418,9 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 				commitOptions.HistoryTimestamp = &created
 			}
 
+			if err := syncBuilderConfig(caller, logical); err != nil {
+				return nil, fmt.Errorf("synchronize component caller configuration: %w", err)
+			}
 			timestampPolicyFromOptions(executor.options).apply(&commitOptions)
 			callerImageID, _, callerManifest, err = caller.Commit(ctx, nil, commitOptions)
 			if err != nil {

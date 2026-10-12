@@ -106,6 +106,7 @@ type SupervisedPlanOptions struct {
 }
 
 type planWorkerRequest struct {
+	ExecutionRecipe     bool                   `json:"execution_recipe,omitempty"`
 	ExecutableOrigin    string                 `json:"executable_origin,omitempty"`
 	ProgressReference   string                 `json:"progress_reference,omitempty"`
 	ProgressPrefix      string                 `json:"progress_prefix,omitempty"`
@@ -349,10 +350,13 @@ func validateDefinitionPlanning(def *definition.Definition, planning planner.Opt
 }
 
 func runPlanSupervised(ctx context.Context, plan *planner.Plan, options SupervisedPlanOptions, mode string) (planWorkerResponse, error) {
+	if def, planning, ok := plan.ExecutionRecipe(); ok {
+		return runDefinitionSupervised(ctx, def, planning, options, mode, true)
+	}
 	return runBuildSupervised(ctx, plan, nil, nil, options, mode)
 }
 
-func runDefinitionSupervised(ctx context.Context, def *definition.Definition, planning planner.Options, options SupervisedPlanOptions, mode string) (planWorkerResponse, error) {
+func runDefinitionSupervised(ctx context.Context, def *definition.Definition, planning planner.Options, options SupervisedPlanOptions, mode string, executionRecipe ...bool) (planWorkerResponse, error) {
 	if len(planning.BuildContexts) == 0 {
 		planning.BuildContexts = options.BuildContexts
 	} else if len(options.BuildContexts) == 0 {
@@ -360,10 +364,10 @@ func runDefinitionSupervised(ctx context.Context, def *definition.Definition, pl
 	} else if !slices.Equal(planning.BuildContexts, options.BuildContexts) {
 		return planWorkerResponse{}, errors.New("planner and worker build contexts differ")
 	}
-	return runBuildSupervised(ctx, nil, def, &planning, options, mode)
+	return runBuildSupervised(ctx, nil, def, &planning, options, mode, executionRecipe...)
 }
 
-func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition.Definition, planning *planner.Options, options SupervisedPlanOptions, mode string) (_ planWorkerResponse, retErr error) {
+func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition.Definition, planning *planner.Options, options SupervisedPlanOptions, mode string, executionRecipe ...bool) (_ planWorkerResponse, retErr error) {
 	sourcePolicy, err := loadSourcePolicy(options.SourcePolicyFile)
 	if err != nil {
 		return planWorkerResponse{}, err
@@ -437,6 +441,7 @@ func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition
 	workerOutput.Path = filepath.Join(jobDir, "layout")
 	executableOrigin := currentRunSequenceOrigin()
 	request := planWorkerRequest{
+		ExecutionRecipe:  len(executionRecipe) != 0 && executionRecipe[0],
 		ExecutableOrigin: executableOrigin,
 		Mode:             mode, ImageID: options.ImageID, ManifestDigest: options.ManifestDigest, ManifestDescriptor: options.ManifestDescriptor, JobID: jobID, Plan: plan, Definition: def, PlannerOptions: planning,
 		Store: options.Store, ContextDir: options.ContextDir, SourcePolicyFile: options.SourcePolicyFile, SourcePolicy: sourcePolicy, IgnoreFile: options.IgnoreFile,

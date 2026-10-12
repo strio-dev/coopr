@@ -8,11 +8,13 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
 	"coopr/internal/oci"
 
+	systemdefaults "github.com/moby/buildkit/util/system"
 	"github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/image/v5/types"
@@ -20,6 +22,13 @@ import (
 )
 
 func TestBuildPlanKeepsImportedConfigThroughCheckpointsAndStageFork(t *testing.T) {
+	for _, variant := range []string{"original", "empty-extend", "empty-extend-checkpoint", "empty-from"} {
+		t.Run(variant, func(t *testing.T) { testImportedConfigThroughStageFork(t, variant) })
+	}
+}
+
+func testImportedConfigThroughStageFork(t *testing.T, variant string) {
+
 	if testing.Short() {
 		t.Skip("skipping a live rootless Buildah graph build in short mode")
 	}
@@ -69,7 +78,7 @@ func TestBuildPlanKeepsImportedConfigThroughCheckpointsAndStageFork(t *testing.T
 	}
 	const reference = "registry.example/team/extended-base:latest"
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
-	resolver, err := oci.NewResolver(oci.Options{})
+	resolver, err := oci.NewResolver(oci.Options{ComponentStoreDir: filepath.Join(root, "components")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +88,7 @@ func TestBuildPlanKeepsImportedConfigThroughCheckpointsAndStageFork(t *testing.T
 	}
 	system := &types.SystemContext{SignaturePolicyPath: policy, BigFilesTemporaryDir: root}
 	importTestImageToNative(t, ctx, store, sourceDir, reference, selected, system)
-	plan := testPlan(t, `
+	sourceDefinition := `
 from "registry.example/team/extended-base:latest" as="source" {
     copy "first" "/first"
     copy "second" "/second"
@@ -88,7 +97,23 @@ from "source" {
     env FINAL="yes"
     entrypoint { exec "/new-entry" }
 }
-`)
+`
+	if strings.HasPrefix(variant, "empty-extend") {
+		if err := os.WriteFile(filepath.Join(contextDir, "noop.coopr"), []byte("extend {}\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if variant == "empty-extend" {
+			sourceDefinition = strings.Replace(sourceDefinition, `copy "first" "/first"`, `component "./noop.coopr"; env observed="$PATH"; copy "first" "/first"`, 1)
+		} else {
+			sourceDefinition = strings.Replace(sourceDefinition, `copy "second" "/second"`, `component "./noop.coopr"; env observed="$PATH"; copy "second" "/second"`, 1)
+		}
+	}
+	if variant == "empty-from" {
+		sourceDefinition = strings.Replace(sourceDefinition, `from "source" {`, `from "source" as="alias" {}
+from "alias" {`, 1)
+	}
+	plan := testPlan(t, sourceDefinition)
+
 	layout := filepath.Join(root, "layout")
 	result, err := BuildPlan(ctx, plan, PlanOptions{
 		Store:      store,
@@ -102,7 +127,12 @@ from "source" {
 	if len(manifest.Layers) != 2 || len(image.RootFS.DiffIDs) != 2 {
 		t.Fatalf("layers=%d diff IDs=%d; want two", len(manifest.Layers), len(image.RootFS.DiffIDs))
 	}
-	if !reflect.DeepEqual(image.Config.Env, []string{"BASE=yes", "FINAL=yes"}) || !reflect.DeepEqual(image.Config.Entrypoint, []string{"/new-entry"}) || len(image.Config.Cmd) != 0 {
+	wantEnv := []string{"BASE=yes", "PATH=" + systemdefaults.DefaultPathEnvUnix}
+	if strings.HasPrefix(variant, "empty-extend") {
+		wantEnv = append(wantEnv, "observed="+systemdefaults.DefaultPathEnvUnix)
+	}
+	wantEnv = append(wantEnv, "FINAL=yes")
+	if !reflect.DeepEqual(image.Config.Env, wantEnv) || !reflect.DeepEqual(image.Config.Entrypoint, []string{"/new-entry"}) || len(image.Config.Cmd) != 0 {
 		t.Fatalf("final runtime config = %+v", image.Config)
 	}
 	configData, err := os.ReadFile(filepath.Join(layout, "blobs", "sha256", manifest.Config.Digest.Encoded()))

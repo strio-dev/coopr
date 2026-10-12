@@ -105,7 +105,7 @@ func (executor *graphExecutor) materializePlanContexts(ctx context.Context, plan
 
 func (executor *graphExecutor) materializeNamedContext(ctx context.Context, spec buildcontext.Spec, platform v1.Platform) (ResolvedImageSource, error) {
 	if spec.Kind == buildcontext.DockerImage {
-		return resolveBaseSourceWithPolicy(ctx, executor.options.Resolver, spec.Reference, platform, executor.store, platformSystemContext(executor.system, platform), executor.options.ContextDir, executor.sourcePolicy)
+		return executor.resolveBaseImage(ctx, spec.Reference, platform)
 	}
 	return MaterializeNamedContext(ctx, spec, platform, executor.store, platformSystemContext(executor.system, platform), executor.options.Resolver, executor.options.Secrets, executor.options.SSH, executor.options.ContextArtifacts...)
 }

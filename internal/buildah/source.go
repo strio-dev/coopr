@@ -72,6 +72,35 @@ func selectImageSource(ctx context.Context, resolver *oci.Resolver, reference st
 		return resolveBaseSource(ctx, resolver, normalized, platform, store, nil, "", "")
 	}
 	reference = normalized
+	if strings.HasPrefix(reference, "sha256:") || dockerreference.IsFullIdentifier(reference) {
+		// libimage owns image-ID validation and pull-policy handling. IDs are
+		// local selections and must never fall through to registry resolution.
+		runtime, err := libimage.RuntimeFromStore(store, &libimage.RuntimeOptions{SystemContext: resolver.SystemContext()})
+		if err != nil {
+			return ResolvedImageSource{}, err
+		}
+		policy, err := libconfig.ParsePullPolicy(string(resolver.PullPolicy()))
+		if err != nil {
+			return ResolvedImageSource{}, err
+		}
+		images, err := runtime.Pull(ctx, reference, policy, nil)
+		localReference := reference
+		if err != nil {
+			// A bare digest can also identify a retained local manifest.
+			// Only an unknown native ID permits that existing digest lookup;
+			// validation, pull-policy and other storage errors remain fatal.
+			if !strings.HasPrefix(reference, "sha256:") || !errors.Is(err, storage.ErrImageUnknown) {
+				return ResolvedImageSource{}, err
+			}
+		} else {
+			localReference = images[0].ID()
+		}
+		stored, err := oci.ResolveStoredImage(ctx, store, localReference, platform)
+		if err != nil {
+			return ResolvedImageSource{}, err
+		}
+		return ResolvedImageSource{ImageID: stored.StorageImageID, Root: stored.Root, Selected: stored.Selected, SourceManifest: stored.SourceManifest, ConfigData: append(json.RawMessage(nil), stored.ConfigData...), Reference: reference}, nil
+	}
 	canonical, err := oci.ParseReference(reference)
 	if err != nil {
 		return ResolvedImageSource{}, err
@@ -166,6 +195,9 @@ func materializeImageSource(ctx context.Context, resolver *oci.Resolver, referen
 		if missingLocal == nil {
 			missingLocal = errors.New("selected native image ID was not found")
 		}
+	}
+	if missingLocal != nil && (strings.HasPrefix(selected.Reference, "sha256:") || dockerreference.IsFullIdentifier(selected.Reference)) {
+		return ResolvedImageSource{}, fmt.Errorf("selected local image %q is missing: %w", selected.Reference, missingLocal)
 	}
 	if resolver == nil {
 		if missingLocal != nil {

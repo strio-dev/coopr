@@ -33,6 +33,13 @@ type packageOutput struct {
 // PublishPlan executes a planner publication graph once and snapshots each
 // package output into Coopr's existing OCI component package representation.
 func PublishPlan(ctx context.Context, plan *planner.Plan, options PublicationOptions) (_ map[string]oci.Package, retErr error) {
+	awaited, awaitErr := plan.AwaitComponentReturns()
+	if awaitErr != nil {
+		return nil, awaitErr
+	}
+	if plan != nil {
+		*plan = *awaited
+	}
 	if options.JobID != "" && !validWorkerJobID(options.JobID) {
 		return nil, errors.New("invalid supervised build job ID")
 	}

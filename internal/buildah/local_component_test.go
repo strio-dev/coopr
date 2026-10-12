@@ -193,7 +193,7 @@ func TestUnprefixedComponentReferenceDoesNotReadContext(t *testing.T) {
 					return &ResolvedComponentPlan{Identity: identity}, nil
 				},
 			}
-			if _, err := executor.resolveComponentInvocation(context.Background(), reference, nil, v1.Platform{OS: "linux", Architecture: "amd64"}, ""); err != nil {
+			if _, err := executor.resolveComponentInvocation(context.Background(), reference, nil, v1.Platform{OS: "linux", Architecture: "amd64"}, "", nil); err != nil {
 				t.Fatal(err)
 			}
 			if !called {
@@ -233,6 +233,9 @@ func TestPinnedLocalComponentDoesNotReadContext(t *testing.T) {
 	called := false
 	executor := &graphExecutor{
 		componentPins: map[string]string{key: identity.String()},
+		componentSelectionHandler: func(context.Context, componentSelectionRequest) (componentSelectionReply, error) {
+			return componentSelectionReply{ComponentPins: map[string]string{key: identity.String()}, ComponentSources: map[string]string{key: "canonical-path#target"}}, nil
+		},
 		resolveComponent: func(_ context.Context, request ComponentPlanRequest) (*ResolvedComponentPlan, error) {
 			called = true
 			if request.Reference != identity.String() || !request.LocalParameters || request.Parameters["build"] != "one" {
@@ -241,13 +244,13 @@ func TestPinnedLocalComponentDoesNotReadContext(t *testing.T) {
 			return &ResolvedComponentPlan{Identity: identity}, nil
 		},
 	}
-	if _, err := executor.resolveComponentInvocation(context.Background(), "./missing.coopr", params, target, ""); err != nil {
-		t.Fatal(err)
+	if resolved, err := executor.resolveComponentInvocation(context.Background(), "./missing.coopr", params, target, "", nil); err != nil || resolved.localSourceIdentity != "canonical-path#target" {
+		t.Fatalf("frozen source identity lost: %v %v", resolved, err)
 	}
 	if !called {
 		t.Fatal("frozen component was not resolved")
 	}
-	if _, err := executor.resolveComponentInvocation(context.Background(), "./other.coopr", params, target, ""); err == nil || !strings.Contains(err.Error(), "not frozen") {
+	if _, err := executor.resolveComponentInvocation(context.Background(), "./other.coopr", params, target, "", nil); err == nil || !strings.Contains(err.Error(), "not pinned by coordinator") {
 		t.Fatalf("unfrozen error=%v", err)
 	}
 }
@@ -261,8 +264,8 @@ func TestMemoizedComponentRetainsBasesInPublicationExecutor(t *testing.T) {
 	}
 	baseKey := ResolvedBaseKey{Reference: "registry.example/base:latest", Platform: "linux/amd64"}
 	resolved := &ResolvedComponentPlan{Identity: digest.FromString("component"), SelectedBases: map[ResolvedBaseKey]ResolvedImageSource{baseKey: {ImageID: "selected"}}}
-	executor := &graphExecutor{resolvedComponents: map[string]*componentResolutionState{key: {identity: resolved.Identity, variants: map[string]*ResolvedComponentPlan{"{}": resolved}}}}
-	selected, err := executor.resolveComponentInvocation(context.Background(), reference, nil, target, "")
+	executor := &graphExecutor{resolvedComponents: map[string]*componentResolutionState{key: {identity: resolved.Identity, variants: map[string]*ResolvedComponentPlan{`{"Parameters":{},"Environment":null}`: resolved}}}}
+	selected, err := executor.resolveComponentInvocation(context.Background(), reference, nil, target, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +273,7 @@ func TestMemoizedComponentRetainsBasesInPublicationExecutor(t *testing.T) {
 		t.Fatalf("selected=%p bases=%v", selected, executor.resolvedBases)
 	}
 	executor.resolvedBases[baseKey] = ResolvedImageSource{ImageID: "changed"}
-	if _, err := executor.resolveComponentInvocation(context.Background(), reference, nil, target, ""); err == nil || !strings.Contains(err.Error(), "changed selection") {
+	if _, err := executor.resolveComponentInvocation(context.Background(), reference, nil, target, "", nil); err == nil || !strings.Contains(err.Error(), "changed selection") {
 		t.Fatalf("changed base error=%v", err)
 	}
 }
@@ -420,5 +423,28 @@ from "scratch" {
 				t.Fatalf("changing-parameter cycle error=%v", err)
 			}
 		})
+	}
+}
+
+func TestComponentInvocationPlansIncludeCallerEnvironment(t *testing.T) {
+	target := v1.Platform{OS: "linux", Architecture: "amd64"}
+	identity := digest.FromString("same-selected-component")
+	calls := 0
+	executor := &graphExecutor{
+		resolveComponent: func(_ context.Context, request ComponentPlanRequest) (*ResolvedComponentPlan, error) {
+			calls++
+			if request.CallerEnvironment["value"] != "first" && request.CallerEnvironment["value"] != "second" {
+				t.Fatalf("missing caller image environment: %+v", request)
+			}
+			return &ResolvedComponentPlan{Identity: identity}, nil
+		},
+	}
+	for _, value := range []string{"first", "second", "first"} {
+		if _, err := executor.resolveComponentInvocation(context.Background(), "registry.example/tool:latest", nil, target, "", map[string]string{"value": value}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("resolved %d plans, want one per caller environment", calls)
 	}
 }

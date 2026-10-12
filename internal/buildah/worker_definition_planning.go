@@ -31,6 +31,7 @@ func planDefinitionInWorker(ctx context.Context, request planWorkerRequest) (*pl
 	}
 	var resolver *oci.Resolver
 	planning := *request.PlannerOptions
+	planning.AwaitComponentReturns = true
 	planning.DeferImageSource = deferredPolicySource(sourcePolicy)
 	planning.TransientRunMounts = TransientMountInstructions(request.TransientRunMounts)
 	planning.SourceDateEpochResolver = sourceDateEpochResolver(ctx, buildCredentialSource{secretSpecs: request.Secrets, sshSpecs: request.SSH})
@@ -64,7 +65,7 @@ func planDefinitionInWorker(ctx context.Context, request planWorkerRequest) (*pl
 		selected, resolveErr := resolve(lease.store)
 		return selected, errors.Join(resolveErr, lease.Close())
 	}
-	plan, selected, planErr := planDefinitionWithExternalBaseState(ctx, request.Definition, planning, func(ctx context.Context, reference string, platform v1.Platform) (ResolvedImageSource, error) {
+	plan, selected, planErr := planDefinitionWithInitialBindings(ctx, request.Definition, planning, request.ExecutionRecipe, func(ctx context.Context, reference string, platform v1.Platform) (ResolvedImageSource, error) {
 		if err := ensureResolver(); err != nil {
 			return ResolvedImageSource{}, err
 		}

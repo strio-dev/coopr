@@ -15,6 +15,7 @@ import (
 	"coopr/internal/buildcontext"
 	"coopr/internal/definition"
 	"coopr/internal/onbuildparse"
+	"github.com/moby/buildkit/util/system"
 )
 
 type Mode string
@@ -26,6 +27,15 @@ const (
 )
 
 type Options struct {
+	// CallerEnvironment binds image ENV to EXTEND roots at invocation. It never
+	// imports caller ARGs or inherited ONBUILD instructions.
+	CallerEnvironment map[string]string
+	// AwaitComponentReturns stops executable planning at each unbound component.
+	// Publication still validates the complete symbolic invocation definition.
+	AwaitComponentReturns bool
+	// ComponentReturns are execution-produced ENV bindings, keyed by stable
+	// stage/authored instruction identity rather than merged operation indexes.
+	ComponentReturns map[ComponentBoundary]map[string]string `json:"-"`
 	// DeferImageSource identifies external inputs produced during execution.
 	DeferImageSource func(string) (bool, error) `json:"-"`
 	Mode             Mode
@@ -59,7 +69,16 @@ type StageBind struct {
 	BaseEnvironment map[string]string
 }
 
+// ComponentBoundary identifies one component call in its original stage body.
+// Instruction includes ARGs and generated layer boundaries, and is independent
+// of injected ONBUILD operations and merged execution/history indexes.
+type ComponentBoundary struct {
+	StageID     string `json:"stage_id"`
+	Instruction int    `json:"instruction"`
+}
+
 type Operation struct {
+	ComponentBoundary *ComponentBoundary `json:"component_boundary,omitempty"`
 	definition.Instruction
 	// NetworkExplicit distinguishes an authored network="default" from the
 	// planner's canonical default so executors can apply a build-wide fallback.
@@ -121,6 +140,8 @@ type Stage struct {
 	// executor must bind that completed image configuration and replan before
 	// executing this stage.
 	DynamicBaseStage string `json:"dynamic_base_stage,omitempty"`
+	// AwaitingComponent marks a planned prefix whose suffix needs actual output ENV.
+	AwaitingComponent *ComponentBoundary `json:"awaiting_component,omitempty"`
 
 	Dependencies []string    `json:"dependencies,omitempty"`
 	Operations   []Operation `json:"operations,omitempty"`
@@ -161,10 +182,30 @@ type Plan struct {
 	// component resolution construct plans in the same process that executes
 	// them, so the closure can retain the verified resolver and frozen
 	// publication metadata without putting either into the public plan format.
-	replan dynamicStageReplanner `json:"-"`
+	replan          dynamicStageReplanner                                     `json:"-"`
+	componentReplan func(ComponentBoundary, map[string]string) (*Plan, error) `json:"-"`
+	executionRecipe func() (*definition.Definition, Options, bool)            `json:"-"`
+	awaitComponents func() (*Plan, error)                                     `json:"-"`
+}
+
+// ExecutionRecipe returns the authored inputs needed to rebuild a component-bearing
+// build/publication plan in an isolated process. It never reconstructs source
+// from normalized operations. Function-valued resolvers remain process-local.
+func (plan *Plan) ExecutionRecipe() (*definition.Definition, Options, bool) {
+	if plan == nil || plan.executionRecipe == nil {
+		return nil, Options{}, false
+	}
+	return plan.executionRecipe()
 }
 
 type dynamicStageReplanner func(string, StageBind) (*Plan, error)
+
+func (plan *Plan) retainExecutionRecipe(next *Plan, err error) (*Plan, error) {
+	if next != nil && plan.executionRecipe != nil {
+		next.executionRecipe = plan.executionRecipe
+	}
+	return next, err
+}
 
 // ReplanDynamicStage binds the completed configuration of a deferred local
 // or filesystem base and reruns normal demand-driven planning. Any inherited ONBUILD
@@ -184,6 +225,32 @@ func (plan *Plan) ReplanDynamicStage(stageID string, bind StageBind) (*Plan, err
 		return nil, fmt.Errorf("stage %s is not awaiting a dynamic local base", stageID)
 	}
 	return plan.replan(stageID, bind)
+}
+
+// AwaitComponentReturns rebuilds from the authored definition before execution,
+// retaining canonical expansion, dependency and publication validation.
+func (plan *Plan) AwaitComponentReturns() (*Plan, error) {
+	if plan == nil {
+		return nil, fmt.Errorf("plan is nil")
+	}
+	if plan.awaitComponents == nil {
+		return plan, nil
+	}
+	return plan.awaitComponents()
+}
+
+// ReplanComponentReturn binds the exact paused call's actual image environment.
+// The binding replaces ENV; caller ARG state is reconstructed in source order.
+func (plan *Plan) ReplanComponentReturn(boundary ComponentBoundary, environment map[string]string) (*Plan, error) {
+	if plan == nil || plan.componentReplan == nil {
+		return nil, fmt.Errorf("plan has no component return replanner")
+	}
+	for _, stage := range plan.Stages {
+		if stage.AwaitingComponent != nil && *stage.AwaitingComponent == boundary {
+			return plan.componentReplan(boundary, environment)
+		}
+	}
+	return nil, fmt.Errorf("component boundary %+v is not awaiting a return", boundary)
 }
 
 type Input struct {
@@ -482,6 +549,29 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 	if _, err := NormalizeParameters(opts.PublishedArguments); err != nil {
 		return nil, err
 	}
+	if len(opts.CallerEnvironment) != 0 && opts.Mode != Invoke {
+		return nil, fmt.Errorf("caller environment is only accepted in invoke mode")
+	}
+	if _, err := NormalizeParameters(opts.CallerEnvironment); err != nil {
+		return nil, err
+	}
+	for name, value := range opts.CallerEnvironment {
+		if name == "" || strings.ContainsAny(name, "=\x00") || strings.ContainsRune(value, '\x00') {
+			return nil, fmt.Errorf("invalid caller environment entry %q", name)
+		}
+	}
+	opts.CallerEnvironment = maps.Clone(opts.CallerEnvironment)
+	opts.ComponentReturns = cloneComponentReturns(opts.ComponentReturns)
+	for boundary, environment := range opts.ComponentReturns {
+		if _, err := NormalizeParameters(environment); err != nil {
+			return nil, err
+		}
+		for name, value := range environment {
+			if name == "" || strings.ContainsAny(name, "=\x00") || strings.ContainsRune(value, '\x00') {
+				return nil, fmt.Errorf("component boundary %+v has invalid environment entry %q", boundary, name)
+			}
+		}
+	}
 	if err := definition.Validate(def); err != nil {
 		return nil, err
 	}
@@ -544,6 +634,7 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 		return nil, fmt.Errorf("stage binds for components require frozen publication metadata")
 	}
 	opts.StageBinds = stageBinds
+	recipeStageBinds := maps.Clone(stageBinds)
 	g.opts = opts
 	if !component && len(g.packages) > 0 {
 		return nil, fmt.Errorf("package stages require a component definition with extend")
@@ -622,12 +713,23 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 			return nil, err
 		}
 		expectedReferences := published.StageReferences
-		if resolvedOnly {
+		if resolvedOnly || opts.AwaitComponentReturns {
 			expectedReferences = slices.DeleteFunc(slices.Clone(expectedReferences), func(ref StageReferenceBinding) bool {
 				id, _ := strconv.Atoi(ref.Stage) // ValidatePublished checked every stage ID.
 				// Deferred bodies have no operations until their executed base is
 				// rebound. Their immutable references are checked during that replan.
-				return g.states[id] != 2 || g.stages[id].DynamicBaseStage != "" || g.stages[id].DeferredImageSource
+				if resolvedOnly && (g.states[id] != 2 || g.stages[id].DynamicBaseStage != "" || g.stages[id].DeferredImageSource) {
+					return true
+				}
+				stage := g.stages[id]
+				if stage.AwaitingComponent != nil && ref.Origin == "authored" {
+					for index, operation := range stage.Operations {
+						if operation.ComponentBoundary != nil && *operation.ComponentBoundary == *stage.AwaitingComponent {
+							return ref.Operation > index-g.inheritedOperations[id]
+						}
+					}
+				}
+				return false
 			})
 		}
 		if !slices.Equal(g.stageReferences(nil), expectedReferences) {
@@ -937,6 +1039,71 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 		slices.Sort(dormant)
 		plan.Component = g.component(output, invocation, dormant, plan.PackageArguments)
 	}
+	hasComponents := false
+	for _, raw := range executionGraph.raw {
+		for _, instruction := range raw.body {
+			hasComponents = hasComponents || instruction.Name == "component"
+		}
+	}
+	if hasComponents {
+		componentOptions := executionGraph.opts
+		componentOptions.Arguments = maps.Clone(componentOptions.Arguments)
+		componentOptions.PublishedArguments = maps.Clone(componentOptions.PublishedArguments)
+		componentOptions.StageBinds = maps.Clone(componentOptions.StageBinds)
+		componentOptions.BuildContexts = slices.Clone(componentOptions.BuildContexts)
+		componentOptions.CallerEnvironment = maps.Clone(componentOptions.CallerEnvironment)
+		componentOptions.ComponentReturns = cloneComponentReturns(componentOptions.ComponentReturns)
+		if published == nil {
+			plan.executionRecipe = func() (*definition.Definition, Options, bool) {
+				// Definitions are immutable planner inputs; maps/slices in options
+				// are detached so worker request assembly cannot change the plan.
+				next := componentOptions
+				next.Arguments = maps.Clone(componentOptions.Arguments)
+				next.PublishedArguments = maps.Clone(componentOptions.PublishedArguments)
+				next.CallerEnvironment = maps.Clone(componentOptions.CallerEnvironment)
+				next.StageBinds = maps.Clone(recipeStageBinds)
+				for id, bind := range next.StageBinds {
+					bind.BaseEnvironment = maps.Clone(bind.BaseEnvironment)
+					bind.Inherited = slices.Clone(bind.Inherited)
+					for i := range bind.Inherited {
+						bind.Inherited[i] = cloneInstruction(bind.Inherited[i])
+					}
+					next.StageBinds[id] = bind
+				}
+				next.BuildContexts = slices.Clone(componentOptions.BuildContexts)
+				for i := range next.BuildContexts {
+					next.BuildContexts[i] = *cloneContextSpec(next.BuildContexts[i])
+				}
+				next.TransientRunMounts = slices.Clone(componentOptions.TransientRunMounts)
+				for i := range next.TransientRunMounts {
+					next.TransientRunMounts[i] = cloneInstruction(next.TransientRunMounts[i])
+				}
+				next.ComponentReturns = nil // A supervised recipe starts a fresh build, never resumes execution.
+				source := &definition.Definition{Instructions: slices.Clone(def.Instructions)}
+				for i := range source.Instructions {
+					source.Instructions[i] = cloneInstruction(source.Instructions[i])
+				}
+				return source, next, true
+			}
+		}
+		plan.awaitComponents = func() (*Plan, error) {
+			next := componentOptions
+			next.AwaitComponentReturns = true
+			return plan.retainExecutionRecipe(create(def, next, published, bindResolver))
+		}
+		plan.componentReplan = func(boundary ComponentBoundary, environment map[string]string) (*Plan, error) {
+			next := componentOptions
+			next.ComponentReturns = cloneComponentReturns(componentOptions.ComponentReturns)
+			if next.ComponentReturns == nil {
+				next.ComponentReturns = make(map[ComponentBoundary]map[string]string)
+			}
+			if _, exists := next.ComponentReturns[boundary]; exists {
+				return nil, fmt.Errorf("component boundary %+v is already bound", boundary)
+			}
+			next.ComponentReturns[boundary] = maps.Clone(environment)
+			return plan.retainExecutionRecipe(create(def, next, published, bindResolver))
+		}
+	}
 	for _, stage := range plan.Stages {
 		if stage.DynamicBaseStage == "" && !stage.DeferredImageSource {
 			continue
@@ -956,11 +1123,22 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 				next.StageBinds = make(map[string]StageBind)
 			}
 			next.StageBinds[stageID] = bind
-			return create(def, next, published, bindResolver)
+			return plan.retainExecutionRecipe(create(def, next, published, bindResolver))
 		}
 		break
 	}
 	return plan, nil
+}
+
+func cloneComponentReturns(bindings map[ComponentBoundary]map[string]string) map[ComponentBoundary]map[string]string {
+	if bindings == nil {
+		return nil
+	}
+	cloned := make(map[ComponentBoundary]map[string]string, len(bindings))
+	for boundary, environment := range bindings {
+		cloned[boundary] = maps.Clone(environment)
+	}
+	return cloned
 }
 
 // Keep the invocation closure in source order. Package stages become opaque
@@ -1476,6 +1654,13 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 	}
 	var environment map[string]string
 	var shadows map[string]bool
+	if stage.Kind == "extend" && g.opts.Mode == Invoke {
+		environment = maps.Clone(g.opts.CallerEnvironment)
+		shadows = make(map[string]bool, len(environment))
+		for name := range environment {
+			shadows[name] = true
+		}
+	}
 	declaredProxy := map[string]bool{}
 	var baseEpoch uint64
 	if stage.Kind == "from" && stageOverridden {
@@ -1654,6 +1839,24 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 			shadows[name] = true
 		}
 	}
+	// A new FROM (including scratch) and a package root use the same missing-PATH
+	// default as the upstream frontend. EXTEND keeps the caller unchanged.
+	_, knownBase := g.opts.StageBinds[stage.ID]
+	knownBase = knownBase || stage.Kind == "package" || stage.Kind == "from" && g.bases[i] < 0 && stage.SourceContext == "" && strings.EqualFold(stage.Source, "scratch")
+	for base := g.bases[i]; !knownBase && base >= 0; base = g.bases[base] {
+		if g.dynamicConfig[base] {
+			break
+		}
+		ancestor := g.stages[base]
+		_, knownBase = g.opts.StageBinds[ancestor.ID]
+		knownBase = knownBase || ancestor.Kind == "package" || ancestor.Kind == "extend" && g.opts.Mode == Invoke || ancestor.Kind == "from" && g.bases[base] < 0 && ancestor.SourceContext == "" && strings.EqualFold(ancestor.Source, "scratch")
+	}
+	if !deferredConfig && knownBase && (stage.Kind == "from" || stage.Kind == "package") {
+		if _, present := environment["PATH"]; !present {
+			environment["PATH"] = system.DefaultPathEnvUnix
+			shadows["PATH"] = true
+		}
+	}
 	used := maps.Clone(values)
 	instructions := raw.body
 	if stageOverridden {
@@ -1702,12 +1905,9 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 				packageFixed[inst.Arguments[0]] = true
 			}
 			expansion := g.instructionScope(g.expansionScope(values), environment, shadows)
-			supplied, err := g.declare(inst, values, expansion)
+			_, err := g.declare(inst, values, expansion)
 			if err != nil {
 				return fmt.Errorf("stage %s: %w", stage.ID, err)
-			}
-			if supplied {
-				shadows[inst.Arguments[0]] = false
 			}
 			if IsPredefinedProxyArgument(inst.Arguments[0]) {
 				declaredProxy[inst.Arguments[0]] = true
@@ -1838,12 +2038,31 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 				op.MountContexts[child] = localContext(g.opts.Mode)
 			}
 		}
+		if normalized.Name == "component" {
+			if instructionIndex < inheritedCount {
+				return fmt.Errorf("component invocation cannot originate in inherited ONBUILD")
+			}
+			op.ComponentBoundary = &ComponentBoundary{StageID: stage.ID, Instruction: instructionIndex - inheritedCount}
+		}
 		stage.Operations = append(stage.Operations, op)
 		if instructionIndex < inheritedCount {
 			g.inheritedOperations[i]++
 		}
 		if normalized.Name == "component" {
 			dynamicConfig = true
+			if returned, bound := g.opts.ComponentReturns[*op.ComponentBoundary]; bound {
+				environment = maps.Clone(returned)
+				if environment == nil {
+					environment = make(map[string]string)
+				}
+				shadows = make(map[string]bool, len(environment))
+				for name := range environment {
+					shadows[name] = true
+				}
+			} else if g.opts.AwaitComponentReturns && (g.opts.Mode != Publish || packagePhase) {
+				stage.AwaitingComponent = op.ComponentBoundary
+				break
+			}
 		}
 		if instructionIndex >= inheritedCount && normalized.Name == "onbuild" {
 			onBuild = append(onBuild, normalized.Arguments[0])

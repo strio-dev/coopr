@@ -44,6 +44,11 @@ import (
 // through Buildah, including component calls and dependencies on earlier
 // stages or resolved images.
 func BuildPlan(ctx context.Context, plan *planner.Plan, options PlanOptions) (result Result, retErr error) {
+	var awaitErr error
+	plan, awaitErr = plan.AwaitComponentReturns()
+	if awaitErr != nil {
+		return Result{}, awaitErr
+	}
 	if options.JobID != "" && !validWorkerJobID(options.JobID) {
 		return Result{}, errors.New("invalid supervised build job ID")
 	}
@@ -119,33 +124,37 @@ type stageState struct {
 // build and any component graphs it invokes recursively. Stage images and
 // aliases remain graph-local because stage IDs are only unique within a plan.
 type graphExecutor struct {
-	options                  PlanOptions
-	sourcePolicy             *sourcepolicy.Policy
-	progress                 io.Writer
-	isolation                define.Isolation
-	capabilities             []string
-	storeLease               *storeLease
-	store                    storage.Store
-	network                  nettypes.ContainerNetwork
-	system                   *types.SystemContext
-	resolvedBases            map[ResolvedBaseKey]ResolvedImageSource
-	replannedBaseDelta       func() map[ResolvedBaseKey]ResolvedImageSource
-	packageImport            *ComponentPackageImporter
-	componentCache           *componentCache
-	instructionPortableCache *portableInstructionCache
-	activeComponents         map[digest.Digest]bool
-	resolvedComponents       map[string]*componentResolutionState
-	componentPins            map[string]string
-	resolveComponent         func(context.Context, ComponentPlanRequest) (*ResolvedComponentPlan, error)
-	zeroLayerBases           map[digest.Digest]stageState
-	instructionRuntime       string
-	instructionRuntimeErr    error
-	runtimeCacheWarning      sync.Once
-	nextBuilderID            uint64
-	sharedBuilderCounter     *uint64
-	activeLocalComponents    map[string]bool
-	allowedEntitlements      entitlements.Set
-	stageRelayMu             sync.Mutex
+	componentReturnHandler    componentReturnHandler
+	componentSelectionHandler componentSelectionHandler
+	baseSelectionHandler      baseSelectionHandler
+	options                   PlanOptions
+	sourcePolicy              *sourcepolicy.Policy
+	progress                  io.Writer
+	isolation                 define.Isolation
+	capabilities              []string
+	storeLease                *storeLease
+	store                     storage.Store
+	network                   nettypes.ContainerNetwork
+	system                    *types.SystemContext
+	resolvedBases             map[ResolvedBaseKey]ResolvedImageSource
+	replannedBaseDelta        func() map[ResolvedBaseKey]ResolvedImageSource
+	packageImport             *ComponentPackageImporter
+	componentCache            *componentCache
+	instructionPortableCache  *portableInstructionCache
+	activeComponents          map[digest.Digest]bool
+	resolvedComponents        map[string]*componentResolutionState
+	componentPins             map[string]string
+	componentSources          map[string]string
+	resolveComponent          func(context.Context, ComponentPlanRequest) (*ResolvedComponentPlan, error)
+	zeroLayerBases            map[digest.Digest]stageState
+	instructionRuntime        string
+	instructionRuntimeErr     error
+	runtimeCacheWarning       sync.Once
+	nextBuilderID             uint64
+	sharedBuilderCounter      *uint64
+	activeLocalComponents     map[string]bool
+	allowedEntitlements       entitlements.Set
+	stageRelayMu              sync.Mutex
 }
 
 func (executor *graphExecutor) nativeBuilder(builder *upstream.Builder, options upstream.BuilderOptions) nativeBuilder {
@@ -231,6 +240,7 @@ func newGraphExecutor(ctx context.Context, options PlanOptions) (*graphExecutor,
 		executor.activeComponents = parent.activeComponents
 		executor.resolvedComponents = parent.resolvedComponents
 		executor.componentPins = parent.componentPins
+		executor.componentSources = parent.componentSources
 	}
 	executor.instructionRuntime, executor.instructionRuntimeErr = instructionRuntimeIdentity(effectiveRuntime(options.Runtime, options.RunControls))
 	if options.Resolver != nil {
@@ -319,6 +329,9 @@ type graphBindings struct {
 }
 
 type preparedGraphStage struct {
+	componentReturnHandler       componentReturnHandler
+	componentSelectionHandler    componentSelectionHandler
+	baseSelectionHandler         baseSelectionHandler
 	retainsCaller                bool
 	baseRoot                     *PackageRootMetadata
 	preserveBaseImageAnnotations bool
@@ -327,11 +340,15 @@ type preparedGraphStage struct {
 	baseName                     string
 	baseManifest                 digest.Digest
 	logical                      *imageconfig.Config
+	baseLogical                  *imageconfig.Config
 	operations                   []planner.Operation
 	cacheMountID                 CacheMountIDResolver
 	cacheScope                   *CacheMountScope
 	bound                        *stageState
 	componentPins                map[string]string
+	componentSources             map[string]string
+	activeComponents             map[digest.Digest]bool
+	activeLocalComponents        map[string]bool
 	progressPrefix               string
 }
 
@@ -420,8 +437,20 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 	}
 	graphCtx, cancelGraph := context.WithCancel(ctx)
 	defer cancelGraph()
-	results := make(chan stageCompletion, parallelism)
+	results := make(chan stageCompletion, max(parallelism, len(stages)))
+	controls := make(chan componentControlEvent)
+	paused := make(map[string]componentControlEvent)
+	inProcessStages := make(map[string]bool)
+	revisions := make(map[string]uint64)
+	activeCount := 0
 	runningCount := 0
+	originalPlan := plan
+	defer func() {
+		if originalPlan.Mode == planner.Publish {
+			originalPlan.Component = plan.Component
+			originalPlan.PackageArguments = plan.PackageArguments
+		}
+	}()
 
 	drain := func(primaryStage string, primary error) error {
 		cancelGraph()
@@ -484,7 +513,43 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 	}
 
 	for len(completed) < len(stages) {
-		ready, err := readyGraphStages(stages, completed, running, parallelism-runningCount)
+		for _, stage := range stages {
+			if componentInProcessActive(running, paused, inProcessStages) {
+				break
+			}
+			event, ok := paused[stage.ID]
+			if !ok || activeCount >= parallelism || !componentDependenciesComplete(stage, completed) {
+				continue
+			}
+			if inProcessStages[stage.ID] && activeCount != 0 {
+				continue
+			}
+			operations, err := componentContinuationOperations(plan.Mode, stage, executor.options, graphStageAliases(stages)[stage.ID], images)
+			if err != nil {
+				return Result{}, drain(stage.ID, err)
+			}
+			reply := componentReturnReply{Operations: operations, Revision: event.returned.Revision + 1, Aliases: graphStageAliases(stages)[stage.ID], Images: make(map[string]string)}
+			if err := validateComponentReturnReply(*event.returned, reply); err != nil {
+				return Result{}, drain(stage.ID, err)
+			}
+			for id, image := range images {
+				reply.Images[id] = image.storageImageID
+			}
+			// Any new mutable component is selected by the coordinator when it
+			// is actually reached, with that invocation's current environment.
+			reply.ComponentPins = maps.Clone(executor.componentPins)
+			reply.ComponentSources = maps.Clone(executor.componentSources)
+			reply.ResolvedBases = executor.componentContinuationBases()
+			delete(paused, stage.ID)
+			activeCount++
+			revisions[stage.ID] = reply.Revision
+			event.reply <- componentControlResult{returned: reply}
+		}
+		capacity := parallelism - activeCount
+		if componentInProcessActive(running, paused, inProcessStages) {
+			capacity = 0
+		}
+		ready, err := readyGraphStages(stages, completed, running, capacity)
 		if err != nil {
 			return Result{}, drain("", err)
 		}
@@ -589,39 +654,39 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 				progressed = true
 				continue
 			}
-			// Keep a lone ready stage in the current process. There is no work to
-			// overlap, and Buildah network helpers must remain in the namespace
-			// established by the supervised plan worker. Once another stage is
-			// running, newly ready descendants still launch immediately.
-			if parallelism == 1 || runningCount == 0 && len(ready) == 1 {
-				finished, err := executor.executeGraphStage(graphCtx, plan, prepared, aliases, images, imageOutputID, observed, true)
-				if err != nil {
-					return Result{}, drain(stage.ID, err)
+			inProcess := parallelism == 1 || runningCount == 0 && len(ready) == 1
+			prepared.componentReturnHandler, prepared.componentSelectionHandler = componentStageCallbacks(controls, stage.ID)
+			prepared.baseSelectionHandler = componentStageBaseCallback(controls, stage.ID)
+			if !inProcess {
+				if err := executor.prepareIsolatedStageComponents(graphCtx, &prepared); err != nil {
+					return Result{}, drain(stage.ID, fmt.Errorf("stage %s component inputs: %w", stage.ID, err))
 				}
-				images[stage.ID] = finished.state
-				completed[stage.ID] = true
-				finishedStages[stage.ID] = finished
-				progressed = true
-				continue
-			}
-			if err := executor.prepareIsolatedStageComponents(graphCtx, &prepared); err != nil {
-				return Result{}, drain(stage.ID, fmt.Errorf("stage %s component inputs: %w", stage.ID, err))
 			}
 			running[stage.ID] = true
+			if inProcess {
+				inProcessStages[stage.ID] = true
+			}
 			runningCount++
+			activeCount++
 			currentPlan := plan
 			currentImages := maps.Clone(images)
 			currentResolvedBases := maps.Clone(executor.resolvedBases)
 			stageID := stage.ID
 			go func() {
-				finished, err := executor.executeGraphStageIsolated(graphCtx, currentPlan, prepared, aliases, currentImages, currentResolvedBases, imageOutputID, observed)
+				var finished executedGraphStage
+				var err error
+				if inProcess {
+					finished, err = executor.executeGraphStage(graphCtx, currentPlan, prepared, aliases, currentImages, imageOutputID, observed, true)
+				} else {
+					finished, err = executor.executeGraphStageIsolated(graphCtx, currentPlan, prepared, aliases, currentImages, currentResolvedBases, imageOutputID, observed)
+				}
 				results <- stageCompletion{stageID: stageID, result: finished, err: err}
 			}()
 		}
 		if replanned {
 			continue
 		}
-		if progressed && runningCount == 0 {
+		if progressed {
 			result, done, err := reportCompleted()
 			if err != nil {
 				return Result{}, drain("", err)
@@ -631,10 +696,100 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 			}
 			continue
 		}
-		if runningCount == 0 {
+		if runningCount == 0 || activeCount == 0 && len(ready) == 0 {
 			return Result{}, drain("", errors.New("build graph has no dependency-ready stage"))
 		}
-		completion := <-results
+		var completion stageCompletion
+		select {
+		case <-graphCtx.Done():
+			return Result{}, drain("", graphCtx.Err())
+		case event := <-controls:
+			if !running[event.stageID] {
+				event.reply <- componentControlResult{err: fmt.Errorf("control request from inactive stage %s", event.stageID)}
+				continue
+			}
+			if event.base != nil {
+				selected, err := executor.resolveBaseImage(graphCtx, event.base.Reference, event.base.Platform)
+				event.reply <- componentControlResult{base: selected, err: err}
+				continue
+			}
+			if event.selection != nil {
+				selected, err := executor.selectCoordinatedComponent(graphCtx, *event.selection)
+				event.reply <- componentControlResult{selection: selected, err: err}
+				continue
+			}
+			request := event.returned
+			if request == nil || request.Boundary.StageID != event.stageID || request.Revision != revisions[event.stageID] {
+				return Result{}, drain(event.stageID, errors.New("invalid component continuation boundary or revision"))
+			}
+			if _, exists := paused[event.stageID]; exists {
+				return Result{}, drain(event.stageID, errors.New("stage already paused at component return"))
+			}
+			nextPlan, err := plan.ReplanComponentReturn(request.Boundary, request.Environment)
+			if err != nil {
+				return Result{}, drain(event.stageID, err)
+			}
+			nextStages, err := resolveAndValidateBuildNetwork(nextPlan.Stages, executor.options.Network, executor.options.RunControls, executor.options.Isolation)
+			if err != nil {
+				return Result{}, drain(event.stageID, err)
+			}
+			protected := maps.Clone(completed)
+			for id := range running {
+				if id != event.stageID {
+					protected[id] = true
+				}
+			}
+			if err := validateReplannedStages(stages, nextStages, protected); err != nil {
+				return Result{}, drain(event.stageID, err)
+			}
+			nextStage, err := componentContinuationStage(nextStages, event.stageID)
+			if err != nil {
+				return Result{}, drain(event.stageID, err)
+			}
+			previousStage, err := componentContinuationStage(stages, event.stageID)
+			if err != nil {
+				return Result{}, drain(event.stageID, err)
+			}
+			if err := validateComponentStageIdentity(previousStage, nextStage); err != nil {
+				return Result{}, drain(event.stageID, err)
+			}
+			operations, err := componentContinuationOperations(nextPlan.Mode, nextStage, executor.options, graphStageAliases(nextStages)[nextStage.ID], images)
+			if err != nil {
+				return Result{}, drain(event.stageID, err)
+			}
+			if err := validateComponentReturnReply(*request, componentReturnReply{Operations: operations, Revision: request.Revision + 1}); err != nil {
+				return Result{}, drain(event.stageID, err)
+			}
+			delta := executor.replannedBaseDelta
+			if bindings != nil && bindings.replannedBaseDelta != nil {
+				delta = bindings.replannedBaseDelta
+			}
+			if delta != nil {
+				if err := executor.adoptReplannedBases(graphCtx, delta); err != nil {
+					return Result{}, drain(event.stageID, err)
+				}
+			}
+			restore, err := executor.materializePlanContexts(graphCtx, nextPlan)
+			if err != nil {
+				return Result{}, drain(event.stageID, err)
+			}
+			restores = append(restores, restore)
+			if bindings != nil && bindings.bindPackages != nil {
+				if err := bindings.bindPackages(graphCtx, nextPlan); err != nil {
+					return Result{}, drain(event.stageID, err)
+				}
+			}
+			plan, stages = nextPlan, nextStages
+			paused[event.stageID] = event
+			activeCount--
+			continue
+		case completion = <-results:
+		}
+		if _, ok := paused[completion.stageID]; ok {
+			delete(paused, completion.stageID)
+		} else {
+			activeCount--
+		}
 		delete(running, completion.stageID)
 		runningCount--
 		if completion.result.state.storageImageID != "" {
@@ -725,6 +880,9 @@ func (executor *graphExecutor) prepareGraphStage(ctx context.Context, plan *plan
 		stageTotal = bindings.progressStageTotal
 	}
 	prepared := preparedGraphStage{stage: stage, base: "scratch", logical: imageconfig.New(), progressPrefix: graphProgressPrefix(stage, parentPrefix, stageTotal)}
+	// Snapshot invocation ancestry before the worker goroutine can race a sibling selection.
+	prepared.activeComponents = maps.Clone(executor.activeComponents)
+	prepared.activeLocalComponents = maps.Clone(executor.activeLocalComponents)
 	if stage.Kind == "package-input" {
 		if bindings == nil {
 			return preparedGraphStage{}, fmt.Errorf("stage %s package input has no component binding", stage.ID)
@@ -805,6 +963,12 @@ func (executor *graphExecutor) prepareGraphStage(ctx context.Context, plan *plan
 		prepared.logical, err = imageconfig.Parse(resolved.ConfigData)
 		if err != nil {
 			return preparedGraphStage{}, fmt.Errorf("stage %s base config: %w", stage.ID, err)
+		}
+	}
+	prepared.baseLogical = prepared.logical.Clone()
+	if stage.Kind == "from" || stage.Kind == "package" {
+		if err := seedStagePath(prepared.logical); err != nil {
+			return preparedGraphStage{}, fmt.Errorf("stage %s default environment: %w", stage.ID, err)
 		}
 	}
 	if plan.Mode == planner.Build {
@@ -901,7 +1065,13 @@ func (executor *graphExecutor) resolveBaseImage(ctx context.Context, reference s
 		return resolved, nil
 	}
 	var resolved ResolvedImageSource
-	if parent := executor.options.componentParent; parent != nil {
+	deferred, err := deferredPolicySource(executor.sourcePolicy)(reference)
+	if err != nil {
+		return ResolvedImageSource{}, err
+	}
+	if executor.baseSelectionHandler != nil && !deferred {
+		resolved, err = executor.baseSelectionHandler(ctx, baseSelectionRequest{Reference: reference, Platform: platform})
+	} else if parent := executor.options.componentParent; parent != nil && !deferred {
 		resolved, err = parent.resolveBaseImage(ctx, reference, platform)
 	} else {
 		resolved, err = resolveBaseSourceWithPolicy(ctx, executor.options.Resolver, reference, platform, executor.store, platformSystemContext(executor.system, platform), executor.options.ContextDir, executor.sourcePolicy)
@@ -918,20 +1088,7 @@ func (executor *graphExecutor) resolveBaseImage(ctx context.Context, reference s
 
 func (executor *graphExecutor) executeGraphStage(ctx context.Context, plan *planner.Plan, prepared preparedGraphStage, aliases map[string]string, images map[string]stageState, imageOutputID string, observed map[string]bool, allowInstructionCache bool) (executedGraphStage, error) {
 	stage := prepared.stage
-	if executor.options.Lifecycle.StageLabels && len(prepared.operations) != 0 {
-		name := stage.Name
-		if name == "" {
-			name = stage.ID
-		}
-		base := stage.Source
-		if id, ok := aliases[strings.ToLower(base)]; ok {
-			if selected, found := images[id]; found {
-				base = selected.storageImageID
-			}
-		}
-		label := definition.Instruction{Name: "label", Properties: map[string]string{"io.buildah.stage.name": name, "io.buildah.stage.base": base}}
-		prepared.operations = append([]planner.Operation{{Instruction: label}}, prepared.operations...)
-	}
+	prepared.operations = graphStageLabelOperations(prepared.operations, stage, executor.options.Lifecycle.StageLabels, aliases, images)
 
 	if prepared.bound != nil {
 		return executedGraphStage{state: *prepared.bound}, nil
@@ -992,7 +1149,7 @@ func (executor *graphExecutor) executeGraphStage(ctx context.Context, plan *plan
 	}
 	var effectiveBase string
 	retainsCaller := prepared.retainsCaller
-	imageID, stageResult, rootMetadata, err := executor.executePlanStage(ctx, builder, builderOptions, prepared.operations, aliases, images, stagePlatform, prepared.cacheMountID, prepared.logical, prepared.baseManifest, rootBaseline, stage.ID == imageOutputID, graphStageNeedsRootMetadata(plan, stage.ID, observed), allowInstructionCache, progress, &effectiveBase, &retainsCaller)
+	imageID, stageResult, rootMetadata, err := executor.executePlanStage(ctx, builder, builderOptions, prepared.operations, aliases, images, stagePlatform, prepared.cacheMountID, prepared.logical, prepared.baseLogical, prepared.baseManifest, rootBaseline, stage.ID == imageOutputID, graphStageNeedsRootMetadata(plan, stage.ID, observed), allowInstructionCache, progress, &effectiveBase, &retainsCaller, prepared.componentReturnHandler)
 	if err != nil {
 		return executedGraphStage{}, fmt.Errorf("stage %s: %w", stage.ID, err)
 	}
@@ -1401,7 +1558,10 @@ func linkedCopyOrAdd(operation Operation) bool {
 	}
 }
 
-func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *upstream.Builder, builderOptions upstream.BuilderOptions, planned []planner.Operation, aliases map[string]string, images map[string]stageState, platform v1.Platform, cacheMountID CacheMountIDResolver, logical *imageconfig.Config, baseManifest digest.Digest, rootBaseline *PackageRootMetadata, output, captureRoot, allowInstructionCache bool, progress stageProgress, effectiveBase *string, retainsCaller *bool) (imageID string, result Result, root *PackageRootMetadata, retErr error) {
+func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *upstream.Builder, builderOptions upstream.BuilderOptions, planned []planner.Operation, aliases map[string]string, images map[string]stageState, platform v1.Platform, cacheMountID CacheMountIDResolver, logical, baseLogical *imageconfig.Config, baseManifest digest.Digest, rootBaseline *PackageRootMetadata, output, captureRoot, allowInstructionCache bool, progress stageProgress, effectiveBase *string, retainsCaller *bool, returnEnvironment componentReturnHandler) (imageID string, result Result, root *PackageRootMetadata, retErr error) {
+	if returnEnvironment == nil {
+		returnEnvironment = executor.componentReturnHandler
+	}
 	store := executor.store
 	options := executor.options
 	current := builder
@@ -1429,6 +1589,11 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 		originalBaseID, _, err = commitStoredSnapshotSelected(ctx, builder, builderOptions.SystemContext, builderOptions.Format, true, timestampPolicyFromOptions(options))
 		if err != nil {
 			return "", Result{}, nil, fmt.Errorf("capture empty squash base: %w", err)
+		}
+	}
+	if builder.FromImageID == "" {
+		if err := inheritScratchWorkDir(logical, builder.WorkDir()); err != nil {
+			return "", Result{}, nil, fmt.Errorf("inherit scratch working directory: %w", err)
 		}
 	}
 	if err := syncBuilderConfig(current, logical); err != nil {
@@ -1459,7 +1624,9 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 	}
 	var group *layerGroupState
 	groupDepth := 0
-	for index, plannedOperation := range planned {
+	var environmentRevision uint64
+	for index := 0; index < len(planned); index++ {
+		plannedOperation := planned[index]
 		if plannedOperation.Name == "layer" {
 			switch plannedOperation.LayerBoundary {
 			case "begin":
@@ -1893,6 +2060,31 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 				pendingLinked = true
 			}
 		}
+		if plannedOperation.Name == "component" && returnEnvironment != nil {
+			if plannedOperation.ComponentBoundary == nil {
+				return "", Result{}, nil, fmt.Errorf("operation %d component has no authored boundary", index+1)
+			}
+			environment, err := imageEnvironment(logical)
+			if err != nil {
+				return "", Result{}, nil, err
+			}
+			request := componentReturnRequest{Boundary: *plannedOperation.ComponentBoundary, Environment: environment, Executed: slices.Clone(planned[:index+1]), Revision: environmentRevision}
+			reply, err := returnEnvironment(ctx, request)
+			if err != nil {
+				return "", Result{}, nil, fmt.Errorf("operation %d component return: %w", index+1, err)
+			}
+			if err := validateComponentReturnReply(request, reply); err != nil {
+				return "", Result{}, nil, err
+			}
+			if err := executor.adoptComponentContinuation(reply, aliases, images); err != nil {
+				return "", Result{}, nil, err
+			}
+			planned = reply.Operations
+			environmentRevision = reply.Revision
+			progress.total = len(planned) + 1
+			remainingFilesystem = plannedFilesystemOperationCount(planned[index:])
+			finalFilesystemOperation = remainingFilesystem == 1
+		}
 		if plannedOperation.Name == "component" {
 			componentFilesystemChanged, err = componentBuilderHasFilesystemChanges(store, current)
 			if err != nil {
@@ -1953,6 +2145,9 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 				var checkpointID string
 				var checkpointManifest digest.Digest
 				var checkpointRoot *PackageRootMetadata
+				if err := syncBuilderConfig(current, logical); err != nil {
+					return "", Result{}, nil, fmt.Errorf("checkpoint operation %d config sync: %w", index+1, err)
+				}
 				if err := applyBuilderCheckpointControls(current, options.ImageControls, timestampPolicyFromOptions(options)); err != nil {
 					return "", Result{}, nil, fmt.Errorf("checkpoint operation %d metadata: %w", index+1, err)
 				}
@@ -2031,6 +2226,7 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 				if err != nil {
 					return "", Result{}, nil, err
 				}
+				*logical = *baseLogical.Clone()
 				committed, err = executor.finalizeOutput(ctx, committed, originalBaseID, builderOptions, logical)
 				return committed.ImageID, committed, root, err
 			}
@@ -2108,7 +2304,15 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 		return committed.ImageID, committed, root, err
 	}
 	if unchangedBase {
+		*logical = *baseLogical.Clone()
 		return current.FromImageID, Result{ManifestDigest: baseManifest.String()}, root, nil
+	}
+	// Metadata operations may reorder Buildah's incremental ENV updates. Replay
+	// the complete logical configuration before committing a changed stage.
+	if finalCachedImageID == "" || !finalCacheDirect {
+		if err := syncBuilderConfig(current, logical); err != nil {
+			return "", Result{}, nil, fmt.Errorf("synchronize intermediate image configuration: %w", err)
+		}
 	}
 	if finalCachedImageID != "" && finalCacheDirect {
 		imageID = finalCachedImageID

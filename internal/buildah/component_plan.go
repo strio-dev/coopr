@@ -25,6 +25,8 @@ type ComponentPlanRequest struct {
 	Resolver   *oci.Resolver
 	Reference  string
 	Parameters map[string]string
+	// CallerEnvironment supplies only the current caller image ENV to EXTEND.
+	CallerEnvironment map[string]string
 	// LocalParameters permits matching publication-time arguments for a local definition.
 	LocalParameters bool
 	Platform        v1.Platform
@@ -132,8 +134,10 @@ func ResolveComponentPlan(ctx context.Context, request ComponentPlanRequest) (*R
 	resolvedBinds := make(map[ResolvedBaseKey]planner.StageBind)
 	plan, err := planner.InstantiateDemandDriven(&resolved.Component.Component, planner.Options{
 		DeferImageSource: request.DeferImageSource, Mode: planner.Invoke, Arguments: parameters, Platform: platform,
-		TransientRunMounts: TransientMountInstructions(request.TransientRunMounts),
-		BuildContexts:      request.BuildContexts,
+		CallerEnvironment:     request.CallerEnvironment,
+		AwaitComponentReturns: true,
+		TransientRunMounts:    TransientMountInstructions(request.TransientRunMounts),
+		BuildContexts:         request.BuildContexts,
 	}, packageBinds, func(source planner.FromSource) (planner.StageBind, error) {
 		if request.ResolveBase == nil {
 			return planner.StageBind{}, fmt.Errorf("external invocation base %q requires an image resolver", source.Source)

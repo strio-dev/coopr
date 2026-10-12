@@ -347,3 +347,28 @@ func TestParseOnBuildTriggerRejectsUnsafeOrUnsupportedSyntax(t *testing.T) {
 		})
 	}
 }
+
+func TestImageEnvironmentDoesNotConsumeOrValidateCallerOnBuild(t *testing.T) {
+	logical, err := imageconfig.Parse([]byte(`{"config":{"Env":["value=first","value=last=part"],"OnBuild":["FROM scratch"]}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := logical.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	values, err := imageEnvironment(logical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(values, map[string]string{"value": "last=part"}) {
+		t.Fatalf("environment = %v", values)
+	}
+	after, err := logical.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("image environment extraction changed caller configuration")
+	}
+}
