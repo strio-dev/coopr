@@ -1,5 +1,6 @@
 {
   fetchFromGitHub,
+  jq,
   mkShellNoCC,
   runCommand,
   semgrep,
@@ -22,7 +23,10 @@ let
   '';
 in
 mkShellNoCC {
-  packages = [ semgrep ];
+  packages = [
+    semgrep
+    jq
+  ];
   # Relative config paths keep rule namespaces stable across Nix store hashes.
   SEMGREP_RULES = ".cache/semgrep-rules";
   SEMGREP_SEND_METRICS = "off";
