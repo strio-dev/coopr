@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -89,11 +90,92 @@ func TestStoredTransferTLSVerifyPolicy(t *testing.T) {
 	}
 }
 
-func TestPlanOptionsPreserveExecutionOrigin(t *testing.T) {
-	origin, err := currentRunSequenceOrigin()
-	if err != nil {
-		t.Fatal(err)
+func TestOrdinaryBuildWithoutExecutableOrigin(t *testing.T) {
+	if len(os.Args) >= 4 && os.Args[len(os.Args)-3] == "--" {
+		mode, origin := os.Args[len(os.Args)-2], os.Args[len(os.Args)-1]
+		if mode != "normalize" && mode != "supervised" {
+			t.Fatalf("unexpected subprocess mode %q", mode)
+		}
+		if !filepath.IsAbs(origin) || origin != currentRunSequenceOrigin() {
+			t.Fatalf("subprocess unlink path %q is not its launch origin", origin)
+		}
+		if err := os.Remove(origin); err != nil {
+			t.Fatal(err)
+		}
+		switch mode {
+		case "normalize":
+			if _, err := normalizePlanOptions(PlanOptions{}); err != nil {
+				t.Fatalf("ordinary options require removed executable origin: %v", err)
+			}
+		case "supervised":
+			root := t.TempDir()
+			plan := testPlan(t, `from "scratch" {}`)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			result, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{Store: StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}, ContextDir: root, Isolation: "rootless", Output: Output{Path: filepath.Join(root, "layout")}, Stdout: io.Discard, Stderr: io.Discard})
+			if err != nil {
+				t.Fatalf("ordinary supervised build requires removed executable origin: %v", err)
+			}
+			if result.ManifestDigest == "" {
+				t.Fatal("scratch build emitted no manifest")
+			}
+		}
+		if _, _, _, err := prepareRunSequence(nativeBuilder{executableOrigin: origin}, [][]string{{"first"}, {"second"}}); err == nil || !strings.Contains(err.Error(), "RUN sequence helper") {
+			t.Fatalf("multi-command RUN missing origin error = %v", err)
+		}
+		return
 	}
+	for _, mode := range []string{"normalize", "supervised"} {
+		t.Run(mode, func(t *testing.T) {
+			if mode == "supervised" && testing.Short() {
+				t.Skip("requires live rootless worker")
+			}
+			origin := filepath.Join(t.TempDir(), "deleted-origin.test")
+			source, err := os.Open("/proc/self/exe")
+			if err != nil {
+				t.Fatal(err)
+			}
+			destination, err := os.OpenFile(origin, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0700)
+			if err != nil {
+				t.Fatal(errors.Join(err, source.Close()))
+			}
+			_, copyErr := io.Copy(destination, source)
+			if err := errors.Join(copyErr, source.Close(), destination.Close()); err != nil {
+				t.Fatal(err)
+			}
+			args := []string{"-test.run=^TestOrdinaryBuildWithoutExecutableOrigin$"}
+			if testing.Short() {
+				args = append(args, "-test.short")
+			}
+			command := exec.Command(origin, append(args, "--", mode, origin)...)
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("%s without executable origin: %v\n%s", mode, err, output)
+			}
+		})
+	}
+}
+
+func TestOrdinaryBuildRejectsUnrelatedUnlinkPath(t *testing.T) {
+	for _, mode := range []string{"normalize", "invalid-mode"} {
+		t.Run(mode, func(t *testing.T) {
+			unrelated := filepath.Join(t.TempDir(), "keep")
+			if err := os.WriteFile(unrelated, []byte("keep this file"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			command := exec.Command("/proc/self/exe", "-test.short", "-test.run=^TestOrdinaryBuildWithoutExecutableOrigin$", "--", mode, unrelated)
+			if output, err := command.CombinedOutput(); err == nil {
+				t.Fatalf("accepted unrelated unlink path: %s", output)
+			}
+			data, err := os.ReadFile(unrelated)
+			if err != nil || string(data) != "keep this file" {
+				t.Fatalf("malformed subprocess changed unrelated file: %q, %v", data, err)
+			}
+		})
+	}
+}
+
+func TestPlanOptionsPreserveExecutionOrigin(t *testing.T) {
+	origin := currentRunSequenceOrigin()
 	for _, explicit := range []string{"", "/opt/coopr/bin/coopr"} {
 		options, err := normalizePlanOptions(PlanOptions{executableOrigin: explicit})
 		if err != nil {

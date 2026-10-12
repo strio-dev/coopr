@@ -145,6 +145,21 @@ func TestRunSequenceHelperDiscoverySupportsUnpackedArchive(t *testing.T) {
 	}
 }
 
+func TestCaptureRunSequenceOriginDoesNotRequireFilesystem(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "removed-coopr")
+	for _, test := range []struct{ executable, argv0, want string }{
+		{missing, missing, missing},
+		{"/", missing + "-in-a-user-namespace", missing},
+		{"/memfd:coopr-in-a-user-namespace", "./removed-coopr-in-a-user-namespace", "./removed-coopr"},
+		{"/", "removed-coopr-in-a-user-namespace", "removed-coopr"},
+		{"/memfd:coopr", planWorkerName, ""},
+	} {
+		if got := captureRunSequenceOrigin(test.executable, test.argv0); got != test.want {
+			t.Fatalf("capture origin %q/%q = %q, want %q", test.executable, test.argv0, got, test.want)
+		}
+	}
+}
+
 func TestRunSequenceOriginSurvivesUpstreamNamespaceReexec(t *testing.T) {
 	prefix := t.TempDir()
 	original := filepath.Join(prefix, "coopr")

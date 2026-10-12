@@ -435,10 +435,7 @@ func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition
 	}
 	workerOutput := options.Output
 	workerOutput.Path = filepath.Join(jobDir, "layout")
-	executableOrigin, err := currentRunSequenceOrigin()
-	if err != nil {
-		return planWorkerResponse{}, err
-	}
+	executableOrigin := currentRunSequenceOrigin()
 	request := planWorkerRequest{
 		ExecutableOrigin: executableOrigin,
 		Mode:             mode, ImageID: options.ImageID, ManifestDigest: options.ManifestDigest, ManifestDescriptor: options.ManifestDescriptor, JobID: jobID, Plan: plan, Definition: def, PlannerOptions: planning,

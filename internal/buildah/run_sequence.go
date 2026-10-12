@@ -42,37 +42,39 @@ func prepareRunSequence(builder operationBuilder, commands [][]string) ([]string
 }
 
 func findRunSequenceHelper() (string, error) {
-	executable, err := currentRunSequenceOrigin()
-	if err != nil {
-		return "", fmt.Errorf("locate RUN sequence helper: %w", err)
-	}
-	return findRunSequenceHelperFrom(executable)
+	return findRunSequenceHelperFrom(currentRunSequenceOrigin())
 }
 
-func currentRunSequenceOrigin() (string, error) {
-	executable, err := os.Executable()
-	if err != nil {
-		return "", err
+// Capture the installation hint before namespace workers replace argv[0]. An
+// ordinary build does not need its executable to remain in the filesystem.
+func currentRunSequenceOrigin() string {
+	executable, _ := os.Executable()
+	return captureRunSequenceOrigin(executable, os.Args[0])
+}
+
+func captureRunSequenceOrigin(executable, argv0 string) string {
+	// containers/storage reexecs a detached bind-fd (reported as "/") or sealed
+	// memfd, retaining the original argv[0] with this suffix until dispatch.
+	if strings.HasPrefix(executable, "/memfd:") || executable == "/" {
+		original, ok := strings.CutSuffix(argv0, "-in-a-user-namespace")
+		if !ok {
+			return ""
+		}
+		executable = original
 	}
-	return resolveRunSequenceOrigin(executable, os.Args[0])
+	return executable
 }
 
 func resolveRunSequenceOrigin(executable, argv0 string) (string, error) {
-	// containers/storage reexecs a detached bind-fd (reported as "/") or sealed
-	// memfd in a user namespace, retaining the original argv[0] with this suffix
-	// until our named worker dispatch.
-	if strings.HasPrefix(executable, "/memfd:") || executable == "/" {
-		original, ok := strings.CutSuffix(argv0, "-in-a-user-namespace")
-		if !ok || original == "" {
-			return "", errors.New("rootless executable origin was not preserved before worker dispatch")
-		}
-		var err error
-		executable, err = exec.LookPath(original)
-		if err != nil {
-			return "", fmt.Errorf("resolve rootless Coopr origin %q: %w", original, err)
-		}
+	origin := captureRunSequenceOrigin(executable, argv0)
+	if origin == "" {
+		return "", errors.New("coopr executable origin was not preserved before worker dispatch")
 	}
-	absolute, err := filepath.Abs(executable)
+	resolved, err := exec.LookPath(origin)
+	if err != nil {
+		return "", fmt.Errorf("resolve Coopr origin %q: %w", origin, err)
+	}
+	absolute, err := filepath.Abs(resolved)
 	if err != nil {
 		return "", err
 	}
@@ -80,9 +82,9 @@ func resolveRunSequenceOrigin(executable, argv0 string) (string, error) {
 }
 
 func findRunSequenceHelperFrom(executable string) (string, error) {
-	resolved, err := filepath.EvalSymlinks(executable)
+	resolved, err := resolveRunSequenceOrigin(executable, "")
 	if err != nil {
-		return "", fmt.Errorf("resolve Coopr executable: %w", err)
+		return "", fmt.Errorf("locate RUN sequence helper: %w", err)
 	}
 	helper, err := runSequenceHelperBeside(resolved)
 	if err == nil {
