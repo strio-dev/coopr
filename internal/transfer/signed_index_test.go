@@ -344,8 +344,24 @@ func TestStoredIndexPushHonorsNativePolicyAndImmutableRoot(t *testing.T) {
 	for _, remove := range []bool{false, true} {
 		t.Run("immutable-root/"+map[bool]string{false: "preserve", true: "remove"}[remove], func(t *testing.T) {
 			dst := Destination{Transport: "dir", Name: filepath.Join(t.TempDir(), "output")}
+			captureRootSignatures := func() any {
+				t.Helper()
+				var captured any
+				if err := buildah.WithStore(store, func(backend storage.Store) error {
+					state, err := oci.CaptureStoredSignatures(backend, oldID)
+					captured = state
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				return captured
+			}
+			beforeSignatures := captureRootSignatures()
 			if _, err := Copy(ctx, oci.Image, root.Digest.String(), dst, Options{BuildStore: store, Push: PushOptions{RemoveSignatures: remove}}); err != nil {
 				t.Fatal(err)
+			}
+			if after := captureRootSignatures(); !reflect.DeepEqual(beforeSignatures, after) {
+				t.Fatal("historical root signature collection changed source metadata or blobs")
 			}
 			got, err := os.ReadFile(filepath.Join(dst.Name, "manifest.json"))
 			if err != nil {
@@ -389,67 +405,4 @@ func TestStoredIndexPushHonorsNativePolicyAndImmutableRoot(t *testing.T) {
 			t.Fatalf("native source rejection was bypassed or failed outside policy: %v", err)
 		}
 	})
-}
-
-// Model the native list changing after WriteStoredIndex returns but before
-// signature retention obtains its lock. A stale target must never receive
-// signatures or default metadata intended for its old root.
-func TestRetainIndexSignaturesRejectsChangedRoot(t *testing.T) {
-	ctx := context.Background()
-	store := nativeTestStore(t.TempDir())
-	old, _, _ := signedIndexFixture(t, store, "before")
-	var imageID string
-	if err := buildah.WithStore(store, func(backend storage.Store) error {
-		image, err := backend.Image("localhost/index:latest")
-		if err == nil {
-			imageID = image.ID
-		}
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	current, raw, selections := signedIndexFixture(t, store, "after")
-	if err := buildah.WithStore(store, func(backend storage.Store) error {
-		lock, err := manifests.LockerForImage(backend, imageID)
-		if err != nil {
-			return err
-		}
-		lock.Lock()
-		defer lock.Unlock()
-		ids := map[digest.Digest]string{}
-		for _, selected := range selections {
-			ids[selected.Manifest.Digest] = selected.ImageID
-		}
-		if _, err := imagestore.FromStore(backend).UpdateStoredIndex(ctx, imageID, current, raw, ids, "index:latest"); err != nil {
-			return err
-		}
-		state, err := oci.CaptureStoredSignatures(backend, imageID)
-		if err != nil {
-			return err
-		}
-		signatures := [][]byte{[]byte("\x00sigstore-json\n{\"mimeType\":\"application/vnd.dev.cosign.simplesigning.v1+json\",\"payload\":\"cGF5bG9hZA==\",\"annotations\":{\"coopr.test\":\"new-root\"}}")}
-		return oci.WriteStoredManifestSignatures(backend, imageID, current.Digest, true, signatures, state)
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := buildah.WithStore(store, func(backend storage.Store) error {
-		before, err := oci.CaptureStoredSignatures(backend, imageID)
-		if err != nil {
-			return err
-		}
-		err = retainIndexSignatures(backend, imageID, old.Digest)
-		if err == nil || !strings.Contains(err.Error(), old.Digest.String()) || !strings.Contains(err.Error(), current.Digest.String()) {
-			t.Errorf("stale root retention did not report expected and current root: %v", err)
-		}
-		after, err := oci.CaptureStoredSignatures(backend, imageID)
-		if err != nil {
-			return err
-		}
-		if !reflect.DeepEqual(before, after) {
-			t.Fatal("rejected stale retention changed native signature metadata or blobs")
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
 }

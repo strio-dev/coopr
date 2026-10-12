@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strings"
 	"time"
 
@@ -29,7 +28,6 @@ import (
 	"github.com/containerd/platforms"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
-	"go.podman.io/common/libimage/manifests"
 	imagecopy "go.podman.io/image/v5/copy"
 	dockertransport "go.podman.io/image/v5/docker"
 	dockerdaemon "go.podman.io/image/v5/docker/daemon"
@@ -474,27 +472,12 @@ func copyStoredIndex(ctx context.Context, storeDir string, root v1.Descriptor, i
 	}
 
 	if destination.Transport == "dir" || destination.Transport == "oci" || destination.Transport == "docker-archive" || destination.Transport == "containers-storage" {
-		imageIDs := make(map[digest.Digest]string, len(selections))
-		for _, selection := range selections {
-			imageIDs[selection.Manifest.Digest] = selection.ImageID
-		}
-		var imageID string
-		if err := buildah.WithStore(storeOptions, func(backend storage.Store) error {
-			var err error
-			imageID, err = imagestore.FromStore(backend).WriteStoredIndex(ctx, root, indexData, imageIDs, "")
-			if err != nil || opts.Push.RemoveSignatures {
-				return err
-			}
-			return retainIndexSignatures(backend, imageID, root.Digest)
-		}); err != nil {
-			return "", err
-		}
-		transferOptions, cleanup, err := storedTransferOptions(imageID, root.Digest, opts)
+		transferOptions, cleanup, err := storedTransferOptions("", root.Digest, opts)
 		if err != nil {
 			return "", err
 		}
 		defer cleanup()
-		transferOptions.AllImages = true
+		transferOptions.Index = &buildah.StoredIndexSnapshot{Root: root, Data: indexData, Selections: selections}
 		transferOptions.Destination = destination.String()
 		return buildah.TransferStoredImageSupervised(ctx, transferOptions)
 	}
@@ -599,78 +582,6 @@ func copyStoredIndex(ctx context.Context, storeDir string, root v1.Descriptor, i
 		return "", fmt.Errorf("restore multi-platform image: %w", err)
 	}
 	return copyStoredImageOutput(ctx, layout, root, destination, opts)
-}
-
-// A historical index may need its own native list record. Keep the signatures
-// associated with that digest when restoring its instance references.
-func retainIndexSignatures(backend storage.Store, imageID string, selected digest.Digest) error {
-	images, err := backend.ImagesByDigest(selected)
-	if err != nil {
-		return err
-	}
-	var retained [][]byte
-	for _, image := range images {
-		if image.ID == imageID {
-			continue
-		}
-		// Snapshot each source independently before locking the target. Its
-		// default manifest and signature metadata must describe the same state.
-		blobs, err := func() ([][]byte, error) {
-			lock, err := manifests.LockerForImage(backend, image.ID)
-			if err != nil {
-				return nil, err
-			}
-			lock.Lock()
-			defer lock.Unlock()
-			current, err := backend.ImageBigData(image.ID, storage.ImageDigestBigDataKey)
-			if err != nil {
-				return nil, err
-			}
-			state, err := oci.CaptureStoredSignatures(backend, image.ID)
-			if err != nil {
-				return nil, err
-			}
-			return oci.StoredSignatureBlobs(state, selected, digest.FromBytes(current) == selected)
-		}()
-		if err != nil {
-			return err
-		}
-		retained = append(retained, blobs...)
-	}
-	lock, err := manifests.LockerForImage(backend, imageID)
-	if err != nil {
-		return err
-	}
-	lock.Lock()
-	defer lock.Unlock()
-	current, err := backend.ImageBigData(imageID, storage.ImageDigestBigDataKey)
-	if err != nil {
-		return err
-	}
-	if actual := digest.FromBytes(current); actual != selected {
-		return fmt.Errorf("stored index is %s, want %s", actual, selected)
-	}
-	previous, err := oci.CaptureStoredSignatures(backend, imageID)
-	if err != nil {
-		return err
-	}
-	signatures, err := oci.StoredSignatureBlobs(previous, selected, true)
-	if err != nil {
-		return err
-	}
-	originalCount := len(signatures)
-	for _, blob := range retained {
-		if !slices.ContainsFunc(signatures, func(existing []byte) bool { return bytes.Equal(existing, blob) }) {
-			signatures = append(signatures, blob)
-		}
-	}
-	if len(signatures) == originalCount {
-		return nil
-	}
-	if err := oci.WriteStoredManifestSignatures(backend, imageID, selected, true, signatures, previous); err != nil {
-		return errors.Join(err, oci.RestoreStoredSignatures(backend, imageID, previous))
-	}
-	return nil
 }
 
 // Only native exports whose original sources passed policy verification reach
@@ -810,21 +721,25 @@ func copyRoot(ctx context.Context, kind oci.Kind, storeDir string, root v1.Descr
 		if kind != oci.Image {
 			return "", fmt.Errorf("%s cannot store Coopr components", destination.Transport)
 		}
-		if opts.Push.ChangesManifest() || opts.Push.RemoveSignatures {
-			nativeDestination := destination
-			nativeDestination.Transport = "docker-daemon"
-			return copyImageDestination(ctx, storeDir, root, nativeDestination, opts, preparedPolicy)
-		}
 		var result string
 		err := localstore.WithReadLock(ctx, storeDir, func() error {
 			var copyErr error
-			result, copyErr = enginecopy.Copy(ctx, storeDir, root, destination.Transport, destination.Name)
+			if root.MediaType == v1.MediaTypeImageIndex || root.MediaType == "application/vnd.docker.distribution.manifest.list.v2+json" {
+				if !opts.Push.ChangesManifest() && !opts.Push.RemoveSignatures {
+					result, copyErr = enginecopy.CopyIndex(ctx, storeDir, root, destination.Name)
+					result += "@" + root.Digest.String()
+					return copyErr
+				}
+			}
+			nativeDestination := destination
+			nativeDestination.Transport = "docker-daemon"
+			result, copyErr = copyImageDestination(ctx, storeDir, root, nativeDestination, opts, preparedPolicy)
 			return copyErr
 		})
 		if err != nil {
 			return "", err
 		}
-		return result + "@" + root.Digest.String(), nil
+		return result, nil
 	default:
 		if kind == oci.Image {
 			return copyImageDestination(ctx, storeDir, root, destination, opts, preparedPolicy)

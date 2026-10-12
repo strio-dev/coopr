@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"coopr/internal/oci"
@@ -24,22 +25,32 @@ import (
 	"go.podman.io/storage"
 )
 
+// StoredIndexSnapshot pins the exact index and resident manifests selected by
+// the caller without creating an intermediate containers/storage image record.
+type StoredIndexSnapshot struct {
+	Root       v1.Descriptor
+	Data       []byte
+	Selections map[string]oci.StoredSelection
+}
+
 // prepareStoredIndexCopySource assembles verified native members in the native
 // directory transport, whose private signature API retains every signature
-// format. A supplemented source exposes only the legacy signature API.
-// The caller holds the stored index lock for the lifetime of this source.
-func prepareStoredIndexCopySource(ctx context.Context, store storage.Store, imageID string, expected digest.Digest, system *types.SystemContext, removeSignatures bool, writer io.Writer) (_ types.ImageReference, cleanup func() error, retErr error) {
+// format. The temporary directory is the only staging storage.
+func prepareStoredIndexCopySource(ctx context.Context, store storage.Store, snapshot StoredIndexSnapshot, system *types.SystemContext, removeSignatures bool, writer io.Writer) (_ types.ImageReference, cleanup func() error, retErr error) {
 	cleanup = func() error { return nil }
-	root, original, selections, err := oci.StoredImageSelections(ctx, store, imageID)
-	if err != nil {
-		return nil, cleanup, err
+	root, original, selections := snapshot.Root, snapshot.Data, snapshot.Selections
+	if root.Digest.Validate() != nil || root.Digest.Algorithm().FromBytes(original) != root.Digest || int64(len(original)) != root.Size {
+		return nil, cleanup, errors.New("stored index snapshot differs from descriptor")
 	}
-	if root.Digest != expected {
-		return nil, cleanup, fmt.Errorf("stored index is %s, want %s", root.Digest, expected)
+	if root.MediaType != v1.MediaTypeImageIndex && root.MediaType != manifest.DockerV2ListMediaType {
+		return nil, cleanup, fmt.Errorf("stored snapshot is not an image index: %s", root.MediaType)
 	}
 	var index v1.Index
 	if err := json.Unmarshal(original, &index); err != nil {
 		return nil, cleanup, fmt.Errorf("decode stored index: %w", err)
+	}
+	if index.SchemaVersion != 2 || index.MediaType != "" && index.MediaType != root.MediaType {
+		return nil, cleanup, errors.New("invalid stored image index")
 	}
 	temporaryDir, err := os.MkdirTemp("", "coopr-native-index-")
 	if err != nil {
@@ -57,39 +68,27 @@ func prepareStoredIndexCopySource(ctx context.Context, store storage.Store, imag
 	if err != nil {
 		return nil, cleanup, err
 	}
-	base, err := imagestorage.Transport.NewStoreReference(store, nil, imageID)
-	if err != nil {
+	if err := os.MkdirAll(aggregatePath, 0o700); err != nil {
 		return nil, cleanup, err
 	}
-	policy, err := signature.NewPolicyContext(oci.PreparedImagePolicy(base))
-	if err != nil {
+	if err := os.WriteFile(filepath.Join(aggregatePath, "version"), []byte("Directory Transport Version: 1.1\n"), 0o644); err != nil {
 		return nil, cleanup, err
 	}
-	// Copy only the root with the native signature API. Every member is
-	// independently approved against its original source below before this
-	// prepared source can be returned to the final copier.
-	copiedRoot, copyErr := imagecopy.Image(ctx, policy, aggregate, base, &imagecopy.Options{
-		SourceCtx: system, DestinationCtx: system,
-		ImageListSelection: imagecopy.CopySpecificImages,
-		RemoveSignatures:   removeSignatures, PreserveDigests: true, ReportWriter: writer,
-	})
-	if err := errors.Join(copyErr, policy.Destroy()); err != nil {
+	if err := os.WriteFile(filepath.Join(aggregatePath, "manifest.json"), original, 0o644); err != nil {
 		return nil, cleanup, err
-	}
-	if !bytes.Equal(copiedRoot, original) {
-		return nil, cleanup, errors.New("prepared stored index differs from original")
 	}
 	preserveDigests := false
 	if !removeSignatures {
-		state, err := oci.CaptureStoredSignatures(store, imageID)
-		if err != nil {
-			return nil, cleanup, err
-		}
-		rootSignatures, err := oci.StoredSignatureBlobs(state, root.Digest, true)
+		rootSignatures, err := storedIndexSignatureBlobs(store, root.Digest)
 		if err != nil {
 			return nil, cleanup, err
 		}
 		preserveDigests = len(rootSignatures) != 0
+		for i, blob := range rootSignatures {
+			if err := os.WriteFile(filepath.Join(aggregatePath, fmt.Sprintf("signature-%d", i+1)), blob, 0o644); err != nil {
+				return nil, cleanup, err
+			}
+		}
 	}
 	type emittedMember struct {
 		descriptor v1.Descriptor
@@ -116,7 +115,7 @@ func prepareStoredIndexCopySource(ctx context.Context, store storage.Store, imag
 			if err != nil {
 				return nil, cleanup, err
 			}
-			manifestData, err := copyStoredIndexMember(ctx, store, imageID, selection, system, memberReference, removeSignatures, preserveDigests, writer)
+			manifestData, err := copyStoredIndexMember(ctx, store, selection, system, memberReference, removeSignatures, preserveDigests, writer)
 			if err != nil {
 				return nil, cleanup, fmt.Errorf("prepare stored manifest %s: %w", member.Digest, err)
 			}
@@ -156,17 +155,53 @@ func prepareStoredIndexCopySource(ctx context.Context, store storage.Store, imag
 	return aggregate, cleanup, nil
 }
 
-// copyStoredIndexMember uses a native single-image copy so signatures are read
-// from the selected instance, never from an unrelated synthetic index root.
-func copyStoredIndexMember(ctx context.Context, store storage.Store, rootID string, selection oci.StoredSelection, system *types.SystemContext, destination types.ImageReference, removeSignatures, preserveDigests bool, writer io.Writer) (_ []byte, retErr error) {
-	if selection.ImageID != rootID {
-		lock, err := manifests.LockerForImage(store, selection.ImageID)
+// storedIndexSignatureBlobs collects exact-root signatures from existing
+// records, including historical roots whose native default has since changed.
+func storedIndexSignatureBlobs(store storage.Store, selected digest.Digest) ([][]byte, error) {
+	images, err := store.ImagesByDigest(selected)
+	if err != nil {
+		return nil, err
+	}
+	var retained [][]byte
+	for _, image := range images {
+		blobs, err := func() ([][]byte, error) {
+			lock, err := manifests.LockerForImage(store, image.ID)
+			if err != nil {
+				return nil, err
+			}
+			lock.Lock()
+			defer lock.Unlock()
+			current, err := store.ImageBigData(image.ID, storage.ImageDigestBigDataKey)
+			if err != nil {
+				return nil, err
+			}
+			state, err := oci.CaptureStoredSignatures(store, image.ID)
+			if err != nil {
+				return nil, err
+			}
+			return oci.StoredSignatureBlobs(state, selected, digest.FromBytes(current) == selected)
+		}()
 		if err != nil {
 			return nil, err
 		}
-		lock.Lock()
-		defer lock.Unlock()
+		for _, blob := range blobs {
+			if !slices.ContainsFunc(retained, func(existing []byte) bool { return bytes.Equal(existing, blob) }) {
+				retained = append(retained, blob)
+			}
+		}
 	}
+	return retained, nil
+}
+
+// copyStoredIndexMember uses a native single-image copy so signatures are read
+// from the selected instance, never from an unrelated synthetic index root.
+func copyStoredIndexMember(ctx context.Context, store storage.Store, selection oci.StoredSelection, system *types.SystemContext, destination types.ImageReference, removeSignatures, preserveDigests bool, writer io.Writer) (_ []byte, retErr error) {
+	lock, err := manifests.LockerForImage(store, selection.ImageID)
+	if err != nil {
+		return nil, err
+	}
+	lock.Lock()
+	defer lock.Unlock()
 	base, err := imagestorage.Transport.NewStoreReference(store, nil, selection.ImageID)
 	if err != nil {
 		return nil, err
@@ -226,7 +261,7 @@ func linkStoredIndexFiles(source, destination string, instance digest.Digest) er
 				return err
 			}
 			// Native directory version 1.2 supports non-SHA256 filenames.
-			// The root-only copy has already initialized the version marker.
+			// The staged root initialized the version marker before member linking.
 			if string(data) == "Directory Transport Version: 1.2\n" {
 				if err := os.WriteFile(filepath.Join(destination, entry.Name()), data, 0o644); err != nil {
 					return err

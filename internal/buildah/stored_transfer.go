@@ -53,7 +53,7 @@ type StoredTransferOptions struct {
 	Store                  StoreOptions
 	ImageID                string
 	ExpectedManifest       digest.Digest
-	AllImages              bool
+	Index                  *StoredIndexSnapshot
 	LocalName              string
 	RegistryDestination    string
 	Destination            string
@@ -110,8 +110,16 @@ func TransferStoredImageResultSupervised(ctx context.Context, options StoredTran
 			destinations++
 		}
 	}
-	if options.ImageID == "" || destinations != 1 {
-		return StoredTransferResult{}, errors.New("stored transfer requires an image ID and exactly one destination")
+	if (options.ImageID != "") == (options.Index != nil) || destinations != 1 {
+		return StoredTransferResult{}, errors.New("stored transfer requires exactly one source and exactly one destination")
+	}
+	if options.Index != nil {
+		if options.LocalName != "" {
+			return StoredTransferResult{}, errors.New("cannot sign an index snapshot locally")
+		}
+		if options.ExpectedManifest != "" && options.ExpectedManifest != options.Index.Root.Digest {
+			return StoredTransferResult{}, fmt.Errorf("index snapshot is %s, want %s", options.Index.Root.Digest, options.ExpectedManifest)
+		}
 	}
 	jobDir, err := os.MkdirTemp("", ".coopr-stored-transfer-*")
 	if err != nil {
@@ -182,11 +190,14 @@ func transferStoredImage(ctx context.Context, options StoredTransferOptions) (_ 
 		return StoredTransferResult{}, err
 	}
 	defer func() { retErr = errors.Join(retErr, lease.Close()) }()
-	baseSource, err := imagestorage.Transport.NewStoreReference(lease.store, nil, options.ImageID)
-	if err != nil {
-		return StoredTransferResult{}, err
+	var baseSource types.ImageReference
+	if options.Index == nil {
+		baseSource, err = imagestorage.Transport.NewStoreReference(lease.store, nil, options.ImageID)
+		if err != nil {
+			return StoredTransferResult{}, err
+		}
 	}
-	var src types.ImageReference = baseSource
+	src := baseSource
 
 	var dst types.ImageReference
 	localIdentity := ""
@@ -228,14 +239,8 @@ func transferStoredImage(ctx context.Context, options StoredTransferOptions) (_ 
 	}
 	sourceCleanup := func() error { return nil }
 	var policyContext *signature.PolicyContext
-	if options.AllImages {
-		lock, err := manifests.LockerForImage(lease.store, options.ImageID)
-		if err != nil {
-			return StoredTransferResult{}, err
-		}
-		lock.Lock()
-		defer lock.Unlock()
-		src, sourceCleanup, err = prepareStoredIndexCopySource(ctx, lease.store, options.ImageID, options.ExpectedManifest, system, options.Push.RemoveSignatures, options.ProgressWriter)
+	if options.Index != nil {
+		src, sourceCleanup, err = prepareStoredIndexCopySource(ctx, lease.store, *options.Index, system, options.Push.RemoveSignatures, options.ProgressWriter)
 		defer func() { retErr = errors.Join(retErr, sourceCleanup()) }()
 		if err != nil {
 			return StoredTransferResult{}, err
@@ -284,7 +289,7 @@ func transferStoredImage(ctx context.Context, options StoredTransferOptions) (_ 
 		SignBy:                       options.SignBy,
 		SignBySigstorePrivateKeyFile: options.SigstorePrivateKeyFile,
 	}
-	if options.AllImages {
+	if options.Index != nil {
 		copyOptions.ImageListSelection = imagecopy.CopyAllImages
 	}
 

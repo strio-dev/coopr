@@ -2,11 +2,15 @@ package buildah
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/distribution/reference"
+	"github.com/opencontainers/go-digest"
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 func TestStoredSignatureTopLevelPreservesSharedURL(t *testing.T) {
@@ -47,5 +51,43 @@ func TestStoredTransferProgressRequest(t *testing.T) {
 	}
 	if bytes.Contains(data, []byte("ProgressWriter")) {
 		t.Fatalf("serialized process-local writer: %s", data)
+	}
+}
+
+func TestStoredTransferRejectsConflictingSources(t *testing.T) {
+	root := digest.FromString("selected index")
+	index := &StoredIndexSnapshot{Root: v1.Descriptor{Digest: root}}
+	for _, test := range []struct {
+		name    string
+		options StoredTransferOptions
+		want    string
+	}{
+		{
+			name:    "missing source",
+			options: StoredTransferOptions{Destination: "dir:output"},
+			want:    "requires exactly one source",
+		},
+		{
+			name:    "both sources",
+			options: StoredTransferOptions{ImageID: "native-image", Index: index, Destination: "dir:output"},
+			want:    "requires exactly one source",
+		},
+		{
+			name:    "local index signing",
+			options: StoredTransferOptions{Index: index, LocalName: "example:latest", SignBy: "key"},
+			want:    "cannot sign an index snapshot locally",
+		},
+		{
+			name:    "mismatched expected root",
+			options: StoredTransferOptions{Index: index, ExpectedManifest: digest.FromString("different index"), Destination: "dir:output"},
+			want:    "index snapshot is " + root.String() + ", want ",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := TransferStoredImageResultSupervised(context.Background(), test.options)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("transfer error = %v, want %q", err, test.want)
+			}
+		})
 	}
 }
