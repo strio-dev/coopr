@@ -75,7 +75,8 @@ func TestConfiguredStoreInteroperatesWithPodmanNativeNames(t *testing.T) {
 		t.Fatalf("Coopr inspection differs from native identity/platform: Coopr=%+v Podman=%+v", inspected, nativeInspected[0])
 	}
 	definition := filepath.Join(root, "application.coopr")
-	writePodmanCompatibilityFile(t, definition, "from \"external-base\"\n", 0o600)
+	writePodmanCompatibilityFile(t, definition, `from "external-base" {}
+`, 0o600)
 	for _, payload := range []string{"first", "second"} {
 		if payload == "second" {
 			buildNativeBase("docker.io/library/external-next:latest", payload)
@@ -123,8 +124,8 @@ func TestConfiguredStoreInteroperatesWithPodmanNativeNames(t *testing.T) {
 	buildNativeBase("localhost/foreign-base:latest", "foreign", "--platform", "linux/"+otherPodmanCompatibilityArchitecture())
 	podman("manifest", "create", "external-list", nativeBase, "localhost/foreign-base:latest")
 	nativeDigest := strings.TrimSpace(podman("image", "inspect", "external-list", "--format", "{{.Digest}}"))
-	if name := strings.TrimSpace(runPodmanCompatibilityCLI(t, "copy", "external-list", "external-list-copy")); name != "external-list-copy:latest" {
-		t.Fatalf("native index copy returned unexpected destination %q", name)
+	if output := runPodmanCompatibilityCLI(t, "copy", "external-list", "external-list-copy"); output != "" {
+		t.Fatalf("native index tag alias printed unexpected output %q", output)
 	}
 	copyDigest := strings.TrimSpace(podman("image", "inspect", "external-list-copy", "--format", "{{.Digest}}"))
 	if !strings.HasPrefix(nativeDigest, "sha256:") || copyDigest != nativeDigest {

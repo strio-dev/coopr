@@ -143,7 +143,10 @@ func ResolveFromSources(def *definition.Definition, opts Options) ([]FromSource,
 			} else if context, ok := g.contextForSource(source, opts.Mode != Publish); ok {
 				item.Kind = FromSourceContext
 				item.Context = cloneContextSpec(context)
-			} else if base, ok := g.aliases[canonicalStageName(source)]; ok {
+			} else if base, ok := g.resolveStageReference(source); ok {
+				if err := g.projection.requireEarlier(index, base, -1, source); err != nil {
+					return err
+				}
 				if err := resolveHead(base); err != nil {
 					return err
 				}

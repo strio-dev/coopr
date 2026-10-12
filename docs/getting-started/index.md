@@ -1,6 +1,6 @@
 # Getting started
 
-Coopr runs on Linux. Install the CLI, then follow the first-image tutorial.
+Install Coopr on Linux (amd64 or arm64), then build an OCI container image using a reusable component. The tutorial uses Podman to run the image; see [host setup](#set-up-your-host) if you need it.
 
 ## Install
 
@@ -9,67 +9,59 @@ curl -fsSL https://coopr.strio.dev/install.sh | sh
 coopr --version
 ```
 
-Other options include [release binaries](https://github.com/strio-dev/coopr/releases), the [container image](#run-the-published-container), and [Nix](#build-from-source-with-nix).
+This installs the latest stable release. For a specific version or Nix, see [other installation options](#other-installation-options).
 
-## Requirements
+## Run in a container
 
-- Linux with user and mount namespaces enabled. Rootless builds need subordinate UID/GID ranges and working `newuidmap`/`newgidmap` helpers.
-- An OCI runtime such as `crun` and the storage and networking helpers required by your container configuration. The release binary does not install these host tools.
-- Registry access for uncached images and network access for package installation steps.
+The published image includes Coopr and its build helpers. Use it with Podman to build images without installing Coopr on your host.
 
-See [rootless setup](../guides/security.md#native-rootless-requirements) for host requirements and [security](../guides/security.md) for nested-container profiles and limitations.
+[Run Coopr in a container](../guides/container.md){ .md-button .coopr-container-link }
 
-## Build an image
+## Build your first image
 
-[Build your first image](../tutorials/first-image.md) builds an NGINX image and runs it with Podman. The [component tutorial](../tutorials/reusable-components.md) builds a separate UBI9 image with shared settings and a policy check.
+[**Build hello world with a component**
+<span>Create a component that packages a greeting, apply it to an image, and run the result.</span>
+<span class="coopr-tutorial__action">Start tutorial</span>](../tutorials/first-image.md){ .coopr-path .coopr-tutorial }
 
-## Run the published container
+## Set up your host
 
-Run Coopr from GHCR:
-
-```sh
-podman run --rm ghcr.io/strio-dev/coopr:latest --help
-```
-
-Use a release tag in place of `latest` to select an exact version. From the repository checkout described in the [first-image tutorial](../tutorials/first-image.md), build with rootless Podman:
+Install Podman using [your distribution's instructions](https://podman.io/docs/installation) and complete its [rootless setup](https://github.com/podman-container-tools/podman/blob/main/docs/tutorials/rootless_tutorial.md). Run this basic check as your normal user:
 
 ```sh
-podman run --rm \
-  --device=/dev/fuse:rw \
-  --security-opt=seccomp=unconfined \
-  --security-opt=label=disable \
-  -v "$PWD:/work:rw" \
-  -v coopr-state:/var/lib \
-  ghcr.io/strio-dev/coopr:latest \
-  build /work/examples/first-image/image.coopr --tag coopr-demo:base
+podman run --rm docker.io/redhat/ubi9:latest true
 ```
 
-The `coopr-state` volume keeps images, components, and caches between runs. The image defaults to chroot isolation; RUNs share the outer container's network and other namespaces. See the [nested container profile](../guides/security.md#nested-container-profile) for isolation controls and limitations.
+The container prints no output and exits successfully. Run Coopr and Podman as the same user with the same storage settings so the tutorial can build and run images without a transfer step. Podman is needed to run the tutorial's image; Coopr itself does not require it.
+
+The Coopr binary embeds the Buildah backend, but does not install host tools. Native rootless builds need:
+
+- User and mount namespaces, subordinate UID/GID ranges, and working `newuidmap` and `newgidmap` helpers.
+- A supported container storage configuration and an OCI runtime such as `crun`. Overlay storage may need `fuse-overlayfs`.
+- The helpers required by your network configuration for networked build steps, and registry access for uncached base images.
+
+The Podman check does not verify every Coopr build prerequisite. See [security and rootless builds](../guides/security.md#native-rootless-requirements) for isolation, resource limits, and nested builds.
 
 ## Other installation options
 
-To pin a release, pass its unprefixed version tag:
+### Install a specific version
+
+Pass a published release tag to the installer:
 
 ```sh
-curl -fsSL https://coopr.strio.dev/install.sh | sh -s -- 1.2.3
+curl -fsSL https://coopr.strio.dev/install.sh | sh -s -- 0.2.0
 ```
 
-You can download the [installer](../install.sh) or binary archives from [GitHub releases](https://github.com/strio-dev/coopr/releases). Each release includes [corresponding sources and rebuild instructions](../contributing.md#corresponding-source) in `coopr-sources.tar.gz`.
+You can also download binary archives from [GitHub releases](https://github.com/strio-dev/coopr/releases). Extract the complete archive and keep its accompanying `libexec/` directory beside `coopr`; RUN blocks with multiple commands require its helper. The installer handles this layout automatically.
 
-For an unprivileged installation, choose a writable prefix:
+Each release also includes [corresponding sources and rebuild instructions](../contributing.md#corresponding-source).
+
+### Install with Nix
+
+With Nix flakes enabled:
 
 ```sh
-curl -fsSL https://coopr.strio.dev/install.sh | COOPR_INSTALL_PREFIX="$HOME/.local" sh
-"$HOME/.local/bin/coopr" --version
+nix profile add github:strio-dev/coopr
+coopr --version
 ```
 
-## Build from source with Nix
-
-From a checkout, with Nix flakes enabled:
-
-```sh
-nix build path:.#coopr -o result-coopr
-./result-coopr/bin/coopr --version
-```
-
-For the development shell and tests, see [Contributing](../contributing.md).
+This uses the repository's default branch. See [contributing](../contributing.md) to build from a checkout or set up a development shell.

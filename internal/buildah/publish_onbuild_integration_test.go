@@ -35,9 +35,10 @@ func TestSupervisedRawPublicationPlansExternalOnBuildBeforePackageProduction(t *
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	parentLayout := filepath.Join(root, "parent")
 	parent, err := BuildPlan(ctx, testPlan(t, `
-from "scratch"
-onbuild { arg "filename" "payload" }
-onbuild { copy "/artifact" "/inherited" from="hidden" }
+from "scratch" {
+    onbuild { arg "filename" "payload" }
+    onbuild { copy "/artifact" "/inherited" from="hidden" }
+}
 `), PlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless",
 		Output:        Output{Path: parentLayout, Format: outputFormatDocker},
@@ -62,16 +63,20 @@ onbuild { copy "/artifact" "/inherited" from="hidden" }
 	}
 
 	component := parseWorkerDefinition(t, `
-from "scratch" as="hidden"
-copy "artifact" "/artifact"
-from "registry.example/coopr/package-onbuild:latest" as="producer"
-copy "$filename" "/selected"
-package as="bundle"
-copy "/selected" "/selected" from="producer"
-copy "/inherited" "/inherited" from="producer"
-extend
-copy "/selected" "/selected" from="bundle"
-copy "/inherited" "/inherited" from="bundle"
+from "scratch" as="hidden" {
+    copy "artifact" "/artifact"
+}
+from "registry.example/coopr/package-onbuild:latest" as="producer" {
+    copy "$filename" "/selected"
+}
+package as="bundle" {
+    copy "/selected" "/selected" from="producer"
+    copy "/inherited" "/inherited" from="producer"
+}
+extend {
+    copy "/selected" "/selected" from="bundle"
+    copy "/inherited" "/inherited" from="bundle"
+}
 `)
 	layout := filepath.Join(root, "component")
 	result, err := PublishDefinitionSupervised(ctx, component, planner.Options{Mode: planner.Publish, Platform: "linux/" + runtime.GOARCH}, SupervisedPlanOptions{
@@ -104,8 +109,9 @@ copy "/inherited" "/inherited" from="bundle"
 	}
 	invokedLayout := filepath.Join(root, "invoked")
 	_, err = BuildPlan(ctx, testPlan(t, `
-from "scratch"
-component "local:bundle-onbuild"
+from "scratch" {
+    component "bundle-onbuild"
+}
 `), PlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Output: Output{Path: invokedLayout}, Resolver: resolver,
 		SystemContext: &types.SystemContext{SignaturePolicyPath: policy, BigFilesTemporaryDir: root},
@@ -142,13 +148,16 @@ func TestPublishedPackageOnBuildArgumentPlansInvocationFromPackage(t *testing.T)
 	}
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	component := parseWorkerDefinition(t, `
-package as="payload"
-copy "fixture" "/fixture"
-onbuild { arg "name" "fixture" }
-from "payload" as="prepared"
-copy "/$name" "/selected" from="payload"
-extend
-copy "/selected" "/selected" from="prepared"
+package as="payload" {
+    copy "fixture" "/fixture"
+    onbuild { arg "name" "fixture" }
+}
+extend {
+    from "payload" as="prepared" {
+        copy "/$name" "/selected" from="payload"
+    }
+    copy "/selected" "/selected" from="prepared"
+}
 `)
 	layout := filepath.Join(root, "package-component")
 	result, err := PublishDefinitionSupervised(ctx, component, planner.Options{Mode: planner.Publish, Platform: "linux/" + runtime.GOARCH}, SupervisedPlanOptions{
@@ -175,8 +184,9 @@ copy "/selected" "/selected" from="prepared"
 	}
 	invokedLayout := filepath.Join(root, "package-invoked")
 	_, err = BuildPlan(ctx, testPlan(t, `
-from "scratch"
-component "local:package-onbuild"
+from "scratch" {
+    component "package-onbuild"
+}
 `), PlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Output: Output{Path: invokedLayout}, Resolver: resolver,
 		SystemContext: &types.SystemContext{SignaturePolicyPath: policy, BigFilesTemporaryDir: root},
@@ -210,14 +220,17 @@ func TestPublishedPackageOnBuildRetainsHiddenPackageStage(t *testing.T) {
 	}
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	component := parseWorkerDefinition(t, `
-package as="assets"
-copy "fixture" "/asset"
-package as="payload"
-onbuild { arg "source" "assets" }
-onbuild { copy "/asset" "/selected" from="$source" }
-from "payload" as="prepared"
-extend
-copy "/selected" "/selected" from="prepared"
+package as="assets" {
+    copy "fixture" "/asset"
+}
+package as="payload" {
+    onbuild { arg "source" "assets" }
+    onbuild { copy "/asset" "/selected" from="$source" }
+}
+extend {
+    from "payload" as="prepared" {}
+    copy "/selected" "/selected" from="prepared"
+}
 `)
 	layout := filepath.Join(root, "component")
 	result, err := PublishDefinitionSupervised(ctx, component, planner.Options{Mode: planner.Publish, Platform: "linux/" + runtime.GOARCH}, SupervisedPlanOptions{
@@ -248,8 +261,9 @@ copy "/selected" "/selected" from="prepared"
 	}
 	invokedLayout := filepath.Join(root, "invoked")
 	_, err = BuildPlan(ctx, testPlan(t, `
-from "scratch"
-component "local:hidden-package-onbuild"
+from "scratch" {
+    component "hidden-package-onbuild"
+}
 `), PlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Output: Output{Path: invokedLayout}, Resolver: resolver,
 		SystemContext: &types.SystemContext{SignaturePolicyPath: policy, BigFilesTemporaryDir: root},

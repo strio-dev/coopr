@@ -30,18 +30,15 @@ func outputDestinations(kind oci.Kind, tag string, tags []string, push bool) ([]
 		if value == "" {
 			return nil, errors.New("--tag requires a nonempty name")
 		}
-		var destination transfer.Destination
-		var err error
-		if push {
-			destination, err = transfer.ParsePushDestination(value, kind)
-		} else {
-			destination, err = transfer.ParseDestination(value, kind)
-		}
+		destination, err := transfer.ParseTag(value, kind)
 		if err != nil {
 			if push {
 				return nil, fmt.Errorf("push target: %w", err)
 			}
 			return nil, err
+		}
+		if push {
+			destination.Transport = "registry"
 		}
 		if !seen[destination] {
 			destinations = append(destinations, destination)
@@ -156,7 +153,7 @@ func publishDestinations(ctx context.Context, kind oci.Kind, root v1.Descriptor,
 	}
 	report := outputReport{Destinations: make([]destinationResult, len(destinations))}
 	for i, destination := range destinations {
-		report.Destinations[i] = destinationResult{Destination: destination.Transport + ":" + destination.Name, Status: "pending"}
+		report.Destinations[i] = destinationResult{Destination: destination.String(), Status: "pending"}
 	}
 	for i, destination := range destinations {
 		result, err := "", ctx.Err()
@@ -166,7 +163,7 @@ func publishDestinations(ctx context.Context, kind oci.Kind, root v1.Descriptor,
 		if err != nil {
 			report.Destinations[i].Status = "failed"
 			report.Destinations[i].Error = err.Error()
-			return report, fmt.Errorf("%s retained as %s; completed destinations %v; copy to %s:%s: %w", kind, root.Digest, report.References, destination.Transport, destination.Name, err)
+			return report, fmt.Errorf("%s retained as %s; completed destinations %v; copy to %s: %w", kind, root.Digest, report.References, destination, err)
 		}
 		report.References = append(report.References, result)
 		report.Destinations[i].Status = "complete"

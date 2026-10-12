@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+
+{% block extrahead %}
+  {{ super() }}
+  {% import ".icons/lucide/copy.svg" as copy_icon %}
+  {% import ".icons/lucide/check.svg" as check_icon %}
+  {% import ".icons/lucide/arrow-right.svg" as arrow_right_icon %}
+  {% import ".icons/lucide/chevron-right.svg" as chevron_right_icon %}
+  <style>
+    :root {
+      --md-code-copy-icon: url("data:image/svg+xml;charset=utf-8,{{ copy_icon | replace('\n', '') | urlencode }}");
+      --md-clipboard-icon: var(--md-code-copy-icon);
+      --coopr-code-check-icon: url("data:image/svg+xml;charset=utf-8,{{ check_icon | replace('\n', '') | urlencode }}");
+      --coopr-arrow-right-icon: url("data:image/svg+xml;charset=utf-8,{{ arrow_right_icon | replace('\n', '') | urlencode }}");
+      --coopr-chevron-right-icon: url("data:image/svg+xml;charset=utf-8,{{ chevron_right_icon | replace('\n', '') | urlencode }}");
+    }
+  </style>
+  <noscript><style>.md-code__nav { display: none; }</style></noscript>
+{% endblock %}

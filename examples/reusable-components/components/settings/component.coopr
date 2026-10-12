@@ -1,7 +1,9 @@
-package as="payload"
-copy "settings.conf" "/settings.conf"
+package as="payload" {
+    copy "settings.conf" "/settings.conf"
+}
 
-extend as="configured"
-arg "channel" "stable"
-env demo_channel="${channel}"
-copy "/settings.conf" "/etc/demo/settings.conf" from="payload"
+extend as="configured" {
+    arg "channel" "stable"
+    env demo_channel="${channel}"
+    copy "/settings.conf" "/etc/demo/settings.conf" from="payload"
+}

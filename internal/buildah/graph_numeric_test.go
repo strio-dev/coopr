@@ -7,13 +7,14 @@ import (
 )
 
 func TestNumericStageIDsReachValidationLoweringAndPackageClosure(t *testing.T) {
-	plan := testPlan(t, `from "scratch"
-from "0"
-copy "/src" "/dst" from="0"
-add "/src" "/added" from="0"
-run "true" {
- mount "bind" from="0" source="/src" target="/bind"
- mount "cache" from="0" source="/src" target="/cache"
+	plan := testPlan(t, `from "scratch" {}
+from "0" {
+    copy "/src" "/dst" from="0"
+    add "/src" "/added" from="0"
+    run "true" {
+     mount "bind" from="0" source="/src" target="/bind"
+     mount "cache" from="0" source="/src" target="/cache"
+    }
 }
 `)
 	stages, _, err := validateStandaloneGraph(plan)
@@ -32,12 +33,14 @@ run "true" {
 	if _, err := lowerGraphOperations(stages[1].Operations, aliases[1], images, nil, []string{"/bin/sh", "-c"}, resolve); err != nil {
 		t.Fatal(err)
 	}
-	publication := testPublicationPlan(t, `from "scratch"
-from "0"
-package as="payload"
-copy "/src" "/dst" from="1"
-extend
-copy "/dst" "/dst" from="payload"
+	publication := testPublicationPlan(t, `from "scratch" {}
+from "0" {}
+package as="payload" {
+    copy "/src" "/dst" from="1"
+}
+extend {
+    copy "/dst" "/dst" from="payload"
+}
 `)
 	stages, _, err = validatePublicationGraph(publication, map[string]string{"payload": filepath.Join(t.TempDir(), "payload.tar")})
 	if err != nil {

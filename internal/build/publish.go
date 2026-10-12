@@ -71,9 +71,8 @@ type ComponentOptions struct {
 	CacheFrom, CacheTo             []buildah.CacheSpec
 }
 
-// BuildComponent builds the selected package graph once and installs the
-// exact resulting OCI artifact in the local component store, an OCI archive,
-// or a registry.
+// BuildComponent builds the selected package graph into the component store
+// and optionally pushes its named OCI artifact to a registry.
 func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retErr error) {
 	if opts.Jobs < 0 {
 		return "", errors.New("jobs must be nonnegative")

@@ -1,28 +1,116 @@
 # Definition syntax
 
-Definitions use KDL v2 in `.coopr` files. Instructions run in source order within a stage. Any definition with `extend` is a component; definitions without it build images.
+Write `.coopr` files in [KDL v2](https://kdl.dev/spec/). `from`, `extend`, and `package` each own their instructions inside `{ ... }`. Instructions execute in source order within that block. A definition with `extend` describes a component; one without it describes an image.
+
+## Instructions
+
+| Instruction | Meaning |
+| --- | --- |
+| `from`, `extend`, `package` | Start [image, caller, or package stages](#stage-blocks). |
+| `layer` | Group instructions into one [net filesystem layer](#layer-groups). |
+| `component` | Invoke an explicit context path (`./`, `../`, or `/`) or an OCI component reference, with `arg` children binding invocation arguments. Append `#NAME` to a local path to [select an output](../guides/components.md#select-outputs-and-arguments). |
+| `run` | Execute [shell text or literal arguments](#command-forms). |
+| `copy`, `add` | [Copy files](#files-and-mounts); ADD also fetches remote inputs and extracts archives. |
+| `arg`, `env` | Declare [build arguments](#arguments) or image environment. |
+| `workdir`, `user` | Set working directory or user. |
+| `cmd`, `entrypoint`, `shell` | Set execution defaults or shell. |
+| `label`, `maintainer` | Set image metadata. |
+| `expose`, `volume`, `stopsignal` | Set runtime configuration. |
+| `healthcheck`, `onbuild` | Set [healthchecks and inherited build triggers](#healthchecks-and-triggers). |
+
+## Stage blocks
+
+A definition contains top-level global `arg` declarations and stage blocks. Put every stage instruction inside its stage’s braces, including `arg`, `component`, and `layer`. An `extend` may also contain FROM blocks. Their dependencies and consumers determine when they run, just as for top-level FROM stages. Other stage nesting is forbidden, including stages inside `layer`. Empty stages still need braces, such as `extend {}`.
+
+```kdl
+arg "base" "docker.io/redhat/ubi9:latest"
+
+from "${base}" as="runtime" {
+    run "echo hello"
+    cmd {
+        exec "echo" "hello"
+    }
+}
+```
+
+Images default to the last top-level FROM; components default to the last top-level EXTEND, even when FROM or PACKAGE stages follow it. `--target NAME`, or `#NAME` on a local component reference, selects another named output. Component targets must be top-level EXTEND stages. FROM stages can supply packaging or invocation dependencies; PACKAGE stages capture packaged inputs. Trailing stages outside the selected output’s dependencies are skipped.
+
+Inside `extend`, direct instructions modify the caller and nested FROM blocks own separate stages. The last non-ARG child determines the output: a nested FROM returns its image; a direct instruction returns the modified caller. ARG declarations alone do not switch the output. Stage aliases must be unique throughout the definition, including nested stages. A local stage must be completed before the FROM, COPY/ADD, or RUN mount that consumes its result. Self-references and references to later stages are errors. Inside EXTEND, a nested FROM becomes available to subsequent instructions and nested stages.
+
+Stage names start with a letter and may contain letters, digits, `_`, `.`, and `-`. Names match case-insensitively; `scratch` is reserved. Stage sources also accept zero-based numeric indices, counting nested FROM stages.
+
+FROM accepts `as`, `platform`, and `after`. `after="NAME"` names one earlier stage (or its numeric index) that must finish before the external image is resolved. Use it for an image layout or archive generated through a writable primary-context mount. It adds a dependency without inheriting that stage's state. See [image selection](execution.md#image-selection) for accepted transports and context confinement.
+
+The examples below show instruction fragments unless they include a stage block. Put fragments inside `from`, `extend`, or `package` as appropriate.
 
 ## Values and forms
 
-Use quoted strings for text, native `#true`/`#false` or quoted `"true"`/`"false"` for boolean options, and native numbers for numeric options. Bare `true` and `false` are not valid KDL v2 values:
+Instructions are lowercase KDL nodes. Arguments follow the instruction name; options use `name=value`. Child instructions and options go inside `{ ... }`.
+
+| Value | Accepted forms |
+| --- | --- |
+| Text | `"hello"`, `"/usr/local/bin/app"`. |
+| Boolean options | Native `#true` / `#false`, or quoted `"true"` / `"false"`. |
+| Numbers | Native numbers, such as `retries=3` or `uid=1000`. |
+| Unix permissions | Native octal `chmod=0o755`, or quoted octal digits `chmod="0755"`. |
+| Parameter expressions | Quoted strings, such as `chmod="${permissions}"`. |
+
+Bare `true` and `false` are invalid KDL v2 values. Null, type annotations, and nonfinite numbers are unsupported. A leading zero does not make a KDL number octal: use `0o755` for a native octal literal.
 
 ```kdl
-copy "app" "/app" chmod=0o755 link=#true
-run "echo $HOME"
-run {
-    exec "/bin/sh" "-c" "echo hello"
-}
-cmd {
-    exec "/app" "--serve"
-}
-cmd "echo hello"
+copy "app" "/usr/local/bin/app" chmod=0o755 link=#true
 ```
 
-Unix permissions accept native KDL octal literals, such as `chmod=0o755` or `mode=0o400`, and quoted octal digits, such as `chmod="0755"`. Other numeric options accept ordinary KDL numbers. Quote parameter expressions, for example `chmod="${permissions}"`.
+### Command forms
 
-RUN, CMD, ENTRYPOINT and HEALTHCHECK take one shell-command string or an `exec` child containing the executable and its arguments. An `exec` child is valid only under those instructions. Do not combine it with a shell-command string. RUN mounts and devices are siblings of `exec`; healthcheck timing stays on the parent. Empty CMD or ENTRYPOINT, including an empty `exec` child, clears that image setting.
+A command string runs through the configured shell. An `exec` child passes an executable and literal arguments; shell variables, pipes, and redirects need shell form.
 
-Ordinary triple-quoted KDL strings hold multiline shell scripts:
+```kdl
+run "echo $HOME"
+
+run {
+    exec "echo" "hello"
+}
+
+cmd {
+    exec "/usr/local/bin/app" "--serve"
+}
+```
+
+A `script` child is the block form of a shell command. RUN accepts multiple `script` and `exec` children, executed in order:
+
+```kdl
+run {
+    script "echo \"$HOME\" > /home-path"
+    exec "cat" "/home-path"
+}
+```
+
+The commands share the RUN's mounts and devices and stop at the first failure. The whole RUN caches as one instruction and produces one filesystem layer when files change, with default layering. Each command starts with the configured environment and working directory. Filesystem changes carry between commands; `cd` and `export` affect only the shell running that script. Put commands needing shared shell state in one script.
+
+CMD, ENTRYPOINT and HEALTHCHECK accept one command string or exactly one `script` or `exec` child. They configure a runtime command instead of executing it during the build. Empty CMD or ENTRYPOINT, including an empty `exec` child, clears that image setting. ONBUILD RUN accepts only one command.
+
+Do not combine a command string with command children. RUN mounts and devices are siblings of `script` and `exec`:
+
+```kdl
+run {
+    mount "bind" source="." target="/src"
+    exec "ls" "/src"
+}
+```
+
+SHELL takes the shell executable and its arguments directly:
+
+```kdl
+shell "/bin/bash" "-c"
+run "echo hello"
+```
+
+It configures shell-form RUN, CMD and ENTRYPOINT, including their `script` children. HEALTHCHECK `script` uses the CMD-SHELL healthcheck form.
+
+### Multiline commands
+
+Use ordinary triple-quoted KDL strings for multiline shell scripts:
 
 ```kdl
 run """
@@ -31,39 +119,18 @@ run """
     """
 ```
 
-KDL removes the closing delimiter's indentation. Normal string escapes still apply: write `\\` to pass a literal backslash to the shell, as in the `printf` above. Static content belongs in context files; authored COPY/ADD have no special inline-content syntax.
+The opening delimiter is followed by a newline; the closing delimiter goes on its own line. KDL removes the closing delimiter's indentation. Normal string escapes still apply: write `\\` to pass a literal backslash to the shell, as in the `printf` above.
 
-A multiline RUN starting with a `#!` interpreter line executes as a script with that interpreter, matching executable Containerfile heredocs.
-
-## Instructions
-
-| Instruction | Meaning |
-| --- | --- |
-| `from`, `extend`, `package` | Start an image, consuming, or package stage. |
-| `layer` | Group ordered instructions into one net filesystem layer. |
-| `component` | Invoke an explicit context path (`./`, `../`, or `/`) or an OCI component reference, with string properties as arguments. |
-| `run` | Execute a shell command or an exec argument list. |
-| `copy`, `add` | Add context/stage/image files; ADD also supports remote inputs and archive extraction. |
-| `arg`, `env` | Declare scoped build arguments or image environment. |
-| `workdir`, `user` | Set working directory or user. |
-| `cmd`, `entrypoint`, `shell` | Set execution defaults or shell. |
-| `label`, `maintainer` | Set image metadata. |
-| `expose`, `volume`, `stopsignal` | Set runtime configuration. |
-| `healthcheck`, `onbuild` | Preserve healthcheck or inherited build-trigger configuration. |
-
-Instruction names are lowercase. Unknown instructions and option names fail during definition validation, including in unused stages. Parameterized values are checked after expansion in the selected stage. See the [execution reference](execution.md) for stage, input, and runtime rules.
-
-Schema errors identify the instruction and nested child where applicable. Source coordinates use byte columns; line numbers are accurate for LF and CRLF files. The parser currently misreports line numbers for CR-only and Unicode line separators.
-
-FROM accepts `as`, `platform`, and `after`. `after="NAME"` names one earlier stage (or its numeric index) that must finish before the external image is resolved. Use it for an image layout or archive generated through a writable primary-context mount. It adds a dependency without inheriting that stage's state. See [image selection](execution.md#image-selection) for accepted transports and context confinement.
+A positional multiline RUN starting with a `#!` interpreter line executes with that interpreter. An explicit `script` child always uses the configured shell, even if its text starts with `#!`. Authored COPY/ADD read files from their source; they have no inline-content form.
 
 ## Layer groups
 
 ```kdl
-from "docker.io/redhat/ubi9:latest"
-layer {
-    run "dnf install -y jq"
-    run "dnf clean all"
+from "docker.io/redhat/ubi9:latest" {
+    layer {
+        run "dnf install -y jq"
+        run "dnf clean all"
+    }
 }
 ```
 
@@ -71,26 +138,41 @@ layer {
 
 Closing the outermost group keeps only the net filesystem change above its starting image. Inner groups are absorbed by the outer one. Empty and configuration-only groups add no filesystem layer. Groups preserve preceding layers and resulting image configuration.
 
-A group requires one image lineage. A component output with an independent FROM base is rejected inside the group, even if its filesystem happens to match the starting image. Use that component outside the group. `--layers=false` takes precedence and retains the existing whole-build no-layer behavior; the lineage rule still applies.
+A group requires one image lineage. A component output with an independent FROM base is rejected inside the group, even if its filesystem happens to match the starting image. Use that component outside the group. `--layers=false` takes precedence; see [layer behavior](execution.md#layers-storage-and-copying). The lineage rule still applies.
 
 ## Arguments
 
 ```kdl
-arg "VERSION" "1"
-from "docker.io/library/alpine:${VERSION}" as="base"
-arg "channel" "stable"
-env APP_CHANNEL="${channel}"
+arg "version" "9"
+
+from "docker.io/redhat/ubi${version}:latest" as="base" {
+    arg "version"
+    arg "channel" "stable"
+    env APP_CHANNEL="${channel}"
+}
 ```
 
-Global ARGs precede the first stage and support structural expansion; redeclare them in a stage for RUN exposure. Local ARGs apply from declaration and pass through FROM inheritance. Independent EXTEND roots get global and explicitly supplied component arguments. Values are strings; unset references expand to empty text. Structural references must remain valid after expansion. Package-producing arguments are fixed at component build; see [argument scope](execution.md#arguments-and-normalization).
+Top-level global ARGs support structural expansion. Redeclare a global inside a stage with `arg "NAME"` to consume its value and expose it to RUN; a stage declaration with a value supplies a stage default. Stage ARGs apply from declaration and pass through FROM inheritance. Independent EXTEND roots get global and explicitly supplied component arguments. Values are strings; unset references expand to empty text. Structural references must remain valid after expansion. Package-producing arguments are fixed at component build; see [argument scope](execution.md#arguments-and-normalization).
+
+Pass arguments to a component inside its call block:
+
+```kdl
+component "./components/shared.coopr#configured" {
+    arg "channel" "api"
+    arg "target" "ordinary-value"
+}
+```
+
+Only `arg` children are accepted, each with a name and an explicit value. Values can use caller argument or environment expansion. Bindings stay private to the invocation; they do not declare caller ARGs. `target` is an ordinary argument name, separate from the local path’s output selector. Calls without bindings need no block.
 
 Boolean options can use arguments. Quote permission defaults so their octal digits survive substitution:
 
 ```kdl
-from "docker.io/redhat/ubi9:latest"
-arg "linked" #true
-arg "permissions" "0755"
-copy "app" "/usr/local/bin/app" link="${linked}" chmod="${permissions}"
+from "docker.io/redhat/ubi9:latest" {
+    arg "linked" #true
+    arg "permissions" "0755"
+    copy "app" "/usr/local/bin/app" link="${linked}" chmod="${permissions}"
+}
 ```
 
 Numeric ARG values are normalized as decimal text. Mount types and option values support `$name`, `${name}`, and defaults such as `${name:-cache}`.
@@ -101,11 +183,11 @@ Numeric ARG values are normalized as decimal text. Mount types and option values
 copy "a" "/a" { exclude "*.md" "*.tmp" }
 run "make" {
     mount "cache" target="/root/.cache"
-    mount "secret" id="token" target="/run/secrets/token" required="true"
+    mount "secret" id="token" target="/run/secrets/token" required=#true
 }
 ```
 
-Child options retain their order. COPY accepts local context and declared stage/image sources; ADD owns HTTP/Git fetch behavior. Files cannot escape the selected context through paths or symlinks. See [security](../guides/security.md) for credentials and entitlements.
+Child options retain their order. COPY reads context files, earlier stages, packages, named contexts, or images. ADD also fetches HTTP/Git sources and extracts archives; COPY rejects remote URLs before connecting. Files cannot escape the selected context through paths or symlinks. See [security](../guides/security.md) for credentials and entitlements.
 
 ## Healthchecks and triggers
 
@@ -116,7 +198,9 @@ healthcheck interval="30s" timeout="3s" retries=3 {
 onbuild { copy "generated" "/generated" }
 ```
 
-Timing properties are `interval`, `timeout`, `start-period`, and `start-interval`; `retries` is a nonnegative integer. `healthcheck NONE` disables a healthcheck and takes no other options. Quoted `"NONE"` remains a shell command; `exec "NONE"` remains an executable argument. ONBUILD takes one ordinary instruction; nested ONBUILD, FROM, and MAINTAINER are rejected as inherited triggers. Later FROM executes inherited triggers in stored order using the child's context, then clears them.
+Timing properties are `interval`, `timeout`, `start-period`, and `start-interval`; `retries` is a nonnegative integer. `healthcheck NONE` disables a healthcheck and takes no other options. Quoted `"NONE"` remains a shell command; `exec "NONE"` remains an executable argument.
+
+ONBUILD wraps one supported image instruction. Stage declarations, `component`, `layer`, `maintainer`, and nested `onbuild` are not supported inside it. A child FROM executes inherited triggers before its authored instructions, using the child's context, then clears them. Local stage sources must be available before that child FROM.
 
 ONBUILD stores Dockerfile-compatible trigger text. Healthcheck timing/retries, RUN network/security, device `required`, and COPY/ADD boolean flags must be literal values there, as the Dockerfile parser reads them before child-stage expansion. RUN mount values can use child-stage arguments, including typed options such as `required` and `mode`:
 
@@ -128,17 +212,69 @@ onbuild {
 }
 ```
 
-EXTEND compatibility fields (`distro`, `distro-version`, `package-manager`, `architecture`) accept a string property or one child listing allowed strings. See [compatibility requirements](execution.md#compatibility-requirements) for matching rules.
-
 ## Instruction options
 
-COPY accepts local or declared stage/image inputs; HTTP/Git sources fail before connection. ADD supports remote sources, archive extraction via `unpack="true"|"false"`, and Git metadata retention via `keep-git-dir="true"`. COPY/ADD `link="true"` creates an independent layer, committed before the next filesystem instruction so later instructions see it.
+The fixed properties for stage and execution instructions are:
+
+| Instruction | Properties / children |
+| --- | --- |
+| `from` | `as`, `platform`, `after`; required stage body. |
+| `extend` | `as`; required stage body. |
+| `package` | Required `as` name and stage body. |
+| `run` | `network`, `security`; repeatable `script`, `exec`, `mount`, and `device` children. |
+| `copy` | `from`, `chown`, `chmod`, `link`, `parents`; repeatable `exclude` children listing patterns. |
+| `add` | COPY properties plus `checksum`, `keep-git-dir`, `unpack`; `exclude` children. |
+| `healthcheck` | `interval`, `timeout`, `start-period`, `start-interval`, `retries`; one `script` or `exec` child instead of positional shell text. |
+| `device` | One or more CDI selectors and optional `required` boolean; child of RUN. |
+| `env`, `label` | User-defined key/value properties. |
+| `component` | Component reference argument; optional `arg "NAME" "VALUE"` children. No properties. |
+
+Other stage instructions accept no properties. CMD and ENTRYPOINT accept one `script` or `exec` child instead of positional shell text. `script`, `exec`, `exclude`, `mount`, and `device` are nested forms, not independent stage instructions.
+
+ENV and LABEL accept key/value properties or one name/value pair. Do not mix the two forms in one instruction:
+
+```kdl
+env APP_CHANNEL="stable" APP_LOG_LEVEL="info"
+env "APP_CHANNEL" "stable"
+label "org.opencontainers.image.title" "hello"
+```
+
+COPY/ADD options have these effects:
+
+| Property | Effect |
+| --- | --- |
+| `from` | Read the selected stage, package, named context, or image. |
+| `chown` | Set destination ownership as `USER[:GROUP]` or numeric IDs. Named identities resolve in the destination image. |
+| `chmod` | Set Unix permission bits; accepts octal forms described above. |
+| `link` | Create an independent layer, committed before the next filesystem instruction. |
+| `parents` | Retain source parent directories; `/./` marks where retained paths begin. |
+| `checksum` (ADD) | Verify one remote source: `sha256:HEX` for HTTP, a commit prefix for Git. |
+| `keep-git-dir` (ADD) | Retain Git metadata instead of removing it. |
+| `unpack` (ADD) | Enable or disable archive extraction. |
+
+Boolean properties accept the forms in [values and forms](#values-and-forms).
 
 Healthcheck and ONBUILD configuration extensions survive OCI and Docker outputs, though receiving runtimes may ignore them. Imported Docker ONBUILD heredocs retain their Dockerfile semantics, including executable/empty RUN scripts and COPY/ADD filenames. This does not add authored inline COPY/ADD syntax.
 
-RUN supports bind, cache, tmpfs, secret, and SSH mounts. Mount types/properties may use arguments and are validated after resolution. Mount children retain source order. Secret/SSH mounts accept `id`, `target`, `required`, `uid`, `gid`, and `mode`; secrets also accept `env`.
+### RUN mount options
 
-Bind mounts support `source`/`src`, `target`/`dst`/`destination`, `from`, and `rw`/`readwrite` or `ro`/`readonly`. Native ownership, relabeling, propagation, recursion, and `nosuid`/`nodev`/`noexec` options remain subject to the selected runtime's permissions. Build-wide `--mount` specifications use the same mount handling and append after authored mounts. See [RUN mounts](execution.md#run-mounts) for writable-context lifetime.
+Mount types and values may use arguments and are validated after expansion. Mount children retain source order.
+
+| Type | Canonical properties |
+| --- | --- |
+| `bind` | `from`, `source`, `target`, `readonly`, `bind-nonrecursive`, `no-dereference`, `consistency`, plus native bind options below. |
+| `cache` | `from`, `id`, `source`, `target`, `readonly`, `sharing`, `mode`, `uid`, `gid`, plus native bind options below. |
+| `tmpfs` | `target`, `readonly`, `size`, `mode`, `nosuid`, `nodev`, `noexec`, `tmpcopyup`. |
+| `secret` | `id`, `source`, `target`, `required`, `mode`, `uid`, `gid`, `env`, `readonly`. |
+| `ssh` | `id`, `target`, `required`, `mode`, `uid`, `gid`, `readonly`. |
+
+`sharing` accepts `shared`, `private`, or `locked`. Secret `source`/`src` names a supplied secret ID; it does not read a host path directly. `size` sets the tmpfs capacity; `mode`, `uid`, and `gid` set mount-specific permissions and ownership. Secret `env` exposes the secret as an environment variable.
+
+Bind/cache native options are `nosuid`, `nodev`, `noexec`, `u`, `shared`, `rshared`, `private`, `rprivate`, `slave`, `rslave`, `bind-propagation`, and `relabel`. Propagation accepts those six propagation modes; relabel accepts `private` or `shared`. Host ownership changes, relabeling, and mount behavior require the selected runtime’s permissions.
+
+Aliases are `src` for `source`, `dst`/`destination` for `target`, `ro` for `readonly`, `rw`/`readwrite` for writable access, `tmpfs-size`/`tmpfs-mode` for tmpfs `size`/`mode`, `U` for `u`, and `z`/`Z` for shared/private relabeling. An alias is accepted only where its canonical property is supported.
+
+Build-wide `--mount` specifications append after authored mounts. See [RUN mounts](execution.md#run-mounts) for source identity and writable-context lifetime.
 
 Both build commands accept `--secret id=NAME,src=PATH`, `--secret id=NAME,env=VARIABLE`, and `--ssh ID[=PATH]`. Credential bytes are read when needed and do not enter definitions or cache keys. Changed credentials require `--no-cache` or another measured input change when they must change the output.
 
@@ -149,3 +285,9 @@ Both build commands accept `--secret id=NAME,src=PATH`, `--secret id=NAME,env=VA
 | HTTP file ADD | `HTTP_AUTH_HEADER_<host>` or `HTTP_AUTH_TOKEN_<host>` secrets, selected separately for each redirect host. |
 | Private HTTPS Git | Host-scoped `GIT_AUTH_HEADER.<host>` or `GIT_AUTH_TOKEN.<host>`. Authenticated redirects fail; submodules outside the selected parent-repository scope receive no parent authorization header. |
 | SSH/SCP Git | `--ssh default` plus `GIT_KNOWN_HOSTS.<host>` or `GIT_KNOWN_HOSTS`, with strict host-key verification. |
+
+## Validation
+
+Unknown instructions and option names fail during definition validation, including in unused stages. Parameterized values are checked after expansion in the selected stage. See the [execution reference](execution.md) for stage, input, and runtime rules.
+
+Errors identify the instruction and nested child where applicable. Source coordinates use byte columns; line numbers are accurate for LF and CRLF files. The parser currently misreports line numbers for CR-only and Unicode line separators.

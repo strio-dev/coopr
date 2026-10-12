@@ -27,7 +27,14 @@ func TestBuildMultiPlatformComponentAndConsumeBothPlatforms(t *testing.T) {
 	ctx := context.Background()
 	work := t.TempDir()
 	file := filepath.Join(work, "component.coopr")
-	definition := "package as=\"pkg\"\narg \"TARGETARCH\"\ncopy \"payload-$TARGETARCH\" \"/artifact\"\nextend as=\"base\"\ncopy \"/artifact\" \"/installed\" from=\"pkg\"\n"
+	definition := `package as="pkg" {
+    arg "TARGETARCH"
+    copy "payload-$TARGETARCH" "/artifact"
+}
+extend as="base" {
+    copy "/artifact" "/installed" from="pkg"
+}
+`
 	if err := os.WriteFile(file, []byte(definition), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +43,7 @@ func TestBuildMultiPlatformComponentAndConsumeBothPlatforms(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	const tag = "multi-component"
+	const tag = "multi-component:latest"
 	got, err := BuildComponent(ctx, ComponentOptions{
 		File: file, Tag: tag, Platforms: []string{"linux/arm64", "linux/amd64"},
 	})
@@ -67,11 +74,11 @@ func TestBuildMultiPlatformComponentAndConsumeBothPlatforms(t *testing.T) {
 	server := httptest.NewServer(registry.New())
 	defer server.Close()
 	remote := strings.TrimPrefix(server.URL, "http://") + "/coopr/multi-component:latest"
-	destination, err := transfer.ParseDestination("registry:"+remote, oci.Component)
+	destination, err := transfer.ParseDestination("docker://"+remote, oci.Component)
 	if err != nil {
 		t.Fatal(err)
 	}
-	immutable, err := transfer.Copy(ctx, oci.Component, "local:"+tag, destination, transfer.Options{ComponentStoreDir: storeDir, TLSVerify: new(false)})
+	immutable, err := transfer.Copy(ctx, oci.Component, tag, destination, transfer.Options{ComponentStoreDir: storeDir, TLSVerify: new(false)})
 	if err != nil || !strings.Contains(immutable, "@"+root.Digest.String()) {
 		t.Fatalf("copy component index to registry = %q, %v", immutable, err)
 	}
@@ -79,7 +86,7 @@ func TestBuildMultiPlatformComponentAndConsumeBothPlatforms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, reference := range []string{"local:" + tag, immutable} {
+	for _, reference := range []string{tag, immutable} {
 		for _, arch := range []string{"amd64", "arm64"} {
 			t.Run(fmt.Sprintf("%s/%s", reference, arch), func(t *testing.T) {
 				platform := v1.Platform{OS: "linux", Architecture: arch}
@@ -96,11 +103,14 @@ func TestBuildMultiPlatformComponentAndConsumeBothPlatforms(t *testing.T) {
 				}
 				consumer := t.TempDir()
 				app := filepath.Join(consumer, "app.coopr")
-				if err := os.WriteFile(app, []byte("from \"scratch\"\ncomponent \""+reference+"\"\n"), 0o600); err != nil {
+				if err := os.WriteFile(app, []byte(`from "scratch" {
+    component "`+reference+`"
+}
+`), 0o600); err != nil {
 					t.Fatal(err)
 				}
 				archive := filepath.Join(consumer, "app.oci.tar")
-				if _, err := Run(ctx, Options{File: app, Tag: "oci-archive:" + archive, Platform: "linux/" + arch, TLSVerify: new(false)}); err != nil {
+				if _, err := buildArchive(t, archive, ctx, Options{File: app, Platform: "linux/" + arch, TLSVerify: new(false)}); err != nil {
 					t.Fatal(err)
 				}
 				if !containsName(archiveLayerNames(t, archive), "installed") {

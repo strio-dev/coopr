@@ -1,6 +1,6 @@
 [project]
 site_name = "Coopr"
-site_description = "Build container images from reusable OCI components."
+site_description = "Build OCI container images from reusable components."
 site_url = "https://coopr.strio.dev"
 repo_url = "https://github.com/strio-dev/coopr"
 repo_name = "strio-dev/coopr"
@@ -8,18 +8,21 @@ docs_dir = "docs"
 site_dir = "site"
 dev_addr = "127.0.0.1:8000"
 extra_css = ["stylesheets/coopr.css"]
+extra_javascript = ["javascripts/copy.js", "javascripts/toc.js"]
 nav = [
   { "Overview" = "index.md" },
   { "Getting started" = "getting-started/index.md" },
   { "Tutorials" = [
-    { "Build your first image" = "tutorials/first-image.md" },
-    { "Reuse two components" = "tutorials/reusable-components.md" },
+    { "Build hello world" = "tutorials/first-image.md" },
+    { "Share a local component" = "tutorials/local-components.md" },
+    { "Package reusable components" = "tutorials/reusable-components.md" },
   ] },
   { "Guides" = [
     { "Build images" = "guides/builds.md" },
     { "Package components" = "guides/components.md" },
     { "Image and component storage" = "guides/storage.md" },
     { "Caching" = "guides/caching.md" },
+    { "Run Coopr in a container" = "guides/container.md" },
     { "Security and rootless builds" = "guides/security.md" },
   ] },
   { "Concepts" = [
@@ -35,6 +38,9 @@ nav = [
   { "Contributing" = "contributing.md" },
 ]
 
+[project.extra]
+generator = false
+
 [project.theme]
 variant = "modern"
 custom_dir = "docs/.overrides"
@@ -49,7 +55,6 @@ features = [
   "navigation.path",
   "navigation.footer",
   "search.highlight",
-  "content.code.copy",
 ]
 
 [project.theme.icon]
@@ -72,9 +77,12 @@ toggle.icon = "lucide/moon"
 toggle.name = "Switch to light mode"
 
 [project.markdown_extensions]
+coopr_copy = {}
 attr_list = {}
 md_in_html = {}
-"pymdownx.highlight" = { anchor_linenums = true }
-"pymdownx.superfences" = {}
+"pymdownx.highlight" = { anchor_linenums = true, pygments_lang_class = true }
+"pymdownx.superfences" = { custom_fences = [
+  { name = "kdl", class = "highlight", format = "coopr_highlight.format" },
+] }
 "pymdownx.tabbed" = { alternate_style = true }
-toc = { permalink = true }
+toc = { permalink = "#" }

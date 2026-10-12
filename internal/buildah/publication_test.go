@@ -24,16 +24,20 @@ import (
 
 func TestValidatePublicationGraphAcceptsMultiplePackageOutputs(t *testing.T) {
 	plan := testPublicationPlan(t, `
-from "scratch" as="producer"
-copy "payload" "/payload"
-package as="tools"
-copy "/payload" "/tool" from="producer"
-from "tools" as="combined"
-package as="bundle"
-copy "/tool" "/bundle" from="combined"
-extend
-copy "/tool" "/one" from="tools"
-copy "/bundle" "/two" from="bundle"
+from "scratch" as="producer" {
+    copy "payload" "/payload"
+}
+package as="tools" {
+    copy "/payload" "/tool" from="producer"
+}
+from "tools" as="combined" {}
+package as="bundle" {
+    copy "/tool" "/bundle" from="combined"
+}
+extend {
+    copy "/tool" "/one" from="tools"
+    copy "/bundle" "/two" from="bundle"
+}
 `)
 	root := t.TempDir()
 	stages, outputs, err := validatePublicationGraph(plan, map[string]string{
@@ -52,16 +56,19 @@ copy "/bundle" "/two" from="bundle"
 
 func TestValidatePublicationGraphIncludesRunMountStageDependencies(t *testing.T) {
 	plan := testPublicationPlan(t, `
-from "scratch" as="source"
-from "scratch" as="producer"
-run "true" {
-  mount "bind" from="SOURCE" source="/input" target="/input"
-  mount "cache" from="source" source="/cache" target="/cache"
+from "scratch" as="source" {}
+from "scratch" as="producer" {
+    run "true" {
+      mount "bind" from="SOURCE" source="/input" target="/input"
+      mount "cache" from="source" source="/cache" target="/cache"
+    }
 }
-package as="payload"
-copy "/proof" "/proof" from="producer"
-extend
-copy "/proof" "/proof" from="payload"
+package as="payload" {
+    copy "/proof" "/proof" from="producer"
+}
+extend {
+    copy "/proof" "/proof" from="payload"
+}
 `)
 	stages, _, err := validatePublicationGraph(plan, map[string]string{"payload": filepath.Join(t.TempDir(), "payload.tar")})
 	if err != nil {
@@ -74,13 +81,15 @@ copy "/proof" "/proof" from="payload"
 
 func TestValidatePublicationGraphAcceptsExternalRunMountImageInputs(t *testing.T) {
 	const source = "registry.example/tools:latest"
-	plan := testPublicationPlan(t, `package as="payload"
-run "true" {
-  mount "bind" from="registry.example/tools:latest" source="/bin" target="/tools" readonly="true"
-  mount "cache" from="registry.example/tools:latest" source="/var/cache" target="/cache" id="tools"
+	plan := testPublicationPlan(t, `package as="payload" {
+    run "true" {
+      mount "bind" from="registry.example/tools:latest" source="/bin" target="/tools" readonly="true"
+      mount "cache" from="registry.example/tools:latest" source="/var/cache" target="/cache" id="tools"
+    }
 }
-extend
-copy "/proof" "/proof" from="payload"
+extend {
+    copy "/proof" "/proof" from="payload"
+}
 `)
 	stages, _, err := validatePublicationGraph(plan, map[string]string{"payload": filepath.Join(t.TempDir(), "payload.tar")})
 	if err != nil {
@@ -96,13 +105,15 @@ copy "/proof" "/proof" from="payload"
 
 func TestPublicationGraphClassifiesNamedContextsWithoutImageResolution(t *testing.T) {
 	contextSpec := buildcontext.Spec{Name: "assets", Kind: buildcontext.Local, Path: t.TempDir()}
-	plan := testPublicationPlanWithContexts(t, `package as="payload"
-copy "/copy" "/copy" from="assets"
-run "true" network="none" {
-  mount "bind" from="assets" source="/mount" target="/mount"
+	plan := testPublicationPlanWithContexts(t, `package as="payload" {
+    copy "/copy" "/copy" from="assets"
+    run "true" network="none" {
+      mount "bind" from="assets" source="/mount" target="/mount"
+    }
 }
-extend
-copy "/copy" "/copy" from="payload"
+extend {
+    copy "/copy" "/copy" from="payload"
+}
 `, contextSpec)
 	stages, _, err := validatePublicationGraph(plan, map[string]string{"payload": filepath.Join(t.TempDir(), "payload.tar")})
 	if err != nil {
@@ -119,10 +130,12 @@ copy "/copy" "/copy" from="payload"
 
 func TestValidatePublicationGraphRejectsMissingAndUnknownPackagePaths(t *testing.T) {
 	plan := testPublicationPlan(t, `
-package as="payload"
-copy "payload" "/payload"
-extend
-copy "/payload" "/payload" from="payload"
+package as="payload" {
+    copy "payload" "/payload"
+}
+extend {
+    copy "/payload" "/payload" from="payload"
+}
 `)
 	_, _, err := validatePublicationGraph(plan, nil)
 	if err == nil || !strings.Contains(err.Error(), "output path is required") {
@@ -138,13 +151,16 @@ copy "/payload" "/payload" from="payload"
 
 func TestPublishPlanRejectsAnyPackageOutputInsideCacheLayout(t *testing.T) {
 	plan := testPublicationPlan(t, `
-package as="first"
-copy "first" "/first"
-package as="second"
-copy "second" "/second"
-extend
-copy "/first" "/first" from="first"
-copy "/second" "/second" from="second"
+package as="first" {
+    copy "first" "/first"
+}
+package as="second" {
+    copy "second" "/second"
+}
+extend {
+    copy "/first" "/first" from="first"
+    copy "/second" "/second" from="second"
+}
 `)
 	root := t.TempDir()
 	cacheDir := filepath.Join(root, "cache")
@@ -185,16 +201,20 @@ func TestPublishPlanSnapshotsMultiplePackages(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := testPublicationPlan(t, `
-from "scratch" as="producer"
-copy "payload" "/payload"
-package as="tools"
-copy "/payload" "/tool" from="producer"
-from "tools" as="combined"
-package as="bundle"
-copy "/tool" "/bundle" from="combined"
-extend
-copy "/tool" "/one" from="tools"
-copy "/bundle" "/two" from="bundle"
+from "scratch" as="producer" {
+    copy "payload" "/payload"
+}
+package as="tools" {
+    copy "/payload" "/tool" from="producer"
+}
+from "tools" as="combined" {}
+package as="bundle" {
+    copy "/tool" "/bundle" from="combined"
+}
+extend {
+    copy "/tool" "/one" from="tools"
+    copy "/bundle" "/two" from="bundle"
+}
 `)
 	toolsPath := filepath.Join(root, "packages", "tools.tar")
 	bundlePath := filepath.Join(root, "packages", "bundle.tar")
@@ -227,10 +247,12 @@ func TestPublishPlanBuildsUnusedPackagesWithoutInvocationStages(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "payload"), []byte("unused package payload\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	def, err := definition.Parse(strings.NewReader(`package as="unused"
-copy "payload" "/payload"
-extend as="target"
-run "exit 79"
+	def, err := definition.Parse(strings.NewReader(`package as="unused" {
+    copy "payload" "/payload"
+}
+extend as="target" {
+    run "exit 79"
+}
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -285,21 +307,24 @@ func TestPublishPlanOverlapsIndependentPackageProducers(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := testPublicationPlan(t, `
-package as="left"
-copy "busybox" "/busybox"
-run network="none" {
-  exec "/busybox" "sh" "-ec" "/busybox timeout -s KILL 120 /busybox sh -ec \"$1\"; :" "rendezvous" "/busybox touch /rendezvous/left; until [ -f /rendezvous/right ]; do /busybox sleep 0.01; done; printf 'left\n' >/left"
-  mount "bind" source="rendezvous" target="/rendezvous" rw="true"
+package as="left" {
+    copy "busybox" "/busybox"
+    run network="none" {
+      exec "/busybox" "sh" "-ec" "/busybox timeout -s KILL 120 /busybox sh -ec \"$1\"; :" "rendezvous" "/busybox touch /rendezvous/left; until [ -f /rendezvous/right ]; do /busybox sleep 0.01; done; printf 'left\n' >/left"
+      mount "bind" source="rendezvous" target="/rendezvous" rw="true"
+    }
 }
-package as="right"
-copy "busybox" "/busybox"
-run network="none" {
-  exec "/busybox" "sh" "-ec" "/busybox timeout -s KILL 120 /busybox sh -ec \"$1\"; :" "rendezvous" "/busybox touch /rendezvous/right; until [ -f /rendezvous/left ]; do /busybox sleep 0.01; done; printf 'right\n' >/right"
-  mount "bind" source="rendezvous" target="/rendezvous" rw="true"
+package as="right" {
+    copy "busybox" "/busybox"
+    run network="none" {
+      exec "/busybox" "sh" "-ec" "/busybox timeout -s KILL 120 /busybox sh -ec \"$1\"; :" "rendezvous" "/busybox touch /rendezvous/right; until [ -f /rendezvous/left ]; do /busybox sleep 0.01; done; printf 'right\n' >/right"
+      mount "bind" source="rendezvous" target="/rendezvous" rw="true"
+    }
 }
-extend
-copy "/left" "/left" from="left"
-copy "/right" "/right" from="right"
+extend {
+    copy "/left" "/left" from="left"
+    copy "/right" "/right" from="right"
+}
 `)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -376,10 +401,12 @@ func TestPublishPlanReusesPortablePackageAcrossBuildStores(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := testPublicationPlan(t, `
-package as="payload"
-copy "payload" "/payload"
-extend
-copy "/payload" "/payload" from="payload"
+package as="payload" {
+    copy "payload" "/payload"
+}
+extend {
+    copy "/payload" "/payload" from="payload"
+}
 `)
 	cacheDir := filepath.Join(root, "cache")
 	build := func(name, expected string) (oci.Package, StoreOptions) {
@@ -429,10 +456,12 @@ func TestPackageCacheInvalidatesChangedFixedArgument(t *testing.T) {
 	defer cancel()
 	definition, err := definition.Parse(strings.NewReader(`
 arg "flavor" "first"
-package as="payload"
-copy "flavor-$flavor" "/payload"
-extend
-copy "/payload" "/payload" from="payload"
+package as="payload" {
+    copy "flavor-$flavor" "/payload"
+}
+extend {
+    copy "/payload" "/payload" from="payload"
+}
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -488,16 +517,20 @@ func TestPublishPlanRunsProducerWithStageMount(t *testing.T) {
 	}
 	policy := writeComponentTestPolicy(t, root)
 	plan := testPublicationPlan(t, `
-from "`+base.reference+`" as="source"
-run "printf packaged-data >/tmp/seed" network="none"
-from "`+base.reference+`" as="producer"
-run "cat /input/seed >/proof" network="none" {
-  mount "bind" from="source" source="/tmp" target="/input"
+from "`+base.reference+`" as="source" {
+    run "printf packaged-data >/tmp/seed" network="none"
 }
-package as="payload"
-copy "/proof" "/proof" from="producer"
-extend
-copy "/proof" "/proof" from="payload"
+from "`+base.reference+`" as="producer" {
+    run "cat /input/seed >/proof" network="none" {
+      mount "bind" from="source" source="/tmp" target="/input"
+    }
+}
+package as="payload" {
+    copy "/proof" "/proof" from="producer"
+}
+extend {
+    copy "/proof" "/proof" from="payload"
+}
 `)
 	packagePath := filepath.Join(root, "payload.tar")
 	packages, err := PublishPlan(ctx, plan, PublicationOptions{
@@ -531,10 +564,12 @@ func TestPublishPlanConsumesLocalNamedContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	contextSpec := buildcontext.Spec{Name: "assets", Kind: buildcontext.Local, Path: contextDir}
-	plan := testPublicationPlanWithContexts(t, `package as="payload"
-copy "/payload" "/proof" from="assets"
-extend
-copy "/proof" "/proof" from="payload"
+	plan := testPublicationPlanWithContexts(t, `package as="payload" {
+    copy "/payload" "/proof" from="assets"
+}
+extend {
+    copy "/proof" "/proof" from="payload"
+}
 `, contextSpec)
 	packagePath := filepath.Join(root, "payload.tar")
 	packages, err := PublishPlan(ctx, plan, PublicationOptions{
@@ -569,10 +604,12 @@ func TestPublishDefinitionSupervisedConsumesPlanningSelectedNamedContext(t *test
 		t.Fatal(err)
 	}
 	contextSpec := buildcontext.Spec{Name: "assets", Kind: buildcontext.Local, Path: contextDir}
-	def := parseWorkerDefinition(t, `package as="payload"
-copy "/payload" "/proof" from="assets"
-extend
-copy "/proof" "/proof" from="payload"
+	def := parseWorkerDefinition(t, `package as="payload" {
+    copy "/payload" "/proof" from="assets"
+}
+extend {
+    copy "/proof" "/proof" from="payload"
+}
 `)
 	layout := filepath.Join(root, "component")
 	result, err := PublishDefinitionSupervised(ctx, def, planner.Options{

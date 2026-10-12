@@ -38,7 +38,8 @@ func TestNormalizeBaseSource(t *testing.T) {
 		{"oci-archive:image.tar", "oci-archive:/context/image.tar", true},
 		{"docker-archive:image.tar:repo:tag", "docker-archive:/context/image.tar:repo:tag", true},
 		{"dir:out", "dir:/context/out", true},
-		{"docker://ubuntu:latest", "ubuntu:latest", false},
+		{"docker://ubuntu:latest", "docker.io/library/ubuntu:latest", false},
+		{"docker://registry.example/team/base:latest", "registry.example/team/base:latest", false},
 		{"docker:latest", "docker:latest", false},
 		{"ubuntu:latest", "ubuntu:latest", false},
 	} {
@@ -46,6 +47,9 @@ func TestNormalizeBaseSource(t *testing.T) {
 		if err != nil || got != strings.ReplaceAll(tc.want, "/context", root) || transport != tc.transport {
 			t.Errorf("%s = %q,%v,%v", tc.input, got, transport, err)
 		}
+	}
+	if _, _, err := normalizeBaseSource("docker://bad name", root); err == nil {
+		t.Fatal("accepted invalid explicit registry reference")
 	}
 }
 
@@ -114,6 +118,14 @@ func TestResolveOCITransportKeepsConfigAndManifest(t *testing.T) {
 	if err := store.SetNames(resolved.ImageID, []string{namedStorageReference}); err != nil {
 		t.Fatal(err)
 	}
+	localOnly, err := oci.NewResolver(oci.Options{PullPolicy: "never"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registrySource, err := resolveBaseSource(ctx, localOnly, "docker://"+namedStorageReference, platform, store, nil, root, "")
+	if err != nil || registrySource.ImageID != resolved.ImageID {
+		t.Fatalf("explicit registry reference ignored local storage/pull policy: %+v, %v", registrySource, err)
+	}
 	byName, err := resolveBaseSource(ctx, resolver, "containers-storage:"+namedStorageReference, platform, store, nil, root, "")
 	if err != nil || byName.ImageID != resolved.ImageID || byName.Selected.Digest != expected.Digest {
 		t.Fatalf("native named transport did not pin immutable image: %+v, %v", byName, err)
@@ -175,7 +187,8 @@ func TestSourcePolicyAppliesAfterNamedImageContext(t *testing.T) {
 	if err := os.WriteFile(policy, []byte(`{"rules":[{"action":"DENY","selector":{"identifier":"docker-image://registry.invalid/base:latest"}}]}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	def, err := definition.Parse(strings.NewReader(`from "tools"`))
+	def, err := definition.Parse(strings.NewReader(`from "tools" {}
+`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +291,8 @@ func TestSourcePolicySnapshotSurvivesFileMutation(t *testing.T) {
 	if _, err := policyImageSource("registry.invalid/base:latest", child.SourcePolicy); err == nil {
 		t.Fatal("stage policy changed when host file changed")
 	}
-	def, err := definition.Parse(strings.NewReader(`from "tools"`))
+	def, err := definition.Parse(strings.NewReader(`from "tools" {}
+`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +323,8 @@ func TestSourcePolicyConvertsNamedImageContextToOCI(t *testing.T) {
 	if err := os.WriteFile(signaturePolicy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	def, err := definition.Parse(strings.NewReader(`from "tools"`))
+	def, err := definition.Parse(strings.NewReader(`from "tools" {}
+`))
 	if err != nil {
 		t.Fatal(err)
 	}

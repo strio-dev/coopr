@@ -13,7 +13,9 @@ import (
 	"github.com/opencontainers/go-digest"
 	"go.podman.io/common/libimage"
 	imagecopy "go.podman.io/image/v5/copy"
+	imagestorage "go.podman.io/image/v5/storage"
 	"go.podman.io/storage"
+	"strings"
 )
 
 // PushManifestList uses the native manifest instance references, including remote
@@ -26,6 +28,16 @@ func PushManifestList(ctx context.Context, name string, destination Destination,
 	if err != nil {
 		return "", err
 	}
+	if destination.isPath() {
+		for _, boundary := range []string{store.GraphRoot, store.RunRoot, store.ImageStore} {
+			if boundary != "" {
+				if err := rejectStoreArchivePath(boundary, destination.Name); err != nil {
+					return "", err
+				}
+			}
+		}
+	}
+
 	lease, err := storeactivity.AcquireShared(ctx, buildah.ActivityRoots(store, "")...)
 	if err != nil {
 		return "", err
@@ -84,7 +96,15 @@ func PushManifestList(ctx context.Context, name string, destination Destination,
 		if err != nil {
 			return err
 		}
-		result, err = list.Push(ctx, "docker://"+destination.Name, options)
+		target := destination.String()
+		if destination.Transport == "containers-storage" && !strings.HasPrefix(destination.Name, "[") {
+			bound, err := imagestorage.Transport.ParseStoreReference(backend, destination.Name)
+			if err != nil {
+				return err
+			}
+			target = "containers-storage:" + bound.StringWithinTransport()
+		}
+		result, err = list.Push(ctx, target, options)
 		return err
 	})
 	return result, retErr

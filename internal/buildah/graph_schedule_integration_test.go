@@ -44,17 +44,22 @@ func TestBuildPlanRunsIndependentStagesInOneRootlessGraph(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := testPlan(t, fmt.Sprintf(`
-from %q as="left-base"
-run "sleep 2; printf left >/left" network="none"
-from "left-base" as="left"
-env LEFT="yes"
-from %q as="right-base"
-run "sleep 2; printf right >/right" network="none"
-from "right-base" as="right"
-env RIGHT="yes"
-from "scratch"
-copy "/left" "/left" from="left"
-copy "/right" "/right" from="right"
+from %q as="left-base" {
+    run "sleep 2; printf left >/left" network="none"
+}
+from "left-base" as="left" {
+    env LEFT="yes"
+}
+from %q as="right-base" {
+    run "sleep 2; printf right >/right" network="none"
+}
+from "right-base" as="right" {
+    env RIGHT="yes"
+}
+from "scratch" {
+    copy "/left" "/left" from="left"
+    copy "/right" "/right" from="right"
+}
 `, base.reference, base.reference))
 	layout := filepath.Join(root, "layout")
 	options := PlanOptions{
@@ -147,18 +152,22 @@ func TestBuildPlanStartsReadyDescendantBeforeIndependentStageFinishes(t *testing
 		server.Close()
 	}()
 	plan := testPlan(t, fmt.Sprintf(`
-from %q as="a"
-run "touch /a" network="none"
-from "a" as="a-next"
-run "touch /cache/mounted" network="none" {
-  mount "cache" target="/cache" id="dependency-ready" sharing="shared"
+from %q as="a" {
+    run "touch /a" network="none"
 }
-add %q "/a-next"
-from %q as="b"
-add %q "/b"
-from "scratch"
-copy "/a-next" "/a-next" from="a-next"
-copy "/b" "/b" from="b"
+from "a" as="a-next" {
+    run "touch /cache/mounted" network="none" {
+      mount "cache" target="/cache" id="dependency-ready" sharing="shared"
+    }
+    add %q "/a-next"
+}
+from %q as="b" {
+    add %q "/b"
+}
+from "scratch" {
+    copy "/a-next" "/a-next" from="a-next"
+    copy "/b" "/b" from="b"
+}
 `, base.reference, server.URL+"/descendant", base.reference, server.URL+"/independent"))
 	layout := filepath.Join(root, "layout")
 	_, err = BuildPlan(ctx, plan, PlanOptions{
@@ -208,13 +217,16 @@ func TestBuildPlanOverlapsIndependentRemoteAddStages(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	plan := testPlan(t, `
-from "scratch" as="left"
-add "`+server.URL+`/left" "/proof"
-from "scratch" as="right"
-add "`+server.URL+`/right" "/proof"
-from "scratch"
-copy "/proof" "/left" from="left"
-copy "/proof" "/right" from="right"
+from "scratch" as="left" {
+    add "`+server.URL+`/left" "/proof"
+}
+from "scratch" as="right" {
+    add "`+server.URL+`/right" "/proof"
+}
+from "scratch" {
+    copy "/proof" "/left" from="left"
+    copy "/proof" "/right" from="right"
+}
 `)
 	if _, err := BuildPlan(ctx, plan, PlanOptions{
 		Store: cacheTestStore(root), ContextDir: root, Isolation: "rootless", Jobs: 2,
@@ -237,13 +249,16 @@ func TestBuildPlanSupervisedCancelsIndependentStagesAndCleansBuilders(t *testing
 		t.Fatal(err)
 	}
 	plan := testPlan(t, fmt.Sprintf(`
-from %q as="left"
-run "trap '' TERM; sleep 60; touch /left" network="none"
-from %q as="right"
-run "trap '' TERM; sleep 60; touch /right" network="none"
-from "scratch"
-copy "/left" "/left" from="left"
-copy "/right" "/right" from="right"
+from %q as="left" {
+    run "trap '' TERM; sleep 60; touch /left" network="none"
+}
+from %q as="right" {
+    run "trap '' TERM; sleep 60; touch /right" network="none"
+}
+from "scratch" {
+    copy "/left" "/left" from="left"
+    copy "/right" "/right" from="right"
+}
 `, base.reference, base.reference))
 	layout := filepath.Join(root, "layout")
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -297,13 +312,16 @@ func TestBuildPlanSupervisedStopsSiblingRunAfterStageFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := testPlan(t, fmt.Sprintf(`
-from %q as="fails"
-run "sleep 2; exit 17" network="none"
-from %q as="sleeps"
-run "printf SIBLING_READY_TOKEN; trap '' TERM; sleep 60; touch /never" network="none"
-from "scratch"
-copy "/etc" "/failed-stage" from="fails"
-copy "/never" "/never" from="sleeps"
+from %q as="fails" {
+    run "sleep 2; exit 17" network="none"
+}
+from %q as="sleeps" {
+    run "printf SIBLING_READY_TOKEN; trap '' TERM; sleep 60; touch /never" network="none"
+}
+from "scratch" {
+    copy "/etc" "/failed-stage" from="fails"
+    copy "/never" "/never" from="sleeps"
+}
 `, base.reference, base.reference))
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()

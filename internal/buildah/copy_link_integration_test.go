@@ -30,11 +30,13 @@ func TestBuildPlanCopyFromLinkProducesIndependentLayer(t *testing.T) {
 	}
 
 	plan := testPlan(t, `
-from "scratch" as="producer"
-copy "producer" "/producer"
-from "scratch"
-copy "local" "/local" link="false"
-copy "/producer" "/linked" from="producer" link="true"
+from "scratch" as="producer" {
+    copy "producer" "/producer"
+}
+from "scratch" {
+    copy "local" "/local" link="false"
+    copy "/producer" "/linked" from="producer" link="true"
+}
 `)
 	layout := filepath.Join(root, "layout")
 	_, err := BuildPlan(ctx, plan, PlanOptions{
@@ -69,9 +71,10 @@ func TestBuildPlanLinkedCopyIsVisibleToFollowingRun(t *testing.T) {
 	contextDir := filepath.Join(root, "context")
 	writeLinkedRunContext(t, contextDir)
 	plan := testPlan(t, `
-from "scratch"
-copy "busybox" "proof" "/input/" link="true"
-run network="none" { exec "/input/busybox" "sh" "-c" "read value </input/proof; test \"$value\" = linked-run; echo \"$value\" >/observed" }
+from "scratch" {
+    copy "busybox" "proof" "/input/" link="true"
+    run network="none" { exec "/input/busybox" "sh" "-c" "read value </input/proof; test \"$value\" = linked-run; echo \"$value\" >/observed" }
+}
 `)
 	layout := filepath.Join(root, "layout")
 	_, err := BuildPlan(ctx, plan, PlanOptions{
@@ -103,9 +106,10 @@ func TestDirectBuildLinkedCopyIsVisibleToFollowingRun(t *testing.T) {
 	contextDir := filepath.Join(root, "context")
 	writeLinkedRunContext(t, contextDir)
 	request, err := RequestFromPlan(testPlan(t, `
-from "scratch"
-copy "busybox" "proof" "/input/" link="true"
-run network="none" { exec "/input/busybox" "sh" "-c" "read value </input/proof; test \"$value\" = linked-run; echo \"$value\" >/observed" }
+from "scratch" {
+    copy "busybox" "proof" "/input/" link="true"
+    run network="none" { exec "/input/busybox" "sh" "-c" "read value </input/proof; test \"$value\" = linked-run; echo \"$value\" >/observed" }
+}
 `), PlanOptions{
 		Store: StoreOptions{
 			RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs",
@@ -146,9 +150,10 @@ func TestDirectBuildFinalLinkedCopyPreservesEarlierCopyLayer(t *testing.T) {
 		t.Fatal(err)
 	}
 	request, err := RequestFromPlan(testPlan(t, `
-from "scratch"
-copy "ordinary" "/ordinary"
-copy "linked" "/linked" link="true"
+from "scratch" {
+    copy "ordinary" "/ordinary"
+    copy "linked" "/linked" link="true"
+}
 `), PlanOptions{
 		Store: StoreOptions{
 			RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs",
@@ -189,9 +194,10 @@ func TestDirectBuildConfigBeforeLinkedCopyDoesNotAddLayer(t *testing.T) {
 		t.Fatal(err)
 	}
 	request, err := RequestFromPlan(testPlan(t, `
-from "scratch"
-env build_marker="preserved"
-copy "payload" "/payload" link="true"
+from "scratch" {
+    env build_marker="preserved"
+    copy "payload" "/payload" link="true"
+}
 `), PlanOptions{
 		Store: StoreOptions{
 			RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs",
@@ -244,8 +250,9 @@ func TestBuildPlanLinkedAddExtractsArchiveIntoIndependentLayer(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := testPlan(t, `
-from "scratch"
-add "payload.tar" "/unpacked/" link="true"
+from "scratch" {
+    add "payload.tar" "/unpacked/" link="true"
+}
 `)
 	layout := filepath.Join(root, "layout")
 	_, err := BuildPlan(ctx, plan, PlanOptions{

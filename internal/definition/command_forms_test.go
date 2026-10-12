@@ -18,7 +18,7 @@ func TestCommandTextAndExecChildren(t *testing.T) {
 				{` { exec "/app" }`, "exec", []string{"/app"}},
 				{` { exec "/app" "" "$HOME" "space here" }`, "exec", []string{"/app", "", "$HOME", "space here"}},
 			} {
-				def, err := Parse(strings.NewReader(name + test.source))
+				def, err := parseFragment(strings.NewReader(name + test.source))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -34,7 +34,7 @@ func TestCommandTextAndExecChildren(t *testing.T) {
 				if got := def.Instructions[0]; !reflect.DeepEqual(got, want) {
 					t.Fatalf("%s%s = %#v, want %#v", name, test.source, got, want)
 				}
-				if err := Validate(def); err != nil {
+				if err := validateFragment(def); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -43,7 +43,7 @@ func TestCommandTextAndExecChildren(t *testing.T) {
 }
 
 func TestExecChildPreservesParentOptionsAndSiblingOrder(t *testing.T) {
-	def, err := Parse(strings.NewReader(`
+	def, err := parseFragment(strings.NewReader(`
 run network="none" {
     mount "cache" target="/cache"
     exec "/app" "arg"
@@ -66,17 +66,21 @@ healthcheck interval="30s" retries=2 { exec "/check" "--ready" }
 	if got := def.Instructions[1]; !reflect.DeepEqual(got.Arguments, []string{"CMD", "/check", "--ready"}) || got.Properties["interval"] != "30s" || got.Properties["retries"] != "2" {
 		t.Fatalf("HEALTHCHECK = %#v", got)
 	}
-	if err := Validate(def); err != nil {
+	if err := validateFragment(def); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestInvalidExecChildrenAndRemovedCommandSelectors(t *testing.T) {
 	for _, name := range []string{"run", "cmd", "entrypoint", "healthcheck"} {
+		if name != "run" {
+			if _, err := parseFragment(strings.NewReader(name + ` { exec "/app"; exec "/other" }`)); err == nil {
+				t.Errorf("accepted multiple exec children under %s", name)
+			}
+		}
 		for _, suffix := range []string{
 			` "one" "two"`,
 			` "shell" { exec "/app" }`,
-			` { exec "/app"; exec "/other" }`,
 			` { (exec)exec "/app" }`,
 			` { exec (word)"/app" }`,
 			` { exec "/app" network="none" }`,
@@ -88,7 +92,7 @@ func TestInvalidExecChildrenAndRemovedCommandSelectors(t *testing.T) {
 			` "true" form="exec"`,
 		} {
 			source := name + suffix
-			if _, err := Parse(strings.NewReader(source)); err == nil {
+			if _, err := parseFragment(strings.NewReader(source)); err == nil {
 				t.Errorf("accepted invalid command %s", source)
 			}
 		}
@@ -103,20 +107,20 @@ func TestInvalidExecChildrenAndRemovedCommandSelectors(t *testing.T) {
 		`healthcheck #null { exec "/check" }`,
 		`run { mount "cache" { exec "/app" } }`,
 	} {
-		if _, err := Parse(strings.NewReader(source)); err == nil {
+		if _, err := parseFragment(strings.NewReader(source)); err == nil {
 			t.Errorf("accepted invalid exec placement %s", source)
 		}
 	}
-	if err := Validate(&Definition{Instructions: []Instruction{{Name: "exec", Arguments: []string{"/app"}}}}); err == nil {
+	if err := validateFragment(&Definition{Instructions: []Instruction{{Name: "exec", Arguments: []string{"/app"}}}}); err == nil {
 		t.Fatal("accepted standalone exec in decoded definition")
 	}
-	if err := Validate(&Definition{Instructions: []Instruction{{Name: "run", Form: "exec", Arguments: []string{"/app"}, Children: []Instruction{{Name: "exec", Arguments: []string{"/other"}}}}}}); err == nil {
+	if err := validateFragment(&Definition{Instructions: []Instruction{{Name: "run", Form: "exec", Arguments: []string{"/app"}, Children: []Instruction{{Name: "exec", Arguments: []string{"/other"}}}}}}); err == nil {
 		t.Fatal("accepted unnormalized exec child in decoded definition")
 	}
 }
 
 func TestOrdinaryMultilineExecArgumentAndQuotedModes(t *testing.T) {
-	def, err := Parse(strings.NewReader(`
+	def, err := parseFragment(strings.NewReader(`
 run {
     exec "/bin/sh" "-c" """
         printf '%s\\n' "$value" &&

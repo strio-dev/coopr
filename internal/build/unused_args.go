@@ -32,7 +32,7 @@ func warnUnusedBuildArguments(writer io.Writer, def *definition.Definition, argu
 			if inst.Name == "arg" && len(inst.Arguments) > 0 {
 				delete(unused, inst.Arguments[0])
 			}
-			if inst.Name == "layer" {
+			if inst.Name == "layer" || inst.Name == "from" || inst.Name == "extend" || inst.Name == "package" {
 				declarations(inst.Children)
 			}
 		}

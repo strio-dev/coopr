@@ -27,7 +27,10 @@ func TestStageWorkerResultPreservesCommittedImageOnCancellation(t *testing.T) {
 	}
 	root := t.TempDir()
 	options := PlanOptions{Store: cacheTestStore(filepath.Join(root, "store")), ContextDir: root, Isolation: "rootless", Lifecycle: LifecycleControls{NoLayers: true}, Output: Output{Path: filepath.Join(root, "output"), DisableCompression: true}}
-	seed, err := BuildPlan(context.Background(), testPlan(t, "from \"scratch\"\nenv proof=\"committed\"\n"), options)
+	seed, err := BuildPlan(context.Background(), testPlan(t, `from "scratch" {
+    env proof="committed"
+}
+`), options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,6 +100,7 @@ func TestStageWorkerMessagePreservesExecutionInputs(t *testing.T) {
 	}
 	request := stageWorkerRequest{
 		ProgressPrefix:    "[linux/amd64] [2/3] [component shared] ",
+		ExecutableOrigin:  "/opt/coopr/bin/coopr",
 		ProgressReference: "app:latest",
 		BaseRoot:          &PackageRootMetadata{Mode: 0711, UID: 1, GID: 2, PAXRecords: map[string]string{"SCHILY.xattr.user.coopr": "root"}},
 		Mode:              planner.Build,

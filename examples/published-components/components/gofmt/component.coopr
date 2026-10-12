@@ -1,21 +1,23 @@
 arg "builder_image" "docker.io/library/golang:1.26.7"
 
 // These commands run when building the component artifact.
-from "${builder_image}" as="builder"
-run "CGO_ENABLED=0 go build -o /gofmt cmd/gofmt"
-
-package as="tools"
-copy "/gofmt" "/usr/local/bin/gofmt" from="builder"
-
-// During invocation, tools is loaded from the component artifact.
-// This derived stage still runs because the consuming output needs it.
-from "tools" as="prepared"
-run {
-    exec "/usr/local/bin/gofmt" "-h"
+from "${builder_image}" as="builder" {
+    run "CGO_ENABLED=0 go build -o /gofmt cmd/gofmt"
 }
 
-extend as="base"
-run "mkdir -p /usr/local/bin"
+package as="tools" {
+    copy "/gofmt" "/usr/local/bin/gofmt" from="builder"
+}
 
-from "base"
-copy "/usr/local/bin/gofmt" "/usr/local/bin/gofmt" from="prepared"
+// During invocation, load the packaged tool and check it before installing it.
+extend {
+    from "tools" as="prepared" {
+        run {
+            exec "/usr/local/bin/gofmt" "-h"
+        }
+    }
+
+    // These direct instructions modify the caller, not the helper stage.
+    run "mkdir -p /usr/local/bin"
+    copy "/usr/local/bin/gofmt" "/usr/local/bin/gofmt" from="prepared"
+}

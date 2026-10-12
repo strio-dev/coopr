@@ -42,12 +42,16 @@ func TestBuildUsesRemotePrimaryHTTPContext(t *testing.T) {
 	defer server.Close()
 	dir := t.TempDir()
 	definition := filepath.Join(dir, "app.coopr")
-	if err := os.WriteFile(definition, []byte("arg \"SOURCE_DATE_EPOCH\" \"context\"\nfrom \"scratch\"\ncopy \"proof\" \"/proof\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(definition, []byte(`arg "SOURCE_DATE_EPOCH" "context"
+from "scratch" {
+    copy "proof" "/proof"
+}
+`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	output := filepath.Join(t.TempDir(), "image.oci.tar")
-	if _, err := Run(context.Background(), Options{
-		File: definition, Context: server.URL + "/context.tar", Tag: "oci-archive:" + output, Platform: "linux/amd64",
+	if _, err := buildArchive(t, output, context.Background(), Options{
+		File: definition, Context: server.URL + "/context.tar", Platform: "linux/amd64",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -83,12 +87,15 @@ func TestBuildUsesNamedLocalContextsForFromAndCopy(t *testing.T) {
 		}
 	}
 	file := filepath.Join(root, "app.coopr")
-	if err := os.WriteFile(file, []byte("from \"base\"\ncopy \"payload\" \"/payload\" from=\"assets\"\n"), 0600); err != nil {
+	if err := os.WriteFile(file, []byte(`from "base" {
+    copy "payload" "/payload" from="assets"
+}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	archive := filepath.Join(t.TempDir(), "image.oci.tar")
-	_, err := Run(context.Background(), Options{
-		File: file, Tag: "oci-archive:" + archive, Platform: "linux/amd64",
+	_, err := buildArchive(t, archive, context.Background(), Options{
+		File: file, Platform: "linux/amd64",
 		BuildContexts: []buildcontext.Spec{
 			{Name: "base", Kind: buildcontext.Local, Path: base},
 			{Name: "assets", Kind: buildcontext.Local, Path: assets},
@@ -115,14 +122,17 @@ func TestBuildCopyDotExcludesStagingInsideContext(t *testing.T) {
 	contextDir := t.TempDir()
 	t.Setenv("TMPDIR", contextDir)
 	definition := filepath.Join(contextDir, "app.coopr")
-	if err := os.WriteFile(definition, []byte("from \"scratch\"\ncopy \".\" \"/captured/\"\n"), 0600); err != nil {
+	if err := os.WriteFile(definition, []byte(`from "scratch" {
+    copy "." "/captured/"
+}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(contextDir, "marker"), []byte("authored\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	archive := filepath.Join(t.TempDir(), "image.oci.tar")
-	if _, err := Run(context.Background(), Options{File: definition, Tag: "oci-archive:" + archive, Platform: "linux/amd64"}); err != nil {
+	if _, err := buildArchive(t, archive, context.Background(), Options{File: definition, Platform: "linux/amd64"}); err != nil {
 		t.Fatal(err)
 	}
 	names := archiveLayerNames(t, archive)
@@ -157,12 +167,15 @@ func TestCopyURLFailsWithoutNetworkRequest(t *testing.T) {
 	defer server.Close()
 	dir := t.TempDir()
 	definition := filepath.Join(dir, "app.coopr")
-	content := "from \"scratch\"\ncopy \"" + server.URL + "/payload\" \"/payload\"\n"
+	content := `from "scratch" {
+    copy "` + server.URL + `/payload" "/payload"
+}
+`
 	if err := os.WriteFile(definition, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
 	archive := filepath.Join(t.TempDir(), "image.oci.tar")
-	_, err := Run(context.Background(), Options{File: definition, Tag: "oci-archive:" + archive, Platform: "linux/amd64"})
+	_, err := buildArchive(t, archive, context.Background(), Options{File: definition, Platform: "linux/amd64"})
 	if err == nil || !strings.Contains(err.Error(), "COPY source must be local") {
 		t.Fatalf("COPY remote source error = %v", err)
 	}
@@ -180,7 +193,10 @@ func TestBuiltBaseAndFromShareCanonicalStore(t *testing.T) {
 	}
 	root := t.TempDir()
 	baseDefinition := filepath.Join(root, "base.coopr")
-	if err := os.WriteFile(baseDefinition, []byte("from \"scratch\"\ncopy \"base\" \"/base\"\n"), 0600); err != nil {
+	if err := os.WriteFile(baseDefinition, []byte(`from "scratch" {
+    copy "base" "/base"
+}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "base"), []byte("base\n"), 0600); err != nil {
@@ -219,14 +235,17 @@ func TestBuiltBaseAndFromShareCanonicalStore(t *testing.T) {
 		t.Fatalf("tag stored image as %q: got %q, %v", alias, got, err)
 	}
 	childDefinition := filepath.Join(root, "child.coopr")
-	if err := os.WriteFile(childDefinition, []byte("from \""+alias+"\"\ncopy \"child\" \"/child\"\n"), 0600); err != nil {
+	if err := os.WriteFile(childDefinition, []byte("from \""+alias+`" {
+    copy "child" "/child"
+}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "child"), []byte("child\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	archive := filepath.Join(t.TempDir(), "child.oci.tar")
-	if _, err := Run(context.Background(), Options{File: childDefinition, Tag: "oci-archive:" + archive, Platform: "linux/amd64"}); err != nil {
+	if _, err := buildArchive(t, archive, context.Background(), Options{File: childDefinition, Platform: "linux/amd64"}); err != nil {
 		t.Fatal(err)
 	}
 	names := archiveLayerNames(t, archive)
@@ -234,12 +253,15 @@ func TestBuiltBaseAndFromShareCanonicalStore(t *testing.T) {
 		t.Fatalf("child lost its local base or own file: %v", names)
 	}
 	namedDefinition := filepath.Join(root, "named-child.coopr")
-	if err := os.WriteFile(namedDefinition, []byte("from \"base\"\ncopy \"child\" \"/child\"\n"), 0600); err != nil {
+	if err := os.WriteFile(namedDefinition, []byte(`from "base" {
+    copy "child" "/child"
+}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	namedArchive := filepath.Join(t.TempDir(), "named-child.oci.tar")
-	if _, err := Run(context.Background(), Options{
-		File: namedDefinition, Tag: "oci-archive:" + namedArchive, Platform: "linux/amd64",
+	if _, err := buildArchive(t, namedArchive, context.Background(), Options{
+		File: namedDefinition, Platform: "linux/amd64",
 		BuildContexts: []buildcontext.Spec{{Name: "base", Kind: buildcontext.DockerImage, Reference: alias}},
 	}); err != nil {
 		t.Fatalf("build with local image named context: %v", err)

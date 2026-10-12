@@ -194,7 +194,10 @@ func TestBuildPlanUnpacksRemoteArchive(t *testing.T) {
 	}))
 	defer server.Close()
 
-	plan := testPlan(t, "from \"scratch\"\nadd \""+server.URL+"/archive.tar\" \"/unpacked/\" unpack=\"true\" checksum=\""+digest.FromBytes(archive).String()+"\"\n")
+	plan := testPlan(t, `from "scratch" {
+    add "`+server.URL+"/archive.tar\" \"/unpacked/\" unpack=\"true\" checksum=\""+digest.FromBytes(archive).String()+`"
+}
+`)
 	root := t.TempDir()
 	layout := filepath.Join(root, "layout")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -231,7 +234,10 @@ func TestBuildPlanAddsAuthenticatedRemoteFile(t *testing.T) {
 	if err := os.WriteFile(secretFile, []byte("build-token"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	plan := testPlan(t, "from \"scratch\"\nadd \""+server.URL+"/payload\" \"/payload\"\n")
+	plan := testPlan(t, `from "scratch" {
+    add "`+server.URL+`/payload" "/payload"
+}
+`)
 	layout := filepath.Join(root, "layout")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -257,9 +263,10 @@ func TestBuildPlanAddsGitDefaultRefChecksumAndMetadata(t *testing.T) {
 	}
 	source, commit := gitProtocolFixture(t)
 	plan := testPlan(t, `
-from "scratch"
-add "`+source+`" "/without/" checksum="`+commit[:12]+`"
-add "`+source+`" "/with/" checksum="`+commit[:12]+`" keep-git-dir="true"
+from "scratch" {
+    add "`+source+"\" \"/without/\" checksum=\""+commit[:12]+`"
+    add "`+source+"\" \"/with/\" checksum=\""+commit[:12]+`" keep-git-dir="true"
+}
 `)
 	root := t.TempDir()
 	layout := filepath.Join(root, "layout")
@@ -295,7 +302,10 @@ func TestBuildPlanAddsRecursiveGitSubmodulesWithoutMetadata(t *testing.T) {
 		t.Skip("skipping a live rootless Buildah Git submodule ADD build in short mode")
 	}
 	source, _ := gitHTTPSubmoduleFixture(t, "")
-	plan := testPlan(t, "from \"scratch\"\nadd \""+source+"\" \"/source/\"\n")
+	plan := testPlan(t, `from "scratch" {
+    add "`+source+`" "/source/"
+}
+`)
 	root := t.TempDir()
 	layout := filepath.Join(root, "layout")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)

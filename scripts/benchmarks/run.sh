@@ -198,16 +198,17 @@ ARG suffix=base
 RUN --network=none cp /one /result && printf '%s' "\$suffix" >>/result
 EOF
   cat >"$work/image.coopr" <<EOF
-from "scratch"
-label "dev.strio.coopr.benchmark"="$marker"
-copy "busybox" "/bin/sh"
-copy "busybox" "/bin/cp"
-copy "busybox" "/bin/busybox"
-copy "payload" "/payload"
-$coopr_sleep
-run "cp /payload /one" network="none"
-arg "suffix" "base"
-run "cp /one /result && printf '%s' \"\$suffix\" >>/result" network="none"
+from "scratch" {
+  label "dev.strio.coopr.benchmark"="$marker"
+  copy "busybox" "/bin/sh"
+  copy "busybox" "/bin/cp"
+  copy "busybox" "/bin/busybox"
+  copy "payload" "/payload"
+  $coopr_sleep
+  run "cp /payload /one" network="none"
+  arg "suffix" "base"
+  run "cp /one /result && printf '%s' \"\$suffix\" >>/result" network="none"
+}
 EOF
 }
 
@@ -226,16 +227,17 @@ RUN ["/proof", "/marker", "/build-proof"]
 CMD ["/proof", "/build-proof"]
 EOF
   cat >"$work/image.coopr" <<EOF
-from "scratch"
-arg "TARGETARCH"
-label "dev.strio.coopr.benchmark"="$marker"
-copy "proof-\$TARGETARCH" "/proof" chmod="0755"
-copy "marker" "/marker"
-run network="none" {
-    exec "/proof" "/marker" "/build-proof"
-}
-cmd {
-    exec "/proof" "/build-proof"
+from "scratch" {
+  arg "TARGETARCH"
+  label "dev.strio.coopr.benchmark"="$marker"
+  copy "proof-\$TARGETARCH" "/proof" chmod="0755"
+  copy "marker" "/marker"
+  run network="none" {
+      exec "/proof" "/marker" "/build-proof"
+  }
+  cmd {
+      exec "/proof" "/build-proof"
+  }
 }
 EOF
 }
@@ -261,17 +263,21 @@ verify_image() {
 
 verify_multi_platform_image() {
   local builder=$1 iteration=$2 tag=$3 marker=$4
-  local arch actual actual_platform runtime_tag runtime_data_home manifest_json
+  local arch actual actual_platform runtime_tag runtime_data_home manifest_json runtime_archive
   if [[ $builder == coopr ]]; then
     runtime_data_home="$bench_root/coopr-data-$iteration"
     for arch in amd64 arm64; do
       runtime_tag="localhost/coopr-parity-benchmark-$(id -u)-$$-$iteration-multi-$arch-runtime:latest"
       runtime_image_tags+=("$runtime_tag")
       runtime_image_data_homes+=("$runtime_data_home")
+      runtime_archive="$bench_root/coopr-$iteration-multi-$arch.oci.tar"
       env "XDG_DATA_HOME=$runtime_data_home" \
-        "$bench_root/coopr" copy "$tag" "$runtime_tag" --platform "linux/$arch" \
-        >"$bench_root/coopr-$iteration-multi-$arch-copy.log" 2>&1 || \
-        fail "could not select iteration $iteration Coopr linux/$arch native image"
+        "$bench_root/coopr" push "$tag" "oci-archive:$runtime_archive:$runtime_tag" --platform "linux/$arch" \
+        >"$bench_root/coopr-$iteration-multi-$arch-push.log" 2>&1 || \
+        fail "could not export iteration $iteration Coopr linux/$arch native image"
+      env "XDG_DATA_HOME=$runtime_data_home" podman load --input "$runtime_archive" \
+        >"$bench_root/coopr-$iteration-multi-$arch-load.log" 2>&1 || \
+        fail "could not load iteration $iteration Coopr linux/$arch native image"
       actual_platform=$(env "XDG_DATA_HOME=$runtime_data_home" \
         podman image inspect --format '{{.Os}}/{{.Architecture}}' "$runtime_tag")
       [[ $actual_platform == "linux/$arch" ]] || \
@@ -350,19 +356,22 @@ for ((iteration=1; iteration<=iterations; iteration++)); do
       cp "$(command -v busybox)" "$component_work/busybox"
       printf 'component payload %s\n' "$iteration" >"$component_work/payload"
       cat >"$component_work/component.coopr" <<'EOF'
-package as="payload"
-copy "payload" "/payload"
-extend
-copy "/payload" "/payload" from="payload"
-run "cp /payload /result" network="none"
+package as="payload" {
+  copy "payload" "/payload"
+}
+extend {
+  copy "/payload" "/payload" from="payload"
+  run "cp /payload /result" network="none"
+}
 EOF
       cat >"$component_work/image.coopr" <<EOF
-from "scratch"
-label "dev.strio.coopr.benchmark"="$benchmark_marker-component"
-copy "busybox" "/bin/sh"
-copy "busybox" "/bin/cp"
-copy "busybox" "/bin/busybox"
-component "local:benchmark-component"
+from "scratch" {
+  label "dev.strio.coopr.benchmark"="$benchmark_marker-component"
+  copy "busybox" "/bin/sh"
+  copy "busybox" "/bin/cp"
+  copy "busybox" "/bin/busybox"
+  component "benchmark-component"
+}
 EOF
       env "XDG_DATA_HOME=$bench_root/coopr-data-$iteration" \
         "$bench_root/coopr" component build "$component_work/component.coopr" \

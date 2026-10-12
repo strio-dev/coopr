@@ -78,9 +78,9 @@ func validateFinalization(opts *Options, platforms []string, destinations []tran
 		}
 		if !validDestination {
 			if opts.Signing.SigstorePrivateKeyFile != "" {
-				return errors.New("sigstore image signing requires a registry destination (--tag registry:NAME or --push --tag NAME)")
+				return errors.New("sigstore image signing requires a registry destination (--push --tag NAME)")
 			}
-			return errors.New("GPG image signing requires a local or registry destination (--tag NAME or --tag registry:NAME)")
+			return errors.New("GPG image signing requires a local or registry destination (--tag NAME or --push --tag NAME)")
 		}
 	} else if opts.Signing.PassphraseFile != "" {
 		return errors.New("--sign-passphrase-file requires --sign-by or --sign-by-sigstore-private-key")

@@ -41,7 +41,10 @@ func TestBuildPlanCompressionAppliesOnCacheHits(t *testing.T) {
 		t.Fatal(err)
 	}
 	options := PlanOptions{Store: StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}, ContextDir: contextDir, Isolation: "rootless", Network: "none", RunControls: RunControls{ConfigModules: []string{module}}}
-	plan := testPlan(t, "from \"scratch\"\ncopy \"proof\" \"/proof\"\n")
+	plan := testPlan(t, `from "scratch" {
+    copy "proof" "/proof"
+}
+`)
 	blobDirectory := filepath.Join(root, "blob-cache")
 	if err := os.Mkdir(blobDirectory, 0700); err != nil {
 		t.Fatal(err)
@@ -88,7 +91,8 @@ func TestBuildPlanCompressionAppliesOnCacheHits(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("compression base lookup: %t %v", found, err)
 	}
-	unchanged := testPlan(t, "from \"compression-base\"\n")
+	unchanged := testPlan(t, `from "compression-base" {}
+`)
 	options.ResolvedBases = map[ResolvedBaseKey]ResolvedImageSource{{Reference: "compression-base", Platform: unchanged.Platform}: {ImageID: selection.ImageID, Root: selection.Root, Selected: selection.Manifest, ConfigData: selection.ConfigData}}
 	options.Output = Output{Path: filepath.Join(root, "unchanged-base"), CompressionFormat: "zstd", DisableCompression: true}
 	result, err := BuildPlan(ctx, unchanged, options)
@@ -157,7 +161,13 @@ func TestBuildPlanSavesAndLabelsStages(t *testing.T) {
 				t.Fatal(err)
 			}
 			options := PlanOptions{Store: StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}, ContextDir: contextDir, Isolation: "rootless", Network: "none", Lifecycle: LifecycleControls{NoLayers: true, SaveStages: save, StageLabels: save}, Output: Output{Path: filepath.Join(root, "layout"), DisableCompression: true}}
-			plan := testPlan(t, "from \"scratch\" as=\"producer\"\ncopy \"proof\" \"/proof\"\nfrom \"scratch\" as=\"final\"\ncopy \"/proof\" \"/proof\" from=\"producer\"\n")
+			plan := testPlan(t, `from "scratch" as="producer" {
+    copy "proof" "/proof"
+}
+from "scratch" as="final" {
+    copy "/proof" "/proof" from="producer"
+}
+`)
 			_, err := BuildPlan(ctx, plan, options)
 			if err != nil {
 				t.Fatal(err)
@@ -258,12 +268,22 @@ func TestFailedNoLayersBuildCleansCompletedStages(t *testing.T) {
 				t.Fatal(err)
 			}
 			options := PlanOptions{Store: cacheTestStore(filepath.Join(root, "store")), ContextDir: root, Isolation: "rootless", Network: "none", Jobs: 1, Lifecycle: LifecycleControls{NoLayers: true, SaveStages: save}, Output: Output{Path: filepath.Join(root, "seed"), DisableCompression: true}}
-			seed, err := BuildPlan(ctx, testPlan(t, "from \"scratch\"\ncopy \"proof\" \"/original\"\n"), options)
+			seed, err := BuildPlan(ctx, testPlan(t, `from "scratch" {
+    copy "proof" "/original"
+}
+`), options)
 			if err != nil {
 				t.Fatal(err)
 			}
 			options.Output.Path = filepath.Join(root, "failed")
-			_, err = BuildPlan(ctx, testPlan(t, "from \"scratch\" as=\"producer\"\ncopy \"proof\" \"/proof\"\nfrom \"scratch\"\ncopy \"/proof\" \"/proof\" from=\"producer\"\ncopy \"missing\" \"/missing\"\n"), options)
+			_, err = BuildPlan(ctx, testPlan(t, `from "scratch" as="producer" {
+    copy "proof" "/proof"
+}
+from "scratch" {
+    copy "/proof" "/proof" from="producer"
+    copy "missing" "/missing"
+}
+`), options)
 			if err == nil {
 				t.Fatal("missing COPY unexpectedly succeeded")
 			}
@@ -305,7 +325,17 @@ func TestFailedNoLayersBuildCleansDrainedStages(t *testing.T) {
 		t.Fatal(err)
 	}
 	options := PlanOptions{Store: cacheTestStore(filepath.Join(root, "store")), ContextDir: root, Isolation: "rootless", Network: "none", Jobs: 2, Lifecycle: LifecycleControls{NoLayers: true}, Output: Output{Path: filepath.Join(root, "output"), DisableCompression: true}}
-	plan := testPlan(t, "from \"scratch\" as=\"a\"\ncopy \"proof\" \"/a\"\nfrom \"scratch\" as=\"b\"\ncopy \"proof\" \"/b\"\nfrom \"scratch\"\ncopy \"/a\" \"/a\" from=\"a\"\ncopy \"/b\" \"/b\" from=\"b\"\n")
+	plan := testPlan(t, `from "scratch" as="a" {
+    copy "proof" "/a"
+}
+from "scratch" as="b" {
+    copy "proof" "/b"
+}
+from "scratch" {
+    copy "/a" "/a" from="a"
+    copy "/b" "/b" from="b"
+}
+`)
 	wantErr := errors.New("stop after parallel stages commit")
 	_, err := executePlanGraph(ctx, plan, options, plan.Stages, plan.Stages[len(plan.Stages)-1].ID, nil, func(store storage.Store, _ planner.Stage, _ string, _ *imageconfig.Config, _ *PackageRootMetadata) error {
 		for {
@@ -358,7 +388,14 @@ func TestNoLayersCleanupPreservesObservedImageSharedByAlias(t *testing.T) {
 		t.Fatal(err)
 	}
 	options := PlanOptions{Store: cacheTestStore(filepath.Join(root, "store")), ContextDir: root, Isolation: "rootless", Network: "none", Jobs: 1, Lifecycle: LifecycleControls{NoLayers: true}, Output: Output{Path: filepath.Join(root, "output"), DisableCompression: true}}
-	plan := testPlan(t, "from \"scratch\" as=\"producer\"\ncopy \"proof\" \"/proof\"\nfrom \"producer\" as=\"alias\"\nfrom \"scratch\"\ncopy \"/proof\" \"/copied\" from=\"alias\"\n")
+	plan := testPlan(t, `from "scratch" as="producer" {
+    copy "proof" "/proof"
+}
+from "producer" as="alias" {}
+from "scratch" {
+    copy "/proof" "/copied" from="alias"
+}
+`)
 	var producerID, aliasID string
 	result, err := executePlanGraph(context.Background(), plan, options, plan.Stages, plan.Stages[len(plan.Stages)-1].ID, map[string]bool{plan.Stages[0].ID: true}, func(_ storage.Store, stage planner.Stage, id string, _ *imageconfig.Config, _ *PackageRootMetadata) error {
 		switch stage.Name {
@@ -399,7 +436,17 @@ func TestParallelFailedWorkerHonorsKeepFailed(t *testing.T) {
 			defer cancel()
 			root := t.TempDir()
 			options := PlanOptions{Store: cacheTestStore(filepath.Join(root, "store")), ContextDir: root, Isolation: "rootless", Network: "none", Jobs: 2, Lifecycle: LifecycleControls{KeepFailed: keep}, Output: Output{Path: filepath.Join(root, "output"), DisableCompression: true}}
-			plan := testPlan(t, "from \"scratch\" as=\"a\"\ncopy \"missing-a\" \"/a\"\nfrom \"scratch\" as=\"b\"\ncopy \"missing-b\" \"/b\"\nfrom \"scratch\"\ncopy \"/a\" \"/a\" from=\"a\"\ncopy \"/b\" \"/b\" from=\"b\"\n")
+			plan := testPlan(t, `from "scratch" as="a" {
+    copy "missing-a" "/a"
+}
+from "scratch" as="b" {
+    copy "missing-b" "/b"
+}
+from "scratch" {
+    copy "/a" "/a" from="a"
+    copy "/b" "/b" from="b"
+}
+`)
 			if _, err := BuildPlan(ctx, plan, options); err == nil {
 				t.Fatal("failed worker unexpectedly succeeded")
 			}
@@ -434,7 +481,11 @@ func TestSavedStageLabelsSkipFromOnlyAndKeepTaggedIntermediates(t *testing.T) {
 		t.Fatal(err)
 	}
 	options := PlanOptions{Store: cacheTestStore(filepath.Join(root, "coopr")), ContextDir: root, Isolation: "rootless", Lifecycle: LifecycleControls{NoLayers: true, SaveStages: true, StageLabels: true}, Output: Output{Path: filepath.Join(root, "layout"), DisableCompression: true}}
-	plan := testPlan(t, "from \"scratch\" as=\"producer\"\ncopy \"proof\" \"/proof\"\nfrom \"producer\" as=\"final\"\n")
+	plan := testPlan(t, `from "scratch" as="producer" {
+    copy "proof" "/proof"
+}
+from "producer" as="final" {}
+`)
 	result, err := BuildPlan(ctx, plan, options)
 	if err != nil {
 		t.Fatal(err)
@@ -472,7 +523,13 @@ func TestSavedStageLabelsSkipFromOnlyAndKeepTaggedIntermediates(t *testing.T) {
 	options.Store = cacheTestStore(filepath.Join(root, "retagged"))
 	options.Lifecycle = LifecycleControls{NoLayers: true}
 	options.Output.Path = filepath.Join(root, "retagged-layout")
-	plan = testPlan(t, "from \"scratch\" as=\"producer\"\ncopy \"proof\" \"/proof\"\nfrom \"scratch\"\ncopy \"/proof\" \"/proof\" from=\"producer\"\n")
+	plan = testPlan(t, `from "scratch" as="producer" {
+    copy "proof" "/proof"
+}
+from "scratch" {
+    copy "/proof" "/proof" from="producer"
+}
+`)
 	_, err = executePlanGraph(ctx, plan, options, plan.Stages, plan.Stages[len(plan.Stages)-1].ID, nil, func(store storage.Store, stage planner.Stage, id string, _ *imageconfig.Config, _ *PackageRootMetadata) error {
 		if stage.Name == "producer" {
 			return store.SetNames(id, []string{"localhost/retained:latest"})
@@ -513,7 +570,11 @@ func TestPortableInstructionCacheUsesSelectedCompression(t *testing.T) {
 		}
 	}
 	cacheDir := filepath.Join(root, "cache")
-	plan := testPlan(t, "from \"scratch\"\ncopy \"first\" \"/first\"\ncopy \"second\" \"/second\"\n")
+	plan := testPlan(t, `from "scratch" {
+    copy "first" "/first"
+    copy "second" "/second"
+}
+`)
 	options := PlanOptions{Store: cacheTestStore(filepath.Join(root, "cold")), ContextDir: contextDir, Isolation: "rootless", Output: Output{Path: filepath.Join(root, "cold-layout"), CompressionFormat: "zstd"}, CacheTo: []CacheSpec{{Transport: "oci-layout", Reference: cacheDir}}}
 	cold, err := BuildPlan(ctx, plan, options)
 	if err != nil {
@@ -613,7 +674,13 @@ func testStageBaseAnnotations(t *testing.T, mode string) {
 		contexts = []buildcontext.Spec{{Name: from, Kind: buildcontext.DockerImage, Reference: base.reference}}
 		nativeContexts = map[string]*define.AdditionalBuildContext{from: {IsImage: true, Value: base.reference}}
 	}
-	def := parseWorkerDefinition(t, fmt.Sprintf("from %q as=\"producer\"\ncopy \"proof\" \"/proof\"\nfrom \"producer\"\ncopy \"proof\" \"/second\"\n", from))
+	def := parseWorkerDefinition(t, fmt.Sprintf(`from %q as="producer" {
+    copy "proof" "/proof"
+}
+from "producer" {
+    copy "proof" "/second"
+}
+`, from))
 	result, err := BuildDefinitionSupervised(ctx, def, planner.Options{Mode: planner.Build, BuildContexts: contexts}, SupervisedPlanOptions{SourcePolicyFile: policyFile, PullPolicy: "never", Jobs: 2, Store: options, ContextDir: root, Isolation: "rootless", Output: Output{Path: filepath.Join(root, "coopr-layout")}})
 	if err != nil {
 		t.Fatal(err)

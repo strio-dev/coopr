@@ -69,6 +69,75 @@ func imageIOArgs(options buildah.StoreOptions, args ...string) []string {
 	return append([]string{"--root", options.GraphRoot, "--runroot", options.RunRoot, "--storage-driver", "vfs", "image"}, args...)
 }
 
+func TestImagePushNativeDestinationsWriteDigest(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping supervised native transfers in short mode")
+	}
+	ctx := context.Background()
+	options := maintenanceStoreOptions(t.TempDir())
+	layout, root, _ := maintenanceImageLayout(t, v1.Platform{OS: "linux", Architecture: runtime.GOARCH}, "native-push")
+	store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(options))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.WriteLayout(ctx, layout, root, "source"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, transport := range []string{"dir", "oci", "docker-archive", "oci-archive", "containers-storage"} {
+		t.Run(transport, func(t *testing.T) {
+			output := filepath.Join(t.TempDir(), "image@artifact")
+			loaded := maintenanceStoreOptions(t.TempDir())
+			destination := transport + ":" + output
+			if transport == "oci" || transport == "docker-archive" {
+				destination += ":exported:dev"
+			}
+			if transport == "containers-storage" {
+				destination = "containers-storage:[vfs@" + loaded.GraphRoot + "+" + loaded.RunRoot + "]localhost/exported:dev"
+			}
+			digestFile := filepath.Join(t.TempDir(), "digest")
+			var out, errs bytes.Buffer
+			if status := run(imageIOArgs(options, "push", "--quiet", "--digestfile", digestFile, "source", destination), &out, &errs); status != 0 {
+				t.Fatalf("push %s status=%d: %s", destination, status, &errs)
+			}
+			if out.Len() != 0 || errs.Len() != 0 {
+				t.Fatalf("quiet push printed stdout=%q stderr=%q", &out, &errs)
+			}
+			data, err := os.ReadFile(digestFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := digest.Digest(data).Validate(); err != nil {
+				t.Fatalf("invalid pushed digest %q: %v", data, err)
+			}
+			if transport != "containers-storage" {
+				if status := run(imageIOArgs(loaded, "load", "--quiet", "--input", output), &out, &errs); status != 0 {
+					t.Fatalf("load %s status=%d: %s", destination, status, &errs)
+				}
+			}
+			err = buildah.WithStore(loaded, func(backend storage.Store) error {
+				selected, err := oci.ResolveStoredImage(ctx, backend, string(data), v1.Platform{OS: "linux", Architecture: runtime.GOARCH})
+				if err != nil {
+					return err
+				}
+				var config v1.Image
+				if err := json.Unmarshal(selected.ConfigData, &config); err != nil {
+					return err
+				}
+				if config.Config.Labels["test"] != "native-push" {
+					t.Fatalf("loaded output lost configuration: %+v", config.Config)
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestImageIOExistsTagAndArchiveRoundTrip(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping supervised native tag and archive operations in short mode")
@@ -92,6 +161,10 @@ func TestImageIOExistsTagAndArchiveRoundTrip(t *testing.T) {
 		status int
 	}{
 		{[]string{"exists", "source"}, 0}, {[]string{"exists", "missing"}, 1}, {[]string{"tag", "source", "tagged"}, 0}, {[]string{"exists", "tagged"}, 0},
+		{[]string{"exists", "local:tagged"}, 1}, {[]string{"tag", "source", "local:tagged"}, 0},
+		{[]string{"exists", "local:tagged"}, 0}, {[]string{"copy", "local:tagged", "copied", "also-copied"}, 0}, {[]string{"exists", "copied"}, 0}, {[]string{"exists", "also-copied"}, 0},
+		{[]string{"tag", "source", "docker-daemon:dev"}, 0}, {[]string{"copy", "docker-daemon:dev", "daemon-name-alias"}, 0},
+		{[]string{"exists", "daemon-name-alias"}, 0},
 	} {
 		out.Reset()
 		errs.Reset()
@@ -101,6 +174,26 @@ func TestImageIOExistsTagAndArchiveRoundTrip(t *testing.T) {
 		if out.Len() != 0 || errs.Len() != 0 {
 			t.Fatalf("%v unexpected output=%q stderr=%q", test.args, &out, &errs)
 		}
+	}
+	pushed := filepath.Join(t.TempDir(), "pushed.oci.tar")
+	out.Reset()
+	errs.Reset()
+	if status := run(imageIOArgs(options, "push", "--quiet", "source", "oci-archive:"+pushed+":pushed-image"), &out, &errs); status != 0 {
+		t.Fatalf("push archive status=%d: %s", status, &errs)
+	}
+	archivedRoot, err := oci.ArchiveRoot(pushed)
+	if err != nil || archivedRoot.Annotations[v1.AnnotationRefName] != "pushed-image" {
+		t.Fatalf("image archive suffix annotation = %v, %v", archivedRoot.Annotations, err)
+	}
+	loaded := maintenanceStoreOptions(t.TempDir())
+	if status := run(imageIOArgs(loaded, "load", "--quiet", "--input", pushed), &out, &errs); status != 0 {
+		t.Fatalf("load image archive with suffix status=%d: %s", status, &errs)
+	}
+	if status := run(imageIOArgs(loaded, "exists", "pushed-image"), &out, &errs); status != 0 {
+		t.Fatalf("archive suffix name missing after load: status=%d stderr=%s", status, &errs)
+	}
+	if info, err := os.Stat(pushed); err != nil || info.Size() == 0 {
+		t.Fatalf("image push archive missing or empty: %v", err)
 	}
 	for _, format := range []string{"oci-archive", "docker-archive", "oci-dir", "docker-dir"} {
 		t.Run(format, func(t *testing.T) {
@@ -811,7 +904,10 @@ func TestImageIOSaveExplicitUncompressed(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "payload"), bytes.Repeat([]byte("compressible payload\n"), 100), 0600); err != nil {
 		t.Fatal(err)
 	}
-	definition, err := definition.Parse(strings.NewReader("from \"scratch\"\ncopy \"payload\" \"/payload\"\n"))
+	definition, err := definition.Parse(strings.NewReader(`from "scratch" {
+    copy "payload" "/payload"
+}
+`))
 	if err != nil {
 		t.Fatal(err)
 	}

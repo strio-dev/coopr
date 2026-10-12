@@ -1,0 +1,15 @@
+// Build this stage when packaging the component.
+from "docker.io/redhat/ubi9:latest" as="builder" {
+    run "echo 'Hello, world!' > /hello.txt"
+}
+
+// Keep the greeting in the packaged component.
+package as="greeting" {
+    copy "/hello.txt" "/hello.txt" from="builder"
+}
+
+// Start from the calling image when the component is used.
+// Copy the saved greeting without rerunning the builder.
+extend {
+    copy "/hello.txt" "/hello.txt" from="greeting"
+}

@@ -61,10 +61,19 @@ func withManifestStore(cmd *cobra.Command, registry oci.Options, exclusive bool,
 	})
 }
 
+func manifestMemberUsesTransport(name string) bool {
+	transport := alltransports.TransportFromImageName(name)
+	if transport == nil {
+		return strings.Contains(name, "://")
+	}
+	// docker:tag is an ordinary image name; the registry transport requires //.
+	return transport.Name() != "docker" || strings.HasPrefix(name, "docker://")
+}
+
 // Native instance references pin a Coopr local selection before libimage Add.
 // Remote names remain native registry references and need not be pulled first.
 func manifestMemberReference(ctx context.Context, backend storage.Store, name string) (string, error) {
-	if strings.Contains(name, "://") || strings.HasPrefix(name, "containers-storage:") || strings.HasPrefix(name, "oci:") || strings.HasPrefix(name, "oci-archive:") {
+	if manifestMemberUsesTransport(name) {
 		return name, nil
 	}
 	matched, err := oci.StoredImageName(backend, name)
@@ -267,7 +276,7 @@ func manifestMemberDigest(cmd *cobra.Command, backend storage.Store, name string
 	if err != nil {
 		return "", err
 	}
-	if !strings.HasPrefix(name, "containers-storage:") && !strings.Contains(name, "://") && !strings.HasPrefix(name, "oci:") && !strings.HasPrefix(name, "oci-archive:") {
+	if !manifestMemberUsesTransport(name) {
 		resolver, err := oci.NewResolver(oci.Options{})
 		if err != nil {
 			return "", err
@@ -286,7 +295,9 @@ func manifestMemberDigest(cmd *cobra.Command, backend storage.Store, name string
 	if err != nil {
 		return "", err
 	}
-	source, err := ref.NewImageSource(cmd.Context(), resolver.SystemContext())
+	system := resolver.SystemContext()
+	system.BigFilesTemporaryDir = os.TempDir()
+	source, err := ref.NewImageSource(cmd.Context(), system)
 	if err != nil {
 		return "", err
 	}
@@ -405,12 +416,11 @@ func newManifestPushCommand() *cobra.Command {
 	var all, quiet bool
 	var remove bool
 	var digestFile string
-	cmd := imageIOCommand("push <list> [destination]", "Push a manifest list and its images to a registry", cobra.RangeArgs(1, 2), func(cmd *cobra.Command, args []string) error {
+	cmd := imageIOCommand("push <list> [destination]", "Push a manifest list and its images to a destination", cobra.RangeArgs(1, 2), func(cmd *cobra.Command, args []string) error {
 		target := args[0]
 		if len(args) == 2 {
 			target = args[1]
 		}
-		target = strings.TrimPrefix(target, "docker://")
 		destination, err := transfer.ParsePushDestination(target, oci.Image)
 		if err != nil {
 			return err

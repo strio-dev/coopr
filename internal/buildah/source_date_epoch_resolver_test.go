@@ -86,9 +86,10 @@ func TestPlanDefinitionInWorkerReconstructsSourceDateEpochResolver(t *testing.T)
 	defer server.Close()
 	def, err := definition.Parse(strings.NewReader(fmt.Sprintf(`
 arg "SOURCE_DATE_EPOCH" "metadata"
-from "scratch" as="metadata"
-add %q "/source"
-from "scratch"
+from "scratch" as="metadata" {
+    add %q "/source"
+}
+from "scratch" {}
 `, server.URL+"/source")))
 	if err != nil {
 		t.Fatal(err)

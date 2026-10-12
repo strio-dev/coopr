@@ -169,7 +169,8 @@ func TestEncryptedRegistryInputDecryptsIntoCanonicalStore(t *testing.T) {
 		"from-only": reference,
 	} {
 		t.Run(name, func(t *testing.T) {
-			body := "from \"" + input + "\"\n"
+			body := "from \"" + input + `" {}
+`
 			if name != "from-only" {
 				body += "run \"printf decrypted > /proof\" network=\"none\"\n"
 			}

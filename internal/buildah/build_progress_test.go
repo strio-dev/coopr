@@ -112,11 +112,13 @@ func TestBuildProgressStagePrefixesRetainParentAndNumbering(t *testing.T) {
 func TestBuildProgressPreparedStageCountsInheritedAndScopedInstructions(t *testing.T) {
 	plan := testPlan(t, `
 arg "global" "excluded"
-from "scratch" as="base"
-onbuild { env inherited="yes" }
-from "base" as="app"
-arg "channel" "stable"
-env output="yes"
+from "scratch" as="base" {
+    onbuild { env inherited="yes" }
+}
+from "base" as="app" {
+    arg "channel" "stable"
+    env output="yes"
+}
 `)
 	base, stage := plan.Stages[0], plan.Stages[1]
 	config := imageconfig.New()
@@ -151,13 +153,13 @@ func TestBuildProgressParsedCommandForms(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			def, err := definition.Parse(strings.NewReader(test.source + "\n"))
+			def, err := definition.Parse(strings.NewReader("from \"scratch\" {\n" + test.source + "\n}\n"))
 			if err != nil {
 				t.Fatal(err)
 			}
 			var output bytes.Buffer
 			progress := stageProgress{writer: &output, total: 1}
-			progress.step(1, def.Instructions[0])
+			progress.step(1, def.Instructions[0].Children[0])
 			if got, want := output.String(), "STEP 1/1: "+test.want+"\n"; got != want {
 				t.Fatalf("parsed progress = %q, want %q", got, want)
 			}
@@ -184,9 +186,9 @@ func TestBuildProgressUnknownAuthoredTotalUsesStableIdentity(t *testing.T) {
 func TestBuildProgressAuthoredCountIncludesForwardStages(t *testing.T) {
 	def, err := definition.Parse(strings.NewReader(`
 arg "global" "excluded"
-from "scratch" as="base"
-from "base" as="target"
-from "scratch" as="forward"
+from "scratch" as="base" {}
+from "base" as="target" {}
+from "scratch" as="forward" {}
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -209,5 +211,21 @@ from "scratch" as="forward"
 				t.Fatalf("prepared prefix = %q, want %q", got, want)
 			}
 		}
+	}
+}
+
+func TestBuildProgressCountsExtendOwnedStages(t *testing.T) {
+	def, err := definition.Parse(strings.NewReader(`
+package as="assets" {}
+extend as="output" {
+    from "scratch" as="helper" {}
+    from "helper" {}
+}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := definitionStageCount(def); got != 4 {
+		t.Fatalf("authored stage count = %d, want 4", got)
 	}
 }

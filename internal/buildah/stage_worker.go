@@ -31,6 +31,7 @@ const (
 )
 
 type stageWorkerRequest struct {
+	ExecutableOrigin      string               `json:"executable_origin,omitempty"`
 	RetainsCaller         bool                 `json:"retains_caller,omitempty"`
 	BaseRoot              *PackageRootMetadata `json:"base_root,omitempty"`
 	ProgressReference     string               `json:"progress_reference,omitempty"`
@@ -180,6 +181,7 @@ func (executor *graphExecutor) executeGraphStageIsolated(ctx context.Context, pl
 	}
 
 	request := stageWorkerRequest{
+		ExecutableOrigin:  executor.options.executableOrigin,
 		ProgressPrefix:    prepared.progressPrefix,
 		ProgressReference: executor.options.ProgressReference,
 		Mode:              plan.Mode, Stage: prepared.stage, Base: prepared.base, BaseName: prepared.baseName, BaseRoot: prepared.baseRoot, RetainsCaller: prepared.retainsCaller, PreserveBaseImageAnns: prepared.preserveBaseImageAnnotations, BaseManifest: prepared.baseManifest, Logical: logical,
@@ -412,6 +414,7 @@ func executeStageWorkerRequest(ctx context.Context, request stageWorkerRequest) 
 		}
 	}
 	options := PlanOptions{
+		executableOrigin:  request.ExecutableOrigin,
 		ProgressReference: request.ProgressReference,
 		ProgressPrefix:    request.ProgressPrefix,
 		Store:             request.Store, ContextDir: request.ContextDir, SourcePolicyFile: request.SourcePolicyFile, SourcePolicy: request.SourcePolicy, IgnoreFile: request.IgnoreFile, ContextArtifacts: request.ContextArtifacts,

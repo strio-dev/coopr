@@ -51,7 +51,13 @@ func loadDockerTestDefinition(t *testing.T, ctx context.Context, work string) st
 		t.Fatalf("build static Docker runner: %v: %s", err, output)
 	}
 	definition := filepath.Join(work, "app.coopr")
-	data := "from \"scratch\"\ncopy \"runner\" \"/runner\"\ncopy \"marker\" \"/marker\"\nlabel coopr_test=\"load\"\ncmd { exec \"/runner\" }\n"
+	data := `from "scratch" {
+    copy "runner" "/runner"
+    copy "marker" "/marker"
+    label coopr_test="load"
+    cmd { exec "/runner" }
+}
+`
 	if err := os.WriteFile(definition, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -135,34 +141,16 @@ func dockerArchiveHasPath(t *testing.T, ctx context.Context, path, name string) 
 
 // Inspect metadata through host Podman rather than imposing a raw-blob export
 // requirement on images imported from Docker's storage.
-func inspectDockerImportedPlatforms(t *testing.T, ctx context.Context, store buildah.StoreOptions, name string, multi bool) []string {
+func inspectDockerImportedPlatforms(t *testing.T, ctx context.Context, store buildah.StoreOptions, name string) []string {
 	t.Helper()
 	args := []string{"--root", store.GraphRoot, "--runroot", store.RunRoot, "--storage-driver=vfs", "--storage-opt=vfs.ignore_chown_errors=true"}
-	if multi {
-		args = append(args, "manifest", "inspect", name)
-	} else {
-		args = append(args, "image", "inspect", name)
-	}
+	args = append(args, "image", "inspect", name)
 	command := exec.CommandContext(ctx, "podman", args...)
 	var stderr bytes.Buffer
 	command.Stderr = &stderr
 	data, err := command.Output()
 	if err != nil {
 		t.Fatalf("inspect imported Docker metadata: %v: %s", err, stderr.String())
-	}
-	if multi {
-		var index v1.Index
-		if err := json.Unmarshal(data, &index); err != nil {
-			t.Fatal(err)
-		}
-		var platforms []string
-		for _, descriptor := range index.Manifests {
-			if descriptor.Platform == nil {
-				t.Fatal("imported Docker index manifest lacks a platform")
-			}
-			platforms = append(platforms, descriptor.Platform.OS+"/"+descriptor.Platform.Architecture)
-		}
-		return platforms
 	}
 	var images []struct {
 		OS           string

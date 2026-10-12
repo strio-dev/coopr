@@ -27,14 +27,18 @@ func TestChrootNetworkPolicyRejectsCachedImageAndComponent(t *testing.T) {
 			root := t.TempDir()
 			store := cacheTestStore(root)
 			base := newLiveBusyBoxStorage(t, ctx, root, store)
-			source := "from \"" + base.reference + "\"\n"
+			source := "from \"" + base.reference + "\" {\n"
 			run := `run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" network="none"` + "\n"
 			if kind == "component" {
-				_ = localConfigComponentResolver(t, ctx, root, "extend\n"+run, false)
-				source += "component \"local:config\"\n"
+				_ = localConfigComponentResolver(t, ctx, root, `extend {
+    `+run+`
+}
+`, false)
+				source += "component \"config\"\n"
 			} else {
 				source += run
 			}
+			source += "}\n"
 			plan := testPlan(t, source)
 			options := SupervisedPlanOptions{
 				Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
@@ -80,12 +84,15 @@ func TestChrootNetworkPolicyRejectsCachedPackage(t *testing.T) {
 	root := t.TempDir()
 	base, _ := newLiveBusyBoxRegistry(t, ctx)
 	component := parseWorkerDefinition(t, `
-from "`+base+`" as="producer"
-run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" network="none"
-package as="payload"
-copy "/proof" "/proof" from="producer"
-extend
-copy "/proof" "/proof" from="payload"
+from "`+base+`" as="producer" {
+    run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" network="none"
+}
+package as="payload" {
+    copy "/proof" "/proof" from="producer"
+}
+extend {
+    copy "/proof" "/proof" from="payload"
+}
 `)
 	options := SupervisedPlanOptions{
 		ContextDir: root, Isolation: "rootless", Runtime: "crun",
@@ -148,8 +155,9 @@ func TestChrootNetworkPolicyRejectsLegacyInheritedOnBuild(t *testing.T) {
 	store := cacheTestStore(root)
 	base := newLiveBusyBoxStorage(t, ctx, root, store)
 	parentLayout := filepath.Join(root, "parent")
-	parentDefinition := parseWorkerDefinition(t, "from \""+base.reference+"\"\n")
-	parentDefinition.Instructions = append(parentDefinition.Instructions, definition.Instruction{Name: "onbuild", Arguments: []string{"RUN --network=none printf inherited >/proof"}})
+	parentDefinition := parseWorkerDefinition(t, "from \""+base.reference+`" {}
+`)
+	parentDefinition.Instructions[0].Children = append(parentDefinition.Instructions[0].Children, definition.Instruction{Name: "onbuild", Arguments: []string{"RUN --network=none printf inherited >/proof"}})
 	parentPlan, err := planner.Create(parentDefinition, planner.Options{Mode: planner.Build, Platform: runtime.GOOS + "/" + runtime.GOARCH})
 	if err != nil {
 		t.Fatal(err)
@@ -175,7 +183,8 @@ func TestChrootNetworkPolicyRejectsLegacyInheritedOnBuild(t *testing.T) {
 	}
 	const reference = "fixture.local/coopr/onbuild:latest"
 	parentID := importTestImageToNative(t, ctx, store, parentLayout, reference, selected, &types.SystemContext{SignaturePolicyPath: writeComponentTestPolicy(t, root)})
-	plan := testPlan(t, "from \""+reference+"\"\n")
+	plan := testPlan(t, "from \""+reference+`" {}
+`)
 	if plan.Stages[0].InheritedOnBuildPlanned {
 		t.Fatal("legacy test must leave inherited ONBUILD unplanned")
 	}

@@ -1,76 +1,131 @@
-# Reuse two components
+# Package reusable components
 
-Apply shared settings and a policy check to a Red Hat UBI9 image from Docker Hub. Each component captures its files during packaging; the consuming build needs only the component reference.
+Package two components with their own files, then apply both to a UBI9 image. The first installs settings; the second checks for those settings before adding a policy. Unlike a [local file reference](local-components.md), a packaged component can be used without its source checkout.
 
-After [installing Coopr](../getting-started/index.md), clone the repository to get the examples:
+You need [Coopr](../getting-started/index.md), Podman, and access to Docker Hub. Run Coopr and Podman as the same user with the same storage settings.
+
+Create a workspace and enter it:
 
 ```sh
-git clone https://github.com/strio-dev/coopr.git
-cd coopr
+mkdir -p reusable-components
+cd reusable-components
+mkdir -p components/settings components/policy
 ```
 
-Run the commands from the repository root with Podman available and access to Docker Hub.
+Run the remaining commands from this directory.
 
 ## Package settings
 
-`examples/reusable-components/components/settings/component.coopr` is:
+Save this as `components/settings/settings.conf`:
+
+```ini
+enabled=true
+```
+
+Save this as `components/settings/component.coopr`:
 
 ```kdl
-package as="payload"
-copy "settings.conf" "/settings.conf"
+// Capture the settings file when packaging the component.
+package as="payload" {
+    copy "settings.conf" "/settings.conf"
+}
 
-extend as="configured"
-arg "channel" "stable"
-env demo_channel="${channel}"
-copy "/settings.conf" "/etc/demo/settings.conf" from="payload"
+// Apply the packaged settings to the calling image.
+extend as="configured" {
+    arg "channel" "stable"
+    env demo_channel="${channel}"
+    copy "/settings.conf" "/etc/demo/settings.conf" from="payload"
+}
 ```
 
-The `package` stage captures the file into an immutable snapshot. The `extend` stage starts from the consuming image. `channel` is declared after `extend`, so invocation can choose it without rebuilding the package.
+The `package` stage starts empty and captures the file. `extend` begins the steps applied to the calling image. Because `channel` is declared inside `extend`, each caller can choose its value without rebuilding the package.
 
 ```sh
-coopr component build examples/reusable-components/components/settings/component.coopr --tag coopr-demo-settings
+coopr component build components/settings/component.coopr --tag coopr-demo-settings
 ```
+
+Passing a definition file uses its parent directory as the build context. Here, `copy "settings.conf"` reads the file beside `component.coopr`.
 
 ## Package a policy
 
-The policy component checks that settings have already been installed, then adds its own file:
+Save this as `components/policy/policy.txt`:
 
-```kdl
-package as="payload"
-copy "policy.txt" "/policy.txt"
-
-extend as="checked"
-run "test -f /etc/demo/settings.conf"
-copy "/policy.txt" "/etc/demo/policy.txt" from="payload"
+```text
+Use approved configuration.
 ```
 
-```sh
-coopr component build examples/reusable-components/components/policy/component.coopr --tag coopr-demo-policy
-```
-
-The check executes when the component is invoked, against the caller's filesystem. It does not run while packaging the policy.
-
-## Compose the image
-
-`examples/reusable-components/image.coopr` invokes the two local tags in order:
+Save this as `components/policy/component.coopr`:
 
 ```kdl
-from "docker.io/redhat/ubi9:latest"
-component "local:coopr-demo-settings" channel="preview"
-component "local:coopr-demo-policy"
-cmd {
-    exec "cat" "/etc/demo/settings.conf" "/etc/demo/policy.txt"
+// Capture the policy file when packaging the component.
+package as="payload" {
+    copy "policy.txt" "/policy.txt"
+}
+
+// Check the calling image before adding the packaged policy.
+extend as="checked" {
+    run "test -f /etc/demo/settings.conf"
+    copy "/policy.txt" "/etc/demo/policy.txt" from="payload"
 }
 ```
 
 ```sh
-coopr build examples/reusable-components/image.coopr --tag coopr-demo:configured
+coopr component build components/policy/component.coopr --tag coopr-demo-policy
+```
+
+The check belongs to the consuming image's build, where it can read the caller's filesystem. Packaging the policy captures its file without running the check.
+
+## Compose the image
+
+Save this as `image.coopr`:
+
+```kdl
+from "docker.io/redhat/ubi9:latest" {
+    // Apply the packaged settings, then check them with the policy.
+    component "coopr-demo-settings" {
+        arg "channel" "preview"
+    }
+    component "coopr-demo-policy"
+
+    // Print both files when the container starts.
+    cmd {
+        exec "cat" "/etc/demo/settings.conf" "/etc/demo/policy.txt"
+    }
+}
+```
+
+These names select the artifacts you just packaged in Coopr's component store. They do not read the source definitions. The settings call overrides the default `channel` with `preview`.
+
+```sh
+coopr build image.coopr --tag coopr-demo:configured
 podman run --rm localhost/coopr-demo:configured
+```
+
+Expected container output:
+
+```{ .text .no-copy }
+enabled=true
+Use approved configuration.
+```
+
+The order matters: placing the policy call first fails its check because the settings file has not been installed yet.
+
+Inspect the image's environment to see the argument override:
+
+```sh
 podman inspect localhost/coopr-demo:configured --format '{{json .Config.Env}}'
 ```
 
-Coopr writes the image directly to the local storage shared with Podman. Run both tools as the same user.
+The result includes `demo_channel=preview`.
 
-The container prints both packaged files, and its environment contains `demo_channel=preview`. Reversing the calls fails the policy check on a fresh build because settings do not exist yet.
+## Change the settings
 
-For registry reuse, copy each component to your registry and use that reference in the definition. Pin the component and its nested OCI inputs by digest when stable selection matters. See [packaging components](../guides/components.md).
+After editing `components/settings/settings.conf`, rerun the settings component build, then the image build. A packaged component keeps its captured files until you rebuild it; rebuilding the image alone does not reread those files.
+
+Changing only the `arg "channel" "preview"` binding in `image.coopr` requires rebuilding the image, without repackaging either component.
+
+## Share the components
+
+These commands keep the packaged components local. To share them with other repositories, [publish to an OCI registry](../guides/components.md#build-an-oci-component). Use digest references for the component and its external inputs when the build must select fixed content.
+
+The same definitions and payloads are available in the [checked-in example](https://github.com/strio-dev/coopr/tree/main/examples/reusable-components).

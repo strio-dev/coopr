@@ -22,15 +22,65 @@ import (
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
 
+func TestDestinationString(t *testing.T) {
+	for _, test := range []struct {
+		destination Destination
+		want        string
+	}{
+		{Destination{Transport: "local", Name: "app:latest"}, "app:latest"},
+		{Destination{Transport: "local", Name: "local:app"}, "local:app"},
+		{Destination{Transport: "registry", Name: "example.com/app:latest"}, "docker://example.com/app:latest"},
+		{Destination{Transport: "docker", Name: "app:dev"}, "docker-daemon:app:dev"},
+		{Destination{Transport: "oci-archive", Name: "app.tar"}, "oci-archive:app.tar"},
+	} {
+		if got := test.destination.String(); got != test.want {
+			t.Fatalf("destination string = %q, want %q", got, test.want)
+		}
+	}
+}
+
+func TestBuildTagsUseOnlyOrdinaryNames(t *testing.T) {
+	for _, kind := range []oci.Kind{oci.Image, oci.Component} {
+		for _, name := range []string{"app", "app:dev", "registry:app", "docker:app"} {
+			destination, err := ParseTag(name, kind)
+			if err != nil || destination.Transport != "local" {
+				t.Fatalf("tag %s = %+v, %v", name, destination, err)
+			}
+		}
+		for _, name := range []string{"docker://example.com/app:dev", "docker-daemon:app:dev", "oci-archive:/tmp/app.tar"} {
+			if _, err := ParseTag(name, kind); err == nil {
+				t.Fatalf("transport accepted as build tag: %s", name)
+			}
+		}
+	}
+}
+
+func TestArchiveDestinationReference(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "app.tar")
+	for _, kind := range []oci.Kind{oci.Image, oci.Component} {
+		value := "oci-archive:" + path + ":app"
+		destination, err := ParseDestination(value, kind)
+		if err != nil || destination.Name != path || destination.ArchiveReference != "app" || destination.String() != value {
+			t.Fatalf("archive destination = %+v, %v", destination, err)
+		}
+		for _, invalid := range []string{"oci-archive:" + path + ":bad name", "oci-archive:" + path + ":app?tag"} {
+			if _, err := ParseDestination(invalid, kind); err == nil {
+				t.Fatalf("invalid archive reference accepted: %s", invalid)
+			}
+		}
+	}
+}
+
 func TestDestinationTransports(t *testing.T) {
 	for _, test := range []struct {
 		value, transport, name string
 	}{
 		{"app:dev", "local", "app:dev"},
-		{"local:app", "local", "app:latest"},
+		{"local:app", "local", "local:app"},
+		{"registry:app", "local", "registry:app"}, {"docker:app", "local", "docker:app"},
 		{"podman:5000/team/app:dev", "local", "podman:5000/team/app:dev"},
-		{"docker:app:dev", "docker", "app:dev"},
-		{"registry:example.com/team/app:dev", "registry", "example.com/team/app:dev"},
+		{"docker-daemon:app:dev", "docker", "app:dev"},
+		{"docker://example.com/team/app:dev", "registry", "example.com/team/app:dev"},
 		{"oci-archive:app.tar", "oci-archive", "app.tar"},
 	} {
 		got, err := ParseDestination(test.value, oci.Image)
@@ -38,14 +88,14 @@ func TestDestinationTransports(t *testing.T) {
 			t.Fatalf("destination %q = %+v, %v", test.value, got, err)
 		}
 	}
-	for _, value := range []string{"docker:app:dev"} {
+	for _, value := range []string{"docker-daemon:app:dev"} {
 		if _, err := ParseDestination(value, oci.Component); err == nil || !strings.Contains(err.Error(), "cannot store Coopr component") {
 			t.Fatalf("component destination %q accepted: %v", value, err)
 		}
 	}
-	for _, value := range []string{"docker:app:dev", "local:app:dev", "oci-archive:app.tar"} {
-		if _, err := ParsePushDestination(value, oci.Image); err == nil || !strings.Contains(err.Error(), "--push cannot use") {
-			t.Fatalf("push target %q accepted: %v", value, err)
+	for _, value := range []string{"docker-daemon:app:dev", "oci-archive:app.tar"} {
+		if _, err := ParsePushDestination(value, oci.Image); err != nil {
+			t.Fatalf("push target %q rejected: %v", value, err)
 		}
 	}
 	if destination, err := ParsePushDestination("localhost:5000/team/app:dev", oci.Image); err != nil || destination.Transport != "registry" {
@@ -54,7 +104,7 @@ func TestDestinationTransports(t *testing.T) {
 }
 
 func TestPodmanImageNameUsesOrdinaryTagSyntax(t *testing.T) {
-	for _, value := range []string{"podman:dev", "local:podman:dev"} {
+	for _, value := range []string{"podman:dev"} {
 		got, err := ParseDestination(value, oci.Image)
 		if err != nil || got != (Destination{Transport: "local", Name: "podman:dev"}) {
 			t.Fatalf("destination %q = %+v, %v; want an ordinary local tag", value, got, err)
@@ -69,6 +119,40 @@ func TestPodmanImageNameUsesOrdinaryTagSyntax(t *testing.T) {
 	}
 }
 
+func TestComponentDestinationsUseOrdinaryReferences(t *testing.T) {
+	for _, test := range []struct{ value, name string }{
+		{"app", "app:latest"}, {"app:dev", "app:dev"},
+		{"local:app", "local:app"}, {"docker.io/library/app", "app:latest"},
+	} {
+		destination, err := ParseDestination(test.value, oci.Component)
+		if err != nil || destination != (Destination{Transport: "local", Name: test.name}) {
+			t.Fatalf("component destination %q = %+v, %v", test.value, destination, err)
+		}
+		selector, err := localSelector(test.value, oci.Component)
+		if err != nil || selector != test.name {
+			t.Fatalf("component selector %q = %q, %v", test.value, selector, err)
+		}
+	}
+	pinned := digest.FromString("component").String()
+	selector, err := localSelector("app@"+pinned, oci.Component)
+	if err != nil || selector != pinned {
+		t.Fatalf("named component digest selector = %q, %v", selector, err)
+	}
+	for _, kind := range []oci.Kind{oci.Image, oci.Component} {
+		if _, err := ParseDestination("local:app:dev", kind); err == nil {
+			t.Fatalf("invalid multi-colon name accepted for %s", kind)
+		}
+		destination, err := ParsePushDestination("local:app", kind)
+		if err != nil || destination != (Destination{Transport: "registry", Name: "local:app"}) {
+			t.Fatalf("ordinary local:app push = %+v, %v", destination, err)
+		}
+	}
+	selector, err = localSelector("local:app", oci.Image)
+	if err != nil || selector != "local:app" {
+		t.Fatalf("image selector stripped ordinary name: %q, %v", selector, err)
+	}
+}
+
 func TestCopyRootArchiveAndRegistryWithoutRebuild(t *testing.T) {
 	ctx := context.Background()
 	options := nativeTestStore(t.TempDir())
@@ -79,7 +163,7 @@ func TestCopyRootArchiveAndRegistryWithoutRebuild(t *testing.T) {
 	}
 	archive := filepath.Join(t.TempDir(), "image.oci.tar")
 	result, err := CopyRoot(ctx, oci.Image, layout, root, Destination{Transport: "oci-archive", Name: archive}, Options{BuildStore: options})
-	if err != nil || result != archive {
+	if err != nil || result != "oci-archive:"+archive+"@"+root.Digest.String() {
 		t.Fatalf("copy archive = %q, %v", result, err)
 	}
 	file, err := os.Open(archive)
@@ -173,7 +257,11 @@ func TestArchiveDestinationCannotOverwriteStore(t *testing.T) {
 	if err := os.Symlink(storeDir, alias); err != nil {
 		t.Fatal(err)
 	}
-	_, err = CopyRoot(ctx, oci.Image, storeDir, root, Destination{Transport: "oci-archive", Name: filepath.Join(alias, "index.json")}, Options{})
+	destination, err := ParseDestination("oci-archive:"+filepath.Join(alias, "index.json")+":app", oci.Image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = CopyRoot(ctx, oci.Image, storeDir, root, destination, Options{})
 	if err == nil || !strings.Contains(err.Error(), "would overwrite the Coopr store") {
 		t.Fatalf("store archive overwrite = %v", err)
 	}

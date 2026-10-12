@@ -597,7 +597,11 @@ func newComponentInspectCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			descriptor, found, err := localstore.Inspect(cmd.Context(), dir, strings.TrimPrefix(args[0], "local:"))
+			selector, err := componentstore.LocalSelector(args[0])
+			if err != nil {
+				return err
+			}
+			descriptor, found, err := localstore.Inspect(cmd.Context(), dir, selector)
 			if err != nil {
 				return err
 			}
@@ -619,8 +623,8 @@ func newComponentRemoveCommand() *cobra.Command {
 			}
 			return withExclusiveStoreActivity(cmd.Context(), []string{dir}, func() error {
 				for _, name := range args {
-					name = strings.TrimPrefix(name, "local:")
-					if err := componentstore.ValidateTag(name); err != nil {
+					name, err = componentstore.NormalizeTag(name)
+					if err != nil {
 						return err
 					}
 					removed, err := localstore.RemoveTag(cmd.Context(), dir, name)

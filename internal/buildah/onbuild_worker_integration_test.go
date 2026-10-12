@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,7 +23,8 @@ func TestSupervisedRawBuildPlansExternalOnBuildBeforeExecution(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	root := t.TempDir()
-	for name, contents := range map[string]string{"artifact": "from producer\n", "payload": "from inherited ARG\n"} {
+	for name, contents := range map[string]string{"artifact": `from producer {}
+`, "payload": "from inherited ARG\n"} {
 		if err := os.WriteFile(filepath.Join(root, name), []byte(contents), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -34,9 +36,10 @@ func TestSupervisedRawBuildPlansExternalOnBuildBeforeExecution(t *testing.T) {
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	parentLayout := filepath.Join(root, "parent")
 	parent, err := BuildPlan(ctx, testPlan(t, `
-from "scratch"
-onbuild { arg "filename" "payload" }
-onbuild { copy "/artifact" "/inherited" from="producer" }
+from "scratch" {
+    onbuild { arg "filename" "payload" }
+    onbuild { copy "/artifact" "/inherited" from="producer" }
+}
 `), PlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless",
 		Output:        Output{Path: parentLayout, Format: outputFormatDocker},
@@ -60,11 +63,29 @@ onbuild { copy "/artifact" "/inherited" from="producer" }
 		t.Fatal(err)
 	}
 
+	forward := parseWorkerDefinition(t, `
+from "registry.example/coopr/onbuild-arg:latest" as="final" {
+    copy "$filename" "/selected"
+}
+from "scratch" as="producer" {
+    copy "artifact" "/artifact"
+}
+`)
+	_, err = BuildDefinitionSupervised(ctx, forward, planner.Options{Mode: planner.Build, Platform: "linux/" + runtime.GOARCH, Target: "final"}, SupervisedPlanOptions{
+		Store: store, ContextDir: root, Isolation: "rootless", Output: Output{Path: filepath.Join(root, "rejected-forward")},
+		SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
+	})
+	if err == nil || !strings.Contains(err.Error(), "earlier") {
+		t.Fatalf("inherited forward reference accepted: %v", err)
+	}
+
 	child := parseWorkerDefinition(t, `
-from "registry.example/coopr/onbuild-arg:latest" as="final"
-copy "$filename" "/selected"
-from "scratch" as="producer"
-copy "artifact" "/artifact"
+from "scratch" as="producer" {
+    copy "artifact" "/artifact"
+}
+from "registry.example/coopr/onbuild-arg:latest" as="final" {
+    copy "$filename" "/selected"
+}
 `)
 	childLayout := filepath.Join(root, "child")
 	_, err = BuildDefinitionSupervised(ctx, child, planner.Options{Mode: planner.Build, Platform: "linux/" + runtime.GOARCH, Target: "final"}, SupervisedPlanOptions{
@@ -79,7 +100,8 @@ copy "artifact" "/artifact"
 		t.Fatalf("child layers = %d, want inherited and authored COPY layers", len(manifest.Layers))
 	}
 	for index, want := range []struct{ path, contents string }{
-		{"inherited", "from producer\n"},
+		{"inherited", `from producer {}
+`},
 		{"selected", "from inherited ARG\n"},
 	} {
 		blob := filepath.Join(childLayout, "blobs", "sha256", manifest.Layers[len(manifest.Layers)-2+index].Digest.Encoded())
@@ -111,7 +133,8 @@ func TestSupervisedRawBuildPlansLocalOnBuildBeforeExecution(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	root := t.TempDir()
-	for name, contents := range map[string]string{"artifact": "from producer\n", "payload": "from inherited ARG\n"} {
+	for name, contents := range map[string]string{"artifact": `from producer {}
+`, "payload": "from inherited ARG\n"} {
 		if err := os.WriteFile(filepath.Join(root, name), []byte(contents), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -122,13 +145,16 @@ func TestSupervisedRawBuildPlansLocalOnBuildBeforeExecution(t *testing.T) {
 	}
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	child := parseWorkerDefinition(t, `
-from "scratch" as="producer"
-copy "artifact" "/artifact"
-from "scratch" as="base"
-onbuild { arg "filename" "payload" }
-onbuild { copy "/artifact" "/inherited" from="producer" }
-from "base"
-copy "$filename" "/selected"
+from "scratch" as="producer" {
+    copy "artifact" "/artifact"
+}
+from "scratch" as="base" {
+    onbuild { arg "filename" "payload" }
+    onbuild { copy "/artifact" "/inherited" from="producer" }
+}
+from "base" {
+    copy "$filename" "/selected"
+}
 `)
 	layout := filepath.Join(root, "child")
 	_, err := BuildDefinitionSupervised(ctx, child, planner.Options{Mode: planner.Build, Platform: "linux/" + runtime.GOARCH}, SupervisedPlanOptions{
@@ -143,7 +169,8 @@ copy "$filename" "/selected"
 		t.Fatalf("child layers = %d, want inherited and authored COPY layers", len(manifest.Layers))
 	}
 	for index, want := range []struct{ path, contents string }{
-		{"inherited", "from producer\n"},
+		{"inherited", `from producer {}
+`},
 		{"selected", "from inherited ARG\n"},
 	} {
 		blob := filepath.Join(layout, "blobs", "sha256", manifest.Layers[len(manifest.Layers)-2+index].Digest.Encoded())

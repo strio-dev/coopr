@@ -81,8 +81,8 @@ func TestCopyDockerStreamsConvertedImageToImageLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "docker:example:dev" {
-		t.Fatalf("Copy() = %q, want docker:example:dev", got)
+	if got != "docker-daemon:example:dev" {
+		t.Fatalf("Copy() = %q, want docker-daemon:example:dev", got)
 	}
 	if !loadCalled {
 		t.Fatal("Docker ImageLoad was not called")
@@ -97,9 +97,6 @@ func TestCopyRejectsUnsupportedEngine(t *testing.T) {
 	for _, engine := range []string{"podman", "buildah"} {
 		if _, err := Copy(context.Background(), "ignored", v1.Descriptor{}, engine, "app:dev"); err == nil || !strings.Contains(err.Error(), "unsupported image engine") {
 			t.Fatalf("Copy accepted engine %q: %v", engine, err)
-		}
-		if _, err := Read(context.Background(), engine, "app:dev", "ignored", v1.Platform{}); err == nil || !strings.Contains(err.Error(), "unsupported image engine") {
-			t.Fatalf("Read accepted engine %q: %v", engine, err)
 		}
 	}
 }

@@ -15,7 +15,6 @@ import (
 	"coopr/internal/buildcontext"
 	"coopr/internal/definition"
 	"coopr/internal/onbuildparse"
-	"github.com/containerd/platforms"
 )
 
 type Mode string
@@ -121,10 +120,10 @@ type Stage struct {
 	// known after execution because it contains a component invocation. The
 	// executor must bind that completed image configuration and replan before
 	// executing this stage.
-	DynamicBaseStage string              `json:"dynamic_base_stage,omitempty"`
-	Requirements     map[string][]string `json:"requirements,omitempty"`
-	Dependencies     []string            `json:"dependencies,omitempty"`
-	Operations       []Operation         `json:"operations,omitempty"`
+	DynamicBaseStage string `json:"dynamic_base_stage,omitempty"`
+
+	Dependencies []string    `json:"dependencies,omitempty"`
+	Operations   []Operation `json:"operations,omitempty"`
 	// History retains non-executable instructions at their source position
 	// without changing operation indexes used by graph dependencies.
 	History []HistoryOperation `json:"history,omitempty"`
@@ -147,12 +146,10 @@ type Plan struct {
 	Platform       string `json:"platform"`
 	// SourceDateEpoch is the canonical numeric SOURCE_DATE_EPOCH selected for
 	// image metadata. It remains separate from stage ARG visibility.
-	SourceDateEpoch *int64  `json:"source_date_epoch,omitempty"`
-	Stages          []Stage `json:"stages"`
-	// CompatibilityRoots constrain the caller without scheduling dormant bodies.
-	CompatibilityRoots []Stage    `json:"compatibility_roots,omitempty"`
-	Outputs            []string   `json:"outputs"`
-	Arguments          []Argument `json:"arguments,omitempty"`
+	SourceDateEpoch *int64     `json:"source_date_epoch,omitempty"`
+	Stages          []Stage    `json:"stages"`
+	Outputs         []string   `json:"outputs"`
+	Arguments       []Argument `json:"arguments,omitempty"`
 	// PackageArguments must accompany the published component, independently of
 	// its filesystem snapshots, so invocation cannot silently reinterpret them.
 	PackageArguments map[string]string `json:"package_arguments,omitempty"`
@@ -198,6 +195,10 @@ type Input struct {
 // It binds a pruned definition to one output and the package argument snapshot.
 // Registry resolution will eventually supply this metadata from a verified artifact.
 type PublishedComponent struct {
+	// SourceStageIDs maps original numeric selectors to retained stages.
+	// Missing indices within SourceStageCount identify pruned producers.
+	SourceStageCount   int                     `json:"source_stage_count"`
+	SourceStageIDs     map[string]string       `json:"source_stage_ids"`
 	Definition         *definition.Definition  `json:"definition"`
 	Output             string                  `json:"output"`
 	DormantRoots       []string                `json:"dormant_roots,omitempty"`
@@ -221,11 +222,11 @@ type FromBinding struct {
 
 // StageReferenceBinding freezes each COPY/ADD and mount dependency to the
 // stage it used at publication. Origin distinguishes an authored operation
-// from one inherited from a package image's ONBUILD configuration.
+// from inherited package ONBUILD or a retained local stage's authored ONBUILD.
 // MountIndex is -1 for COPY/ADD itself.
 type StageReferenceBinding struct {
 	Stage      string `json:"stage"`
-	Origin     string `json:"origin"` // authored or onbuild
+	Origin     string `json:"origin"` // authored, onbuild, or local-onbuild
 	Operation  int    `json:"operation"`
 	MountIndex int    `json:"mount_index"`
 	// Kind is "stage" when omitted for compatibility with existing artifacts.
@@ -265,8 +266,9 @@ type binding struct {
 type scope map[string]binding
 
 type rawStage struct {
-	head definition.Instruction
-	body []definition.Instruction
+	owner string
+	head  definition.Instruction
+	body  []definition.Instruction
 }
 
 type graph struct {
@@ -295,13 +297,14 @@ type graph struct {
 	bases               []int
 	packages            []int
 	extended            []int
-	compatibilityOnly   map[int]bool
+	projection          *RawGraph
 	declared            map[string]bool
 	bindResolver        StageBindResolver
 	reservedStageNames  map[string]bool
 	contexts            map[string]buildcontext.Spec
 	contextOverrides    map[int]buildcontext.Spec
 	published           *PublishedComponent
+	packageSource       *graph
 	contextBindings     map[string][]ContextBinding
 }
 
@@ -552,27 +555,11 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 	if n == 0 {
 		return nil, fmt.Errorf("no stages: expected from or extend")
 	}
-	g.stages = make([]Stage, n)
-	g.states = make([]int, n)
-	g.finalScopes = make([]scope, n)
-	g.finalEnvironments = make([]map[string]string, n)
-	g.finalShadows = make([]map[string]bool, n)
-	g.finalDeclaredProxy = make([]map[string]bool, n)
-	g.finalOnBuild = make([][]string, n)
-	g.dynamicConfig = make([]bool, n)
-	g.verifiedConfig = make([]bool, n)
-	g.packageDerived = make([]bool, n)
-	g.inheritedOperations = make([]int, n)
-	g.packageResolved = make([]bool, n)
-	g.packageFixed = make([]map[string]bool, n)
-	g.resolutionEpoch = make([]uint64, n)
-	g.scopes = make([]scope, n)
-	g.deps = make([][]int, n)
-	g.bases = make([]int, n)
-	for i := range g.bases {
-		g.bases[i] = -1
+	g.initializeResolution()
+	output, err := g.projection.selectedTarget(opts.Target, component)
+	if err != nil && opts.Mode != Invoke {
+		return nil, err
 	}
-	output := n - 1
 	if opts.Mode == Invoke {
 		var err error
 		output, err = strconv.Atoi(published.Output)
@@ -586,6 +573,10 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 		if !ok {
 			return nil, fmt.Errorf("unknown target %q", opts.Target)
 		}
+	}
+	executionGraph := g
+	if opts.Mode == Publish {
+		g = g.invocationView()
 	}
 	if bindResolver != nil {
 		if (component && opts.Mode != Publish && opts.Mode != Invoke) || (!component && opts.Mode != Build) {
@@ -611,7 +602,15 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 			}
 		}
 	} else {
+		if component {
+			if err := g.resolve(output); err != nil {
+				return nil, err
+			}
+		}
 		for i := range g.raw {
+			if component && g.raw[i].head.Name == "extend" && g.projection.Results[strconv.Itoa(i)] != strconv.Itoa(i) && g.states[i] == 0 {
+				continue
+			}
 			if err := g.resolve(i); err != nil {
 				return nil, err
 			}
@@ -653,20 +652,7 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 			}
 		}
 	}
-	if component && g.raw[output].head.Name == "package" {
-		return nil, fmt.Errorf("selected output cannot be a package stage")
-	}
-	componentStart := -1
-	if component {
-		for _, id := range g.extended {
-			if id <= output {
-				componentStart = id
-			}
-		}
-		if componentStart < 0 {
-			return nil, fmt.Errorf("selected component output must follow extend; preceding FROM stages are producers")
-		}
-	}
+
 	reachable, err := g.walk([]int{output}, false)
 	if err != nil {
 		return nil, err
@@ -681,19 +667,24 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 		if err != nil {
 			return nil, err
 		}
-		lastDeferredBase := -1
+		var discoveringStages []int
 		for _, id := range invocationClosure {
-			if g.raw[id].head.Name == "from" && g.bases[id] == -1 && !strings.EqualFold(g.stages[id].Source, "scratch") && id > lastDeferredBase {
-				lastDeferredBase = id
+			if g.raw[id].head.Name == "from" && (g.bases[id] >= 0 && g.dynamicConfig[g.bases[id]] || g.bases[id] == -1 && !strings.EqualFold(g.stages[id].Source, "scratch")) {
+				discoveringStages = append(discoveringStages, id)
 			}
 		}
-		if lastDeferredBase >= 0 {
+		if len(discoveringStages) != 0 {
 			for id, raw := range g.raw {
-				// External ONBUILD is discovered only when the invocation base is
-				// resolved. It may reference a later named package or an unaliased
-				// stage by its original numeric index, so retain every stage and its
-				// source order. This also keeps projected numeric IDs unchanged.
+				// External or component-produced ONBUILD may discover package or invocation
+				// dependencies. Retain these dormant roots in source order;
+				// SourceStageIDs maps their original numeric selectors after
+				// private producer stages are pruned.
 				if selectedClosure[id] {
+					continue
+				}
+				if !slices.ContainsFunc(discoveringStages, func(consumer int) bool {
+					return g.projection.requireEarlier(consumer, id, -1, strconv.Itoa(id)) == nil
+				}) {
 					continue
 				}
 				if err := g.resolvePhase(id, raw.head.Name == "package"); err != nil {
@@ -708,22 +699,17 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 		}
 	}
 	if opts.Mode == Publish {
-		hasExtend := false
-		for _, id := range reachable {
-			hasExtend = hasExtend || g.raw[id].head.Name == "extend"
-		}
-		if !hasExtend {
-			// The selected image may be independent of the caller. Preserve its
-			// mandatory compatibility contract without retaining unused body edges.
-			g.compatibilityOnly = map[int]bool{}
-			contract, err := g.extendContract(componentStart)
-			if err != nil {
-				return nil, err
+		// Ownership is structural, not filesystem ancestry. Preserve the EXTEND block
+		// enclosing an independently based output without executing its caller body.
+		for _, id := range slices.Clone(reachable) {
+			if owner := g.raw[id].owner; owner != "" && !slices.Contains(reachable, mustStageIndex(owner)) && !slices.Contains(retentionRoots, mustStageIndex(owner)) {
+				index := mustStageIndex(owner)
+				g.raw[index].body = nil
+				g.deps[index] = nil
+				g.stages[index] = Stage{ID: owner, Name: g.raw[index].head.Properties["as"], Kind: "extend", Platform: g.opts.Platform}
+				g.states[index] = 2
+				retentionRoots = append(retentionRoots, index)
 			}
-			g.stages[componentStart] = contract
-			g.deps[componentStart] = nil
-			g.compatibilityOnly[componentStart] = true
-			retentionRoots = append(retentionRoots, componentStart)
 		}
 		reachable, err = g.walk(retentionRoots, false)
 		if err != nil {
@@ -737,16 +723,24 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 			requiredPackages = append(requiredPackages, id)
 		}
 	}
-	publication, err := g.walk(requiredPackages, false)
+	publication, err := executionGraph.walk(requiredPackages, false)
 	if err != nil {
 		return nil, err
 	}
+	// Nested packages also need exported artifacts even when invocation sees only
+	// the outer package leaf.
+	for _, id := range publication {
+		if executionGraph.stages[id].Kind == "package" && !slices.Contains(requiredPackages, id) {
+			requiredPackages = append(requiredPackages, id)
+		}
+	}
+	slices.Sort(requiredPackages)
 	fixed := map[string]bool{}
 	for _, id := range publication {
-		if g.stages[id].Kind == "extend" {
-			return nil, fmt.Errorf("package production depends on extend (stage %s)", g.stages[id].ID)
+		if executionGraph.stages[id].Kind == "extend" {
+			return nil, fmt.Errorf("package production depends on invocation stage %s (extend)", executionGraph.stages[id].ID)
 		}
-		for name := range g.packageFixed[id] {
+		for name := range executionGraph.packageFixed[id] {
 			fixed[name] = true
 		}
 	}
@@ -785,23 +779,28 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 		case Publish:
 			executionRoots = slices.Clone(requiredPackages)
 			for index := 0; index <= output; index++ {
-				if g.stages[index].Kind == "package" && !slices.Contains(executionRoots, index) {
+				if executionGraph.stages[index].Kind == "package" && !slices.Contains(executionRoots, index) {
 					executionRoots = append(executionRoots, index)
 				}
 			}
 			slices.Sort(executionRoots)
 		}
 	}
-	order, err := g.walk(executionRoots, opts.Mode == Invoke)
+	order, err := executionGraph.walk(executionRoots, opts.Mode == Invoke)
 	if err != nil {
 		return nil, err
 	}
 	plan := &Plan{Mode: opts.Mode, Target: g.stages[output].Name, DefinitionType: "container", Platform: g.stages[output].Platform, SourceDateEpoch: sourceDateEpoch, Stages: []Stage{}, Outputs: []string{}}
 	if component {
+		for _, root := range g.projection.Roots {
+			if g.projection.Results[root] == strconv.Itoa(output) && g.raw[mustStageIndex(root)].head.Name == "extend" {
+				plan.Target = g.raw[mustStageIndex(root)].head.Properties["as"]
+			}
+		}
 		plan.DefinitionType = "component"
 	}
 	for _, i := range roots {
-		plan.Outputs = append(plan.Outputs, g.stages[i].ID)
+		plan.Outputs = append(plan.Outputs, executionGraph.stages[i].ID)
 	}
 	for _, name := range sortedKeys(g.declared) {
 		phase := "build"
@@ -827,7 +826,7 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 	}
 	usedContexts := map[string]bool{}
 	for _, i := range order {
-		stage := g.stages[i]
+		stage := executionGraph.emittedStage(executionGraph.stages[i])
 		if opts.Mode == Invoke && stage.Kind == "package" {
 			stage.Kind = "package-input"
 			stage.Operations = nil
@@ -842,7 +841,7 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 			if stage.SourceContext != "" {
 				addInput("context", stage.SourceContext)
 				usedContexts[stage.SourceContext] = true
-			} else if stage.Kind == "from" && g.bases[i] == -1 && !strings.EqualFold(stage.Source, "scratch") {
+			} else if stage.Kind == "from" && executionGraph.bases[i] == -1 && !strings.EqualFold(stage.Source, "scratch") {
 				addInput("image", stage.Source)
 			}
 			for _, op := range stage.Operations {
@@ -850,10 +849,10 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 					addInput("component", op.Arguments[0])
 				}
 				if (op.Name == "copy" || op.Name == "add") && op.Properties["from"] != "" {
-					if _, context := g.contexts[op.InputContext]; context {
+					if _, context := executionGraph.contexts[op.InputContext]; context {
 						addInput("context", op.InputContext)
 						usedContexts[op.InputContext] = true
-					} else if _, local := g.resolveStageReference(op.Properties["from"]); !local {
+					} else if _, local := executionGraph.resolveStageReference(op.Properties["from"]); !local {
 						addInput("image", op.Properties["from"])
 					}
 				}
@@ -865,7 +864,7 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 					if contextName := op.MountContexts[childIndex]; contextName != "" {
 						addInput("context", contextName)
 						usedContexts[contextName] = true
-					} else if _, local := g.resolveStageReference(mount.Properties["from"]); !local {
+					} else if _, local := executionGraph.resolveStageReference(mount.Properties["from"]); !local {
 						addInput("image", mount.Properties["from"])
 					}
 				}
@@ -873,25 +872,12 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 		}
 		plan.Stages = append(plan.Stages, stage)
 	}
-	hasSelectedExtend := false
-	for _, id := range order {
-		hasSelectedExtend = hasSelectedExtend || g.raw[id].head.Name == "extend"
-	}
-	if component && opts.Mode == Invoke && !hasSelectedExtend {
-		// Independent targets must not acquire unrelated dormant target contracts.
-		// Only an output with no selected caller root needs a separate contract.
-		contract, err := g.extendContract(componentStart)
-		if err != nil {
-			return nil, err
-		}
-		plan.CompatibilityRoots = append(plan.CompatibilityRoots, contract)
-	}
 
 	for _, name := range sortedKeys(usedContexts) {
-		bindings := slices.DeleteFunc(slices.Clone(g.contextBindings[name]), func(binding ContextBinding) bool {
+		bindings := slices.DeleteFunc(slices.Clone(executionGraph.contextBindings[name]), func(binding ContextBinding) bool {
 			return !selectedStages[binding.StageID]
 		})
-		plan.Contexts = append(plan.Contexts, ContextInput{Spec: g.contexts[name], Bindings: bindings})
+		plan.Contexts = append(plan.Contexts, ContextInput{Spec: executionGraph.contexts[name], Bindings: bindings})
 	}
 	switch opts.Mode {
 	case Invoke:
@@ -904,7 +890,7 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 			var value string
 			found := false
 			for _, i := range publication {
-				if b, ok := g.scopes[i][name]; ok {
+				if b, ok := executionGraph.scopes[i][name]; ok {
 					if b.conflict {
 						return nil, fmt.Errorf("package argument %q changes value within a stage; use distinct names", name)
 					}
@@ -919,7 +905,7 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 				}
 			}
 			if !found {
-				if global, ok := g.globals[name]; ok {
+				if global, ok := executionGraph.globals[name]; ok {
 					if !global.present {
 						return nil, fmt.Errorf("package argument %q requires a value", name)
 					}
@@ -938,17 +924,28 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 		if err != nil {
 			return nil, err
 		}
-		plan.Component = g.component(output, invocation, retentionRoots[1:], plan.PackageArguments)
+		selectedInvocation, err := g.walk([]int{output}, true)
+		if err != nil {
+			return nil, err
+		}
+		dormant := []int{}
+		for _, id := range retentionRoots[1:] {
+			if !slices.Contains(selectedInvocation, id) && !slices.Contains(dormant, id) {
+				dormant = append(dormant, id)
+			}
+		}
+		slices.Sort(dormant)
+		plan.Component = g.component(output, invocation, dormant, plan.PackageArguments)
 	}
 	for _, stage := range plan.Stages {
 		if stage.DynamicBaseStage == "" && !stage.DeferredImageSource {
 			continue
 		}
-		replanOptions := g.opts
-		replanOptions.Arguments = maps.Clone(g.opts.Arguments)
-		replanOptions.PublishedArguments = maps.Clone(g.opts.PublishedArguments)
-		replanOptions.StageBinds = maps.Clone(g.opts.StageBinds)
-		replanOptions.BuildContexts = slices.Clone(g.opts.BuildContexts)
+		replanOptions := executionGraph.opts
+		replanOptions.Arguments = maps.Clone(executionGraph.opts.Arguments)
+		replanOptions.PublishedArguments = maps.Clone(executionGraph.opts.PublishedArguments)
+		replanOptions.StageBinds = maps.Clone(executionGraph.opts.StageBinds)
+		replanOptions.BuildContexts = slices.Clone(executionGraph.opts.BuildContexts)
 		plan.replan = func(stageID string, bind StageBind) (*Plan, error) {
 			if _, exists := replanOptions.StageBinds[stageID]; exists {
 				return nil, fmt.Errorf("stage %s dynamic local base is already bound", stageID)
@@ -971,13 +968,9 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 // and must not be replayed or validated as invocation operations.
 func (g *graph) component(output int, reachable, dormant []int, args map[string]string) *PublishedComponent {
 	kept := make(map[int]bool, len(reachable))
-	dormantSet := make(map[int]bool, len(dormant))
 	newIDs := make(map[int]string, len(reachable))
 	for _, id := range reachable {
 		kept[id] = true
-	}
-	for _, id := range dormant {
-		dormantSet[id] = true
 	}
 	def := &definition.Definition{}
 	// Preserve global declarations, including their source defaults. Their fixed
@@ -991,6 +984,7 @@ func (g *graph) component(output int, reachable, dormant []int, args map[string]
 		}
 	}
 	bindings := map[string]FromBinding{}
+	heads := map[int]definition.Instruction{}
 	for id, raw := range g.raw {
 		if !kept[id] {
 			continue
@@ -1020,26 +1014,51 @@ func (g *graph) component(output int, reachable, dormant []int, args map[string]
 			bindings[newIDs[id]] = binding
 		}
 		head := raw.head
-		if dormantSet[id] && head.Name == "extend" && head.Properties["as"] != "" {
-			// Retain dormant extend stages as numeric-index placeholders without
-			// making their target names invocation-visible. FROM/package stages
-			// keep names because external ONBUILD may consume them with --from.
-			head.Properties = maps.Clone(head.Properties)
-			delete(head.Properties, "as")
-		}
-		def.Instructions = append(def.Instructions, head)
+		head.Children = nil
 		if raw.head.Name == "package" {
 			// Preserve the fixed package-argument scope without retaining the
 			// producer instructions. Instantiate uses these declarations to
 			// validate the immutable values stored in publication metadata.
 			for _, name := range sortedKeys(args) {
-				def.Instructions = append(def.Instructions, definition.Instruction{
+				head.Children = append(head.Children, definition.Instruction{
 					Name: "arg", Arguments: []string{name, args[name]},
 				})
 			}
-		} else if !g.compatibilityOnly[id] {
-			def.Instructions = append(def.Instructions, foldLayerInstructions(raw.body)...)
+		} else {
+			head.Children = foldLayerInstructions(raw.body)
 		}
+		heads[id] = head
+	}
+	for _, root := range g.projection.Roots {
+		id := mustStageIndex(root)
+		head, ok := heads[id]
+		if !ok {
+			continue
+		}
+		if head.Name == "extend" {
+			head.Children = nil
+			nested := id + 1
+			for _, child := range g.projection.Stages[id].AuthoredChildren {
+				if child.Name == "from" {
+					if retained, ok := heads[nested]; ok {
+						head.Children = append(head.Children, retained)
+					}
+					nested++
+				} else if g.raw[id].body != nil {
+					head.Children = append(head.Children, cloneInstruction(child))
+				}
+			}
+		}
+		if head.Name == "extend" && head.Properties["as"] != "" {
+			originalResult := mustStageIndex(g.projection.Results[root])
+			// Keeping a nested helper does not publish its owner's original
+			// output. Reserve that name without redirecting it to the helper.
+			if !kept[originalResult] || originalResult == id && g.raw[id].body == nil && len(head.Children) > 0 {
+				head.Properties = maps.Clone(head.Properties)
+				delete(head.Properties, "as")
+			}
+		}
+		def.Instructions = append(def.Instructions, head)
 	}
 	dormantRoots := make([]string, 0, len(dormant))
 	for _, id := range dormant {
@@ -1047,7 +1066,11 @@ func (g *graph) component(output int, reachable, dormant []int, args map[string]
 			dormantRoots = append(dormantRoots, mapped)
 		}
 	}
-	return &PublishedComponent{Definition: def, Output: selected, DormantRoots: dormantRoots, Platform: g.opts.Platform, PackageArguments: maps.Clone(args), FromBindings: bindings, ReservedStageNames: sortedKeys(g.aliases), StageReferences: g.stageReferences(newIDs)}
+	sourceIDs := map[string]string{}
+	for original, mapped := range newIDs {
+		sourceIDs[strconv.Itoa(original)] = mapped
+	}
+	return &PublishedComponent{SourceStageCount: len(g.raw), SourceStageIDs: sourceIDs, Definition: def, Output: selected, DormantRoots: dormantRoots, Platform: g.opts.Platform, PackageArguments: maps.Clone(args), FromBindings: bindings, ReservedStageNames: sortedKeys(g.aliases), StageReferences: g.stageReferences(newIDs)}
 }
 
 // Bodies originate from validated nested definitions, so their generated
@@ -1081,9 +1104,6 @@ func (g *graph) stageReferences(newIDs map[int]string) []StageReferenceBinding {
 		return newIDs[id]
 	}
 	for id, stage := range g.stages {
-		if g.compatibilityOnly[id] {
-			continue
-		}
 		if newIDs != nil {
 			if _, kept := newIDs[id]; !kept {
 				continue
@@ -1095,15 +1115,19 @@ func (g *graph) stageReferences(newIDs map[int]string) []StageReferenceBinding {
 		for opIndex, op := range stage.Operations {
 			origin, sourceIndex := "authored", opIndex-g.inheritedOperations[id]
 			if opIndex < g.inheritedOperations[id] {
-				if !g.packageDerived[id] {
+				localTriggers := g.bases[id] >= 0 && g.raw[g.bases[id]].head.Name == "from" && !g.dynamicConfig[g.bases[id]]
+				if !g.packageDerived[id] && !localTriggers {
 					continue
 				}
 				origin, sourceIndex = "onbuild", opIndex
+				if localTriggers && !g.packageDerived[id] && len(g.finalOnBuild[g.bases[id]]) > 0 {
+					origin = "local-onbuild"
+				}
 			}
 			if (op.Name == "copy" || op.Name == "add") && op.Properties["from"] != "" {
 				ref := StageReferenceBinding{Stage: index(id), Origin: origin, Operation: sourceIndex, MountIndex: -1}
 				if target, local := g.resolveStageReference(op.Properties["from"]); local {
-					if origin == "onbuild" {
+					if origin != "authored" {
 						ref.Kind = "stage"
 					}
 					ref.Target = index(target)
@@ -1122,7 +1146,7 @@ func (g *graph) stageReferences(newIDs map[int]string) []StageReferenceBinding {
 				if mount.Properties["from"] != "" {
 					ref := StageReferenceBinding{Stage: index(id), Origin: origin, Operation: sourceIndex, MountIndex: childIndex}
 					if target, local := g.resolveStageReference(mount.Properties["from"]); local {
-						if origin == "onbuild" {
+						if origin != "authored" {
 							ref.Kind = "stage"
 						}
 						ref.Target = index(target)
@@ -1189,44 +1213,30 @@ func (g *graph) checkFromBindings(bindings map[string]FromBinding, reserved []st
 }
 
 func (g *graph) split(def *definition.Definition) error {
-	for pos, inst := range definition.FlattenLayers(def.Instructions) {
-		switch inst.Name {
-		case "from", "extend", "package":
-			i := len(g.raw)
-			name := inst.Properties["as"]
-			if _, set := inst.Properties["as"]; set {
-				canonical := canonicalStageName(name)
-				if !stageName.MatchString(canonical) || canonical == "scratch" {
-					return fmt.Errorf("instruction %d: invalid stage name %q", pos+1, name)
-				}
-				if _, ok := g.aliases[canonical]; ok {
-					return fmt.Errorf("duplicate stage name %q", name)
-				}
-				g.aliases[canonical] = i
-			}
-			if inst.Name == "extend" {
-				g.extended = append(g.extended, i)
-			}
-			if inst.Name == "package" {
-				g.packages = append(g.packages, i)
-			}
-			g.raw = append(g.raw, rawStage{head: inst})
-			if context, ok := g.contexts[canonicalStageName(name)]; ok && inst.Name == "from" {
-				g.contextOverrides[i] = context
-			}
-		default:
-			if len(g.raw) == 0 {
-				if inst.Name != "arg" {
-					return fmt.Errorf("instruction %d: %s requires a stage", pos+1, inst.Name)
-				}
-				g.globalInstructions = append(g.globalInstructions, inst)
-				if _, err := g.declare(inst, g.globals, nil); err != nil {
-					return err
-				}
-			} else {
-				i := len(g.raw) - 1
-				g.raw[i].body = append(g.raw[i].body, inst)
-			}
+	projected, err := projectRaw(def)
+	if err != nil {
+		return err
+	}
+	g.projection = projected
+	for name, id := range projected.Aliases {
+		g.aliases[name] = mustStageIndex(id)
+	}
+	for i, stage := range projected.Stages {
+		g.raw = append(g.raw, rawStage{head: stage.Head, body: stage.Body, owner: stage.Owner})
+		if stage.Kind == "extend" {
+			g.extended = append(g.extended, i)
+		}
+		if stage.Kind == "package" {
+			g.packages = append(g.packages, i)
+		}
+		if context, ok := g.contexts[canonicalStageName(stage.Name)]; ok && stage.Kind == "from" {
+			g.contextOverrides[i] = context
+		}
+	}
+	for _, inst := range projected.Globals {
+		g.globalInstructions = append(g.globalInstructions, inst)
+		if _, err := g.declare(inst, g.globals, nil); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -1302,7 +1312,7 @@ func validateAndCloneStageBinds(raw []rawStage, binds map[string]StageBind) (map
 			if !inheritedInstruction(inst.Name) {
 				return nil, fmt.Errorf("stage bind %q inherited instruction %d cannot be %q", key, position+1, inst.Name)
 			}
-			if err := definition.Validate(&definition.Definition{Instructions: []definition.Instruction{inst}}); err != nil {
+			if err := definition.ValidateOperation(inst); err != nil {
 				return nil, fmt.Errorf("stage bind %q inherited instruction %d: %w", key, position+1, err)
 			}
 			copy.Inherited = append(copy.Inherited, cloneInstruction(inst))
@@ -1321,68 +1331,108 @@ func inheritedInstruction(name string) bool {
 	}
 }
 
+// initializeResolution allocates independent mutable planning state. Publication
+// and invocation may visit the same authored FROM with different input contexts.
+func (g *graph) initializeResolution() {
+	n := len(g.raw)
+	g.stages = make([]Stage, n)
+	g.states = make([]int, n)
+	g.finalScopes = make([]scope, n)
+	g.finalEnvironments = make([]map[string]string, n)
+	g.finalShadows = make([]map[string]bool, n)
+	g.finalDeclaredProxy = make([]map[string]bool, n)
+	g.finalOnBuild = make([][]string, n)
+	g.dynamicConfig = make([]bool, n)
+	g.verifiedConfig = make([]bool, n)
+	g.packageDerived = make([]bool, n)
+	g.inheritedOperations = make([]int, n)
+	g.packageResolved = make([]bool, n)
+	g.packageFixed = make([]map[string]bool, n)
+	g.resolutionEpoch = make([]uint64, n)
+	g.scopes = make([]scope, n)
+	g.deps = make([][]int, n)
+	g.bases = make([]int, n)
+	for i := range g.bases {
+		g.bases[i] = -1
+	}
+}
+
+// invocationView keeps package production separate from symbolic call-time work.
+// PACKAGE leaves import their verified configuration from the production graph;
+// all other stages are expanded without publisher contexts, binds or mounts.
+func (g *graph) invocationView() *graph {
+	view := *g
+	view.packageSource = g
+	view.opts.StageBinds = map[string]StageBind{}
+	for id, bind := range g.opts.StageBinds {
+		index := mustStageIndex(id)
+		source, err := expand(g.raw[index].head.Arguments[0], g.expansionScope(g.globals))
+		if err != nil {
+			continue // Resolution reports invalid authored sources.
+		}
+		_, overridden := g.contextOverrides[index]
+		_, context := g.contextForSource(source, true)
+		if base, ok := g.resolveStageReference(source); ok && g.raw[base].head.Name == "package" && !overridden && !context {
+			view.opts.StageBinds[id] = bind
+		}
+	}
+	view.opts.BuildContexts = nil
+	view.opts.TransientRunMounts = nil
+	view.contexts = nil
+	view.contextOverrides = nil
+	view.contextBindings = map[string][]ContextBinding{}
+	view.raw = slices.Clone(g.raw)
+	view.declared = maps.Clone(g.declared)
+	view.initializeResolution()
+	return &view
+}
+
+func (g *graph) importPackage(i int) error {
+	source := g.packageSource
+	if err := source.resolvePhase(i, true); err != nil {
+		return err
+	}
+	g.stages[i] = source.stages[i]
+	g.stages[i].Dependencies = nil
+	g.stages[i].Operations = nil
+	g.deps[i] = nil
+	g.finalScopes[i] = source.finalScopes[i]
+	g.finalEnvironments[i] = source.finalEnvironments[i]
+	g.finalShadows[i] = source.finalShadows[i]
+	g.finalDeclaredProxy[i] = source.finalDeclaredProxy[i]
+	g.finalOnBuild[i] = source.finalOnBuild[i]
+	g.dynamicConfig[i] = source.dynamicConfig[i]
+	g.verifiedConfig[i] = source.verifiedConfig[i]
+	g.packageDerived[i] = true
+	g.packageResolved[i] = true
+	g.packageFixed[i] = source.packageFixed[i]
+	g.scopes[i] = source.scopes[i]
+	g.resolutionEpoch[i] = source.resolutionEpoch[i]
+	g.states[i] = 2
+	for name := range source.declared {
+		g.declared[name] = true
+	}
+	return nil
+}
+
 func (g *graph) resolve(i int) error {
 	return g.resolvePhase(i, false)
 }
 
-// extendContract resolves compatibility separately from execution. A dormant
-// caller root still constrains invocation without replaying its unused body.
-func (g *graph) extendContract(i int) (Stage, error) {
-	raw := g.raw[i]
-	stage := Stage{ID: strconv.Itoa(i), Name: raw.head.Properties["as"], Kind: "extend", Platform: g.opts.Platform}
-	for _, key := range []string{"architecture", "distro", "distro-version", "package-manager"} {
-		var authored []string
-		if scalar, present := raw.head.Properties[key]; present {
-			authored = []string{scalar}
-		} else {
-			for _, requirement := range raw.head.Children {
-				if requirement.Name == key {
-					authored = requirement.Arguments
-					break
-				}
-			}
-		}
-		if len(authored) == 0 {
-			continue
-		}
-		if stage.Requirements == nil {
-			stage.Requirements = make(map[string][]string)
-		}
-		for _, expression := range authored {
-			value, err := expand(expression, g.expansionScope(g.globals))
-			if err != nil {
-				return Stage{}, fmt.Errorf("stage %s extend %s: %w", stage.ID, key, err)
-			}
-			value = strings.TrimSpace(value)
-			if value == "" || strings.ContainsRune(value, '\x00') {
-				return Stage{}, fmt.Errorf("stage %s extend %s must resolve to a nonempty value without NUL", stage.ID, key)
-			}
-			if key == "architecture" {
-				if strings.Contains(value, "/") {
-					return Stage{}, fmt.Errorf("stage %s extend architecture must be a single OCI architecture, got %q", stage.ID, value)
-				}
-				parsed, err := platforms.Parse("linux/" + value)
-				if err != nil {
-					return Stage{}, fmt.Errorf("stage %s extend invalid architecture %q: %w", stage.ID, value, err)
-				}
-				value = platforms.Normalize(parsed).Architecture
-			}
-			stage.Requirements[key] = append(stage.Requirements[key], value)
-		}
-		slices.Sort(stage.Requirements[key])
-		stage.Requirements[key] = slices.Compact(stage.Requirements[key])
-	}
-	return stage, nil
-}
-
 func (g *graph) resolvePhase(i int, packagePhase bool) error {
+	if g.packageSource != nil && g.raw[i].head.Name == "package" {
+		return g.importPackage(i)
+	}
 	// Some focused planner tests construct graph state directly. Keep this
 	// derived scope storage lazy so those graphs follow the same invariant.
 	if len(g.finalDeclaredProxy) != len(g.raw) {
 		g.finalDeclaredProxy = make([]map[string]bool, len(g.raw))
 	}
-	if g.bindResolver != nil && g.opts.Mode == Publish && g.raw[i].head.Name == "package" {
+	if g.raw[i].head.Name == "package" {
 		packagePhase = true
+	}
+	if packagePhase && g.raw[i].head.Name == "extend" {
+		return fmt.Errorf("package production depends on invocation stage %d (extend)", i)
 	}
 	if g.states[i] == 2 {
 		if g.bindResolver != nil && g.opts.Mode == Publish && packagePhase && !g.packageResolved[i] {
@@ -1412,6 +1462,9 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 	g.states[i] = 1
 	raw := g.raw[i]
 	stage := Stage{ID: strconv.Itoa(i), Name: raw.head.Properties["as"], Kind: raw.head.Name, Platform: g.opts.Platform}
+	if g.projection != nil {
+		stage.Name = g.projection.Stages[i].Name
+	}
 	g.packageDerived[i] = stage.Kind == "package"
 	override, stageOverridden := g.contextOverrides[i]
 	stageOverridden = stageOverridden && g.contextsAvailable(packagePhase)
@@ -1425,13 +1478,6 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 	var shadows map[string]bool
 	declaredProxy := map[string]bool{}
 	var baseEpoch uint64
-	if stage.Kind == "extend" {
-		contract, err := g.extendContract(i)
-		if err != nil {
-			return err
-		}
-		stage.Requirements = contract.Requirements
-	}
 	if stage.Kind == "from" && stageOverridden {
 		stage.Source = override.Name
 		stage.SourceContext = override.Name
@@ -1458,6 +1504,9 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 			stage.SourceContext = context.Name
 			g.addContextBinding(context.Name, ContextBinding{Role: "from", StageID: stage.ID, Operation: -1, MountIndex: -1})
 		} else if base, ok := g.resolveStageReference(source); ok {
+			if err := g.projection.requireEarlier(i, base, -1, source); err != nil {
+				return err
+			}
 			if err := g.resolvePhase(base, packagePhase); err != nil {
 				return err
 			}
@@ -1500,8 +1549,11 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 			}
 		}
 		dependency, ok := g.resolveStageReference(after)
-		if !ok || dependency >= i {
+		if !ok {
 			return fmt.Errorf("stage %s after requires an earlier stage, got %q", stage.ID, after)
+		}
+		if err := g.projection.requireEarlier(i, dependency, -1, after); err != nil {
+			return err
 		}
 		if err := g.resolvePhase(dependency, packagePhase); err != nil {
 			return err
@@ -1512,6 +1564,11 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 	bind, bound := g.opts.StageBinds[stage.ID]
 	localBind := g.bindResolver != nil && (g.opts.Mode == Publish && (packagePhase || g.packageDerived[i] || g.bases[i] >= 0 && g.packageResolved[g.bases[i]]) ||
 		g.opts.Mode == Build || g.opts.Mode == Invoke && g.bases[i] >= 0 && (bound || g.verifiedConfig[g.bases[i]] || g.dynamicConfig[g.bases[i]]))
+	// Authored ONBUILD on a completed FROM is known without resolving its external
+	// base. Those triggers belong to this stage, so their invocation dependencies
+	// must be discovered even when the local base has no verified image metadata.
+	localTriggers := g.bases[i] >= 0 && g.raw[g.bases[i]].head.Name == "from" && !g.dynamicConfig[g.bases[i]] && len(g.finalOnBuild[g.bases[i]]) > 0
+	localBind = localBind || localTriggers
 	deferredSource := stage.AfterStage != ""
 	deferReference := stage.Source
 	deferContext := false
@@ -1692,12 +1749,25 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 			}
 			normalized.Children = append(normalized.Children, normalizedTransient.Children...)
 		}
-		dynamicInherited := g.opts.Mode == Invoke && instructionIndex < inheritedCount && !g.packageDerived[i]
+		dynamicInherited := g.opts.Mode == Invoke && instructionIndex < inheritedCount && !g.packageDerived[i] && !localTriggers
 		operationIndex := len(stage.Operations)
+		if dynamicInherited {
+			if err := g.bindExternalNumericReference(normalized.Properties); err != nil {
+				return err
+			}
+			for _, mount := range normalized.Children {
+				if err := g.bindExternalNumericReference(mount.Properties); err != nil {
+					return err
+				}
+			}
+		}
 		if g.published != nil {
 			origin, ordinal := "authored", operationIndex-g.inheritedOperations[i]
 			if instructionIndex < inheritedCount {
 				origin, ordinal = "onbuild", operationIndex
+				if localTriggers && !g.packageDerived[i] {
+					origin = "local-onbuild"
+				}
 			}
 			if err := g.bindPublishedNumericReference(stage.ID, origin, ordinal, -1, normalized.Properties); err != nil {
 				return err
@@ -1709,9 +1779,13 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 			}
 		}
 		inputContext := ""
+		referencePosition := operationIndex - g.inheritedOperations[i]
+		if instructionIndex < inheritedCount {
+			referencePosition = -1
+		}
 		if inst.Name == "copy" || inst.Name == "add" {
 			var err error
-			inputContext, err = g.reference(i, stage.Platform, normalized.Properties, dynamicInherited, true, packagePhase, operationIndex, -1, "copy")
+			inputContext, err = g.reference(i, stage.Platform, normalized.Properties, dynamicInherited, true, packagePhase, operationIndex, -1, "copy", referencePosition)
 			if err != nil {
 				return err
 			}
@@ -1720,7 +1794,7 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 		for childIndex, mount := range normalized.Children {
 			allowImage := mount.Name == "mount" && len(mount.Arguments) == 1 &&
 				(mount.Arguments[0] == "bind" || mount.Arguments[0] == "cache")
-			contextName, err := g.reference(i, stage.Platform, mount.Properties, dynamicInherited, allowImage, packagePhase, operationIndex, childIndex, "run-mount")
+			contextName, err := g.reference(i, stage.Platform, mount.Properties, dynamicInherited, allowImage, packagePhase, operationIndex, childIndex, "run-mount", referencePosition)
 			if err != nil {
 				return err
 			}
@@ -1794,7 +1868,7 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 		stage.Dependencies = append(stage.Dependencies, strconv.Itoa(d))
 	}
 	g.stages[i] = stage
-	if g.bindResolver != nil {
+	if g.bindResolver != nil || g.packageSource != nil || packagePhase {
 		if g.opts.Mode == Publish && !packagePhase {
 			for _, dependency := range g.deps[i] {
 				if g.raw[dependency].head.Name == "package" {
@@ -1954,7 +2028,7 @@ func localContext(mode Mode) string {
 	}
 }
 
-func (g *graph) reference(i int, platform string, props map[string]string, sourceVisible, allowImage, packagePhase bool, operation, mount int, role string) (string, error) {
+func (g *graph) reference(i int, platform string, props map[string]string, sourceVisible, allowImage, packagePhase bool, operation, mount int, role string, referencePosition int) (string, error) {
 	source, ok := props["from"]
 	if !ok {
 		return "", nil
@@ -1992,6 +2066,9 @@ func (g *graph) reference(i int, platform string, props map[string]string, sourc
 			}
 		}
 		return "", nil
+	}
+	if err := g.projection.requireEarlier(i, target, referencePosition, source); err != nil {
+		return "", err
 	}
 	if !slices.Contains(g.deps[i], target) {
 		g.deps[i] = append(g.deps[i], target)
@@ -2059,7 +2136,7 @@ func normalize(inst definition.Instruction, values scope) (definition.Instructio
 		}
 		return out, nil
 	}
-	out := definition.Instruction{Name: inst.Name, Form: inst.Form, LayerBoundary: inst.LayerBoundary, Properties: map[string]string{}}
+	out := definition.Instruction{Name: inst.Name, Form: inst.Form, LayerBoundary: inst.LayerBoundary, Commands: cloneCommands(inst.Commands), Properties: map[string]string{}}
 	for _, file := range inst.InlineFiles {
 		data := file.Data
 		if file.Expand {
@@ -2071,12 +2148,12 @@ func normalize(inst definition.Instruction, values scope) (definition.Instructio
 		}
 		out.InlineFiles = append(out.InlineFiles, definition.InlineFile{Path: file.Path, Data: data})
 	}
-	for _, arg := range inst.Arguments {
+	for index, arg := range inst.Arguments {
 		value := arg
 		// Runtime commands and inherited triggers retain their payload until
 		// execution. Expanding them here could turn data into shell code or
 		// substitute the parent's values into a future child stage.
-		if inst.Name != "run" && inst.Name != "cmd" && inst.Name != "entrypoint" && inst.Name != "healthcheck" && inst.Name != "onbuild" {
+		if (inst.Name != "arg" || index != 0) && inst.Name != "run" && inst.Name != "cmd" && inst.Name != "entrypoint" && inst.Name != "healthcheck" && inst.Name != "onbuild" {
 			var err error
 			if inst.ProcessQuotes {
 				value, err = expandDockerWord(arg, values)
@@ -2240,4 +2317,51 @@ func (g *graph) publishedSourceIndex(stage, origin string, operation, mount int,
 		}
 	}
 	return source
+}
+
+// EXTEND names denote their selected output, which may already have a FROM
+// alias. Emit numeric references for that second alias; executors need only
+// the existing primary-name and numeric-ID lookup contract.
+func (g *graph) emittedStage(stage Stage) Stage {
+	canonical := func(source string) string {
+		if id, ok := g.aliases[canonicalStageName(source)]; ok && canonicalStageName(g.raw[id].head.Properties["as"]) != canonicalStageName(source) {
+			return strconv.Itoa(id)
+		}
+		return source
+	}
+	if stage.SourceContext == "" {
+		stage.Source = canonical(stage.Source)
+	}
+	stage.Operations = slices.Clone(stage.Operations)
+	for i := range stage.Operations {
+		op := &stage.Operations[i]
+		op.Instruction = cloneInstruction(op.Instruction)
+		if source, ok := op.Properties["from"]; ok && op.InputContext == "" {
+			op.Properties["from"] = canonical(source)
+		}
+		for j := range op.Children {
+			if source, ok := op.Children[j].Properties["from"]; ok && op.MountContexts[j] == "" {
+				op.Children[j].Properties["from"] = canonical(source)
+			}
+		}
+	}
+	return stage
+}
+
+// External ONBUILD instructions are discovered after publication. Their numeric
+// selectors use the original source graph, not the compact published indices.
+func (g *graph) bindExternalNumericReference(props map[string]string) error {
+	source := props["from"]
+	if !canonicalSourceIndex(source) {
+		return nil
+	}
+	if g.published == nil {
+		return nil
+	}
+	mapped, ok := g.published.SourceStageIDs[source]
+	if !ok {
+		return fmt.Errorf("external ONBUILD references unavailable original stage %q", source)
+	}
+	props["from"] = mapped
+	return nil
 }

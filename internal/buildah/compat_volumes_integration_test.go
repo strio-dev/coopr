@@ -30,12 +30,13 @@ func TestBuildDefinitionCompatVolumesPreservesRunBoundaryButAllowsCopy(t *testin
 	if err := os.WriteFile(filepath.Join(root, "copied"), []byte("copied"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	source := fmt.Sprintf(`from %q
-run "/bin/busybox mkdir -p /vol; printf before >/vol/value" network="none"
-volume "/vol"
-run "printf during >/vol/value" network="none"
-copy "copied" "/vol/copied"
-run "printf '%%s:%%s' \"$(/bin/busybox cat /vol/value)\" \"$(/bin/busybox cat /vol/copied)\" >/proof" network="none"
+	source := fmt.Sprintf(`from %q {
+    run "/bin/busybox mkdir -p /vol; printf before >/vol/value" network="none"
+    volume "/vol"
+    run "printf during >/vol/value" network="none"
+    copy "copied" "/vol/copied"
+    run "printf '%%s:%%s' \"$(/bin/busybox cat /vol/value)\" \"$(/bin/busybox cat /vol/copied)\" >/proof" network="none"
+}
 `, base.reference)
 	def, err := definition.Parse(strings.NewReader(source))
 	if err != nil {
@@ -114,8 +115,9 @@ func TestFinalVolumeCreatesDirectoryInFilesystemExport(t *testing.T) {
 	defer cancel()
 	root := t.TempDir()
 	export := filepath.Join(root, "rootfs")
-	_, err := BuildPlanSupervised(ctx, testPlan(t, `from "scratch"
-volume "/data"
+	_, err := BuildPlanSupervised(ctx, testPlan(t, `from "scratch" {
+    volume "/data"
+}
 `), SupervisedPlanOptions{Store: StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}, ContextDir: root, Output: Output{Path: filepath.Join(root, "layout"), Filesystem: FilesystemOutput{Type: "local", Path: export}}, Stdout: io.Discard, Stderr: os.Stderr})
 	if err != nil {
 		t.Fatal(err)
@@ -140,10 +142,11 @@ func TestCompatVolumesRestoreConfinesReplacedParentSymlink(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(outside, "sentinel"), []byte("unchanged"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	source := fmt.Sprintf(`from %q
-run "/bin/busybox mkdir -p /parent/data; /bin/busybox chmod 0710 /parent/data; printf original >/parent/data/value" network="none"
-volume "/parent/data"
-run %q network="none"
+	source := fmt.Sprintf(`from %q {
+    run "/bin/busybox mkdir -p /parent/data; /bin/busybox chmod 0710 /parent/data; printf original >/parent/data/value" network="none"
+    volume "/parent/data"
+    run %q network="none"
+}
 `, base.reference, "/bin/busybox rm -rf /parent; /bin/busybox ln -s "+outside+" /parent")
 	export := filepath.Join(root, "export")
 	_, err := BuildDefinitionSupervised(ctx, parseWorkerDefinition(t, source), planner.Options{Mode: planner.Build}, SupervisedPlanOptions{

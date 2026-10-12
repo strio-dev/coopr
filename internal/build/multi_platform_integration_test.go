@@ -32,7 +32,10 @@ func TestRunBuildsAndCopiesMultiPlatformIndex(t *testing.T) {
 	work := t.TempDir()
 	storeDir := filepath.Join(work, "images")
 	file := filepath.Join(work, "base.coopr")
-	if err := os.WriteFile(file, []byte("from \"scratch\"\nlabel multi=\"yes\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(file, []byte(`from "scratch" {
+    label multi="yes"
+}
+`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	const tag = "multi:latest"
@@ -142,12 +145,15 @@ func TestRunBuildsAndCopiesMultiPlatformIndex(t *testing.T) {
 		t.Fatalf("selected alias root = %s, found=%t, err=%v", selected.Root.Digest, found, err)
 	}
 	child := filepath.Join(work, "child.coopr")
-	if err := os.WriteFile(child, []byte("from \"localhost/multi-alias:latest\"\nlabel child=\"yes\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(child, []byte(`from "localhost/multi-alias:latest" {
+    label child="yes"
+}
+`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for _, arch := range []string{"arm64", "amd64"} {
 		output := filepath.Join(work, "child-"+arch+".oci.tar")
-		if _, err := Run(ctx, Options{File: child, BuildStore: nativeBuildTestStore(storeDir), Tag: "oci-archive:" + output, Platform: "linux/" + arch}); err != nil {
+		if _, err := buildArchive(t, output, ctx, Options{File: child, BuildStore: nativeBuildTestStore(storeDir), Platform: "linux/" + arch}); err != nil {
 			t.Fatalf("build child for %s from local index: %v", arch, err)
 		}
 		_, image := readExampleImage(t, ctx, output)
@@ -169,7 +175,10 @@ func TestNativeMultiPlatformAliasesVisibleToPodman(t *testing.T) {
 		t.Fatal(err)
 	}
 	file := filepath.Join(work, "podman.coopr")
-	if err := os.WriteFile(file, []byte("from \"scratch\"\nlabel copied=\"yes\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(file, []byte(`from "scratch" {
+    label copied="yes"
+}
+`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	sourceTag := fmt.Sprintf("podman-index-%d-%d:test", os.Getpid(), time.Now().UnixNano())
@@ -208,7 +217,10 @@ func TestNativeMultiPlatformAliasesVisibleToPodman(t *testing.T) {
 		t.Fatalf("Podman index = %+v, %v", index, err)
 	}
 	assertPodmanIndexDigest(t, ctx, tag, sourceRoot.Digest)
-	if err := os.WriteFile(file, []byte("from \"scratch\"\nlabel copied=\"updated\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(file, []byte(`from "scratch" {
+    label copied="updated"
+}
+`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Run(ctx, Options{File: file, BuildStore: storeOptions, Tag: sourceTag, Platforms: []string{"linux/amd64", "linux/arm64"}}); err != nil {
@@ -266,7 +278,10 @@ func TestRunBuildsDockerManifestList(t *testing.T) {
 	work := t.TempDir()
 	storeDir := filepath.Join(work, "images")
 	file := filepath.Join(work, "docker.coopr")
-	if err := os.WriteFile(file, []byte("from \"scratch\"\nlabel format=\"docker\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(file, []byte(`from "scratch" {
+    label format="docker"
+}
+`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	const tag = "docker-multi:latest"

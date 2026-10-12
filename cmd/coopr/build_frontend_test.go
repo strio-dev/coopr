@@ -15,7 +15,8 @@ import (
 func TestResolveBuildInput(t *testing.T) {
 	root := t.TempDir()
 	definition := filepath.Join(root, "custom.coopr")
-	if err := os.WriteFile(definition, []byte("from \"scratch\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(definition, []byte(`from "scratch" {}
+`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	file, context, _, err := resolveBuildInput(definition, "")
@@ -67,7 +68,8 @@ func TestBuildArgFilesPrecedeExplicitArguments(t *testing.T) {
 func TestResolveBuildInputRequiresExplicitDefinition(t *testing.T) {
 	root := t.TempDir()
 	for _, name := range []string{"image.coopr", "component.coopr"} {
-		if err := os.WriteFile(filepath.Join(root, name), []byte("from \"scratch\"\n"), 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(`from "scratch" {}
+`), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -99,7 +101,8 @@ func TestResolveBuildInputRequiresExplicitDefinition(t *testing.T) {
 func TestResolveBuildInputKeepsExactExtensionlessPaths(t *testing.T) {
 	root := t.TempDir()
 	for _, name := range []string{"definition", "missing.coopr"} {
-		if err := os.WriteFile(filepath.Join(root, name), []byte("from \"scratch\"\n"), 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(`from "scratch" {}
+`), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -254,7 +257,8 @@ func TestResolveBuildInputsKeepsRepeatedExplicitFiles(t *testing.T) {
 	root := t.TempDir()
 	files := []string{filepath.Join(root, "first.coopr"), filepath.Join(root, "second.coopr")}
 	for _, file := range files {
-		if err := os.WriteFile(file, []byte("from \"scratch\"\n"), 0600); err != nil {
+		if err := os.WriteFile(file, []byte(`from "scratch" {}
+`), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -278,7 +282,8 @@ func TestResolveBuildInputsKeepsRepeatedExplicitFiles(t *testing.T) {
 func TestResolveBuildInputsReadsContextRelativeFiles(t *testing.T) {
 	root := t.TempDir()
 	t.Chdir(t.TempDir())
-	if err := os.WriteFile(filepath.Join(root, "custom.coopr"), []byte("from \"scratch\"\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "custom.coopr"), []byte(`from "scratch" {}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	files, _, contained, err := resolveBuildInputs(root, []string{"custom.coopr"})

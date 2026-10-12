@@ -68,6 +68,11 @@ func (g *graph) collectArgumentReferences(inst definition.Instruction, values sc
 	for _, value := range inst.Arguments[start:] {
 		collect(value, inst.ProcessQuotes)
 	}
+	for _, command := range inst.Commands {
+		for _, value := range command.Arguments {
+			collect(value, inst.ProcessQuotes)
+		}
+	}
 	for _, value := range inst.Properties {
 		collect(value, inst.ProcessQuotes)
 	}

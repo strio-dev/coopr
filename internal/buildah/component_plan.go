@@ -189,6 +189,19 @@ func ResolveComponentPlan(ctx context.Context, request ComponentPlanRequest) (*R
 	}
 	selectedBases.finishInitialPlan()
 
+	inputs, err := componentPackageInputs(plan, resolved.Component.Packages)
+	if err != nil {
+		return nil, fmt.Errorf("component %q: %w", request.Reference, err)
+	}
+	return &ResolvedComponentPlan{
+		Identity: resolved.Selected.Digest, Artifact: resolved, Plan: plan, PackageInputs: inputs, SelectedBases: selectedBases.all,
+		replannedBaseDelta: selectedBases.takeDelta,
+	}, nil
+}
+
+// componentPackageInputs selects verified artifact packages for the current plan. A
+// runtime replan can activate packages that were dormant in the initial plan.
+func componentPackageInputs(plan *planner.Plan, packages []oci.Package) (map[string]oci.Package, error) {
 	packageStages := make(map[string]string)
 	for _, stage := range plan.Stages {
 		if stage.Kind != "package-input" {
@@ -196,32 +209,28 @@ func ResolveComponentPlan(ctx context.Context, request ComponentPlanRequest) (*R
 		}
 		name := strings.ToLower(stage.Name)
 		if name == "" {
-			return nil, fmt.Errorf("component %q package-input stage %s has no name", request.Reference, stage.ID)
+			return nil, fmt.Errorf("package-input stage %s has no name", stage.ID)
 		}
 		if _, exists := packageStages[name]; exists {
-			return nil, fmt.Errorf("component %q has duplicate package-input stage %q", request.Reference, stage.Name)
+			return nil, fmt.Errorf("duplicate package-input stage %q", stage.Name)
 		}
 		packageStages[name] = stage.ID
 	}
 	inputs := make(map[string]oci.Package, len(packageStages))
-	for _, pkg := range resolved.Component.Packages {
+	for _, pkg := range packages {
 		stageID, ok := packageStages[strings.ToLower(pkg.Stage)]
 		if !ok {
 			continue // Dormant packages are verified but need not be imported.
 		}
 		if _, exists := inputs[stageID]; exists {
-			return nil, fmt.Errorf("component %q package stage %s is bound more than once", request.Reference, stageID)
+			return nil, fmt.Errorf("package stage %s is bound more than once", stageID)
 		}
 		inputs[stageID] = cloneComponentPackage(pkg)
 	}
 	if len(inputs) != len(packageStages) {
-		return nil, fmt.Errorf("component %q package inputs do not match invocation stages", request.Reference)
+		return nil, fmt.Errorf("package inputs do not match invocation stages")
 	}
-
-	return &ResolvedComponentPlan{
-		Identity: resolved.Selected.Digest, Artifact: resolved, Plan: plan, PackageInputs: inputs, SelectedBases: selectedBases.all,
-		replannedBaseDelta: selectedBases.takeDelta,
-	}, nil
+	return inputs, nil
 }
 
 func componentPlatformFromString(value string) (v1.Platform, error) {

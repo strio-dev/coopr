@@ -20,14 +20,19 @@ func TestComponentPreservesInstructionLayers(t *testing.T) {
 	f := newLocalComponentFixture(t)
 	f.write(t, "one", "one")
 	f.write(t, "two", "two")
-	f.write(t, "component.coopr", `package as="assets"
-copy "one" "/one"
-copy "two" "/two"
-extend
-copy "/one" "/one" from="assets"
-copy "/two" "/two" from="assets"
+	f.write(t, "component.coopr", `package as="assets" {
+    copy "one" "/one"
+    copy "two" "/two"
+}
+extend {
+    copy "/one" "/one" from="assets"
+    copy "/two" "/two" from="assets"
+}
 `)
-	_, layout := f.build(t, "cold", "from \"scratch\"\ncomponent \"./component.coopr\"\n")
+	_, layout := f.build(t, "cold", `from "scratch" {
+    component "./component.coopr"
+}
+`)
 	cold, coldConfig := readPlanImage(t, layout)
 	if len(cold.Layers) != 2 {
 		t.Fatalf("component layers=%d, want each of 2 COPY layers preserved", len(cold.Layers))
@@ -35,7 +40,10 @@ copy "/two" "/two" from="assets"
 	if len(coldConfig.RootFS.DiffIDs) != 2 {
 		t.Fatalf("diffids=%v", coldConfig.RootFS.DiffIDs)
 	}
-	result, warmLayout := f.build(t, "warm", "from \"scratch\"\ncomponent \"./component.coopr\"\n")
+	result, warmLayout := f.build(t, "warm", `from "scratch" {
+    component "./component.coopr"
+}
+`)
 	warm, _ := readPlanImage(t, warmLayout)
 	if result.CacheStats.Hits == 0 {
 		t.Fatal("expected warm component/image cache hit")
@@ -69,9 +77,16 @@ func TestLayerGroupNetChangeNestedAndConfigurationOnly(t *testing.T) {
 		{"empty", `layer {}`, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			_, initial := f.build(t, test.name+"-base", fmt.Sprintf("from %q\ncopy \"one\" \"/before\"\n", base.reference))
+			_, initial := f.build(t, test.name+"-base", fmt.Sprintf(`from %q {
+    copy "one" "/before"
+}
+`, base.reference))
 			start, _ := readPlanImage(t, initial)
-			_, layout := f.build(t, test.name, fmt.Sprintf("from %q\ncopy \"one\" \"/before\"\n%s\n", base.reference, test.body))
+			_, layout := f.build(t, test.name, fmt.Sprintf(`from %q {
+    copy "one" "/before"
+    %s
+}
+`, base.reference, test.body))
 			manifest, image := readPlanImage(t, layout)
 			if len(manifest.Layers) != len(start.Layers)+test.extra {
 				t.Fatalf("layers=%d start=%d extra=%d", len(manifest.Layers), len(start.Layers), test.extra)
@@ -123,24 +138,30 @@ func TestLayerAroundComponentAndInsideComponent(t *testing.T) {
 	f.write(t, "one", "one")
 	f.write(t, "two", "two")
 	f.write(t, "three", "three")
-	f.write(t, "component.coopr", `package as="assets"
-copy "one" "/one"
-copy "two" "/two"
-extend
-layer {
- copy "/one" "/one" from="assets"
- copy "/two" "/two" from="assets"
+	f.write(t, "component.coopr", `package as="assets" {
+    copy "one" "/one"
+    copy "two" "/two"
+}
+extend {
+    layer {
+     copy "/one" "/one" from="assets"
+     copy "/two" "/two" from="assets"
+    }
 }
 `)
-	_, inside := f.build(t, "inside", "from \"scratch\"\ncomponent \"./component.coopr\"\n")
+	_, inside := f.build(t, "inside", `from "scratch" {
+    component "./component.coopr"
+}
+`)
 	m, _ := readPlanImage(t, inside)
 	if len(m.Layers) != 1 {
 		t.Fatalf("inner group layers=%d", len(m.Layers))
 	}
-	_, outer := f.build(t, "outer", `from "scratch"
-layer {
- component "./component.coopr"
- copy "three" "/three"
+	_, outer := f.build(t, "outer", `from "scratch" {
+    layer {
+     component "./component.coopr"
+     copy "three" "/three"
+    }
 }
 `)
 	m, _ = readPlanImage(t, outer)
@@ -158,25 +179,29 @@ func TestComponentReplacementAdoptsSelectedBaseAndDropsCaller(t *testing.T) {
 			f.write(t, "caller", "old")
 			f.write(t, "one", "replacement")
 			f.write(t, "after", "after")
-			f.write(t, "replace.coopr", fmt.Sprintf(`package as="assets"
-copy "one" "/one"
-extend as="caller"
-from %q as="output"
-copy "/one" "/one" from="assets"
-env selected="yes"
-label selected="yes"
-workdir "/selected"
-user "0"
-cmd { exec "/bin/busybox" "echo" "selected" }
-entrypoint { exec "/bin/busybox" }
-volume "/selected-volume"
+			f.write(t, "replace.coopr", fmt.Sprintf(`package as="assets" {
+    copy "one" "/one"
+}
+extend as="output" {
+    from %q as="replacement" {
+        copy "/one" "/one" from="assets"
+        env selected="yes"
+        label selected="yes"
+        workdir "/selected"
+        user "0"
+        cmd { exec "/bin/busybox" "echo" "selected" }
+        entrypoint { exec "/bin/busybox" }
+        volume "/selected-volume"
+    }
+}
 `, base.reference))
-			source := fmt.Sprintf(`from %q
-copy "caller" "/caller-only"
-env abandoned="yes"
-component "./replace.coopr"
-copy "after" "/after"
-run "/bin/busybox test ! -e /caller-only; /bin/busybox test -e /one; /bin/busybox test -e /after; /bin/busybox echo checked >/proof" network="none"
+			source := fmt.Sprintf(`from %q {
+    copy "caller" "/caller-only"
+    env abandoned="yes"
+    component "./replace.coopr#output"
+    copy "after" "/after"
+    run "/bin/busybox test ! -e /caller-only; /bin/busybox test -e /one; /bin/busybox test -e /after; /bin/busybox echo checked >/proof" network="none"
+}
 `, base.reference)
 			_, layout := f.build(t, "replacement", source)
 			m, image := readPlanImage(t, layout)
@@ -201,12 +226,23 @@ func TestLayerRejectsDirectAndNestedReplacementEvenWithoutLayers(t *testing.T) {
 		t.Run(fmt.Sprintf("no-layers=%v", noLayers), func(t *testing.T) {
 			f := newLocalComponentFixture(t)
 			f.options.Lifecycle.NoLayers = noLayers
-			f.write(t, "replacement.coopr", "extend\nfrom \"scratch\"\nenv replacement=\"yes\"\n")
-			f.write(t, "nested.coopr", "extend\ncomponent \"./replacement.coopr\"\n")
+			f.write(t, "replacement.coopr", `extend {
+    from "scratch" {
+        env replacement="yes"
+    }
+}
+`)
+			f.write(t, "nested.coopr", `extend {
+    component "./replacement.coopr"
+}
+`)
 			for _, reference := range []string{"./replacement.coopr", "./nested.coopr"} {
 				options := f.options
 				options.Output = Output{Path: filepath.Join(f.root, strings.TrimPrefix(reference, "./"))}
-				_, err := BuildPlan(f.ctx, testPlan(t, fmt.Sprintf("from \"scratch\"\nlayer { component %q }\n", reference)), options)
+				_, err := BuildPlan(f.ctx, testPlan(t, fmt.Sprintf(`from "scratch" {
+    layer { component %q }
+}
+`, reference)), options)
 				if err == nil || !strings.Contains(err.Error(), "lineage") {
 					t.Fatalf("replacement %s error=%v", reference, err)
 				}
@@ -250,15 +286,17 @@ func TestComponentImageCachePreservesMultipleLayersAcrossFreshStores(t *testing.
 	f.options.Timestamp = &epoch
 	f.write(t, "one", "one")
 	f.write(t, "two", "two")
-	f.write(t, "component.coopr", `package as="assets"
-copy "one" "/one"
-copy "two" "/two"
-extend
-copy "/one" "/one" from="assets"
-copy "/two" "/two" from="assets"
-env image_cache="yes"
-shell "/bin/custom-shell" "-c"
-onbuild { env inherited="yes" }
+	f.write(t, "component.coopr", `package as="assets" {
+    copy "one" "/one"
+    copy "two" "/two"
+}
+extend {
+    copy "/one" "/one" from="assets"
+    copy "/two" "/two" from="assets"
+    env image_cache="yes"
+    shell "/bin/custom-shell" "-c"
+    onbuild { env inherited="yes" }
+}
 `)
 	var expectedManifest v1.Manifest
 	var expectedConfig v1.Image
@@ -269,8 +307,9 @@ onbuild { env inherited="yes" }
 			f.options.Store = cacheTestStore(filepath.Join(f.root, fmt.Sprintf("fresh-store-%d", attempt)))
 		}
 		layout := filepath.Join(f.root, fmt.Sprintf("cache-%d", attempt))
-		result, err := BuildPlanSupervised(f.ctx, testPlan(t, `from "scratch"
-component "./component.coopr"
+		result, err := BuildPlanSupervised(f.ctx, testPlan(t, `from "scratch" {
+    component "./component.coopr"
+}
 `), SupervisedPlanOptions{Store: f.options.Store, ContextDir: f.contextDir, Isolation: "rootless", Runtime: "crun", ComponentStoreDir: f.options.Resolver.ComponentStoreDir(), CacheLocalDir: f.options.CacheLocalDir, Timestamp: &epoch, SignaturePolicyPath: f.options.SystemContext.SignaturePolicyPath, Stdout: io.Discard, Stderr: &progress, Output: Output{Path: layout}})
 		if err != nil {
 			t.Fatal(err)
@@ -306,18 +345,24 @@ func TestComponentCallerRootSurvivesStagesWorkersAndNextComponent(t *testing.T) 
 	f := newLocalComponentFixture(t)
 	f.options.Jobs = 2
 	base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
-	f.write(t, "root.coopr", `extend as="first"
-run "/bin/busybox test $(/bin/busybox stat -c %a /) = 711; /bin/busybox chmod 0701 /; /bin/busybox chown 3:4 /" network="none"
-from "first" as="out"
-run "/bin/busybox test $(/bin/busybox stat -c %a /) = 701; /bin/busybox test $(/bin/busybox stat -c %u /) = 3; /bin/busybox chmod 0710 /" network="none"
+	f.write(t, "root.coopr", `extend as="first" {
+    run "/bin/busybox test $(/bin/busybox stat -c %a /) = 711; /bin/busybox chmod 0701 /; /bin/busybox chown 3:4 /" network="none"
+}
+extend {
+    from "first" as="out" {
+        run "/bin/busybox test $(/bin/busybox stat -c %a /) = 701; /bin/busybox test $(/bin/busybox stat -c %u /) = 3; /bin/busybox chmod 0710 /" network="none"
+    }
+}
 `)
-	f.write(t, "next.coopr", `extend
-run "/bin/busybox test $(/bin/busybox stat -c %a /) = 710; /bin/busybox test $(/bin/busybox stat -c %u /) = 3; /bin/busybox echo preserved >/proof" network="none"
+	f.write(t, "next.coopr", `extend {
+    run "/bin/busybox test $(/bin/busybox stat -c %a /) = 710; /bin/busybox test $(/bin/busybox stat -c %u /) = 3; /bin/busybox echo preserved >/proof" network="none"
+}
 `)
-	source := fmt.Sprintf(`from %q
-run "/bin/busybox chmod 0711 /; /bin/busybox chown 1:2 /" network="none"
-component "./root.coopr"
-component "./next.coopr"
+	source := fmt.Sprintf(`from %q {
+    run "/bin/busybox chmod 0711 /; /bin/busybox chown 1:2 /" network="none"
+    component "./root.coopr"
+    component "./next.coopr"
+}
 `, base.reference)
 	for attempt := range 2 {
 		_, layout := f.build(t, fmt.Sprintf("root-%d", attempt), source)
@@ -333,11 +378,12 @@ func TestLayerGroupNoLayersTakesPrecedence(t *testing.T) {
 	f.write(t, "one", "one")
 	f.write(t, "two", "two")
 	f.write(t, "three", "three")
-	_, layout := f.build(t, "no-layers", `from "scratch"
-copy "one" "/one"
-layer {
- copy "two" "/two"
- layer { copy "three" "/three" }
+	_, layout := f.build(t, "no-layers", `from "scratch" {
+    copy "one" "/one"
+    layer {
+     copy "two" "/two"
+     layer { copy "three" "/three" }
+    }
 }
 `)
 	manifest, _ := readPlanImage(t, layout)
@@ -349,18 +395,28 @@ layer {
 func TestComponentReplacementInheritsSelectedBaseConfiguration(t *testing.T) {
 	f := newLocalComponentFixture(t)
 	base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
-	selected, _ := f.build(t, "selected-base", fmt.Sprintf(`from %q
-env inherited="yes"
-label inherited="yes"
-user "0"
-workdir "/inherited"
-cmd { exec "/bin/busybox" "echo" "inherited" }
-entrypoint { exec "/bin/busybox" }
-volume "/inherited-volume"
+	selected, _ := f.build(t, "selected-base", fmt.Sprintf(`from %q {
+    env inherited="yes"
+    label inherited="yes"
+    user "0"
+    workdir "/inherited"
+    cmd { exec "/bin/busybox" "echo" "inherited" }
+    entrypoint { exec "/bin/busybox" }
+    volume "/inherited-volume"
+}
 `, base.reference))
-	f.write(t, "replacement.coopr", fmt.Sprintf("extend\nfrom %q\nenv override=\"yes\"\n", "containers-storage:"+selected.ImageID))
+	f.write(t, "replacement.coopr", fmt.Sprintf(`extend {
+    from %q {
+        env override="yes"
+    }
+}
+`, "containers-storage:"+selected.ImageID))
 	for _, attempt := range []string{"cold", "warm"} {
-		_, layout := f.build(t, "inherited-"+attempt, fmt.Sprintf("from %q\nenv abandoned=\"yes\"\ncomponent \"./replacement.coopr\"\n", base.reference))
+		_, layout := f.build(t, "inherited-"+attempt, fmt.Sprintf(`from %q {
+    env abandoned="yes"
+    component "./replacement.coopr"
+}
+`, base.reference))
 		manifest, image := readPlanImage(t, layout)
 		if manifest.Annotations[v1.AnnotationBaseImageDigest] != selected.ManifestDigest || manifest.Annotations[v1.AnnotationBaseImageName] == base.reference {
 			t.Fatalf("replacement inherited caller provenance: selected=%s annotations=%v", selected.ManifestDigest, manifest.Annotations)
@@ -386,18 +442,28 @@ func TestComponentReplacementCacheAndSquashRetainEffectiveBase(t *testing.T) {
 			base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
 			f.write(t, "one", "one")
 			f.write(t, "caller", "abandoned")
-			f.write(t, "replacement.coopr", fmt.Sprintf(`package as="assets"
-copy "one" "/one"
-extend
-from %q
-copy "/one" "/one" from="assets"
+			f.write(t, "replacement.coopr", fmt.Sprintf(`package as="assets" {
+    copy "one" "/one"
+}
+extend {
+    from %q {
+        copy "/one" "/one" from="assets"
+    }
+}
 `, base.reference))
 			reference := "./replacement.coopr"
 			if wrapper {
-				f.write(t, "wrapper.coopr", "extend\ncomponent \"./replacement.coopr\"\n")
+				f.write(t, "wrapper.coopr", `extend {
+    component "./replacement.coopr"
+}
+`)
 				reference = "./wrapper.coopr"
 			}
-			source := fmt.Sprintf("from %q\ncopy \"caller\" \"/caller-only\"\ncomponent %q\n", base.reference, reference)
+			source := fmt.Sprintf(`from %q {
+    copy "caller" "/caller-only"
+    component %q
+}
+`, base.reference, reference)
 			f.options.Output.Squash = true
 			// build helper supplies the output path; request-level squash lives in Output.
 			for attempt := range 2 {
@@ -421,10 +487,19 @@ func TestLayerRejectsNamedContextReplacementOfCallerAlias(t *testing.T) {
 	f := newLocalComponentFixture(t)
 	base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
 	f.options.BuildContexts = []buildcontext.Spec{{Name: "caller", Kind: buildcontext.DockerImage, Reference: base.reference}}
-	f.write(t, "named.coopr", "extend as=\"caller\"\nfrom \"caller\"\nenv named=\"replacement\"\n")
+	f.write(t, "named.coopr", `extend as="caller" {}
+extend {
+    from "caller" {
+        env named="replacement"
+    }
+}
+`)
 	options := f.options
 	options.Output = Output{Path: filepath.Join(f.root, "named")}
-	_, err := BuildPlan(f.ctx, testPlan(t, "from \"scratch\"\nlayer { component \"./named.coopr\" }\n"), options)
+	_, err := BuildPlan(f.ctx, testPlan(t, `from "scratch" {
+    layer { component "./named.coopr" }
+}
+`), options)
 	if err == nil || !strings.Contains(err.Error(), "lineage") {
 		t.Fatalf("named context output replacement err=%v", err)
 	}
@@ -432,19 +507,34 @@ func TestLayerRejectsNamedContextReplacementOfCallerAlias(t *testing.T) {
 
 func TestLayerRejectsReplacementIntroducedByDynamicStageReplan(t *testing.T) {
 	f := newLocalComponentFixture(t)
-	f.write(t, "setting.coopr", "extend\nenv child=\"./replacement.coopr\"\n")
-	f.write(t, "replacement.coopr", "extend\nfrom \"scratch\"\nenv replaced=\"yes\"\n")
-	f.write(t, "dynamic.coopr", `extend as="first"
-env child="./setting.coopr"
-component "./setting.coopr"
-from "first"
-component "$child"
+	f.write(t, "setting.coopr", `extend {
+    env child="./replacement.coopr"
+}
+`)
+	f.write(t, "replacement.coopr", `extend {
+    from "scratch" {
+        env replaced="yes"
+    }
+}
+`)
+	f.write(t, "dynamic.coopr", `extend as="first" {
+    env child="./setting.coopr"
+    component "./setting.coopr"
+}
+extend {
+    from "first" {
+        component "$child"
+    }
+}
 `)
 	for _, noLayers := range []bool{false, true} {
 		options := f.options
 		options.Lifecycle.NoLayers = noLayers
 		options.Output = Output{Path: filepath.Join(f.root, fmt.Sprintf("dynamic-%v", noLayers))}
-		_, err := BuildPlan(f.ctx, testPlan(t, "from \"scratch\"\nlayer { component \"./dynamic.coopr\" }\n"), options)
+		_, err := BuildPlan(f.ctx, testPlan(t, `from "scratch" {
+    layer { component "./dynamic.coopr" }
+}
+`), options)
 		if err == nil || !strings.Contains(err.Error(), "lineage") {
 			t.Fatalf("noLayers=%v dynamic nested replacement err=%v", noLayers, err)
 		}
@@ -454,12 +544,13 @@ component "$child"
 func TestLayerGroupPreservesDeletionTypesLinksAndMetadata(t *testing.T) {
 	f := newLocalComponentFixture(t)
 	base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
-	source := fmt.Sprintf(`from %q
-run "/bin/busybox touch /doomed /node; /bin/busybox mkdir /type; /bin/busybox touch /type/old" network="none"
-layer {
- run "/bin/busybox rm /doomed /node; /bin/busybox mkdir /node; echo kept >/node/value; /bin/busybox rm -r /type; echo regular >/type; /bin/busybox ln -s /node/value /link; /bin/busybox ln /node/value /hard; /bin/busybox chmod 0640 /node/value; /bin/busybox chown 3:4 /node/value; /bin/busybox chmod 0701 /; /bin/busybox chown 1:2 /" network="none"
+	source := fmt.Sprintf(`from %q {
+    run "/bin/busybox touch /doomed /node; /bin/busybox mkdir /type; /bin/busybox touch /type/old" network="none"
+    layer {
+     run "/bin/busybox rm /doomed /node; /bin/busybox mkdir /node; echo kept >/node/value; /bin/busybox rm -r /type; echo regular >/type; /bin/busybox ln -s /node/value /link; /bin/busybox ln /node/value /hard; /bin/busybox chmod 0640 /node/value; /bin/busybox chown 3:4 /node/value; /bin/busybox chmod 0701 /; /bin/busybox chown 1:2 /" network="none"
+    }
+    run "/bin/busybox test ! -e /doomed; /bin/busybox test -d /node; /bin/busybox test -f /type; /bin/busybox test $(/bin/busybox readlink /link) = /node/value; /bin/busybox test $(/bin/busybox stat -c %%u /node/value) = 3; /bin/busybox test $(/bin/busybox stat -c %%a /node/value) = 640; /bin/busybox test $(/bin/busybox stat -c %%a /) = 701; /bin/busybox test $(/bin/busybox stat -c %%u /) = 1; /bin/busybox test $(/bin/busybox stat -c %%i /hard) = $(/bin/busybox stat -c %%i /node/value)" network="none"
 }
-run "/bin/busybox test ! -e /doomed; /bin/busybox test -d /node; /bin/busybox test -f /type; /bin/busybox test $(/bin/busybox readlink /link) = /node/value; /bin/busybox test $(/bin/busybox stat -c %%u /node/value) = 3; /bin/busybox test $(/bin/busybox stat -c %%a /node/value) = 640; /bin/busybox test $(/bin/busybox stat -c %%a /) = 701; /bin/busybox test $(/bin/busybox stat -c %%u /) = 1; /bin/busybox test $(/bin/busybox stat -c %%i /hard) = $(/bin/busybox stat -c %%i /node/value)" network="none"
 `, base.reference)
 	_, layout := f.build(t, "metadata-group", source)
 	manifest, image := readPlanImage(t, layout)
@@ -477,26 +568,36 @@ run "/bin/busybox test ! -e /doomed; /bin/busybox test -d /node; /bin/busybox te
 	}
 }
 
-func TestComponentReplacementStillEnforcesDormantExtendCompatibility(t *testing.T) {
+func TestComponentReplacementDoesNotExecuteUnusedExtendBody(t *testing.T) {
 	for _, published := range []bool{false, true} {
 		t.Run(fmt.Sprintf("published=%v", published), func(t *testing.T) {
 			f := newLocalComponentFixture(t)
-			component := `extend distro="not-a-real-compatible-distro"
-from "scratch"
-env output="independent"
+			component := `extend {
+    copy "missing-caller-file" "/should-not-run"
+    from "scratch" {
+        env output="independent"
+    }
+}
 `
 			reference := "./restricted.coopr"
 			if published {
 				f.options.Resolver = localConfigComponentResolver(t, f.ctx, f.root, component, false)
-				reference = "local:config"
+				reference = "config"
 			} else {
 				f.write(t, "restricted.coopr", component)
 			}
 			options := f.options
 			options.Output = Output{Path: filepath.Join(f.root, "restricted")}
-			_, err := BuildPlan(f.ctx, testPlan(t, fmt.Sprintf("from \"scratch\"\ncomponent %q\n", reference)), options)
-			if err == nil || !strings.Contains(err.Error(), "compatibility") {
-				t.Fatalf("dormant mandatory EXTEND compatibility err=%v", err)
+			_, err := BuildPlan(f.ctx, testPlan(t, fmt.Sprintf(`from "scratch" {
+    component %q
+}
+`, reference)), options)
+			if err != nil {
+				t.Fatalf("independent output executed unused EXTEND body: %v", err)
+			}
+			_, image := readPlanImage(t, options.Output.Path)
+			if !strings.Contains("\n"+strings.Join(image.Config.Env, "\n")+"\n", "\noutput=independent\n") {
+				t.Fatalf("independent output config = %v", image.Config.Env)
 			}
 		})
 	}
@@ -508,7 +609,10 @@ func TestLayerEmptyConfigurationGroupsBothFormats(t *testing.T) {
 		for _, body := range []string{"layer {}", "layer { env grouped=\"yes\" }"} {
 			options := f.options
 			options.Output = Output{Path: filepath.Join(f.root, fmt.Sprintf("empty-%s-%d", format, len(body))), Format: format}
-			if _, err := BuildPlan(f.ctx, testPlan(t, "from \"scratch\"\n"+body+"\n"), options); err != nil {
+			if _, err := BuildPlan(f.ctx, testPlan(t, `from "scratch" {
+    `+body+`
+}
+`), options); err != nil {
 				t.Fatal(err)
 			}
 			manifest, image := readPlanImage(t, options.Output.Path)
@@ -523,9 +627,22 @@ func TestNoLayersReplacementThenComponentUsesCurrentBaseManifest(t *testing.T) {
 	f := newLocalComponentFixture(t)
 	base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
 	f.options.Lifecycle.NoLayers = true
-	f.write(t, "replacement.coopr", fmt.Sprintf("extend\nfrom %q\nenv selected=\"yes\"\n", base.reference))
-	f.write(t, "next.coopr", "extend\nrun \"echo current >/proof\" network=\"none\"\n")
-	_, layout := f.build(t, "no-layers-next", "from \"scratch\"\nenv abandoned=\"yes\"\ncomponent \"./replacement.coopr\"\ncomponent \"./next.coopr\"\n")
+	f.write(t, "replacement.coopr", fmt.Sprintf(`extend {
+    from %q {
+        env selected="yes"
+    }
+}
+`, base.reference))
+	f.write(t, "next.coopr", `extend {
+    run "echo current >/proof" network="none"
+}
+`)
+	_, layout := f.build(t, "no-layers-next", `from "scratch" {
+    env abandoned="yes"
+    component "./replacement.coopr"
+    component "./next.coopr"
+}
+`)
 	if got := localComponentLastFile(t, layout, "proof"); got != "current\n" {
 		t.Fatalf("next component proof=%q", got)
 	}

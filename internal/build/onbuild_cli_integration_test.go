@@ -13,18 +13,22 @@ func TestBuildConsumesLocalBaseOnBuildARGAndStageDependency(t *testing.T) {
 	}
 	root := t.TempDir()
 	for name, contents := range map[string]string{
-		"artifact": "from producer\n",
-		"payload":  "from inherited ARG\n",
+		"artifact": `from producer {}
+`,
+		"payload": "from inherited ARG\n",
 		"base.coopr": `
-from "scratch"
-onbuild { arg "filename" "payload" }
-onbuild { copy "/artifact" "/inherited" from="producer" }
+from "scratch" {
+    onbuild { arg "filename" "payload" }
+    onbuild { copy "/artifact" "/inherited" from="producer" }
+}
 `,
 		"child.coopr": `
-from "scratch" as="producer"
-copy "artifact" "/artifact"
-from "localhost/coopr-inherited-arg:latest"
-copy "$filename" "/selected"
+from "scratch" as="producer" {
+    copy "artifact" "/artifact"
+}
+from "localhost/coopr-inherited-arg:latest" {
+    copy "$filename" "/selected"
+}
 `,
 	} {
 		if err := os.WriteFile(filepath.Join(root, name), []byte(contents), 0o600); err != nil {
@@ -38,8 +42,8 @@ copy "$filename" "/selected"
 		t.Fatal(err)
 	}
 	archive := filepath.Join(t.TempDir(), "child.oci.tar")
-	if _, err := Run(context.Background(), Options{
-		File: filepath.Join(root, "child.coopr"), Tag: "oci-archive:" + archive,
+	if _, err := buildArchive(t, archive, context.Background(), Options{
+		File:     filepath.Join(root, "child.coopr"),
 		Platform: "linux/amd64", Format: "docker",
 	}); err != nil {
 		t.Fatal(err)

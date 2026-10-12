@@ -80,9 +80,15 @@ func TestGlobalMountStageContextAndImageSources(t *testing.T) {
 		name, source, mount, command string
 		contexts                     []buildcontext.Spec
 	}{
-		{name: "stage", source: fmt.Sprintf("from %q as=\"producer\"\ncopy \"assets/value\" \"/value\"\nfrom %q\n", base.reference, base.reference), mount: "type=bind,from=producer,target=/src", command: "cat /src/value >/proof"},
-		{name: "context", source: fmt.Sprintf("from %q\n", base.reference), mount: "type=bind,from=assets,target=/src", command: "cat /src/value >/proof", contexts: []buildcontext.Spec{{Name: "assets", Kind: buildcontext.Local, Path: filepath.Join(contextDir, "assets")}}},
-		{name: "image", source: fmt.Sprintf("from %q\n", base.reference), mount: "type=bind,from=" + base.reference + ",source=/bin/busybox,target=/tools/busybox", command: "/tools/busybox printf mounted >/proof"},
+		{name: "stage", source: fmt.Sprintf(`from %q as="producer" {
+    copy "assets/value" "/value"
+}
+from %q {}
+`, base.reference, base.reference), mount: "type=bind,from=producer,target=/src", command: "cat /src/value >/proof"},
+		{name: "context", source: fmt.Sprintf(`from %q {}
+`, base.reference), mount: "type=bind,from=assets,target=/src", command: "cat /src/value >/proof", contexts: []buildcontext.Spec{{Name: "assets", Kind: buildcontext.Local, Path: filepath.Join(contextDir, "assets")}}},
+		{name: "image", source: fmt.Sprintf(`from %q {}
+`, base.reference), mount: "type=bind,from=" + base.reference + ",source=/bin/busybox,target=/tools/busybox", command: "/tools/busybox printf mounted >/proof"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -90,7 +96,7 @@ func TestGlobalMountStageContextAndImageSources(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			def, err := definition.Parse(strings.NewReader(test.source + fmt.Sprintf("run %q network=\"none\"\n", test.command)))
+			def, err := definition.Parse(strings.NewReader(strings.TrimSuffix(test.source, "{}\n") + fmt.Sprintf("{\nrun %q network=\"none\"\n}\n", test.command)))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -130,11 +136,12 @@ func TestGlobalWritableContextMountUsesNativeOwnershipAndNoexec(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := fmt.Sprintf(`from %q
-user "123:456"
-run "if /src/probe >/dev/null 2>&1; then exit 17; fi; printf controlled >/src/generated" network="none"
-user "0"
-copy "generated" "/proof"
+	source := fmt.Sprintf(`from %q {
+    user "123:456"
+    run "if /src/probe >/dev/null 2>&1; then exit 17; fi; printf controlled >/src/generated" network="none"
+    user "0"
+    copy "generated" "/proof"
+}
 `, base.reference)
 	def, err := definition.Parse(strings.NewReader(source))
 	if err != nil {
@@ -156,11 +163,13 @@ copy "generated" "/proof"
 }
 
 func TestGlobalMountsDoNotBecomePublishedComponentInstructions(t *testing.T) {
-	def, err := definition.Parse(strings.NewReader(`package as="assets"
-copy "value" "/value"
-extend
-copy "/value" "/value" from="assets"
-run "true"
+	def, err := definition.Parse(strings.NewReader(`package as="assets" {
+    copy "value" "/value"
+}
+extend {
+    copy "/value" "/value" from="assets"
+    run "true"
+}
 `))
 	if err != nil {
 		t.Fatal(err)

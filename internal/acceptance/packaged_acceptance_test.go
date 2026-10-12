@@ -116,45 +116,56 @@ func TestPackagedAcceptance(t *testing.T) {
 	const multi = "coopr-release-multi:acceptance"
 	const multiComponent = "coopr-release-multi-component-acceptance"
 	definitions := map[string]string{
-		"base": `from "scratch"
-copy "busybox" "/bin/sh"
-copy "busybox" "/bin/cat"
-copy "busybox" "/bin/busybox"
-run "printf 'base\\n' >/proof"
+		"base": `from "scratch" {
+    copy "busybox" "/bin/sh"
+    copy "busybox" "/bin/cat"
+    copy "busybox" "/bin/busybox"
+    run "printf 'base\\n' >/proof"
+}
 `,
-		"child": `from "` + base + `" as="source"
-from "` + base + `"
-run "cat /input >/mounted-proof" { mount "bind" from="source" source="/proof" target="/input" }
-run "test -z \"$(/bin/busybox ip route show default)\""
-run "printf 'child\\n' >>/proof"
-cmd { exec "/bin/cat" "/proof" "/mounted-proof" }
+		"child": "from \"" + base + `" as="source" {}
+from "` + base + `" {
+    run "cat /input >/mounted-proof" { mount "bind" from="source" source="/proof" target="/input" }
+    run "test -z \"$(/bin/busybox ip route show default)\""
+    run "printf 'child\\n' >>/proof"
+    cmd { exec "/bin/cat" "/proof" "/mounted-proof" }
+}
 `,
-		"component": "extend\nrun \"printf 'component\\\\n' >>/proof\"\n",
-		"component-child": `from "` + base + `"
-component "local:` + component + `"
-cmd { exec "/bin/cat" "/proof" }
+		"component": `extend {
+    run "printf 'component\\n' >>/proof"
+}
 `,
-		"named-child": `from "base"
-copy "context-payload" "/context-payload" from="assets"
-cmd { exec "/bin/cat" "/proof" "/context-payload" }
+		"component-child": "from \"" + base + `" {
+    component "` + component + `"
+    cmd { exec "/bin/cat" "/proof" }
+}
 `,
-		"multi-platform": `from "scratch"
-arg "TARGETARCH"
-copy "proof-$TARGETARCH" "/foreign-proof" chmod="0755"
-run { exec "/foreign-proof" }
-label "dev.strio.coopr.release-acceptance"="multi-platform"
-cmd { exec "/foreign-proof" }
+		"named-child": `from "base" {
+    copy "context-payload" "/context-payload" from="assets"
+    cmd { exec "/bin/cat" "/proof" "/context-payload" }
+}
 `,
-		"multi-component": `package as="payload"
-arg "TARGETARCH"
-copy "proof-$TARGETARCH" "/component-proof" chmod="0755"
-extend
-copy "/component-proof" "/component-proof" from="payload"
+		"multi-platform": `from "scratch" {
+    arg "TARGETARCH"
+    copy "proof-$TARGETARCH" "/foreign-proof" chmod="0755"
+    run { exec "/foreign-proof" }
+    label "dev.strio.coopr.release-acceptance"="multi-platform"
+    cmd { exec "/foreign-proof" }
+}
 `,
-		"multi-component-child": `from "scratch"
-component "local:` + multiComponent + `"
-run { exec "/component-proof" }
-cmd { exec "/component-proof" }
+		"multi-component": `package as="payload" {
+    arg "TARGETARCH"
+    copy "proof-$TARGETARCH" "/component-proof" chmod="0755"
+}
+extend {
+    copy "/component-proof" "/component-proof" from="payload"
+}
+`,
+		"multi-component-child": `from "scratch" {
+    component "` + multiComponent + `"
+    run { exec "/component-proof" }
+    cmd { exec "/component-proof" }
+}
 `,
 	}
 	for name, definition := range definitions {
@@ -165,24 +176,28 @@ cmd { exec "/component-proof" }
 	t.Run("MultiPlatformImageAndComponent", func(t *testing.T) {
 		a.t = t
 		a.coopr(false, "none", "build", "/work/multi-platform.coopr", "--tag", multi, "--platform", "linux/amd64", "--platform", "linux/arm64")
-		a.coopr(false, "none", "copy", multi, "oci-archive:/work/multi-platform.oci.tar")
+		a.coopr(false, "none", "save", "--format", "oci-archive", "--output", "/work/multi-platform.oci.tar", multi)
 		a.checkIndex(filepath.Join(a.workspace, "multi-platform.oci.tar"))
 		a.coopr(false, "none", "component", "build", "/work/multi-component.coopr", "--tag", multiComponent, "--platform", "linux/amd64", "--platform", "linux/arm64")
 		for _, arch := range []string{"amd64", "arm64"} {
-			a.coopr(false, "none", "copy", multi, "oci-archive:/work/multi-"+arch+".oci.tar", "--platform", "linux/"+arch)
+			a.coopr(false, "none", "save", "--format", "oci-archive", "--output", "/work/multi-"+arch+".oci.tar", "--platform", "linux/"+arch, multi)
 			a.assertImage("multi-"+arch+".oci.tar", arch, "linux/"+arch)
-			a.coopr(false, "none", "build", "/work/multi-component-child.coopr", "--tag", "oci-archive:/work/multi-component-"+arch+".oci.tar", "--platform", "linux/"+arch)
+			a.coopr(false, "none", "build", "/work/multi-component-child.coopr", "--tag", "coopr-release-multi-child:"+arch, "--platform", "linux/"+arch)
+			a.coopr(false, "none", "save", "--format", "oci-archive", "--platform", "linux/"+arch, "--output", "/work/multi-component-"+arch+".oci.tar", "coopr-release-multi-child:"+arch)
 			a.assertImage("multi-component-"+arch+".oci.tar", arch, "linux/"+arch)
 		}
 	})
 	t.Run("SharedStoreAndContexts", func(t *testing.T) {
 		a.t = t
 		a.coopr(false, "slirp4netns", "build", "/work/base.coopr", "--tag", base, "--platform", a.platform)
-		a.coopr(false, "none", "build", "/work/child.coopr", "--tag", "oci-archive:/work/child.oci.tar", "--platform", a.platform)
+		a.coopr(false, "none", "build", "/work/child.coopr", "--tag", "coopr-release-child:acceptance", "--platform", a.platform)
+		a.coopr(false, "none", "save", "--format", "oci-archive", "--platform", a.platform, "--output", "/work/child.oci.tar", "coopr-release-child:acceptance")
 		a.assertImage("child.oci.tar", "base\nchild\nbase", a.platform)
-		a.coopr(false, "none", "build", "/work/named-child.coopr", "--build-context", "base=docker-image://"+base, "--build-context", "assets=/work/assets", "--tag", "oci-archive:/work/named-child.oci.tar", "--platform", a.platform)
+		a.coopr(false, "none", "build", "/work/named-child.coopr", "--build-context", "base=docker-image://"+base, "--build-context", "assets=/work/assets", "--tag", "coopr-release-named-child:acceptance", "--platform", a.platform)
+		a.coopr(false, "none", "save", "--format", "oci-archive", "--platform", a.platform, "--output", "/work/named-child.oci.tar", "coopr-release-named-child:acceptance")
 		a.assertImage("named-child.oci.tar", "base\nnamed-context", a.platform)
-		a.coopr(false, "none", "build", "/work/child.coopr", "--format", "docker", "--tag", "oci-archive:/work/child-docker.oci.tar", "--platform", a.platform)
+		a.coopr(false, "none", "build", "/work/child.coopr", "--format", "docker", "--tag", "coopr-release-child-docker:acceptance", "--platform", a.platform)
+		a.coopr(false, "none", "save", "--format", "oci-archive", "--platform", a.platform, "--output", "/work/child-docker.oci.tar", "coopr-release-child-docker:acceptance")
 		a.assertImage("child-docker.oci.tar", "base\nchild\nbase", a.platform)
 		if _, err := os.Stat(filepath.Join(a.state, "containers/storage/overlay/.has-mount-program")); err != nil {
 			t.Fatalf("packaged builds did not use fuse-overlayfs: %v", err)
@@ -190,17 +205,26 @@ cmd { exec "/component-proof" }
 	})
 	t.Run("SelfContainedLocalState", func(t *testing.T) {
 		a.t = t
-		a.write("self-component.coopr", "extend\nenv SELF_CONTAINED_PROOF=ready\n")
-		a.write("self-app.coopr", "from \""+base+"\"\ncomponent \"local:self-proof\"\nrun \"test \\\"$SELF_CONTAINED_PROOF\\\" = ready && printf self-contained-ok >/proof\"\ncmd { exec \"/bin/cat\" \"/proof\" }\n")
+		a.write("self-component.coopr", `extend {
+    env SELF_CONTAINED_PROOF=ready
+}
+`)
+		a.write("self-app.coopr", "from \""+base+`" {
+    component "self-proof"
+    run "test \"$SELF_CONTAINED_PROOF\" = ready && printf self-contained-ok >/proof"
+    cmd { exec "/bin/cat" "/proof" }
+}
+`)
 		a.coopr(false, "none", "component", "build", "/work/self-component.coopr", "--tag", "self-proof", "--platform", a.platform)
 		for _, name := range []string{"offline", "chroot"} {
-			args := []string{"build", "/work/self-app.coopr", "--tag", "oci-archive:/work/self-" + name + ".oci.tar", "--platform", a.platform}
+			args := []string{"build", "/work/self-app.coopr", "--tag", "coopr-release-self:" + name, "--platform", a.platform}
 			if name == "chroot" {
 				// Chroot uses the outer container's network namespace; this
 				// container is offline and must not launch a nested helper.
 				args = append(args, "--isolation=chroot", "--network=host", "--no-cache")
 			}
 			a.coopr(false, "none", args...)
+			a.coopr(false, "none", "save", "--format", "oci-archive", "--platform", a.platform, "--output", "/work/self-"+name+".oci.tar", "coopr-release-self:"+name)
 			a.assertImage("self-"+name+".oci.tar", "self-contained-ok", a.platform)
 		}
 		for _, name := range []string{"containers/storage", "coopr/components"} {
@@ -219,10 +243,22 @@ cmd { exec "/component-proof" }
 	})
 	t.Run("NetworkRejection", func(t *testing.T) {
 		a.t = t
-		a.write("network-global.coopr", "from \""+base+"\"\nrun \"printf COOPR_NETWORK_PROOF_EXECUTED\"\n")
-		a.write("network-authored.coopr", "from \""+base+"\"\nrun \"printf COOPR_NETWORK_PROOF_EXECUTED\" network=\"none\"\n")
-		a.write("network-component.coopr", "extend\nrun \"printf COOPR_NETWORK_PROOF_EXECUTED\" network=\"none\"\n")
-		a.write("network-component-child.coopr", "from \""+base+"\"\ncomponent \"./network-component.coopr\"\n")
+		a.write("network-global.coopr", "from \""+base+`" {
+    run "printf COOPR_NETWORK_PROOF_EXECUTED"
+}
+`)
+		a.write("network-authored.coopr", "from \""+base+`" {
+    run "printf COOPR_NETWORK_PROOF_EXECUTED" network="none"
+}
+`)
+		a.write("network-component.coopr", `extend {
+    run "printf COOPR_NETWORK_PROOF_EXECUTED" network="none"
+}
+`)
+		a.write("network-component-child.coopr", "from \""+base+`" {
+    component "./network-component.coopr"
+}
+`)
 		for _, name := range []string{"global", "authored", "component"} {
 			definition := "/work/network-" + name + ".coopr"
 			args := []string{"build", definition}
@@ -232,7 +268,7 @@ cmd { exec "/component-proof" }
 			case "component":
 				args[1] = "/work/network-component-child.coopr"
 			}
-			args = append(args, "--isolation=chroot", "--no-cache", "--platform", a.platform, "--tag", "oci-archive:/work/network-"+name+".oci.tar")
+			args = append(args, "--isolation=chroot", "--no-cache", "--platform", a.platform, "--tag", "coopr-release-network:"+name)
 			output, err := a.tryCoopr(false, "slirp4netns", args...)
 			if err == nil || !strings.Contains(output, "RUN network=none cannot be used with chroot isolation; use --isolation=oci or --isolation=rootless") {
 				t.Fatalf("%s rejection: %v: %s", name, err, output)
@@ -242,8 +278,13 @@ cmd { exec "/component-proof" }
 					t.Fatalf("rejected %s RUN executed", name)
 				}
 			}
-			if _, err := os.Stat(filepath.Join(a.workspace, "network-"+name+".oci.tar")); !os.IsNotExist(err) {
-				t.Fatalf("rejected %s build produced output: %v", name, err)
+			if output, err := a.tryCoopr(false, "none", "exists", "coopr-release-network:"+name); err == nil {
+				t.Fatalf("rejected %s build produced an image: %s", name, output)
+			} else {
+				var exitErr *exec.ExitError
+				if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+					t.Fatalf("check rejected %s image absence: %v: %s", name, err, output)
+				}
 			}
 		}
 	})
@@ -258,13 +299,15 @@ cmd { exec "/component-proof" }
 		}
 		a.coopr(true, "none", "build", "/work/base.coopr", "--isolation=rootless", "--network=none", "--tag", base, "--platform", a.platform)
 		a.coopr(true, "none", "component", "build", "/work/component.coopr", "--isolation=rootless", "--network=none", "--tag", component, "--platform", a.platform)
-		a.coopr(true, "none", "build", "/work/component-child.coopr", "--isolation=rootless", "--network=none", "--tag", "oci-archive:/work/component-child.oci.tar", "--cache-from", "type=local,src=/var/lib/coopr/component-cache", "--cache-to", "type=local,dest=/var/lib/coopr/component-cache", "--platform", a.platform)
+		a.coopr(true, "none", "build", "/work/component-child.coopr", "--isolation=rootless", "--network=none", "--tag", "coopr-release-component-child:acceptance", "--cache-from", "type=local,src=/var/lib/coopr/component-cache", "--cache-to", "type=local,dest=/var/lib/coopr/component-cache", "--platform", a.platform)
+		a.coopr(true, "none", "save", "--format", "oci-archive", "--platform", a.platform, "--output", "/work/component-child.oci.tar", "coopr-release-component-child:acceptance")
 		info, err := os.Stat(filepath.Join(a.state, "coopr/component-cache/index.json"))
 		if err != nil || info.Size() == 0 {
 			t.Fatalf("component cache not populated: %v", err)
 		}
 		a.assertImage("component-child.oci.tar", "base\ncomponent", a.platform)
-		a.coopr(true, "none", "build", "/work/multi-platform.coopr", "--isolation=rootless", "--network=none", "--platform", a.platform, "--tag", "oci-archive:/work/oci-override.oci.tar")
+		a.coopr(true, "none", "build", "/work/multi-platform.coopr", "--isolation=rootless", "--network=none", "--platform", a.platform, "--tag", "coopr-release-oci-override:acceptance")
+		a.coopr(true, "none", "save", "--format", "oci-archive", "--platform", a.platform, "--output", "/work/oci-override.oci.tar", "coopr-release-oci-override:acceptance")
 		info, err = os.Stat(filepath.Join(a.workspace, "oci-override.oci.tar"))
 		if err != nil || info.Size() == 0 {
 			t.Fatalf("OCI override produced no image: %v", err)
@@ -493,7 +536,8 @@ func (a packagedAcceptance) conformance() {
 			a.t.Errorf("cleanup conformance image: %v: %s", err, output)
 		}
 	})
-	a.coopr(false, "none", "build", "--file", "/work/containerfile-conformance/image.coopr", "/work/containerfile-conformance", "--build-arg", "message=release-acceptance", "--format", "docker", "--tag", "oci-archive:/work/containerfile-conformance/coopr.oci.tar", "--platform", a.platform)
+	a.coopr(false, "none", "build", "--file", "/work/containerfile-conformance/image.coopr", "/work/containerfile-conformance", "--build-arg", "message=release-acceptance", "--format", "docker", "--tag", "coopr-release-conformance:acceptance", "--platform", a.platform)
+	a.coopr(false, "none", "save", "--format", "oci-archive", "--platform", a.platform, "--output", "/work/containerfile-conformance/coopr.oci.tar", "coopr-release-conformance:acceptance")
 	built := a.loadImage(filepath.Join(dir, "coopr.oci.tar"))
 	want := "stage:release-acceptance\ncontext:static\nfinal:release-acceptance\nenv:containerfile\narchive:static"
 	for _, image := range []string{tag, built} {

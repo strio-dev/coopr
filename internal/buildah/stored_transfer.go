@@ -29,6 +29,7 @@ import (
 	"go.podman.io/image/v5/manifest"
 	"go.podman.io/image/v5/signature"
 	imagestorage "go.podman.io/image/v5/storage"
+	"go.podman.io/image/v5/transports/alltransports"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/storage"
 	"go.podman.io/storage/pkg/reexec"
@@ -52,8 +53,10 @@ type StoredTransferOptions struct {
 	Store                  StoreOptions
 	ImageID                string
 	ExpectedManifest       digest.Digest
+	AllImages              bool
 	LocalName              string
 	RegistryDestination    string
+	Destination            string
 	RegistryInstance       bool
 	AuthFile               string
 	CertDir                string
@@ -101,7 +104,13 @@ func TransferStoredImageResultSupervised(ctx context.Context, options StoredTran
 	if err := ctx.Err(); err != nil {
 		return StoredTransferResult{}, err
 	}
-	if options.ImageID == "" || (options.LocalName == "") == (options.RegistryDestination == "") {
+	destinations := 0
+	for _, value := range []string{options.LocalName, options.RegistryDestination, options.Destination} {
+		if value != "" {
+			destinations++
+		}
+	}
+	if options.ImageID == "" || destinations != 1 {
 		return StoredTransferResult{}, errors.New("stored transfer requires an image ID and exactly one destination")
 	}
 	jobDir, err := os.MkdirTemp("", ".coopr-stored-transfer-*")
@@ -187,6 +196,14 @@ func transferStoredImage(ctx context.Context, options StoredTransferOptions) (_ 
 			return StoredTransferResult{}, fmt.Errorf("parse local signing identity %q: %w", options.LocalName, err)
 		}
 		localIdentity = named.String()
+	} else if options.Destination != "" {
+		previousStore := imagestorage.Transport.GetStoreIfSet()
+		imagestorage.Transport.SetStore(lease.store)
+		dst, err = alltransports.ParseImageName(options.Destination)
+		imagestorage.Transport.SetStore(previousStore)
+		if err != nil {
+			return StoredTransferResult{}, err
+		}
 	} else {
 		dst, err = docker.ParseReference("//" + options.RegistryDestination)
 		if err != nil {
@@ -211,7 +228,26 @@ func transferStoredImage(ctx context.Context, options StoredTransferOptions) (_ 
 	}
 	sourceCleanup := func() error { return nil }
 	var policyContext *signature.PolicyContext
-	if localIdentity == "" && options.ExpectedManifest != "" {
+	if options.AllImages {
+		lock, err := manifests.LockerForImage(lease.store, options.ImageID)
+		if err != nil {
+			return StoredTransferResult{}, err
+		}
+		lock.Lock()
+		defer lock.Unlock()
+		src, sourceCleanup, err = prepareStoredIndexCopySource(ctx, lease.store, options.ImageID, options.ExpectedManifest, system, options.Push.RemoveSignatures, options.ProgressWriter)
+		defer func() { retErr = errors.Join(retErr, sourceCleanup()) }()
+		if err != nil {
+			return StoredTransferResult{}, err
+		}
+		// Every original member passed the caller's policy above. Scope trust
+		// to this private directory instead of overriding storage policy.
+		policyContext, err = signature.NewPolicyContext(oci.PreparedImagePolicy(src))
+		if err != nil {
+			return StoredTransferResult{}, err
+		}
+		defer func() { retErr = errors.Join(retErr, policyContext.Destroy()) }()
+	} else if localIdentity == "" && options.ExpectedManifest != "" {
 		src, policyContext, sourceCleanup, err = verifiedStoredCopySourceReference(ctx, lease.store, baseSource, system, options.ImageID, options.ExpectedManifest)
 		defer func() { retErr = errors.Join(retErr, sourceCleanup()) }()
 		if err != nil {
@@ -247,6 +283,9 @@ func transferStoredImage(ctx context.Context, options StoredTransferOptions) (_ 
 		ImageListSelection:           imagecopy.CopySystemImage,
 		SignBy:                       options.SignBy,
 		SignBySigstorePrivateKeyFile: options.SigstorePrivateKeyFile,
+	}
+	if options.AllImages {
+		copyOptions.ImageListSelection = imagecopy.CopyAllImages
 	}
 
 	if options.SignBy != "" {
@@ -321,6 +360,9 @@ func transferStoredImage(ctx context.Context, options StoredTransferOptions) (_ 
 	}, retryOptions)
 	if err != nil {
 		return StoredTransferResult{}, fmt.Errorf("copy stored image: %w", err)
+	}
+	if options.Destination != "" {
+		return StoredTransferResult{Reference: options.Destination + "@" + digest.FromBytes(copiedData).String(), Manifest: v1.Descriptor{Digest: digest.FromBytes(copiedData), Size: int64(len(copiedData)), MediaType: manifest.GuessMIMEType(copiedData)}, ManifestData: copiedData}, nil
 	}
 	named, err := reference.ParseNormalizedNamed(options.RegistryDestination)
 	if err != nil {

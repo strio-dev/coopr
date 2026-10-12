@@ -64,7 +64,10 @@ func (fixture liveRuntimeControlsFixture) buildWithNetwork(
 	network string,
 ) (string, error) {
 	t.Helper()
-	def, err := definition.Parse(strings.NewReader(fmt.Sprintf("from %q\nrun %q network=%q\n", fixture.base.reference, command, network)))
+	def, err := definition.Parse(strings.NewReader(fmt.Sprintf(`from %q {
+    run %q network=%q
+}
+`, fixture.base.reference, command, network)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +125,10 @@ func TestBuildDefinitionCancellationCleansSlirp4netns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	def, err := definition.Parse(strings.NewReader(fmt.Sprintf("from %q\nrun %q network=%q\n", fixture.base.reference, "trap 'exit 0' TERM; sleep 60", "slirp4netns:enable_ipv6=false")))
+	def, err := definition.Parse(strings.NewReader(fmt.Sprintf(`from %q {
+    run %q network=%q
+}
+`, fixture.base.reference, "trap 'exit 0' TERM; sleep 60", "slirp4netns:enable_ipv6=false")))
 	if err != nil {
 		t.Fatal(err)
 	}

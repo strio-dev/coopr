@@ -42,7 +42,8 @@ func TestNormalizeBuildNetworkOptions(t *testing.T) {
 
 func TestBuildWideHostNetworkAuthorizesRuns(t *testing.T) {
 	for _, authored := range []string{"", ` network="host"`} {
-		plan := testPlan(t, "from \"scratch\"\nrun \"true\""+authored+"\n")
+		plan := testPlan(t, `from "scratch" {
+    run "true"`+authored+"\n}\n")
 		for _, network := range []string{"default", "host"} {
 			request, err := RequestFromPlan(plan, PlanOptions{Network: network})
 			if err != nil {
@@ -141,7 +142,8 @@ func TestChrootRejectsRequestedNetworkIsolation(t *testing.T) {
 		{name: "controls select rootless", network: "none", controls: RunControls{Isolation: "rootless"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			plan := testPlan(t, "from \"scratch\"\nrun \"true\""+test.authored+"\n")
+			plan := testPlan(t, `from "scratch" {
+    run "true"`+test.authored+"\n}\n")
 			_, err := RequestFromPlan(plan, PlanOptions{Network: test.network, Isolation: test.isolation, RunControls: test.controls})
 			if test.wantError {
 				if err == nil || !strings.Contains(err.Error(), "cannot be used with chroot isolation") {
@@ -288,7 +290,11 @@ func TestImplicitNoneEnablesPortablePackageAndComponentCaches(t *testing.T) {
 }
 
 func TestRequestFromPlanResolvesBuildNetworkAndHosts(t *testing.T) {
-	plan := testPlan(t, "from \"scratch\"\nrun \"printf implicit\"\nrun \"printf explicit\" network=\"default\"\n")
+	plan := testPlan(t, `from "scratch" {
+    run "printf implicit"
+    run "printf explicit" network="default"
+}
+`)
 	request, err := RequestFromPlan(plan, PlanOptions{Network: "none", AddHosts: []string{"EXAMPLE.TEST:127.0.0.1"}})
 	if err != nil {
 		t.Fatal(err)

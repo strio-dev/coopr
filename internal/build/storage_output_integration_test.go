@@ -40,8 +40,8 @@ func TestNativeStorageMatchesArchiveAndRuns(t *testing.T) {
 	archive := filepath.Join(work, "image.oci.tar")
 	base := Options{File: file, Platform: "linux/" + runtime.GOARCH}
 	archiveBuild := base
-	archiveBuild.Tag = "oci-archive:" + archive
-	if _, err := Run(ctx, archiveBuild); err != nil {
+	archiveBuild.Tag = "coopr-archive:test"
+	if _, err := buildArchive(t, archive, ctx, archiveBuild); err != nil {
 		t.Fatalf("archive build: %v", err)
 	}
 	manifest, image := readExampleImage(t, ctx, archive)
@@ -132,7 +132,7 @@ func TestDefaultNativeStoreRetagRunsWithoutContext(t *testing.T) {
 	copy.Stdout = &copyOutput
 	copy.Stderr = &copyDiagnostics
 	err = copy.Run()
-	if err != nil || strings.TrimSpace(copyOutput.String()) != tag {
+	if err != nil || copyOutput.Len() != 0 {
 		t.Fatalf("retag stored image: %v: stdout=%s stderr=%s", err, copyOutput.String(), copyDiagnostics.String())
 	}
 	t.Cleanup(func() {
@@ -215,7 +215,13 @@ func loadTestDefinition(t *testing.T, ctx context.Context, work string) string {
 		t.Fatal(err)
 	}
 	definition := filepath.Join(work, "app.coopr")
-	content := "from \"scratch\"\ncopy \"runner\" \"/runner\"\ncopy \"marker\" \"/marker\"\nlabel coopr_test=\"load\"\ncmd { exec \"/runner\" }\n"
+	content := `from "scratch" {
+    copy "runner" "/runner"
+    copy "marker" "/marker"
+    label coopr_test="load"
+    cmd { exec "/runner" }
+}
+`
 	if err := os.WriteFile(definition, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}

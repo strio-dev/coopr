@@ -75,5 +75,6 @@ docs-serve:
 
 # Build documentation strictly and parse its KDL examples.
 docs-check: docs-build
+    nix develop path:. -c python3 -B -m unittest discover -s docs/.overrides -p test_highlight.py
     nix develop path:. -c go test -count=1 ./internal/definition -run TestDocumentationKDLExamples
     nix develop path:. -c python3 nix/tests/installer.py docs/install.sh

@@ -1,57 +1,110 @@
 # Caching
 
-Share cached results through a registry repository:
+Coopr reuses instruction results automatically, including work inside components. Share those results through a registry or a portable local directory. Use RUN cache mounts separately to keep disposable tool data between builds.
+
+## Reuse local results
+
+From a repository checkout, build the [hello-world example](../tutorials/first-image.md) twice:
 
 ```sh
-coopr build image.coopr \
-  --cache-from ghcr.io/team/cache --cache-to ghcr.io/team/cache
-coopr component build ./components/settings/component.coopr \
-  --cache-from ghcr.io/team/cache --cache-to ghcr.io/team/cache
+coopr build examples/first-image/image.coopr --tag hello:cached
+coopr build examples/first-image/image.coopr --tag hello:cached
 ```
 
-`--cache-from` reads cached results and `--cache-to` writes them. Both are repeatable. Registry values name repositories, without tags or digests.
+The second build reports `Using cache` for reused checkpoints. Coopr matches the input image state, arguments, platform, execution settings, and declared sources. Changed inputs can invalidate a result and the instructions that depend on it.
 
-For a portable local cache, use `type=local,src=PATH` when reading and `type=local,dest=PATH` when writing:
+Local instruction snapshots live in the [native image store](storage.md). They work with the default `--layers=true`; `--layers=false` reruns filesystem instructions instead of reading those snapshots. See [layer and cache behavior](../reference/execution.md#layers-storage-and-copying).
+
+## Share results through a registry
+
+Use a cache repository that your machines or CI jobs can access. Replace `registry.example.com/team/coopr-cache` below and authenticate with `coopr login` when required:
 
 ```sh
-coopr build image.coopr \
+coopr build examples/first-image/image.coopr --tag hello:cached \
+  --cache-from registry.example.com/team/coopr-cache \
+  --cache-to registry.example.com/team/coopr-cache
+```
+
+The same options apply when packaging a component:
+
+```sh
+coopr component build examples/reusable-components/components/settings/component.coopr \
+  --cache-from registry.example.com/team/coopr-cache \
+  --cache-to registry.example.com/team/coopr-cache
+```
+
+Both commands run from the repository checkout. `--cache-from` reads results and `--cache-to` writes them; supply both to use a repository in both directions. Each option is repeatable. Registry values name repositories without tags or digests.
+
+## Use a portable local cache
+
+Write an OCI cache directory that you can retain between CI jobs or move to another machine:
+
+```sh
+coopr build examples/first-image/image.coopr --tag hello:cached \
   --cache-from type=local,src=.coopr-cache \
   --cache-to type=local,dest=.coopr-cache
 ```
 
-Sources and destinations can differ; for example, read a registry cache and write a local cache. The local option syntax follows Docker's convention; Coopr's cache contents are not interchangeable with BuildKit caches.
+Paths are relative to the command’s working directory. Coopr creates the directory if it does not exist. Read and write destinations can differ: for example, read a registry cache and write a local cache. The contents use Coopr’s cache format and cannot be exchanged with BuildKit caches.
 
-## Local and portable results
+## What is reused
 
-Coopr caches instruction snapshots, component invocation results, and package results. Local snapshots and cache mounts use the selected [image store](storage.md). Portable results can be stored in OCI layouts or registry repositories. Cached component outputs retain their complete image layers and configuration, rather than restoring a flattened filesystem onto the caller. Their keys include the input image chain; a cache hit preserves the same output chain as execution. Explicit layer groups compact only when their outer boundary closes.
+Portable caches store eligible instruction snapshots, component outputs, and package results. Restored components retain their selected image’s layers, configuration, and root metadata. RUN cache-mount contents remain local and are **not uploaded** by `--cache-to` or restored by `--cache-from`.
 
-Reuse depends on the selected inputs and execution controls. Device-backed RUNs cannot use portable instruction results. Unpinned remote ADD, nested component operations, and elevated operations can prevent whole-package reuse. See the [execution reference](../reference/execution.md) for eligibility and key contents.
+Some instructions stay in the local cache, including device-backed RUNs and unpinned remote ADD. Other operations can prevent reuse of a whole package or component while individual instructions still hit. See [cache scopes](../reference/execution.md#cache-scopes) for the exact boundaries, including layer groups.
+
+Trust cache repositories as you would other build inputs. Intermediate results may contain files removed from the final image.
 
 ## Refresh deliberately
 
-Rebuild when changed external data or credentials must affect the result:
+Force instructions to execute again, or limit how old a reusable result may be:
 
 ```sh
-coopr build image.coopr --no-cache
-coopr build image.coopr --cache-from ghcr.io/team/cache --cache-ttl 24h
+coopr build examples/first-image/image.coopr --no-cache
+coopr build examples/first-image/image.coopr --cache-ttl 24h
 ```
 
-`--no-cache` bypasses result reads and saves fresh results. It does not clear cache mounts. `--cache-ttl` limits reads by publication age; `--cache-ttl 0` disables reads while saving fresh results. Image timestamps do not determine cache age.
+`--no-cache` bypasses result reads and saves fresh results. It does not clear cache mounts or refresh a base image; use `--pull` to refresh registry image inputs. `--cache-ttl` limits reuse by cache-record age, not image timestamps. `--cache-ttl 0` disables result reads while saving fresh results.
 
-Network responses, credential values, cache-mount contents, and mutable host-volume/device contents do not invalidate cached results. Secret and SSH declarations do enter cache identity. Use `--no-cache` or change an authored argument when these inputs must force a rebuild. Required entitlements are checked even on a cache hit.
+Network responses, credential values, cache-mount contents, and mutable host-volume/device contents do not invalidate conventional results. Secret and SSH declarations do enter cache identity, but their contents do not. Use `--no-cache` or change a consumed build argument when these inputs must force a rebuild. A cache hit is not a reproducibility guarantee, and required entitlements are checked even on a hit.
 
-Writable primary-context bind mounts always execute because their side effects are outside the cached image. Later COPY/ADD and read-only mounts measure the changed context. This shared context is disposable; the source checkout remains unchanged. Component calls using caller-context bind mounts also bypass whole-component result reuse.
+Writable primary-context bind mounts execute each time so their context changes remain visible to later instructions. Components using caller-context binds also bypass whole-component reuse. See [RUN mounts](../reference/execution.md#run-mounts) for context lifetime and measurement.
 
-Image output compression also applies to portable instruction-cache layers. Changing `--compression-format` changes exported representation without invalidating instruction results. Native instruction snapshots keep the image store's usual representation.
+Sources may still need resolution before a cache lookup, so a hit does not guarantee an offline build. Changing [output compression](../reference/execution.md#output-compression) changes portable-cache representation without invalidating instruction results.
 
 ## Cache mounts
 
-Keep disposable tool data between RUNs:
+Cache mounts help when a RUN must execute again: a package manager can reuse downloads even when its instruction result no longer matches.
+
+Save this definition as `image.coopr` in a new directory:
 
 ```kdl
-run "go build ./..." {
-    mount "cache" target="/root/.cache/go-build"
+from "docker.io/redhat/ubi9:latest" {
+    // Keep DNF downloads outside the image's filesystem layers.
+    run {
+        script """
+            dnf install -y jq \\
+                --setopt=cachedir=/var/cache/dnf \\
+                --setopt=keepcache=True
+            """
+        mount "cache" target="/var/cache/dnf" id="ubi9-dnf" sharing="locked"
+    }
+
+    cmd {
+        exec "jq" "--version"
+    }
 }
 ```
 
-Mounts without an `id` receive deterministic names scoped to their use. Explicit IDs retain the selected sharing mode. Mount contents persist in the execution store independently of result caches. Treat them as accelerators; a cache hit does not prove the build's external inputs are reproducible.
+Build and run it from that directory:
+
+```sh
+coopr build image.coopr --tag tools:cached
+podman run --rm localhost/tools:cached
+```
+
+DNF installs `jq` into the image while its repository metadata and downloaded RPMs stay in the mount. [`keepcache=True`](https://dnf.readthedocs.io/en/latest/conf_ref.html#keepcache-label) retains those RPMs after installation. A later RUN can reuse this data even with `--no-cache`; a new machine starts with an empty mount.
+
+The explicit `id` shares tool data with other mounts using that ID. Omit it for an automatically scoped name that can change with the definition, platform, or component arguments. `sharing="locked"` serializes access; `shared` permits concurrent access and `private` gives concurrent users separate caches.
+
+Mount data is disposable: the build must work when it is empty. See [mount options](../reference/definition.md#run-mount-options) and [cache cleanup](storage.md#clear-run-cache-mounts).

@@ -24,9 +24,10 @@ let
       ''
         mkdir package "$out"
         cp ${coopr-static}/bin/coopr package/coopr
+        cp -r ${coopr-static}/libexec package/libexec
         cp ${coopr-static}/share/licenses/coopr/LICENSE package/LICENSE
         cp -r ${coopr-static}/share/licenses/coopr/third-party package/third-party
-        tar ${tarFlags} -C package -cf - coopr LICENSE third-party | gzip -n > "$out/coopr-linux-${arch}.tar.gz"
+        tar ${tarFlags} -C package -cf - coopr libexec LICENSE third-party | gzip -n > "$out/coopr-linux-${arch}.tar.gz"
       '';
   sources =
     pkgs.runCommand "coopr-sources.tar.gz"
@@ -67,6 +68,7 @@ in
         mkdir package
         tar -xzf ${binary}/coopr-linux-${arch}.tar.gz -C package
         cmp package/coopr ${coopr-static}/bin/coopr
+        cmp package/libexec/coopr/coopr-run-sequence ${coopr-static}/libexec/coopr/coopr-run-sequence
         cmp package/LICENSE ${../LICENSE}
         diff -r package/third-party ${coopr-static}/share/licenses/coopr/third-party
         test -s package/third-party/NOTICE
@@ -77,6 +79,17 @@ in
           echo 'The release binary requires a dynamic loader' >&2
           exit 1
         fi
+        if readelf -l package/libexec/coopr/coopr-run-sequence | grep -q INTERP; then
+          echo 'The RUN sequence helper requires a dynamic loader' >&2
+          exit 1
+        fi
+        if env -i PATH=/nonexistent ./package/libexec/coopr/coopr-run-sequence 2> helper-error; then
+          echo 'The RUN sequence helper accepted missing arguments' >&2
+          exit 1
+        else
+          test "$?" = 125
+        fi
+        grep -q 'coopr-run-sequence: expected one command-file path' helper-error
         env -i PATH=/nonexistent HOME="$TMPDIR" ./package/coopr --help > help
         grep -q 'Usage:' help
         test "$(env -i PATH=/nonexistent HOME="$TMPDIR" ./package/coopr --version)" = ${pkgs.lib.escapeShellArg "coopr version ${coopr-static.version}"}

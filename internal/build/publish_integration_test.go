@@ -24,7 +24,13 @@ func TestPublishComponentServiceFromSourceAndConsume(t *testing.T) {
 	ref := strings.TrimPrefix(server.URL, "http://") + "/coopr/service:stable"
 	publisher := t.TempDir()
 	component := filepath.Join(publisher, "component.coopr")
-	if err := os.WriteFile(component, []byte("package as=\"pkg\"\ncopy \"publisher-source\" \"/artifact\"\nextend as=\"base\"\ncopy \"/artifact\" \"/installed\" from=\"pkg\"\n"), 0600); err != nil {
+	if err := os.WriteFile(component, []byte(`package as="pkg" {
+    copy "publisher-source" "/artifact"
+}
+extend as="base" {
+    copy "/artifact" "/installed" from="pkg"
+}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	source := filepath.Join(publisher, "publisher-source")
@@ -48,11 +54,14 @@ func TestPublishComponentServiceFromSourceAndConsume(t *testing.T) {
 	}
 	consumer := t.TempDir()
 	app := filepath.Join(consumer, "app.coopr")
-	if err := os.WriteFile(app, []byte("from \"scratch\"\ncomponent \""+immutable+"\"\n"), 0600); err != nil {
+	if err := os.WriteFile(app, []byte(`from "scratch" {
+    component "`+immutable+`"
+}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	archive := filepath.Join(consumer, "app.oci.tar")
-	if _, err := Run(context.Background(), Options{File: app, Tag: "oci-archive:" + archive, Platform: "linux/amd64", TLSVerify: new(false)}); err != nil {
+	if _, err := buildArchive(t, archive, context.Background(), Options{File: app, Platform: "linux/amd64", TLSVerify: new(false)}); err != nil {
 		t.Fatal(err)
 	}
 	if !containsName(archiveLayerNames(t, archive), "installed") {
@@ -66,7 +75,13 @@ func TestBuildComponentDefaultLocalStoreThenInvoke(t *testing.T) {
 	}
 	publisher := t.TempDir()
 	component := filepath.Join(publisher, "component.coopr")
-	if err := os.WriteFile(component, []byte("package as=\"pkg\"\ncopy \"payload\" \"/artifact\"\nextend as=\"base\"\ncopy \"/artifact\" \"/installed\" from=\"pkg\"\n"), 0600); err != nil {
+	if err := os.WriteFile(component, []byte(`package as="pkg" {
+    copy "payload" "/artifact"
+}
+extend as="base" {
+    copy "/artifact" "/installed" from="pkg"
+}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(publisher, "payload"), []byte("local component\n"), 0600); err != nil {
@@ -83,11 +98,14 @@ func TestBuildComponentDefaultLocalStoreThenInvoke(t *testing.T) {
 	}
 	consumer := t.TempDir()
 	app := filepath.Join(consumer, "app.coopr")
-	if err := os.WriteFile(app, []byte("from \"scratch\"\ncomponent \""+local+"\"\n"), 0600); err != nil {
+	if err := os.WriteFile(app, []byte(`from "scratch" {
+    component "`+local+`"
+}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	archive := filepath.Join(consumer, "app.oci.tar")
-	if _, err := Run(context.Background(), Options{File: app, Tag: "oci-archive:" + archive, Platform: "linux/amd64"}); err != nil {
+	if _, err := buildArchive(t, archive, context.Background(), Options{File: app, Platform: "linux/amd64"}); err != nil {
 		t.Fatal(err)
 	}
 	if !containsName(archiveLayerNames(t, archive), "installed") {
@@ -104,7 +122,10 @@ func TestPublishComponentDoesNotRunInvocationSteps(t *testing.T) {
 	ref := strings.TrimPrefix(server.URL, "http://") + "/coopr/poison:stable"
 	dir := t.TempDir()
 	component := filepath.Join(dir, "component.coopr")
-	if err := os.WriteFile(component, []byte("extend as=\"base\"\nrun \"exit 79\"\n"), 0600); err != nil {
+	if err := os.WriteFile(component, []byte(`extend as="base" {
+    run "exit 79"
+}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	immutable, err := PublishComponent(context.Background(), PublishOptions{
@@ -127,7 +148,17 @@ func TestPublishIndependentPackages(t *testing.T) {
 	ref := strings.TrimPrefix(server.URL, "http://") + "/coopr/two-packages:stable"
 	dir := t.TempDir()
 	file := filepath.Join(dir, "component.coopr")
-	content := "package as=\"first\"\ncopy \"first-source\" \"/first-source\"\npackage as=\"second\"\ncopy \"second-source\" \"/second-source\"\nextend as=\"base\"\ncopy \"/first-source\" \"/first\" from=\"first\"\ncopy \"/second-source\" \"/second\" from=\"second\"\n"
+	content := `package as="first" {
+    copy "first-source" "/first-source"
+}
+package as="second" {
+    copy "second-source" "/second-source"
+}
+extend as="base" {
+    copy "/first-source" "/first" from="first"
+    copy "/second-source" "/second" from="second"
+}
+`
 	if err := os.WriteFile(file, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -147,11 +178,14 @@ func TestPublishIndependentPackages(t *testing.T) {
 	}
 	consumer := t.TempDir()
 	app := filepath.Join(consumer, "app.coopr")
-	if err := os.WriteFile(app, []byte("from \"scratch\"\ncomponent \""+immutable+"\"\n"), 0600); err != nil {
+	if err := os.WriteFile(app, []byte(`from "scratch" {
+    component "`+immutable+`"
+}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	archive := filepath.Join(consumer, "app.oci.tar")
-	if _, err := Run(context.Background(), Options{File: app, Tag: "oci-archive:" + archive, Platform: "linux/amd64", TLSVerify: new(false)}); err != nil {
+	if _, err := buildArchive(t, archive, context.Background(), Options{File: app, Platform: "linux/amd64", TLSVerify: new(false)}); err != nil {
 		t.Fatal(err)
 	}
 	names := archiveLayerNames(t, archive)
@@ -170,7 +204,17 @@ func TestPublishCopyDotExcludesPackageStagingInsideContext(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("TMPDIR", dir)
 	component := filepath.Join(dir, "component.coopr")
-	content := "package as=\"first\"\ncopy \".\" \"/captured-first/\"\npackage as=\"second\"\ncopy \".\" \"/captured-second/\"\nextend as=\"base\"\ncopy \"/captured-first/marker\" \"/first\" from=\"first\"\ncopy \"/captured-second/marker\" \"/second\" from=\"second\"\n"
+	content := `package as="first" {
+    copy "." "/captured-first/"
+}
+package as="second" {
+    copy "." "/captured-second/"
+}
+extend as="base" {
+    copy "/captured-first/marker" "/first" from="first"
+    copy "/captured-second/marker" "/second" from="second"
+}
+`
 	if err := os.WriteFile(component, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}

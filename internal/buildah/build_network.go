@@ -136,6 +136,13 @@ func normalizeAddHosts(values []string) ([]string, error) {
 }
 
 func normalizePlanOptions(options PlanOptions) (PlanOptions, error) {
+	if options.executableOrigin == "" {
+		var err error
+		options.executableOrigin, err = currentRunSequenceOrigin()
+		if err != nil {
+			return PlanOptions{}, err
+		}
+	}
 	if options.Lifecycle.StageLabels && !options.Lifecycle.SaveStages {
 		return PlanOptions{}, fmt.Errorf("--stage-labels requires --save-stages")
 	}

@@ -26,9 +26,16 @@ import (
 
 func publicationMetadata(t *testing.T, data []byte, stage bool) (ComponentMetadata, map[string]string) {
 	t.Helper()
-	source := "extend as=\"base\"\nenv GREETING=\"hello\"\n"
+	source := `extend as="base" {
+    env GREETING="hello"
+}
+`
 	if stage {
-		source = "package as=\"pkg\"\nextend as=\"base\"\ncopy \"/src\" \"/dst\" from=\"pkg\"\n"
+		source = `package as="pkg" {}
+extend as="base" {
+    copy "/src" "/dst" from="pkg"
+}
+`
 	}
 	def, err := definition.Parse(strings.NewReader(source))
 	if err != nil {
@@ -133,7 +140,7 @@ func TestLocalComponentTagMovesWhileDigestPinsRemainResolvable(t *testing.T) {
 		roots = append(roots, root)
 	}
 	platform := v1.Platform{OS: "linux", Architecture: "amd64"}
-	latest, err := resolver.Resolve(ctx, "local:stable", platform, Component)
+	latest, err := resolver.Resolve(ctx, "stable", platform, Component)
 	if err != nil || latest.Root.Digest != roots[1].Digest {
 		t.Fatalf("local tag did not move: %+v, %v", latest, err)
 	}

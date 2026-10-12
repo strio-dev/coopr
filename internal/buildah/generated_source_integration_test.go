@@ -90,12 +90,14 @@ func testGeneratedOCIBase(t *testing.T, explicitAfter bool, converted bool, name
 		t.Fatal(err)
 	}
 	store := cacheTestStore(root)
-	text := `from "oci:input:latest" as="producer"
-run "cp -a /ctx/input /ctx/out" {
- mount "bind" target="/ctx" rw="true"
+	text := `from "oci:input:latest" as="producer" {
+    run "cp -a /ctx/input /ctx/out" {
+     mount "bind" target="/ctx" rw="true"
+    }
 }
-from "oci:out:latest" after="producer"
-env generated="yes"
+from "oci:out:latest" after="producer" {
+    env generated="yes"
+}
 `
 	if !explicitAfter {
 		text = strings.ReplaceAll(text, ` after="producer"`, "")
@@ -107,12 +109,16 @@ env generated="yes"
 		if err := os.WriteFile(sourcePolicyFile, []byte(`{"rules":[{"action":"CONVERT","selector":{"identifier":"docker-image://registry.invalid/generated:latest"},"updates":{"identifier":"oci:out:latest"}}]}`), 0600); err != nil {
 			t.Fatal(err)
 		}
-		text = strings.ReplaceAll(text, `from "oci:out:latest"`, `from "registry.invalid/generated:latest"`)
+		text = strings.ReplaceAll(text, `from "oci:out:latest" {}
+`, `from "registry.invalid/generated:latest" {}
+`)
 	}
 
 	var contexts []buildcontext.Spec
 	if namedContext {
-		text = strings.ReplaceAll(text, `from "registry.invalid/generated:latest"`, `from "generated"`)
+		text = strings.ReplaceAll(text, `from "registry.invalid/generated:latest" {}
+`, `from "generated" {}
+`)
 		contexts = []buildcontext.Spec{{Name: "generated", Kind: buildcontext.DockerImage, Reference: "registry.invalid/generated:latest"}}
 	}
 	def, err := definition.Parse(strings.NewReader(text))

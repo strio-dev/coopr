@@ -10,7 +10,7 @@ import (
 
 func TestParseInstructions(t *testing.T) {
 	source := `
-from "debian:bookworm" as="base"
+from "debian:bookworm" as="base" {
 run "echo one"
 run """
     echo two
@@ -18,104 +18,152 @@ run """
     """ {
     mount "cache" target="/tmp/cache"
 }
-package as="assets"
+}
+package as="assets" {
 copy "/out" "/" from="base"
-extend as="consumer"
-component "registry.example.com/team/setup:v1" channel="preview" target="literal-argument"
+}
+extend as="consumer" {
+component "registry.example.com/team/setup:v1" { arg "channel" "preview"; arg "target" "literal-argument" }
+}
 `
 	def, err := Parse(strings.NewReader(source))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(def.Instructions) != 7 {
-		t.Fatalf("got %d instructions, want 7", len(def.Instructions))
+	if len(def.Instructions) != 3 {
+		t.Fatalf("got %d instructions, want 3", len(def.Instructions))
 	}
-	if def.Instructions[1].Name != "run" || def.Instructions[2].Name != "run" {
+	if def.Instructions[0].Children[0].Name != "run" || def.Instructions[0].Children[1].Name != "run" {
 		t.Fatal("repeated instructions lost order")
 	}
-	if def.Instructions[2].Arguments[0] != "echo two\necho three" {
-		t.Fatalf("multiline string = %q", def.Instructions[2].Arguments[0])
+	if def.Instructions[0].Children[1].Arguments[0] != "echo two\necho three" {
+		t.Fatalf("multiline string = %q", def.Instructions[0].Children[1].Arguments[0])
 	}
-	if got := def.Instructions[2].Children[0]; got.Name != "mount" || got.Properties["target"] != "/tmp/cache" {
+	if got := def.Instructions[0].Children[1].Children[0]; got.Name != "mount" || got.Properties["target"] != "/tmp/cache" {
 		t.Fatalf("mount = %#v", got)
 	}
-	if got := def.Instructions[4]; got.Name != "copy" || got.Properties["from"] != "base" {
+	if got := def.Instructions[1].Children[0]; got.Name != "copy" || got.Properties["from"] != "base" {
 		t.Fatalf("copy = %#v", got)
 	}
-	if got := def.Instructions[6]; len(got.Arguments) != 1 || got.Properties["channel"] != "preview" || got.Properties["target"] != "literal-argument" || len(got.Children) != 0 {
+	if got := def.Instructions[2].Children[0]; len(got.Arguments) != 1 || len(got.Properties) != 0 || len(got.Children) != 2 {
 		t.Fatalf("component = %#v", got)
 	}
 }
 
 func TestComponentArguments(t *testing.T) {
+	def, err := parseFragment(strings.NewReader(`component "./shared.coopr#configured" {
+ arg "channel" "${channel}"
+ arg "target" "literal-argument"
+ arg "enabled" #true
+ arg "count" 0o755
+ arg "ratio" 1.5
+ }`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst := def.Instructions[0]
+	got, err := inst.ComponentArguments()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"channel": "${channel}", "target": "literal-argument", "enabled": "true", "count": "493", "ratio": "1.5"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("arguments = %#v, want %#v", got, want)
+	}
+	if len(inst.Properties) != 0 || len(inst.Children) != 5 {
+		t.Fatalf("bindings not retained: %#v", inst)
+	}
+	if err := validateFragment(def); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateResolved(inst); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestComponentArgumentValidation(t *testing.T) {
 	for _, source := range []string{
-		`component "registry.example.com/team/setup:v1" channel="preview"`,
-		`component "registry.example.com/team/setup:v1" channel="preview" target="literal-argument"`,
+		`component "./shared.coopr" channel="api"`,
+		`component "./shared.coopr" { arg "channel" "one"; arg "channel" "two" }`,
+		`component "./shared.coopr" { arg "channel" }`,
+		`component "./shared.coopr" { arg "channel" "one" "two" }`,
+		`component "./shared.coopr" { arg "channel" "one" extra="two" }`,
+		`component "./shared.coopr" { arg "channel" "one" { arg "nested" "two" } }`,
+		`component "./shared.coopr" { run "true" }`,
+		`component "./shared.coopr" { arg "" "one" }`,
+		`component "./shared.coopr" { arg "bad-name" "one" }`,
+		`component "./shared.coopr" { arg "1name" "one" }`,
+		`run "true" { arg "name" "value" }`,
 	} {
+		t.Run(source, func(t *testing.T) {
+			if _, err := parseFragment(strings.NewReader(source)); err == nil {
+				t.Fatalf("accepted %s", source)
+			}
+		})
+	}
+	for _, inst := range []Instruction{
+		{Name: "component", Arguments: []string{"./shared.coopr"}, Properties: map[string]string{"name": "value"}},
+		{Name: "component", Arguments: []string{"./shared.coopr\x00"}},
+		{Name: "component", Arguments: []string{"./shared.coopr"}, Children: []Instruction{{Name: "arg", Arguments: []string{"name"}}}},
+		{Name: "component", Arguments: []string{"./shared.coopr"}, Children: []Instruction{{Name: "arg", Arguments: []string{"name", "one"}}, {Name: "arg", Arguments: []string{"name", "two"}}}},
+		{Name: "component", Arguments: []string{"./shared.coopr"}, Children: []Instruction{{Name: "arg", Arguments: []string{"bad-name", "one"}}}},
+		{Name: "component", Arguments: []string{"./shared.coopr"}, Children: []Instruction{{Name: "env", Arguments: []string{"name", "one"}}}},
+	} {
+		if _, err := inst.ComponentArguments(); err == nil {
+			t.Fatalf("accepted malformed component %#v", inst)
+		}
+		if err := validateFragment(&Definition{Instructions: []Instruction{inst}}); err == nil {
+			t.Fatalf("Validate accepted malformed component %#v", inst)
+		}
+		if err := ValidateResolved(inst); err == nil {
+			t.Fatalf("ValidateResolved accepted malformed component %#v", inst)
+		}
+	}
+	for _, binding := range []Instruction{
+		{Name: "arg", Arguments: []string{"name", "value\x00"}},
+		{Name: "arg", Arguments: []string{"name\x00", "value"}},
+		{Name: "arg", Arguments: []string{"name", "value"}, Form: "exec"},
+		{Name: "arg", Arguments: []string{"name", "value"}, LayerBoundary: "begin"},
+		{Name: "arg", Arguments: []string{"name", "value"}, ProcessQuotes: true},
+		{Name: "arg", Arguments: []string{"name", "value"}, DeferredOnBuild: "RUN true"},
+	} {
+		inst := Instruction{Name: "component", Arguments: []string{"./shared.coopr"}, Children: []Instruction{binding}}
+		if _, err := inst.ComponentArguments(); err == nil {
+			t.Fatalf("accepted malformed binding %#v", binding)
+		}
+		if err := validateFragment(&Definition{Instructions: []Instruction{inst}}); err == nil {
+			t.Fatalf("Validate accepted %#v", binding)
+		}
+		if err := ValidateResolved(inst); err == nil {
+			t.Fatalf("ValidateResolved accepted %#v", binding)
+		}
+	}
+}
+
+func TestExtendOnlyAcceptsAlias(t *testing.T) {
+	for _, source := range []string{`extend {}`, `extend as="configured" {}`} {
 		def, err := Parse(strings.NewReader(source))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := def.Instructions[0]; got.Name != "component" || got.Properties["channel"] != "preview" {
-			t.Fatalf("component = %#v", got)
+		if err := Validate(def); err != nil {
+			t.Fatal(err)
 		}
 	}
-}
-
-func TestExtendCompatibilityProperties(t *testing.T) {
-	def, err := Parse(strings.NewReader(`extend as="base" distro="${distribution}" distro-version="3.20" package-manager="apk" architecture="amd64"`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := def.Instructions[0].Properties; got["distro"] != "${distribution}" || got["distro-version"] != "3.20" || got["package-manager"] != "apk" || got["architecture"] != "amd64" {
-		t.Fatalf("compatibility properties lost: %v", got)
-	}
-	for _, source := range []string{`extend distro-version="3.20"`, `extend distro="alpine" unknown="value"`} {
-		if _, err := Parse(strings.NewReader(source)); err == nil {
-			t.Fatalf("accepted invalid extend %q", source)
+	for _, name := range []string{"architecture", "distro", "distro-version", "package-manager"} {
+		for _, source := range []string{`extend ` + name + `="value" {}`, `extend { ` + name + ` "value" }`} {
+			if _, err := Parse(strings.NewReader(source)); err == nil {
+				t.Fatalf("accepted removed compatibility syntax %s", source)
+			}
 		}
-	}
-}
-
-func TestExtendCompatibilityLists(t *testing.T) {
-	def, err := Parse(strings.NewReader(`
-extend as="base" {
-  distro "fedora" "rhel"
-  distro-version "41" "42"
-  package-manager "dnf" "yum"
-  architecture "amd64" "arm64"
-}
-`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	children := def.Instructions[0].Children
-	want := []Instruction{
-		{Name: "distro", Arguments: []string{"fedora", "rhel"}},
-		{Name: "distro-version", Arguments: []string{"41", "42"}},
-		{Name: "package-manager", Arguments: []string{"dnf", "yum"}},
-		{Name: "architecture", Arguments: []string{"amd64", "arm64"}},
-	}
-	if !reflect.DeepEqual(children, want) {
-		t.Fatalf("compatibility lists = %#v, want %#v", children, want)
-	}
-}
-
-func TestExtendCompatibilityListRejectsDuplicateDeclarations(t *testing.T) {
-	tests := []struct {
-		source string
-		want   string
-	}{
-		{`extend distro="fedora" { distro "rhel" }`, `duplicate compatibility requirement "distro"`},
-		{`extend { architecture "amd64"; architecture "arm64" }`, `duplicate compatibility requirement "architecture"`},
-		{`extend { distro-version "41" }`, "distro-version requires distro"},
-		{`extend { distro }`, "needs at least one value"},
-		{`extend { distro "fedora" unsupported="value" }`, "only string values"},
-		{`extend { kernel "6" }`, `unknown compatibility requirement "kernel"`},
-	}
-	for _, test := range tests {
-		if _, err := Parse(strings.NewReader(test.source)); err == nil || !strings.Contains(err.Error(), test.want) {
-			t.Errorf("Parse(%q) error = %v, want %q", test.source, err, test.want)
+		inst := Instruction{Name: "extend", Properties: map[string]string{name: "value"}}
+		if err := ValidateResolved(inst); err == nil {
+			t.Fatalf("accepted removed property %s", name)
+		}
+		inst.Properties = nil
+		inst.Children = []Instruction{{Name: name, Arguments: []string{"value"}}}
+		if err := ValidateResolved(inst); err == nil {
+			t.Fatalf("accepted removed child %s", name)
 		}
 	}
 }
@@ -151,10 +199,23 @@ func TestParseExamples(t *testing.T) {
 
 func TestComponentSymbolicReference(t *testing.T) {
 	for _, source := range []string{
-		"extend\narg \"inner\"\ncomponent \"${inner}\"\n",
-		"extend\ncomponent \"$inner\"\n",
-		"from \"scratch\"\ncomponent \"sha256:8a3f2ec95696c56dbeeb55c6ae2e7a0583d7d97ce72cd258774d814ad214aaa7\"\n",
-		"from \"scratch\"\ncomponent \"local:company-config\"\n",
+		`extend {
+    arg "inner"
+    component "${inner}"
+}
+`,
+		`extend {
+    component "$inner"
+}
+`,
+		`from "scratch" {
+    component "sha256:8a3f2ec95696c56dbeeb55c6ae2e7a0583d7d97ce72cd258774d814ad214aaa7"
+}
+`,
+		`from "scratch" {
+    component "company-config"
+}
+`,
 	} {
 		if _, err := Parse(strings.NewReader(source)); err != nil {
 			t.Fatalf("parse symbolic component %q: %v", source, err)
@@ -167,16 +228,17 @@ func TestInvalidDefinitions(t *testing.T) {
 		{"empty", "// empty\n", "empty Coopr definition"},
 		{"syntax", "run \"unterminated\n", "parse KDL v2"},
 		{"invalid instruction name", "Nope \"x\"", "invalid instruction name"},
-		{"arity", "from", "expected one source"},
+		{"arity", "from {}", "expected one source"},
 		{"null argument", "run #null", "null is not supported"},
-		{"null property", "from \"base\" platform=#null", "null is not supported"},
+		{"null property", `from "base" platform=#null {}
+`, "null is not supported"},
 		{"nonfinite argument", "run #inf", "finite"},
 		{"node annotation", "(exec)run \"true\"", "annotations are not supported"},
 		{"argument annotation", "run (word)\"true\"", "annotations are not supported"},
 		{"property annotation", "run \"true\" network=(mode)\"none\"", "annotations are not supported"},
 		{"string shell selector", `run "/bin/true" shell="false"`, "shell property is not supported"},
-		{"package name", "package", "nonempty as"},
-		{"component child", "component \"registry.example.com/a:v1\" { with channel=\"x\" }", "children are only allowed"},
+		{"package name", "package {}", "nonempty as"},
+		{"component child", "component \"registry.example.com/a:v1\" { with channel=\"x\" }", "unknown instruction"},
 		{"component positional target", `component "registry.example.com/a:v1" "debug"`, "expected one component reference"},
 		{"too many component arguments", `component "registry.example.com/a:v1" "debug" "extra"`, "expected one component reference"},
 		{"mount child", "run \"x\" { mount \"cache\" target=\"/tmp\" { foo } }", "children are only allowed"},
@@ -191,7 +253,12 @@ func TestInvalidDefinitions(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := Parse(strings.NewReader(tt.source))
+			var err error
+			if tt.name == "empty" {
+				_, err = Parse(strings.NewReader(tt.source))
+			} else {
+				_, err = parseFragment(strings.NewReader(tt.source))
+			}
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("error = %v, want substring %q", err, tt.want)
 			}
@@ -200,7 +267,7 @@ func TestInvalidDefinitions(t *testing.T) {
 }
 
 func TestStandardOptionsDeferToFrontend(t *testing.T) {
-	parsed, err := Parse(strings.NewReader(`run "true" network="host" security="sandbox"`))
+	parsed, err := parseFragment(strings.NewReader(`run "true" network="host" security="sandbox"`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +278,7 @@ func TestStandardOptionsDeferToFrontend(t *testing.T) {
 }
 
 func TestCommandFormsAndDirectRepeatedOptions(t *testing.T) {
-	def, err := Parse(strings.NewReader(`
+	def, err := parseFragment(strings.NewReader(`
 run { exec "/bin/echo" "hello" }
 cmd "echo $HOME"
 entrypoint { exec "/usr/bin/app" }
@@ -233,8 +300,8 @@ run "true" { device "vendor.example/gpu=one" "vendor.example/gpu=two" required=#
 }
 
 func TestNativeScalarNormalization(t *testing.T) {
-	def, err := Parse(strings.NewReader(`
-component "example.com/test:latest" retry=3 enabled=#true ratio=1.5
+	def, err := parseFragment(strings.NewReader(`
+component "example.com/test:latest" { arg "retry" 3; arg "enabled" #true; arg "ratio" 1.5 }
 copy "src" "/dst" chmod="0755"
 run "true" { mount "secret" target="/run/secret" mode="0400" required=#true uid=1000 }
 env "ENABLED" #true
@@ -244,7 +311,7 @@ run "true" { mount "secret" target="/run/other-secret" required="false" }
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := def.Instructions[0]; got.Name != "component" || got.Properties["retry"] != "3" || got.Properties["enabled"] != "true" || got.Properties["ratio"] != "1.5" {
+	if got, err := def.Instructions[0].ComponentArguments(); err != nil || got["retry"] != "3" || got["enabled"] != "true" || got["ratio"] != "1.5" {
 		t.Fatalf("normalized component = %#v", got)
 	}
 	if got := def.Instructions[1].Properties["chmod"]; got != "0755" {
@@ -273,14 +340,14 @@ func TestRemovedAuthoredInlineAndOptionSyntax(t *testing.T) {
 		`run "true" { option "device" "vendor.example/gpu" }`,
 		`run "true" { device "vendor.example/gpu" required="yes" }`,
 	} {
-		if _, err := Parse(strings.NewReader(source)); err == nil {
+		if _, err := parseFragment(strings.NewReader(source)); err == nil {
 			t.Errorf("accepted removed authored syntax %q", source)
 		}
 	}
 }
 
 func TestMultilineShebangRunBecomesExecutableInlineFile(t *testing.T) {
-	def, err := Parse(strings.NewReader(`
+	def, err := parseFragment(strings.NewReader(`
 run """
     #!/bin/sh
     printf hello >/message
@@ -304,7 +371,7 @@ func TestValidateRejectsUnsafeInternalInlineFilePaths(t *testing.T) {
 		def := &Definition{Instructions: []Instruction{{
 			Name: "copy", Arguments: []string{"/target"}, InlineFiles: []InlineFile{{Path: path, Data: "payload"}},
 		}}}
-		if err := Validate(def); err == nil || !strings.Contains(err.Error(), "inline file path") {
+		if err := validateFragment(def); err == nil || !strings.Contains(err.Error(), "inline file path") {
 			t.Fatalf("Validate inline path %q error = %v", path, err)
 		}
 	}
@@ -315,13 +382,13 @@ func TestValidateAcceptsImportedInlineFiles(t *testing.T) {
 		{Name: "copy", Arguments: []string{"/target"}, InlineFiles: []InlineFile{{Path: "message", Data: "payload"}}},
 		{Name: "run", Form: "exec", Arguments: []string{"/run/coopr-heredoc/script"}, InlineFiles: []InlineFile{{Path: "script", Data: "#!/bin/sh\ntrue"}}},
 	}}
-	if err := Validate(def); err != nil {
+	if err := validateFragment(def); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestHealthcheckAndOnBuildSyntax(t *testing.T) {
-	def, err := Parse(strings.NewReader(`
+	def, err := parseFragment(strings.NewReader(`
 healthcheck interval="30s" timeout="3s" start-period="5s" start-interval="1s" retries=4 { exec "/bin/check" "--ready" }
 healthcheck "curl -f http://localhost/ || exit 1"
 healthcheck NONE
@@ -373,41 +440,41 @@ func TestInvalidHealthcheckAndOnBuildSyntax(t *testing.T) {
 		{`onbuild extra="no" { run "true" }`, "no arguments or properties"},
 	}
 	for _, test := range tests {
-		_, err := Parse(strings.NewReader(test.source))
+		_, err := parseFragment(strings.NewReader(test.source))
 		if err == nil || !strings.Contains(err.Error(), test.want) {
-			t.Errorf("Parse(%q) error = %v, want containing %q", test.source, err, test.want)
+			t.Errorf("parseFragment(%q) error = %v, want containing %q", test.source, err, test.want)
 		}
 	}
 	for _, source := range []string{`healthcheck "true" interval="0s" retries=4`, `healthcheck "true" start-period="1ms"`} {
-		if _, err := Parse(strings.NewReader(source)); err != nil {
-			t.Errorf("Parse(%q): %v", source, err)
+		if _, err := parseFragment(strings.NewReader(source)); err != nil {
+			t.Errorf("parseFragment(%q): %v", source, err)
 		}
 	}
 }
 
 func TestCommandResetForms(t *testing.T) {
 	for _, source := range []string{"cmd", "entrypoint", `cmd { exec }`, `entrypoint { exec }`} {
-		def, err := Parse(strings.NewReader(source))
+		def, err := parseFragment(strings.NewReader(source))
 		if err != nil {
 			t.Fatalf("parse %q: %v", source, err)
 		}
 		if got := def.Instructions[0]; len(got.Arguments) != 0 || got.Form != "exec" {
 			t.Fatalf("parse %q arguments = %#v, want empty reset", source, got.Arguments)
 		}
-		if err := Validate(def); err != nil {
+		if err := validateFragment(def); err != nil {
 			t.Fatalf("validate %q: %v", source, err)
 		}
 	}
 
 	for _, source := range []string{`cmd "one" "two"`, `entrypoint "one" "two"`} {
-		if _, err := Parse(strings.NewReader(source)); err == nil || !strings.Contains(err.Error(), "one shell command") {
+		if _, err := parseFragment(strings.NewReader(source)); err == nil || !strings.Contains(err.Error(), "one shell command") {
 			t.Fatalf("parse %q error = %v, want shell-form arity error", source, err)
 		}
 	}
 }
 
 func TestParameterizedMountTypeCheckedAfterResolution(t *testing.T) {
-	def, err := Parse(strings.NewReader(`run "true" { mount "${mount_type}" target="/cache" }`))
+	def, err := parseFragment(strings.NewReader(`run "true" { mount "${mount_type}" target="/cache" }`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -430,7 +497,6 @@ func TestValidateDecodedDefinition(t *testing.T) {
 	}{
 		{"nil", nil, "empty Coopr definition"},
 		{"empty", &Definition{}, "empty Coopr definition"},
-		{"missing from source", &Definition{Instructions: []Instruction{{Name: "from"}}}, "expected one source"},
 		{"missing component reference", &Definition{Instructions: []Instruction{{Name: "component"}}}, "expected one component reference"},
 		{"invalid child", &Definition{Instructions: []Instruction{{Name: "run", Arguments: []string{"true"}, Children: []Instruction{{Name: "copy", Arguments: []string{"a", "b"}}}}}}, "unsupported child"},
 		{"invalid mount", &Definition{Instructions: []Instruction{{Name: "run", Arguments: []string{"true"}, Children: []Instruction{{Name: "mount", Arguments: []string{""}}}}}}, "mount type"},
@@ -442,14 +508,13 @@ func TestValidateDecodedDefinition(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := Validate(tt.def)
+			err := validateFragment(tt.def)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("error = %v; want %q", err, tt.want)
 			}
 		})
 	}
 	valid := &Definition{Instructions: []Instruction{
-		{Name: "extend"},
 		{Name: "run", Form: "shell", Arguments: []string{"true"}, Children: []Instruction{
 			{Name: "mount", Arguments: []string{"cache"}, Properties: map[string]string{"target": "/tmp"}},
 			{Name: "device", Arguments: []string{"vendor.example/gpu"}, Properties: map[string]string{"required": "true"}},
@@ -457,7 +522,7 @@ func TestValidateDecodedDefinition(t *testing.T) {
 		{Name: "copy", Arguments: []string{"src", "/dst"}, Children: []Instruction{{Name: "exclude", Arguments: []string{"*.tmp"}}}},
 		{Name: "onbuild", Arguments: []string{"RUN true"}},
 	}}
-	if err := Validate(valid); err != nil {
+	if err := validateFragment(valid); err != nil {
 		t.Fatal(err)
 	}
 }

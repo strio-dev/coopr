@@ -1,32 +1,46 @@
 # Execution
 
-Definitions contain ordered KDL v2 instructions in `.coopr` files. A definition without `extend` builds an image; one with `extend` builds a component. See [definition syntax](definition.md) for authored forms, [CLI](cli.md) for options, and [storage](../guides/storage.md) for stores and transfers.
+This reference defines how Coopr resolves inputs, executes stages and reuses cached results. Use [definition syntax](definition.md) to write instructions and [CLI](cli.md) to find commands and options. For worked examples, start with [Build images](../guides/builds.md) or [Package components](../guides/components.md).
 
 ## State and stages
 
-A stage has a Linux filesystem, image configuration, platform, and argument scope. Its instructions run in source order.
+A stage has a Linux filesystem, image configuration, platform, and argument scope. Its instructions run in source order inside the stage’s `{ ... }` block. Only global ARG declarations and stage blocks belong at the top level.
+
+Image definitions contain FROM stages. Component definitions require EXTEND and may also contain FROM and PACKAGE stages.
 
 | Stage source | Initial state |
 | --- | --- |
-| `from "IMAGE"` | Selected immutable OCI image and its configuration. |
-| `from "scratch"` | Empty filesystem and configuration. |
-| `from "STAGE"` | Named stage's completed filesystem, configuration, platform, and declared arguments. |
-| `package as="NAME"` | Empty filesystem and configuration; produces a stored package snapshot. |
-| `extend` | Consumer's current filesystem and configuration. Multiple roots start independently from that same state. |
+| `from "IMAGE" { ... }` | Selected immutable OCI image and its configuration. |
+| `from "scratch" { ... }` | Empty filesystem and configuration. |
+| `from "STAGE" { ... }` | Named stage's completed filesystem, configuration, platform, and declared arguments. |
+| `package as="NAME" { ... }` | Empty filesystem and configuration; produces a stored package snapshot. |
+| `extend { ... }` | Consumer's current filesystem and configuration. Multiple roots start independently from that same state. |
 
-The final stage is the image output unless `--target` selects another. Components require `extend`, but may select an independently based FROM output declared after it. A package stage cannot itself be the output. Component build fixes that output; an invocation property named `target` is an ordinary argument.
+### Output selection
 
-A component call adopts the selected output’s complete image chain, filesystem and configuration, then the caller continues. A FROM output uses its selected base’s normal configuration inheritance and authored overrides; an independent output discards caller-only state. Caller arguments remain in scope; component-private arguments do not. Returned ENV values win collisions with caller arguments. A later caller ARG declaration still uses the original caller CLI override. Like FROM, a component call makes a later ENTRYPOINT clear inherited CMD unless a subsequent CMD supplies one.
+| Build | Default output | Explicit selection |
+| --- | --- | --- |
+| Image | Last top-level FROM. | `--target NAME` selects a named FROM. |
+| Component artifact | Last top-level EXTEND; trailing FROM/PACKAGE stages do not change it. | `--target NAME` selects a named top-level EXTEND. |
+| Local component call | The file's default component output. | `./shared.coopr#configured` selects a named top-level EXTEND during automatic packaging. |
 
-COPY/ADD and RUN mounts with `from=` create input dependencies without changing base lineage. Sources can be named stages, packages, named contexts, or external images. External images resolve by platform to immutable descriptors. Graphs must be acyclic and stage aliases unambiguous; graph-affecting arguments must resolve before execution.
+Stored and registry artifacts keep the output chosen at packaging. Nested FROM aliases supply dependencies, not callable component targets. Stage aliases match case-insensitively. The `#` separator is reserved in local component references and requires one nonempty target. A component-call `arg "target" "value"` binds an ordinary argument; it does not select an output.
 
-Published components fix whether each FROM, COPY/ADD, and RUN mount source is a stage, `scratch`, or an external image. Invocation cannot change that role or a stage dependency. Arguments may change an external reference while it remains external. Component references themselves may use caller ARG/ENV values resolved at invocation. If a deferred component could change the scope needed to classify a dynamic COPY or mount source, publication rejects the unknown role; literal sources remain usable.
+Inside EXTEND, direct instructions modify the caller; nested FROM blocks own separate stages. The last non-ARG child determines the result: a nested FROM returns its image, while a direct instruction returns the modified caller. ARG does not switch the result. The selected result includes its filesystem, configuration and layers; see [returned state](#returned-state).
+
+### Dependencies
+
+COPY/ADD and RUN mounts with `from=` create input dependencies without changing base lineage. Sources can be named stages, packages, named contexts, or external images. External images resolve by platform to immutable descriptors. Stage sources must precede their consuming FROM, COPY/ADD, or RUN mount. Nested FROM helpers become visible to later instructions inside EXTEND. Graphs must be acyclic and stage aliases unambiguous; graph-affecting arguments must resolve before execution.
+
+Published components fix whether each FROM, COPY/ADD, and RUN mount source is a stage, `scratch`, or an external image. Invocation arguments cannot change that role or a stage dependency. Explicit [named build contexts](#named-contexts) can substitute a source without rewriting the published definition. Arguments may change an external reference while it remains external. Component references themselves may use caller ARG/ENV values resolved at invocation.
+
+If a deferred component could change the scope needed to classify a dynamic COPY or mount source, publication rejects the unknown role; literal sources remain usable.
 
 ### Platforms
 
 Only Linux platforms are supported. Repeated or comma-separated `--platform` values plan independent builds; a FROM `platform=` can select another Linux platform for that stage. The output stage determines the actual output platform. Duplicate normalized output platforms fail.
 
-One image platform produces a manifest; several produce an OCI index, or a Docker manifest list with `--format docker`, preserving requested order. Component builds similarly produce one manifest or an OCI index of complete per-platform component artifacts. Invocation selects the child matching the consumer platform.
+One image platform produces a manifest; several produce an OCI index, or a Docker manifest list with `--format docker`, preserving requested order. Component builds similarly produce one manifest or an OCI index of complete per-platform component artifacts. Invocation selects the child matching the consumer platform. Local file components are packaged for that platform. Component calls have no platform override; use `from ... platform=... { ... }` for independently based stages.
 
 Executing foreign-architecture binaries requires host-provided `binfmt_misc` emulation. Coopr does not register emulators. Filesystem and metadata operations need no emulation when they do not execute target binaries.
 
@@ -34,7 +48,7 @@ Executing foreign-architecture binaries requires host-provided `binfmt_misc` emu
 
 FROM runs inherited triggers in stored order before authored instructions, then clears them. Local COPY/ADD and bind mounts use the child build's context; inherited secret/SSH mounts use the child's supplied sources. EXTEND does not consume the caller's triggers.
 
-Planning binds inherited ARGs and stage references before execution. Publication retains earlier named stages and package snapshots that invocation-time triggers could activate. Invocation-only external bases resolve at invocation and remain pinned for execution. Inherited stage references must name retained earlier stages.
+Planning binds inherited ARGs and stage references before execution. Publication retains named stages and package snapshots that invocation-time triggers could activate. Invocation-only external bases resolve at invocation and remain pinned for execution. Inherited stage references must select retained stages declared before the child FROM; numeric references preserve their original source identities.
 
 ## Component build and invocation phases
 
@@ -44,39 +58,26 @@ Planning binds inherited ARGs and stage references before execution. Publication
 | Component build | Required package producers and dependencies. | Component builder's context. |
 | Component invocation | Retained invocation graph, using stored packages as leaves. | Consuming caller's context. |
 
-Package producers cannot depend on EXTEND: the consumer filesystem is unavailable at publication. Unneeded packages are excluded, except retained snapshots needed by possible inherited triggers. A shared private producer may run in both phases, using each phase's context. Producer instructions used only at publication are omitted from the invocation graph; directly referenced producers remain executable there.
+FROM stages follow these dependencies regardless of position or nesting. A stage needed by both a package and the selected extend runs in both phases, with each phase's inputs. Stage sources must still be declared before their consumers.
+
+A package cannot depend on actual EXTEND caller state: the consumer filesystem is unavailable at publication. An independently based FROM can supply a package, including one nested inside EXTEND. Only package snapshots are immutable leaves. Packaging-only producers are omitted from the invocation graph; unneeded stages are excluded, except dormant dependencies retained for inherited triggers. See [Stages and component phases](../concepts/stages.md) for a complete example.
 
 Packages store both filesystem and full image configuration. FROM inherits both; COPY/ADD takes files only. Referencing a package does not otherwise install its configuration or append its layers to the consumer. Component-owned files needed at invocation must be captured in a package; invocation does not require the source checkout.
 
 Package imports verify content and the full Linux platform, including OS version/features. Filesystem metadata remains subject to the [output limitations](#state-identity-and-metadata-limits).
 
-A component retains its selected output, definition, fixed arguments, and package snapshots. Multi-platform builds package each platform separately. Architecture matching alone does not prove distro or package-manager compatibility.
+A component retains its selected output, definition, fixed arguments, and package snapshots. Multi-platform builds package each platform separately. Components use the caller’s platform; they do not infer distribution or package-manager requirements.
 
-### Compatibility requirements
+### Returned state
 
-An EXTEND field accepts one string property or one child containing allowed strings:
+A component call adopts the selected output's complete image chain, filesystem and configuration, then the caller continues. A FROM output uses its selected base's normal configuration inheritance and authored overrides. An independently based output drops caller-only files and configuration.
 
-```kdl
-extend as="base" {
-    distro "fedora" "rhel"
-    distro-version "41" "42" "9"
-    package-manager "dnf" "yum"
-    architecture "amd64" "arm64"
-}
-```
-
-Each field may appear once; lists require nonempty strings. Values support global ARG expansion, and architecture aliases are accepted.
-
-Any value within a field may match. Every declared field on each selected EXTEND root must match before body execution or component-cache reuse. An output with no selected EXTEND root checks the nearest preceding EXTEND’s contract instead. Unrelated dormant targets do not add requirements to an already selected caller root.
-
-| Requirement | Match rule |
+| State after the call | Rule |
 | --- | --- |
-| `architecture` | Normalized selected Linux OCI architecture. |
-| `distro` | Exact `ID` from `/etc/os-release`; `/usr/lib/os-release` is used only when the first file is absent. No `ID_LIKE` inference. |
-| `distro-version` | Exact `VERSION_ID`; requires `distro`. Omission permits any allowed distro version. No version ranges. |
-| `package-manager` | An allowed executable at an absolute path or a simple name in the image's absolute PATH directories. Conventional PATH defaults apply when absent. No manager-version check. |
-
-Missing or conflicting required values fail. Filesystem-based checks may require solving the caller before that boundary; unrelated stages remain schedulable.
+| Caller ARGs | Remain in scope; component-private ARGs do not escape. |
+| Returned ENV | Wins collisions with caller arguments. |
+| Later caller ARG declaration | Still uses the original caller CLI override when supplied. |
+| Later ENTRYPOINT | Clears inherited CMD unless a subsequent CMD supplies one, as after FROM. |
 
 ## Instructions and image configuration
 
@@ -96,19 +97,29 @@ Chroot shares its caller's network namespace. It accepts default or host network
 | `security="insecure"` | Requires `--allow security.insecure`, including cache hits. Requires OCI/rootless isolation; chroot fails. Applies the insecure OCI spec policy, bounded by outer container, user namespace, and kernel permissions. Writable sysfs/cgroup remounts may fail in nested rootless containers; failures are reported. |
 | RUN `device` children | Require `--allow device`, `--allow device=SELECTOR`, or CDI auto-allow annotation. Selection/authorization precede cache lookup. Only devices/CDI files available to the outer container can pass through. |
 
-For example, `run "command" { device "vendor.example/gpu=card0" required="true" }` requests a CDI device. Repeatable `--add-host 'HOST[;HOST...]:IP'` applies to all RUNs and cache identities. `host-gateway` is accepted, but its host-dependent resolution disables RUN instruction and component/package result caching. See [security](../guides/security.md).
+Request a CDI device with a child of RUN:
+
+```kdl
+run "command" {
+    device "vendor.example/gpu=card0" required=#true
+}
+```
+
+Repeatable `--add-host 'HOST[;HOST...]:IP'` applies to all RUNs and cache identities. `host-gateway` is accepted, but its host-dependent resolution disables RUN instruction and component/package result caching. See [security](../guides/security.md) for credentials and elevated access.
 
 ## Arguments and normalization
 
 | Scope | Rule |
 | --- | --- |
-| Global ARG | Declared before the first stage; available for structural expansion. Redeclare in a stage to expose it to RUN. |
-| Stage ARG | Applies from declaration; inherited through FROM. |
+| Global ARG | Declared at the top level; available for structural expansion. Redeclare inside a stage to consume it and expose it to RUN. |
+| Stage ARG | Declared inside the stage block; consumes a global value or supplies a stage default. Applies from declaration and is inherited through FROM. |
 | Independent EXTEND | Gets global and explicitly supplied component arguments plus caller image ENV, without caller-local or sibling-root ARGs. |
-| Package arguments | Every argument in the producer's effective scope is fixed at publication, even if unused in command text. Invocation overrides fail. |
-| Invocation arguments | Adjustable after EXTEND unless also fixed by package production. |
+| Package arguments | Arguments used during package production are fixed at publication, including values exposed to RUN. Invocation overrides fail. |
+| Invocation arguments | Adjustable in invocation stages unless also fixed by package production. |
 
-Values are strings and parameters require valid UTF-8. Unset/undeclared ARG references expand to empty text; unused supplied build arguments are ignored. Structural references must remain valid after expansion. Conflicting package values fail. Standard ARG/ENV substitution, shell/exec boundaries, and RUN exposure retain the supported Containerfile behavior.
+Argument values are strings and require valid UTF-8. Unset/undeclared ARG references expand to empty text; structural references must remain valid afterward. Conflicting package values fail. See [argument syntax](definition.md#arguments) and [command forms](definition.md#command-forms) for substitution and shell/exec boundaries.
+
+Unused supplied build arguments are ignored with a warning containing names only. Predefined proxy arguments (`HTTP_PROXY`, `HTTPS_PROXY`, `FTP_PROXY`, `NO_PROXY`, `ALL_PROXY`, and lowercase forms) can reach RUN without ARG declarations and do not enter its argument/cache identity. Declaring one explicitly gives it normal ARG scope and cache behavior. Host proxy forwarding is controlled by `--http-proxy`.
 
 ### Timestamps and cache age
 
@@ -126,6 +137,8 @@ Values are strings and parameters require valid UTF-8. Unset/undeclared ARG refe
 
 ## Build contexts and local files
 
+A positional definition path uses its parent directory as context. With `--file FILE`, the context is the positional operand or the current directory. A relative FILE resolves from the working directory first; when absent there, Coopr looks inside the selected local, extracted archive, or remote context. Repeated files resolve independently against that shared context and append their global declarations and complete stage blocks in order.
+
 Definition and primary context are independent inputs. Either can use stdin, but both cannot do so in one request. Contexts accept directories, local tar archives, stdin tar, Git checkouts, or HTTP(S) tar archives. `--file` also accepts an HTTP(S) definition. Definitions selected inside remote/archive contexts must remain inside them after symlink resolution; explicit local definitions may live outside the context.
 
 Ignore selection is `--ignorefile`, otherwise the first context-root file: `.cooprignore`, `.containerignore`, `.dockerignore`. Docker/Podman patterns filter local COPY/ADD, RUN binds, and local component definitions; filtered inputs enter cache identity. Definition placement does not change ignore selection. Paths/symlinks cannot escape the selected context.
@@ -134,37 +147,81 @@ Local contexts exclude host `security.selinux` labels. Other xattrs, including `
 
 ### Named contexts
 
-Names take precedence over image references for FROM, COPY/ADD `from=`, and RUN mount `from=`. A matching stage alias replaces that stage and skips its body; numeric references still select stages. Only selected-graph contexts materialize. Local named contexts use their own ignore files and freeze contents before execution. Component build contexts apply to package production; invocation local inputs come from the caller.
+Named contexts take precedence over image references and stage aliases in FROM sources, COPY/ADD `from=`, and RUN mount `from=`. Substituting a FROM's source keeps its instruction body. A context matching the FROM stage's own `as=` name replaces that stage and skips its body; numeric references still select stages. EXTEND and PACKAGE stage names are not replaced this way.
+
+Only contexts needed by the selected graph materialize. Local named contexts use their own ignore files and freeze contents before execution. Context overrides supplied while packaging a component apply to package production and are not saved as invocation overrides. At invocation, named contexts and local inputs come from the caller.
 
 For transport syntax, Git selectors, and credentials, see [named inputs](cli.md#named-inputs) and [remote inputs](definition.md#remote-inputs).
 
 ## Build request controls
 
-See [CLI build controls](cli.md#build-controls) for option syntax and [security](../guides/security.md) for host requirements. `--jobs` limits total stage/platform work (default 1; zero unlimited) without changing dependency order or cache identity.
+Both build commands accept the following RUN and lifecycle settings. Defaults not given here come from the native configuration or leave the setting unspecified. See [CLI build controls](cli.md#build-controls) for inputs and outputs and [security](../guides/security.md) for host requirements.
+
+| Group | Options and defaults |
+| --- | --- |
+| Scheduling | `--jobs` / `-j` limits total stage/platform work (1; 0 unlimited). `--skip-unused-stages=true` executes only the selected output’s dependencies. |
+| Proxy and DNS | `--http-proxy=true` forwards host proxy variables. Repeatable `--dns`, `--dns-search`, `--dns-option` configure RUN resolution; `--dns none` disables DNS configuration. |
+| Network | `--network` selects `default`, `private`, `none`, `host`, `ns:PATH`, `pasta[:OPTIONS]`, or a named network. Repeatable `--add-host HOST:IP` adds host entries. `--no-hosts` and `--no-hostname` preserve the image’s files. |
+| Memory | `--memory` / `-m`, `--memory-swap` (memory plus swap; -1 unlimited swap), `--shm-size`. |
+| CPU | `--cpu-period`, `--cpu-quota` (-1 unlimited), `--cpu-shares` / `-c`, `--cpuset-cpus`, `--cpuset-mems`. |
+| Limits and groups | Repeatable `--ulimit NAME=SOFT:HARD`, `--group-add`. |
+| Mounts and devices | Repeatable `--mount SPEC`, `--volume HOST:CONTAINER[:OPTIONS]` / `-v`, `--device`. CDI lookup uses global `--cdi-spec-dir`; hidden `--cdi-config-dir` overrides that list for a build. |
+| Capabilities and security | Repeatable `--cap-add`, `--cap-drop`, `--security-opt`; elevated authored requests require `--allow` entitlements. |
+| User namespaces | `--userns host\|private\|auto\|PATH`, `--userns-uid-map`, `--userns-gid-map` (`CONTAINER:HOST:SIZE`), `--userns-uid-map-user`, `--userns-gid-map-group`. |
+| Other namespaces | `--cgroupns`, `--pid`, `--ipc`, `--uts` (`host`, `private`, or a namespace path); `--cgroup-parent`. |
+| Runtime | `--isolation oci\|rootless\|chroot`, `--runtime`, repeatable `--runtime-flag`, `--hooks-dir`. Global `--module`, `--cgroup-manager`, `--network-config-dir` select native configuration. |
+| Instruction layers | `--layers=true` caches instructions and preserves their layers; `BUILDAH_LAYERS` can change the default. See [layer rules](#layers-storage-and-copying). |
+| Build containers | `--rm=true` removes intermediate containers after success; `--force-rm=true` also removes them after failure. To retain successful containers, disable both. |
+| Stages and volumes | `--save-stages`, `--stage-labels`, `--compat-volumes`; details below. |
+
+`--jobs` changes concurrency without changing dependency order or cache identity. Authored RUN network values override the build-wide default. Both build commands accept `--stdin` to pass command stdin to RUN; stdin cannot simultaneously supply the definition or context.
 
 RUN resource, namespace, and runtime settings affect cache reuse; host volume/device contents are not measured. Memory and swap apply independently; explicit shared-memory zero differs from omission. Host permissions and cgroup delegation can reject resource requests.
 
-Image `--env` prepends values to every stage; authored ENV wins. Bare names import present host values, `PREFIX*` imports matching names, and `*` imports all. Repeated context names and secret/SSH IDs use the last value. Label/environment unsets, inheritance, and history omission apply to final outputs, including cache hits. OCI annotations are dropped with Docker format.
+Image `--env` prepends values to every stage; authored ENV wins. Bare names import present host values, `PREFIX*` imports matching names, and `*` imports all. Repeated context names and secret/SSH IDs use the last value.
+
+Label/environment unsets, inheritance, and history omission apply to final image outputs, including cache hits. OCI annotations are dropped with Docker format. These output controls are listed in [CLI image output controls](cli.md#image-output-controls).
 
 `--all-platforms` discovers common runnable Linux platforms across registry/native-store non-scratch bases and conflicts with explicit `--platform`. Discovery does not apply source-policy conversions; use explicit platforms for local transports or generated image sources. `--manifest NAME` serializes updates to a named local index, preserves other platforms, and replaces newly built instances.
 
 ### Outputs and failure recovery
 
-Repeatable `--tag` applies local names or transfers to one retained immutable result, in requested order. Plain names are local; explicit transports are `local:`, `registry:`, `oci-archive:`, and `docker:`. Components support only the first three. `--push --tag NAME` selects registry publication.
+Repeatable `--tag` assigns local names to one retained immutable result. With `--push`, those names select registry publication; the result remains stored by ID or digest. For later transfers, use `push` with an [image transport destination](cli.md#names-and-transfer-destinations). Components support registry and OCI archive transfers. Plain `push` destinations select a registry. `copy` is an alias for `tag` and only assigns local names.
 
-`--metadata-file` records `containerimage.digest`, `containerimage.config.digest`, `containerimage.descriptor`, `coopr.platforms`, `coopr.references`, and per-destination `coopr.outputs`. Image `--iidfile` writes the algorithm-prefixed native image or manifest-list ID. `--iidfile-raw` (alias `--raw-iidfile`) writes the unprefixed image ID and requires one platform. Both files omit a trailing newline and suppress the final build ID line, including in logfiles. File-output parents are checked before execution.
+`--metadata-file` records `containerimage.digest`, `containerimage.descriptor`, `coopr.platforms`, `coopr.references`, and per-destination `coopr.outputs`. A single-platform image also includes `containerimage.config.digest` when available; multi-platform image configuration digests appear in the per-platform entries.
 
-Successful execution retains the result/checkpoints before transfers. Destinations commit independently; there is no cross-engine/registry transaction. Transfer failure/cancellation reports the retained digest and completed destinations. Metadata records complete/failed/pending destinations and `coopr.outputError`; result-file finalization failures also report retained outputs. An interrupted transfer may have committed remotely: check its destination, then retry with `coopr copy`. Execution failure publishes neither newly staged portable-cache candidates nor final output names. A failed RUN preserves its process exit status through worker execution and produces one command diagnostic.
+Image `--iidfile` writes the algorithm-prefixed native image or manifest-list ID. `--iidfile-raw` (alias `--raw-iidfile`) writes the unprefixed image ID and requires one platform. Both files omit a trailing newline and suppress the final build ID line, including in logfiles. File-output parents are checked before execution.
+
+Successful execution retains the result/checkpoints before transfers. Destinations commit independently; there is no transaction spanning engines or registries.
+
+| Failure | Retained state and recovery |
+| --- | --- |
+| Transfer failure or cancellation | Reports the retained digest and completed destinations. Metadata records complete/failed/pending destinations and `coopr.outputError`. Check the destination before retrying: an interrupted transfer may have committed remotely. |
+| Result-file finalization failure | Reports retained outputs. |
+| Execution failure | Publishes neither newly staged portable-cache candidates nor final output names. A failed RUN preserves its exit status and produces one command diagnostic. |
+
+Retry a transfer with `coopr push` or `coopr component push`. See [build output](cli.md#build-output) for progress, quiet and logfile behavior.
 
 Registry resolution, caches, and publication share the request's [authentication and trust configuration](configuration.md#runtime-and-trust).
 
 Signature policies apply to original image sources. Native image exports and index pushes verify each stored image before preparing private output. Continuing from that output does not require allowing directory or OCI-layout inputs in your policy. Caller-supplied layouts and directories remain subject to the configured policy.
 
-## Resolution, compatibility, execution, and caching
+## Resolution, execution, and caching
 
 ### Image selection
 
-Registry component tags resolve on each build. Image tags default to local cached selection. `--pull` accepts `missing` (default), `always`, `newer`, and `never`; bare `--pull` means always. `newer` compares selected digests and can reuse a local image on registry failure. `never` fails missing inputs before registry access. Digest references select exact objects and can reuse local copies offline. Reproducibility requires pinning every selected OCI reference, including nested ones.
+Image tags default to local cached selection. For image inputs, `--pull` accepts:
+
+| Policy | Image selection |
+| --- | --- |
+| `missing` (default) | Use local content when available; pull a missing input. |
+| `always` | Resolve from the source again. Bare `--pull` selects this policy. |
+| `newer` | Compare selected digests; may reuse a local image on registry failure. |
+| `never` | Require local content; fail missing image inputs before registry access. |
+
+Digest references select exact objects and can reuse local copies offline. Reproducibility requires pinning every selected OCI reference, including nested ones. Partially imported registry indexes default to native Linux selection. Single-platform local tags select their stored platform; bare manifest digests select that exact manifest regardless of host.
+
+Component calls check the component store by ordinary name before resolving a missing name from a registry. Bare component digests select local artifacts. Store errors fail the build instead of falling through to a registry. Components are not engine-loadable images; image `--pull` policy does not refresh a component already found locally. Use `coopr component pull` explicitly to refresh one.
 
 FROM accepts plain image names, `docker://`, `containers-storage:`, `oci:`, `oci-archive:`, `docker-archive:`, `dir:`, `docker-daemon:`, and the native `atomic:` OpenShift transport. Filesystem transports read paths inside the selected build context, including through symlinks; they cannot read arbitrary host paths. Native transport selection preserves the selected image's configuration and layers.
 
@@ -177,6 +234,15 @@ For generated image sources, FROM `after` names one earlier stage by alias or nu
 Authored mount children apply to their RUN. Repeatable `--mount` adds mounts to every executed RUN, including component and inherited RUNs, after the authored mounts. Mount `from` references participate in dependency planning and input identity; a self-dependency or cycle fails before execution.
 
 A writable bind of the primary context uses one filtered, disposable copy for the build. Changes persist across RUNs, stages, and component calls, so later file operations and generated image sources see them. The original context is unchanged. Writes to image or named-context bind mounts use disposable per-RUN overlays and do not persist to subsequent RUNs.
+
+For example, these instructions inside a FROM write a file into that disposable context, then copy it into the image:
+
+```kdl
+run "echo generated > /src/message.txt" {
+    mount "bind" source="." target="/src" rw=#true
+}
+copy "message.txt" "/message.txt"
+```
 
 RUNs that write the primary context execute rather than reusing instruction results: an image snapshot cannot restore their context side effects. Later COPY/ADD and read-only context mounts measure the resulting files. Components using caller-context bind mounts do not reuse whole-component results.
 
@@ -192,37 +258,47 @@ Instruction keys use the ordered OCI filesystem layers rather than the image's c
 | --- | --- | --- |
 | Local instruction | RUN, COPY, ADD, and WORKDIR checkpoints across image and component phases. | Metadata-only changes need no filesystem checkpoint. |
 | Portable instruction | Instruction checkpoints from an OCI cache. | Unpinned remote ADD and device-backed RUN stay local. Networked RUN and declared mounts can reuse results. |
-| Component state | The selected component output. | Caller-local inputs without complete identities prevent whole-component reuse. |
+| Component state | The selected component output. | Requires a fixed invocation graph with fully identified inputs; see below. |
 | Package result | Completed package snapshots. | All selected package results must be available; otherwise their producers execute. |
 | Cache mount | Disposable tool data. | Names are scoped to their use unless explicitly supplied. Builds must work with empty mounts. |
 
 COPY/ADD measure their selected inputs. Checksum-pinned HTTP ADD can hit without downloading again; Git ADD resolves the commit and submodules before checking the cache. A cache hit therefore does not guarantee an entirely offline build.
 
+Whole-component reuse requires COPY/ADD and bind inputs to come from retained stages or packages. Deferred or dynamic image bases, named-context stages, nested component calls, device-backed or insecure RUNs, and RUN networks other than default/none bypass whole-component reuse. Individual instructions can still reuse eligible snapshots.
+
 Package-result caching supports networked RUN, bind/cache/tmpfs/secret/SSH mounts, and checksum-pinned remote ADD. Unpinned remote ADD, nested components, RUN networks other than default/none, and insecure/device RUN bypass whole-package reuse; eligible instructions can still hit.
 
 Network responses, credentials/SSH-agent state, cache-mount contents, clock, randomness, and undeclared host inputs do not invalidate conventional cache results. A cache hit is not a reproducibility guarantee. Required reusable files belong in packages. Cache repositories are trusted inputs and may contain intermediate files absent from final images; protect them accordingly.
 
-`--no-cache` bypasses instruction, component-state, and package-result reads, writes fresh results, and leaves cache mounts intact. Repeatable `--cache-from` reads results; `--cache-to` writes them. Supply both for a cache used in both directions. Registry values are repository names without tags or digests, such as `ghcr.io/team/cache`. Local caches use `type=local,src=PATH` for reads and `type=local,dest=PATH` for writes. Validated hits can seed another writable destination; read-only sources are never updated and write-only destinations are never queried.
+`--no-cache` bypasses instruction, component-state, and package-result reads, writes fresh results, and leaves cache mounts intact. `--cache-from` reads portable results; `--cache-to` writes them. Validated hits can seed another writable destination; read-only sources are never updated and write-only destinations are never queried. See the [caching guide](../guides/caching.md) for registry/local syntax and refresh commands.
 
 ### State identity and metadata limits
 
-Portable instruction cache identity follows effective filesystem and image-configuration changes, independently of layer history. Component-result cache identity also includes the input image chain, and restoration retains the selected output’s image graph, configuration and root metadata. It ignores the root directory’s modification time. Metadata that the exporter cannot preserve can prevent portable reuse.
+Portable instruction cache identity includes the ordered filesystem layers and execution configuration, excluding creation time and non-execution history metadata. Equal flattened filesystems with different layer chains need not share a key.
+
+Component-result cache identity also includes the input image chain. Restoration retains the selected output's image graph, configuration and root metadata; identity ignores the root directory's modification time. Metadata that the exporter cannot preserve can prevent portable reuse.
 
 Ordinary image commits have a Buildah/Podman limitation: changes to root-directory mode, owner, or portable xattrs may be discarded at layer commit. Coopr accepts such builds even when committed images cannot represent them. Package snapshots and cache checkpoints capture/restore these root attributes. Portable state snapshots cannot reuse outputs whose metadata the exporter cannot preserve, including subsecond file mtimes and nonportable xattrs.
 
 ### Layers, storage, and copying
 
-Default `--format oci` preserves the base filesystem layers and configuration; native export may change their compression and manifest digest. Docker format selects schema 2 config/manifests and manifest lists. Ordinary filesystem changes produce one layer per instruction, including instructions within components. Component invocation preserves the selected output’s layers. Explicit `layer { ... }` groups publish their ordered net change as one layer; nested groups are absorbed by the outer group. Configuration-only/empty changes add none. `--layers=false` takes precedence and combines newly executed filesystem instructions into one layer. Groups reject independently based replacement component outputs to preserve the starting image lineage. Packages are invocation inputs, not appended consumer layers.
+OCI output preserves the base filesystem layers and configuration; native export may change their compression and manifest digest. Docker format selects schema 2 config/manifests and manifest lists. Component invocation preserves the selected output’s layers. Packages are invocation inputs, not appended consumer layers.
+
+| Control | Layer boundary | Cache behavior |
+| --- | --- | --- |
+| Default `--layers=true` | One layer per filesystem instruction, including instructions inside components. Empty/configuration-only changes add none. | Eligible instructions reuse snapshots. |
+| Authored `layer { ... }` | One net filesystem layer when the outer group closes; preceding layers remain. Nested groups are absorbed. | Instructions remain eligible for reuse within the group. |
+| `--squash` (image build) | Combine the final image’s new layers, retaining its base layers. | Output compaction permits instruction reuse. |
+| `--squash-all` (image build) | Combine the final image’s layers, including its base. | Output compaction permits instruction reuse. |
+| `--layers=false` | Combine newly executed filesystem instructions into one layer; overrides authored group boundaries. | Rerun filesystem instructions instead of using instruction snapshots. |
+
+`--squash` and `--squash-all` are mutually exclusive. An authored layer group requires one image lineage: an independently based replacement component output fails inside it, including with `--layers=false`. Outside an authored group, `--layers=false` permits replacement and adopts the selected output's base. See [layer groups](definition.md#layer-groups) for authored scope.
 
 `--save-stages` retains completed intermediate stage images; instruction-cache snapshots follow their separate cache lifecycle. `--stage-labels` requires saved stages and adds `io.buildah.stage.name` and `io.buildah.stage.base` to stages with instructions. FROM-only stages reuse their base without adding labels.
 
-Image builds print the native image or manifest-list ID, whether or not a tag was supplied. `--logfile` redirects that result and progress to the file; `--logsplit` records them per platform. `--quiet` removes progress from both terminal and logfiles, while retaining the final result unless an IID-file option suppresses it. Component builds print their local reference when tagged, or their artifact digest otherwise. See [storage](../guides/storage.md) for stores and transfers.
+`coopr tag` and its `copy` alias assign local names to the stored image or complete index. `coopr push` transfers a local image or index; complete locally built indexes transfer as complete indexes by default, and `--platform` selects one child. Destinations must support the selected image or index format. Docker’s classic store requires that selection; complete-index transfer requires an Engine store that supports indexes and passes Coopr’s capability, digest, and platform checks. Use `coopr pull docker-daemon:NAME` to import an Engine image. Engine conversion may change representation; `--format docker` avoids relying on Docker's OCI conversion.
 
-`coopr copy` accepts a local tag/digest or explicit engine source. Complete locally built indexes copy as complete indexes by default; `--platform` selects one child. Docker's classic store requires that selection; its containerd store accepts indexes, with capability/digest/platform checks. Engine-imported indexes must contain exactly one runnable Linux manifest per platform; auxiliary descriptors and duplicate platforms fail. Engine conversion may change representation; `--format docker` avoids relying on Docker's OCI conversion.
-
-Partially imported registry indexes default to native Linux selection. Single-platform local tags select their stored platform; bare manifest digests select that exact manifest regardless of host.
-
-Local component invocation accepts `local:TAG` or a bare immutable digest; registry failure does not search local storage. Components are not engine-loadable images. Pruning follows [storage lifecycle rules](../guides/storage.md#inspect-and-maintain); external Podman access uses native storage locking.
+Pruning follows [storage lifecycle rules](../guides/storage.md#inspect-and-maintain); external Podman access uses native storage locking.
 
 ### Output compression
 

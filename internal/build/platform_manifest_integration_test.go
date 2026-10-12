@@ -27,13 +27,18 @@ func TestAllPlatformsDiscoversLocalBasesAndIntersectsPlatforms(t *testing.T) {
 	storeDir := filepath.Join(workspace, "images")
 	base := filepath.Join(workspace, "base.coopr")
 	consumer := filepath.Join(workspace, "consumer.coopr")
-	if err := os.WriteFile(base, []byte("from \"scratch\"\nlabel purpose=\"discovery\"\n"), 0600); err != nil {
+	if err := os.WriteFile(base, []byte(`from "scratch" {
+    label purpose="discovery"
+}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Run(ctx, Options{File: base, BuildStore: nativeBuildTestStore(storeDir), Tag: "base", Platforms: []string{"linux/amd64", "linux/arm64"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(consumer, []byte("arg \"base\"\nfrom \"$base\"\n"), 0600); err != nil {
+	if err := os.WriteFile(consumer, []byte(`arg "base"
+from "$base" {}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	opts := Options{File: consumer, BuildStore: nativeBuildTestStore(storeDir), Tag: "discovered", AllPlatforms: true, PullPolicy: "never", Args: map[string]string{"base": "base"}}
@@ -51,7 +56,9 @@ func TestAllPlatformsDiscoversLocalBasesAndIntersectsPlatforms(t *testing.T) {
 	if _, err := Run(ctx, Options{File: base, BuildStore: nativeBuildTestStore(storeDir), Tag: "single", Platform: "linux/amd64"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(consumer, []byte("from \"base\" as=\"multi\"\nfrom \"single\"\n"), 0600); err != nil {
+	if err := os.WriteFile(consumer, []byte(`from "base" as="multi" {}
+from "single" {}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	opts.Tag = "intersection"
@@ -79,7 +86,11 @@ func TestManifestAppendsConcurrentPlatformsAndReplacesExistingPlatform(t *testin
 	workspace := dockerEngineWorkspace(t)
 	storeDir := filepath.Join(workspace, "images")
 	definition := filepath.Join(workspace, "image.coopr")
-	if err := os.WriteFile(definition, []byte("from \"scratch\"\narg \"revision\"\nlabel revision=\"$revision\"\n"), 0600); err != nil {
+	if err := os.WriteFile(definition, []byte(`from "scratch" {
+    arg "revision"
+    label revision="$revision"
+}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	var wg sync.WaitGroup
@@ -135,7 +146,8 @@ func TestManifestAppendsConcurrentPlatformsAndReplacesExistingPlatform(t *testin
 		t.Fatal("replacement changed the wrong manifest instances")
 	}
 	consumer := filepath.Join(workspace, "consumer.coopr")
-	if err := os.WriteFile(consumer, []byte("from \"combined\"\n"), 0600); err != nil {
+	if err := os.WriteFile(consumer, []byte(`from "combined" {}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Run(ctx, Options{File: consumer, BuildStore: nativeBuildTestStore(storeDir), AllPlatforms: true, PullPolicy: "never", Tag: "consumed"}); err != nil {
@@ -151,7 +163,11 @@ func TestDuplicatePlatformIndexDiscoveryAndManifestAppend(t *testing.T) {
 	workspace := dockerEngineWorkspace(t)
 	store := nativeBuildTestStore(filepath.Join(workspace, "images"))
 	definition := filepath.Join(workspace, "base.coopr")
-	if err := os.WriteFile(definition, []byte("from \"scratch\"\narg \"revision\"\nlabel revision=\"$revision\"\n"), 0600); err != nil {
+	if err := os.WriteFile(definition, []byte(`from "scratch" {
+    arg "revision"
+    label revision="$revision"
+}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	variants := []oci.ImageVariant{}
@@ -198,7 +214,8 @@ func TestDuplicatePlatformIndexDiscoveryAndManifestAppend(t *testing.T) {
 		t.Fatal(err)
 	}
 	consumer := filepath.Join(workspace, "consumer.coopr")
-	if err := os.WriteFile(consumer, []byte("from \"duplicate\"\n"), 0600); err != nil {
+	if err := os.WriteFile(consumer, []byte(`from "duplicate" {}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Run(ctx, Options{File: consumer, BuildStore: store, Tag: "consumed", AllPlatforms: true, PullPolicy: "never"}); err != nil {

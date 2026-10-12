@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"coopr/internal/buildah"
+	"github.com/google/go-containerregistry/pkg/registry"
 )
 
 func TestCompletedStdoutTarSurvivesLaterPublicationFailure(t *testing.T) {
@@ -21,7 +22,10 @@ func TestCompletedStdoutTarSurvivesLaterPublicationFailure(t *testing.T) {
 	}
 	root := dockerEngineWorkspace(t)
 	file := filepath.Join(root, "image.coopr")
-	if err := os.WriteFile(file, []byte("from \"scratch\"\ncopy \"proof\" \"/proof\"\n"), 0600); err != nil {
+	if err := os.WriteFile(file, []byte(`from "scratch" {
+    copy "proof" "/proof"
+}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "proof"), []byte("completed"), 0600); err != nil {
@@ -32,10 +36,13 @@ func TestCompletedStdoutTarSurvivesLaterPublicationFailure(t *testing.T) {
 	}))
 	defer server.Close()
 	authority := strings.TrimPrefix(server.URL, "http://")
+	completed := httptest.NewServer(registry.New())
+	defer completed.Close()
+	completedTag := strings.TrimPrefix(completed.URL, "http://") + "/coopr/completed:latest"
 	metadata := filepath.Join(root, "metadata.json")
 	var stdout bytes.Buffer
 	_, err := Run(context.Background(), Options{File: file, Context: root, BuildStore: nativeBuildTestStore(filepath.Join(root, "images")), Quiet: true, Stdout: &stdout,
-		Output: buildah.FilesystemOutput{Type: "tar", Path: "-"}, Tags: []string{"completed:latest", "registry:" + authority + "/coopr/refused:latest"},
+		Output: buildah.FilesystemOutput{Type: "tar", Path: "-"}, Push: true, Tags: []string{completedTag, authority + "/coopr/refused:latest"},
 		TLSVerify: new(false), MetadataFile: metadata, RetrySet: true,
 	})
 	if err == nil {

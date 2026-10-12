@@ -1,5 +1,8 @@
-from "docker.io/redhat/ubi9:latest"
-component "./components/shared.coopr" channel="api"
-cmd {
-    exec "cat" "/etc/coopr/settings.conf"
+from "docker.io/redhat/ubi9:latest" {
+    component "./components/shared.coopr" {
+        arg "channel" "api"
+    }
+    cmd {
+        exec "cat" "/etc/coopr/settings.conf"
+    }
 }

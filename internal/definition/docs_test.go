@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	kdl "github.com/calico32/kdl-go"
 )
 
 func TestDocumentationKDLExamples(t *testing.T) {
@@ -39,7 +41,22 @@ func TestDocumentationKDLExamples(t *testing.T) {
 		for i, match := range fence.FindAllSubmatch(data, -1) {
 			count++
 			t.Run(fmt.Sprintf("%s/block%d", path, i+1), func(t *testing.T) {
-				if _, err := Parse(strings.NewReader(string(match[1]))); err != nil {
+				source := string(match[1])
+				doc, err := kdl.ParseString(source, kdl.WithVersion(kdl.Version2))
+				if err != nil {
+					t.Fatal(err)
+				}
+				// Reference pages show operation fragments as well as complete
+				// definitions. Validate fragments inside a canonical stage; a
+				// source containing any stage head must stand on its own.
+				parse := parseFragment
+				for _, node := range doc.Nodes {
+					if isStage(node.Name()) {
+						parse = Parse
+						break
+					}
+				}
+				if _, err := parse(strings.NewReader(source)); err != nil {
 					t.Fatal(err)
 				}
 			})

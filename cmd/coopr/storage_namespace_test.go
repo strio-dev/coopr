@@ -12,7 +12,7 @@ import (
 
 func TestNativeCommandsPrepareStorageNamespace(t *testing.T) {
 	for _, args := range [][]string{
-		{"build"}, {"component", "build"}, {"copy", "source", "local:destination"},
+		{"build"}, {"component", "build"}, {"copy", "source", "destination:latest"},
 		{"images"}, {"image", "ls"}, {"image", "inspect", "image"}, {"image", "rm", "image"},
 		{"system", "df"}, {"system", "prune"}, {"image", "prune"},
 	} {
@@ -77,7 +77,7 @@ func TestArtifactCommandsDoNotPrepareStorageNamespace(t *testing.T) {
 	t.Setenv("CONTAINERS_STORAGE_CONF", config)
 	for _, args := range [][]string{
 		{"components"}, {"component", "ls"}, {"component", "inspect", "component"},
-		{"component", "rm", "component"}, {"component", "copy", "source", "local:destination"},
+		{"component", "rm", "component"}, {"component", "copy", "source", "destination:latest"},
 	} {
 		t.Run(args[len(args)-1], func(t *testing.T) {
 			root := newRootCommandWithStorageNamespace(func() error {
@@ -124,7 +124,7 @@ func TestNativeCommandsRejectInvalidStorageConfiguration(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("CONTAINERS_STORAGE_CONF", config)
-	for _, args := range [][]string{{"images"}, {"image", "inspect", "image"}, {"build"}, {"component", "build"}, {"copy", "source", "local:destination"}, {"system", "df"}, {"image", "prune"}} {
+	for _, args := range [][]string{{"images"}, {"image", "inspect", "image"}, {"build"}, {"component", "build"}, {"copy", "source", "destination:latest"}, {"system", "df"}, {"image", "prune"}} {
 		root := newRootCommand()
 		cmd, _, err := root.Find(args)
 		if err != nil {

@@ -63,7 +63,7 @@ func TestComponentPullSaveLoadPreservesEveryPlatform(t *testing.T) {
 		t.Fatalf("load root=%s err=%v", got.Digest, err)
 	}
 	for _, arch := range []string{"amd64", "arm64"} {
-		resolved, err := loaded.Resolve(ctx, "local:restored", v1.Platform{OS: "linux", Architecture: arch}, Component)
+		resolved, err := loaded.Resolve(ctx, "restored", v1.Platform{OS: "linux", Architecture: arch}, Component)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -113,7 +113,7 @@ func TestComponentLoadRejectsImageBeforeMovingTag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := stored.Resolve(ctx, "stable")
+	got, err := stored.Resolve(ctx, "stable:latest")
 	if err != nil || got.Digest != root.Digest {
 		t.Fatalf("failed load moved tag: %s %v", got.Digest, err)
 	}

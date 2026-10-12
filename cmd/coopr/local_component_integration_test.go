@@ -17,9 +17,21 @@ func TestBuildCommandConsumesLocalComponentsFromDirectoryAndArchiveContexts(t *t
 	root := t.TempDir()
 	contextDir := filepath.Join(root, "context")
 	files := map[string]string{
-		"image.coopr": "from \"scratch\"\ncomponent \"./components/shared.coopr\" channel=\"archive\"\n",
-		"components/shared.coopr": "package as=\"settings\"\ncopy \"settings.conf\" \"/settings.conf\"\n" +
-			"extend\narg \"channel\"\nenv channel=\"${channel}\"\ncopy \"/settings.conf\" \"/etc/shared.conf\" from=\"settings\"\n",
+		"image.coopr": `from "scratch" {
+    component "./components/shared.coopr" {
+        arg "channel" "archive"
+    }
+}
+`,
+		"components/shared.coopr": `package as="settings" {
+    copy "settings.conf" "/settings.conf"
+}
+extend {
+    arg "channel"
+    env channel="${channel}"
+    copy "/settings.conf" "/etc/shared.conf" from="settings"
+}
+`,
 		"settings.conf": "shared local settings\n",
 	}
 	var archive bytes.Buffer
@@ -82,7 +94,13 @@ func TestBuildCommandTwoDefinitionsShareLocalComponentFromExplicitContext(t *tes
 		t.Fatal(err)
 	}
 	for name, data := range map[string]string{
-		"shared.coopr":  "package as=\"settings\"\ncopy \"settings.conf\" \"/settings.conf\"\nextend\ncopy \"/settings.conf\" \"/etc/shared.conf\" from=\"settings\"\n",
+		"shared.coopr": `package as="settings" {
+    copy "settings.conf" "/settings.conf"
+}
+extend {
+    copy "/settings.conf" "/etc/shared.conf" from="settings"
+}
+`,
 		"settings.conf": "same settings\n",
 	} {
 		if err := os.WriteFile(filepath.Join(contextDir, name), []byte(data), 0o600); err != nil {
@@ -91,7 +109,10 @@ func TestBuildCommandTwoDefinitionsShareLocalComponentFromExplicitContext(t *tes
 	}
 	for _, name := range []string{"api", "worker"} {
 		file := filepath.Join(definitions, name+".coopr")
-		if err := os.WriteFile(file, []byte("from \"scratch\"\ncomponent \"./shared.coopr\"\n"), 0o600); err != nil {
+		if err := os.WriteFile(file, []byte(`from "scratch" {
+    component "./shared.coopr"
+}
+`), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		var output, stderr bytes.Buffer

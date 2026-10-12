@@ -47,7 +47,8 @@ func testRunPullRefresh(t *testing.T, withLayers bool) {
 	baseArchive := filepath.Join(dir, "base.oci.tar")
 	produceBase := func(revision string) {
 		t.Helper()
-		definition := "from \"scratch\"\n"
+		definition := `from "scratch" {}
+`
 		if withLayers {
 			if err := os.WriteFile(filepath.Join(dir, "base-marker"), []byte(revision), 0600); err != nil {
 				t.Fatal(err)
@@ -58,8 +59,8 @@ func testRunPullRefresh(t *testing.T, withLayers bool) {
 		if err := os.WriteFile(baseFile, []byte(definition), 0600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := Run(ctx, Options{
-			File: baseFile, Tag: "oci-archive:" + baseArchive,
+		if _, err := buildArchive(t, baseArchive, ctx, Options{
+			File:     baseFile,
 			Platform: "linux/amd64", BuildStore: nativeBuildTestStore(filepath.Join(storeBase, "producer-store")),
 		}); err != nil {
 			t.Fatal(err)
@@ -79,7 +80,8 @@ func testRunPullRefresh(t *testing.T, withLayers bool) {
 	}
 	writeConsumer := func(from string) {
 		t.Helper()
-		definition := "from \"" + from + "\"\n"
+		definition := "from \"" + from + `" {}
+`
 		if withLayers {
 			definition += "copy \"consumer-marker\" \"/consumer-marker\"\n"
 		}
@@ -90,12 +92,12 @@ func testRunPullRefresh(t *testing.T, withLayers bool) {
 	writeConsumer(ref)
 	consumerArchive := filepath.Join(dir, "consumer.oci.tar")
 	opts := Options{
-		File: consumerFile, Tag: "oci-archive:" + consumerArchive,
+		File: consumerFile, Tag: "consumer:latest",
 		Platform: "linux/amd64", TLSVerify: new(false), BuildStore: nativeBuildTestStore(filepath.Join(storeBase, "consumer-store")),
 	}
 	assertRevision := func(want string) {
 		t.Helper()
-		if _, err := Run(ctx, opts); err != nil {
+		if _, err := buildArchive(t, consumerArchive, ctx, opts); err != nil {
 			t.Fatal(err)
 		}
 		_, image := readExampleImage(t, ctx, consumerArchive)
@@ -109,8 +111,8 @@ func testRunPullRefresh(t *testing.T, withLayers bool) {
 	writeConsumer(strings.TrimSuffix(ref, ":stable") + "@" + old.Digest.String())
 	pinned := opts
 	pinned.BuildStore = nativeBuildTestStore(filepath.Join(storeBase, "named-digest-store"))
-	pinned.Tag = "oci-archive:" + filepath.Join(dir, "pinned-consumer.oci.tar")
-	if _, err := Run(ctx, pinned); err != nil {
+	pinnedArchive := filepath.Join(dir, "pinned-consumer.oci.tar")
+	if _, err := buildArchive(t, pinnedArchive, ctx, pinned); err != nil {
 		t.Fatalf("pull uncached named digest: %v", err)
 	}
 	writeConsumer(ref)
@@ -118,8 +120,8 @@ func testRunPullRefresh(t *testing.T, withLayers bool) {
 	if !withLayers {
 		crossFormat := opts
 		crossFormat.Format = "docker"
-		crossFormat.Tag = "oci-archive:" + filepath.Join(dir, "consumer-docker.oci.tar")
-		if _, err := Run(ctx, crossFormat); err != nil {
+		crossFormatArchive := filepath.Join(dir, "consumer-docker.oci.tar")
+		if _, err := buildArchive(t, crossFormatArchive, ctx, crossFormat); err != nil {
 			t.Fatal(err)
 		}
 		assertRevision("old") // A same-config-ID Docker alternate must not invalidate the selected OCI manifest.

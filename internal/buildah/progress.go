@@ -113,6 +113,13 @@ func definitionStageCount(def *definition.Definition) int {
 		switch instruction.Name {
 		case "from", "package", "extend":
 			total++
+			if instruction.Name == "extend" {
+				for _, nested := range instruction.Children {
+					if nested.Name == "from" {
+						total++
+					}
+				}
+			}
 		}
 	}
 	return total

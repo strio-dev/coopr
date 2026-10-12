@@ -29,6 +29,7 @@ type PlanOptions struct {
 	// ProgressReference is a display label, never an image annotation.
 	ProgressReference  string
 	progressStageTotal int
+	executableOrigin   string
 	// componentParent shares selection and cycle state with nested local publication.
 	// Execution options and caches remain owned by each executor.
 	componentParent *graphExecutor
@@ -222,7 +223,7 @@ func lowerOperationWithCacheMountIDs(operation planner.Operation, shell []string
 		}
 		return []Operation{historyOnlyOperation{}}, nil, nil
 	case "run":
-		if len(instruction.Arguments) == 0 {
+		if len(instruction.Arguments) == 0 && len(instruction.Commands) == 0 {
 			return nil, nil, fmt.Errorf("RUN requires a command")
 		}
 		if err := allowProperties(instruction); err != nil {
@@ -236,7 +237,20 @@ func lowerOperationWithCacheMountIDs(operation planner.Operation, shell []string
 			return nil, nil, fmt.Errorf("RUN security mode %q is not supported", security)
 		}
 		command := slices.Clone(instruction.Arguments)
-		if instruction.Form != "exec" {
+		var commands [][]string
+		if instruction.Commands != nil {
+			if err := definition.ValidateOperation(instruction); err != nil {
+				return nil, nil, err
+			}
+			commands = make([][]string, len(instruction.Commands))
+			for index, child := range instruction.Commands {
+				if child.Form == "shell" {
+					commands[index] = append(slices.Clone(shell), child.Arguments[0])
+				} else {
+					commands[index] = slices.Clone(child.Arguments)
+				}
+			}
+		} else if instruction.Form != "exec" {
 			if instruction.Form != "" && instruction.Form != "shell" {
 				return nil, nil, fmt.Errorf("RUN form %q is not supported", instruction.Form)
 			}
@@ -250,7 +264,7 @@ func lowerOperationWithCacheMountIDs(operation planner.Operation, shell []string
 		if err != nil {
 			return nil, nil, fmt.Errorf("RUN devices: %w", err)
 		}
-		return []Operation{Run{Command: command, InlineFiles: slices.Clone(instruction.InlineFiles), Network: instruction.Properties["network"], Security: security, Mounts: mounts, Devices: devices, Env: argumentEnvironment(operation.ArgumentsInScope)}}, nil, nil
+		return []Operation{Run{Command: command, Commands: commands, InlineFiles: slices.Clone(instruction.InlineFiles), Network: instruction.Properties["network"], Security: security, Mounts: mounts, Devices: devices, Env: argumentEnvironment(operation.ArgumentsInScope)}}, nil, nil
 	case "copy", "add":
 		return lowerCopyOrAdd(instruction, operation.InputContext)
 	case "env", "label":

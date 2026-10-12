@@ -20,7 +20,10 @@ func TestBuildArchiveAndDefinitionStdinWithMultipleDestinations(t *testing.T) {
 	}
 	root := t.TempDir()
 	definition := filepath.Join(root, "image.coopr")
-	script := "from \"scratch\"\ncopy \"payload\" \"/payload\"\n"
+	script := `from "scratch" {
+    copy "payload" "/payload"
+}
+`
 	if err := os.WriteFile(definition, []byte(script), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +52,7 @@ func TestBuildArchiveAndDefinitionStdinWithMultipleDestinations(t *testing.T) {
 			output := filepath.Join(t.TempDir(), "output.oci.tar")
 			metadata := filepath.Join(t.TempDir(), "metadata.json")
 			opts := Options{File: definition, Context: root, BuildStore: nativeBuildTestStore(store), Platform: "linux/" + runtime.GOARCH, Jobs: 1,
-				Tags: []string{"app:one", "app:two", "oci-archive:" + output}, MetadataFile: metadata}
+				Tags: []string{"app:one", "app:two", "app:three"}, MetadataFile: metadata}
 			switch mode {
 			case "definition-stdin", "definition-and-run-stdin":
 				opts.File, opts.Stdin = "-", strings.NewReader(script)
@@ -61,7 +64,7 @@ func TestBuildArchiveAndDefinitionStdinWithMultipleDestinations(t *testing.T) {
 			if strings.Contains(mode, "and-run-stdin") {
 				opts.RunStdin = opts.Stdin
 			}
-			result, err := Run(context.Background(), opts)
+			result, err := buildArchive(t, output, context.Background(), opts)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -101,13 +104,16 @@ func TestBuildCooprIgnoreOverridesDefaultsAndIgnoresLegacy(t *testing.T) {
 	}
 	root := t.TempDir()
 	file := filepath.Join(root, "image.coopr")
-	for name, data := range map[string]string{"image.coopr": "from \"scratch\"\ncopy \".\" \"/\"\n", ".dockerignore": "default-only\n", "image.coopr.dockerignore": "legacy-only\n", ".cooprignore": "specific-only\n", ".containerignore": "container-only\n", "legacy-only": "kept", "container-only": "kept", "default-only": "kept", "specific-only": "excluded"} {
+	for name, data := range map[string]string{"image.coopr": `from "scratch" {
+    copy "." "/"
+}
+`, ".dockerignore": "default-only\n", "image.coopr.dockerignore": "legacy-only\n", ".cooprignore": "specific-only\n", ".containerignore": "container-only\n", "legacy-only": "kept", "container-only": "kept", "default-only": "kept", "specific-only": "excluded"} {
 		if err := os.WriteFile(filepath.Join(root, name), []byte(data), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
 	output := filepath.Join(t.TempDir(), "output.oci.tar")
-	if _, err := Run(context.Background(), Options{File: file, Tag: "oci-archive:" + output, Platform: "linux/" + runtime.GOARCH, Jobs: 1}); err != nil {
+	if _, err := buildArchive(t, output, context.Background(), Options{File: file, Platform: "linux/" + runtime.GOARCH, Jobs: 1}); err != nil {
 		t.Fatal(err)
 	}
 	names := archiveLayerNames(t, output)
@@ -125,10 +131,17 @@ func TestBuildCombinesDefinitionsAndWritesRawIID(t *testing.T) {
 			root := t.TempDir()
 			first := filepath.Join(root, "first.coopr")
 			second := filepath.Join(root, "second.coopr")
-			firstSource := "from \"scratch\" as=\"base\"\nlabel first=\"present\"\ncopy \"payload\" \"/payload\"\n"
+			firstSource := `from "scratch" as="base" {
+    label first="present"
+    copy "payload" "/payload"
+}
+`
 			secondSource := "label second=\"present\"\n"
 			if secondFrom {
-				secondSource = "from \"scratch\" as=\"final\"\n" + secondSource + "copy \"/payload\" \"/payload\" from=\"base\"\n"
+				secondSource = `from "scratch" as="final" {
+    ` + secondSource + `copy "/payload" "/payload" from="base"
+}
+`
 			}
 			for path, source := range map[string]string{first: firstSource, second: secondSource, filepath.Join(root, "payload"): "multifile fixture\n"} {
 				if err := os.WriteFile(path, []byte(source), 0600); err != nil {

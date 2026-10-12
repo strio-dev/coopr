@@ -6,10 +6,11 @@ import (
 )
 
 func TestBuildUnusedStagesRetainsEarlierStagesAndOneTarget(t *testing.T) {
-	def := parse(t, `from "scratch" as="unused"
-label purpose="unused"
-from "scratch" as="target"
-from "unavailable.example/later" as="later"
+	def := parse(t, `from "scratch" as="unused" {
+    label purpose="unused"
+}
+from "scratch" as="target" {}
+from "unavailable.example/later" as="later" {}
 `)
 	for _, includeUnused := range []bool{false, true} {
 		plan, err := CreateDemandDriven(def, Options{Mode: Build, Target: "target", BuildUnusedStages: includeUnused}, func(source FromSource) (StageBind, error) {
@@ -33,8 +34,8 @@ from "unavailable.example/later" as="later"
 }
 
 func TestBuildUnusedStagesResolvesPreviouslyDormantInputs(t *testing.T) {
-	def := parse(t, `from "unused.example/base" as="unused"
-from "scratch" as="target"
+	def := parse(t, `from "unused.example/base" as="unused" {}
+from "scratch" as="target" {}
 `)
 	var calls []string
 	plan, err := CreateDemandDriven(def, Options{Mode: Build, BuildUnusedStages: true}, func(source FromSource) (StageBind, error) {
@@ -50,16 +51,20 @@ from "scratch" as="target"
 }
 
 func TestBuildUnusedStagesForPublicationRunsOnlyEarlierPackageProducers(t *testing.T) {
-	def := parse(t, `package as="unused"
-copy "unused" "/unused"
-package as="used"
-copy "used" "/used"
-extend as="target"
-copy "/used" "/used" from="used"
-run "invocation"
-package as="later"
-copy "later" "/later"
-extend as="other"
+	def := parse(t, `package as="unused" {
+    copy "unused" "/unused"
+}
+package as="used" {
+    copy "used" "/used"
+}
+extend as="target" {
+    copy "/used" "/used" from="used"
+    run "invocation"
+}
+package as="later" {
+    copy "later" "/later"
+}
+extend as="other" {}
 `)
 	for _, includeUnused := range []bool{false, true} {
 		plan, err := CreateDemandDriven(def, Options{Mode: Publish, Target: "target", BuildUnusedStages: includeUnused}, func(source FromSource) (StageBind, error) {
@@ -88,11 +93,13 @@ extend as="other"
 }
 
 func TestBuildUnusedStagesForPublicationResolvesPackageDependenciesOnly(t *testing.T) {
-	def := parse(t, `from "unused.example/base" as="producer"
-package as="unused"
-copy "/payload" "/payload" from="producer"
-extend as="target"
-run "invocation"
+	def := parse(t, `from "unused.example/base" as="producer" {}
+package as="unused" {
+    copy "/payload" "/payload" from="producer"
+}
+extend as="target" {
+    run "invocation"
+}
 `)
 	var calls []string
 	plan, err := CreateDemandDriven(def, Options{Mode: Publish, Target: "target", BuildUnusedStages: true}, func(source FromSource) (StageBind, error) {

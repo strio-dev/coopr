@@ -12,11 +12,12 @@ import (
 
 func TestMetadataInstructionsPreserveAuthoredOrder(t *testing.T) {
 	request, err := RequestFromPlan(testPlan(t, `
-from "scratch"
-expose "8080" "8443/tcp"
-volume " /var/lib/data " "/var/cache"
-maintainer "A B <a@example.com>"
-expose "9090/udp"
+from "scratch" {
+    expose "8080" "8443/tcp"
+    volume " /var/lib/data " "/var/cache"
+    maintainer "A B <a@example.com>"
+    expose "9090/udp"
+}
 `), PlanOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -48,9 +49,10 @@ expose "9090/udp"
 func TestExposeSplitsExpandedValuesAndNormalizesPorts(t *testing.T) {
 	request, err := RequestFromPlan(testPlan(t, `
 arg "ports" "80 81/UDP 82-83/sCtP"
-from "scratch"
-arg "ports"
-expose "$ports" "127.0.0.1:9000:84"
+from "scratch" {
+    arg "ports"
+    expose "$ports" "127.0.0.1:9000:84"
+}
 `), PlanOptions{})
 	if err != nil {
 		t.Fatal(err)

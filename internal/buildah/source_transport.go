@@ -38,7 +38,11 @@ func normalizeBaseSource(reference, contextDir string) (string, bool, error) {
 		return reference, false, nil
 	}
 	if transport.Name() == "docker" {
-		return strings.TrimPrefix(reference, "docker://"), false, nil
+		parsed, err := alltransports.ParseImageName(reference)
+		if err != nil {
+			return "", false, err
+		}
+		return parsed.DockerReference().String(), false, nil
 	}
 	prefix, value, _ := strings.Cut(reference, ":")
 	switch prefix {

@@ -100,7 +100,8 @@ func TestCopyPinnedManifestExportsExactVariantSharingImageID(t *testing.T) {
 	olderOCI, olderRef, newerDocker, newerRef := selectedCopySharedConfigFixture(t, ctx)
 	build := func(name, reference, format string, platform v1.Platform, selection oci.StoredSelection) buildah.Result {
 		t.Helper()
-		parsed, err := definition.Parse(strings.NewReader("from \"" + reference + "\"\n"))
+		parsed, err := definition.Parse(strings.NewReader("from \"" + reference + `" {}
+`))
 		if err != nil {
 			t.Fatal(err)
 		}

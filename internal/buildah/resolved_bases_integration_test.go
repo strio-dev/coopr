@@ -19,7 +19,10 @@ func TestBuildPlanUsesPinnedBaseWithoutResolvingTagAgain(t *testing.T) {
 	root := t.TempDir()
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	baseLayout := filepath.Join(root, "base")
-	base, err := BuildPlan(ctx, testPlan(t, "from \"scratch\"\nenv BASE=\"before\"\n"), PlanOptions{
+	base, err := BuildPlan(ctx, testPlan(t, `from "scratch" {
+    env BASE="before"
+}
+`), PlanOptions{
 		Store: store, Isolation: "rootless", Output: Output{Path: baseLayout},
 	})
 	if err != nil {
@@ -31,7 +34,10 @@ func TestBuildPlanUsesPinnedBaseWithoutResolvingTagAgain(t *testing.T) {
 	}
 	reference := "registry.invalid/coopr/test:mutable"
 	childLayout := filepath.Join(root, "child")
-	_, err = BuildPlan(ctx, testPlan(t, "from \""+reference+"\"\nenv CHILD=\"after\"\n"), PlanOptions{
+	_, err = BuildPlan(ctx, testPlan(t, "from \""+reference+`" {
+    env CHILD="after"
+}
+`), PlanOptions{
 		Store: store, Isolation: "rootless", Output: Output{Path: childLayout},
 		ResolvedBases: map[ResolvedBaseKey]ResolvedImageSource{
 			{Reference: reference, Platform: "linux/amd64"}: {ImageID: base.ImageID, ConfigData: config},

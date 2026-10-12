@@ -67,8 +67,8 @@ func TestCopyDockerIndexStreamsNamedOCIArchiveAndVerifiesManifests(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "docker:example:dev" {
-		t.Fatalf("Copy() = %q, want docker:example:dev", got)
+	if got != "docker-daemon:example:dev" {
+		t.Fatalf("Copy() = %q, want docker-daemon:example:dev", got)
 	}
 	archiveRoot := dockerArchiveRoot(t, loadBody)
 	if archiveRoot.Digest != root.Digest || archiveRoot.Size != root.Size || archiveRoot.MediaType != root.MediaType {

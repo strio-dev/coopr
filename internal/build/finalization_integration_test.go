@@ -19,15 +19,17 @@ func TestDockerAnnotationControlsAreIgnored(t *testing.T) {
 	root := dockerEngineWorkspace(t)
 	t.Setenv("XDG_RUNTIME_DIR", root)
 	definition := filepath.Join(root, "image.coopr")
-	if err := os.WriteFile(definition, []byte("from \"scratch\"\nlabel marker=\"kept\"\n"), 0600); err != nil {
+	if err := os.WriteFile(definition, []byte(`from "scratch" {
+    label marker="kept"
+}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	for _, format := range []string{"docker", "oci"} {
 		for attempt := range 2 {
 			archive := filepath.Join(root, format+".tar")
-			_, err := Run(context.Background(), Options{
+			_, err := buildArchive(t, archive, context.Background(), Options{
 				File: definition, Format: format,
-				Tag:        "oci-archive:" + archive,
 				BuildStore: buildah.StoreOptions{GraphRoot: filepath.Join(root, "store", "graph"), RunRoot: filepath.Join(root, "run"), GraphDriverName: "vfs"},
 				ImageControls: buildah.ImageControls{
 					Annotations:      []string{"org.example.kept=value", "org.example.removed=value"},
@@ -59,7 +61,11 @@ func TestMultiPlatformTarFilesystemOutputUsesLastPlatform(t *testing.T) {
 	root := dockerEngineWorkspace(t)
 	definition := filepath.Join(root, "image.coopr")
 	for name, contents := range map[string]string{
-		"image.coopr":  "from \"scratch\"\narg \"TARGETARCH\"\ncopy \"marker-$TARGETARCH\" \"/marker\"\n",
+		"image.coopr": `from "scratch" {
+    arg "TARGETARCH"
+    copy "marker-$TARGETARCH" "/marker"
+}
+`,
 		"marker-amd64": "amd64\n", "marker-arm64": "arm64\n",
 	} {
 		if err := os.WriteFile(filepath.Join(root, name), []byte(contents), 0600); err != nil {
@@ -103,7 +109,10 @@ func TestMultiPlatformLocalFilesystemExports(t *testing.T) {
 	}
 	root := dockerEngineWorkspace(t)
 	definition := filepath.Join(root, "image.coopr")
-	if err := os.WriteFile(definition, []byte("from \"scratch\"\ncopy \"marker\" \"/marker\"\n"), 0600); err != nil {
+	if err := os.WriteFile(definition, []byte(`from "scratch" {
+    copy "marker" "/marker"
+}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "marker"), []byte("multi export\n"), 0600); err != nil {

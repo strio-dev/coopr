@@ -39,7 +39,10 @@ func TestSharedStoreMultiPlatformLocalIndex(t *testing.T) {
 				definition := filepath.Join(work, "image.coopr")
 				writeDefinition := func(label string) {
 					t.Helper()
-					if err := os.WriteFile(definition, []byte(fmt.Sprintf("from \"scratch\"\nlabel shared_index=%q\n", label)), 0o600); err != nil {
+					if err := os.WriteFile(definition, []byte(fmt.Sprintf(`from "scratch" {
+    label shared_index=%q
+}
+`, label)), 0o600); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -96,12 +99,15 @@ func TestSharedStoreMultiPlatformLocalIndex(t *testing.T) {
 				}
 				// A fresh catalog forces consumption through the shared native store.
 				child := filepath.Join(work, "child.coopr")
-				if err := os.WriteFile(child, []byte("from \"localhost/shared-index-alias:latest\"\nlabel child=\"yes\"\n"), 0o600); err != nil {
+				if err := os.WriteFile(child, []byte(`from "localhost/shared-index-alias:latest" {
+    label child="yes"
+}
+`), 0o600); err != nil {
 					t.Fatal(err)
 				}
 				for _, arch := range []string{"amd64", "arm64"} {
 					archive := filepath.Join(work, "child-"+arch+".tar")
-					if _, err := Run(ctx, Options{File: child, Context: work, BuildStore: storeOptions, Platform: "linux/" + arch, Format: format, Tag: "oci-archive:" + archive}); err != nil {
+					if _, err := buildArchive(t, archive, ctx, Options{File: child, Context: work, BuildStore: storeOptions, Platform: "linux/" + arch, Format: format}); err != nil {
 						t.Fatalf("consume local index for %s: %v", arch, err)
 					}
 					_, image := readExampleImage(t, ctx, archive)

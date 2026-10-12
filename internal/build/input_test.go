@@ -29,9 +29,18 @@ func TestHTTPDefinitionErrorsRedactCredentialsAcrossBuildModes(t *testing.T) {
 						_, _ = io.WriteString(w, "invalid {\n")
 					case "build":
 						if component {
-							_, _ = io.WriteString(w, "package as=\"bundle\"\ncopy \"missing\" \"/missing\"\nextend\ncopy \"/missing\" \"/missing\" from=\"bundle\"\n")
+							_, _ = io.WriteString(w, `package as="bundle" {
+    copy "missing" "/missing"
+}
+extend {
+    copy "/missing" "/missing" from="bundle"
+}
+`)
 						} else {
-							_, _ = io.WriteString(w, "from \"scratch\"\ncopy \"missing\" \"/missing\"\n")
+							_, _ = io.WriteString(w, `from "scratch" {
+    copy "missing" "/missing"
+}
+`)
 						}
 					}
 				}))
@@ -54,7 +63,7 @@ func TestHTTPDefinitionErrorsRedactCredentialsAcrossBuildModes(t *testing.T) {
 }
 
 func TestDefinitionStdinRetainsModeValidation(t *testing.T) {
-	_, err := Run(context.Background(), Options{File: "-", Stdin: strings.NewReader("extend\n")})
+	_, err := Run(context.Background(), Options{File: "-", Stdin: strings.NewReader("extend {}\n")})
 	if err == nil || !strings.Contains(err.Error(), "requires coopr component build") {
 		t.Fatalf("stdin definition did not reach mode validation: %v", err)
 	}
@@ -80,7 +89,8 @@ func TestHTTPDefinitionSupportsURLBasicAuthentication(t *testing.T) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		_, _ = io.WriteString(w, "from \"scratch\"\n")
+		_, _ = io.WriteString(w, `from "scratch" {}
+`)
 	}))
 	defer server.Close()
 	source := strings.Replace(server.URL, "http://", "http://user:secret@", 1) + "/definition.coopr"
@@ -103,9 +113,9 @@ func TestHTTPDefinitionDoesNotProbeURLAsLocalPath(t *testing.T) {
 	for _, component := range []bool{false, true} {
 		var err error
 		if component {
-			_, err = BuildComponent(context.Background(), ComponentOptions{File: source, Context: root, Tag: "oci-archive:" + filepath.Join(root, "component.tar")})
+			_, err = BuildComponent(context.Background(), ComponentOptions{File: source, Context: root, Tag: "component:test"})
 		} else {
-			_, err = Run(context.Background(), Options{File: source, Context: root, Tag: "oci-archive:" + filepath.Join(root, "image.tar")})
+			_, err = Run(context.Background(), Options{File: source, Context: root, Tag: "image:test"})
 		}
 		if err == nil || strings.Contains(err.Error(), "secret") || !strings.Contains(err.Error(), "HTTP status 503") {
 			t.Fatalf("remote definition was treated as a local path: %v", err)
@@ -115,7 +125,8 @@ func TestHTTPDefinitionDoesNotProbeURLAsLocalPath(t *testing.T) {
 
 func TestDefinitionLocalPathWithURLReservedCharacters(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "local%definition.coopr")
-	if err := os.WriteFile(path, []byte("from \"scratch\"\n"), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(`from "scratch" {}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := readDefinition(context.Background(), path, nil); err != nil {
@@ -124,7 +135,8 @@ func TestDefinitionLocalPathWithURLReservedCharacters(t *testing.T) {
 }
 
 func TestDefinitionAndContextCannotBothReadStdin(t *testing.T) {
-	_, err := Run(context.Background(), Options{File: "-", Context: "-", Stdin: strings.NewReader("from \"scratch\"\n")})
+	_, err := Run(context.Background(), Options{File: "-", Context: "-", Stdin: strings.NewReader(`from "scratch" {}
+`)})
 	if err == nil || !strings.Contains(err.Error(), "both use stdin") {
 		t.Fatalf("ambiguous stdin inputs accepted: %v", err)
 	}
@@ -192,7 +204,8 @@ func TestArchiveContextDefinitionRejectsTraversal(t *testing.T) {
 			}
 			defer func() { _ = os.RemoveAll(outsideDir) }()
 			outsidePath := filepath.Join(outsideDir, name)
-			if err := os.WriteFile(outsidePath, []byte("from \"scratch\"\n"), 0600); err != nil {
+			if err := os.WriteFile(outsidePath, []byte(`from "scratch" {}
+`), 0600); err != nil {
 				t.Fatal(err)
 			}
 
@@ -214,7 +227,8 @@ func TestArchiveContextDefinitionRejectsEscapingSymlink(t *testing.T) {
 	for _, name := range []string{"image.coopr", "component.coopr"} {
 		t.Run(name, func(t *testing.T) {
 			outside := filepath.Join(t.TempDir(), name)
-			if err := os.WriteFile(outside, []byte("from \"scratch\"\n"), 0600); err != nil {
+			if err := os.WriteFile(outside, []byte(`from "scratch" {}
+`), 0600); err != nil {
 				t.Fatal(err)
 			}
 			var archive bytes.Buffer
@@ -267,7 +281,13 @@ func TestContextIgnoreFileSelection(t *testing.T) {
 func TestPrepareDefinitionsPreservesFileAndStageOrder(t *testing.T) {
 	root := t.TempDir()
 	files := []string{filepath.Join(root, "first.coopr"), filepath.Join(root, "second.coopr")}
-	for i, source := range []string{"from \"scratch\" as=\"first\"\nrun \"echo first\"\n", "run \"echo appended\"\nfrom \"scratch\" as=\"second\"\n"} {
+	for i, source := range []string{`from "scratch" as="first" {
+    run "echo first"
+}
+`, `from "first" as="second" {
+    run "echo appended"
+}
+`} {
 		if err := os.WriteFile(files[i], []byte(source), 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -285,7 +305,7 @@ func TestPrepareDefinitionsPreservesFileAndStageOrder(t *testing.T) {
 	for _, inst := range def.Instructions {
 		names = append(names, inst.Name)
 	}
-	if strings.Join(names, ",") != "from,run,run,from" {
+	if strings.Join(names, ",") != "from,from" || len(def.Instructions[0].Children) != 1 || len(def.Instructions[1].Children) != 1 || def.Instructions[1].Children[0].Arguments[0] != "echo appended" {
 		t.Fatalf("combined order: %v", names)
 	}
 }
@@ -293,7 +313,8 @@ func TestPrepareDefinitionsPreservesFileAndStageOrder(t *testing.T) {
 func TestPrepareDefinitionsExtractsContextOnce(t *testing.T) {
 	var data bytes.Buffer
 	writer := tar.NewWriter(&data)
-	for _, file := range []struct{ name, source string }{{"first.coopr", "from \"scratch\"\n"}, {"second.coopr", "run \"echo second\"\n"}} {
+	for _, file := range []struct{ name, source string }{{"first.coopr", `from "scratch" {}
+`}, {"second.coopr", "from \"scratch\" {\nrun \"echo second\"\n}\n"}} {
 		if err := writer.WriteHeader(&tar.Header{Name: file.name, Mode: 0600, Size: int64(len(file.source))}); err != nil {
 			t.Fatal(err)
 		}
@@ -323,7 +344,8 @@ func TestMultipleDefinitionsCannotOverwriteLaterInput(t *testing.T) {
 	first := filepath.Join(root, "first.coopr")
 	second := filepath.Join(root, "second.coopr")
 	for _, file := range []string{first, second} {
-		if err := os.WriteFile(file, []byte("from \"scratch\"\n"), 0600); err != nil {
+		if err := os.WriteFile(file, []byte(`from "scratch" {}
+`), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -331,7 +353,8 @@ func TestMultipleDefinitionsCannotOverwriteLaterInput(t *testing.T) {
 		t.Fatalf("later definition overwrite: %v", err)
 	}
 	data, err := os.ReadFile(second)
-	if err != nil || string(data) != "from \"scratch\"\n" {
+	if err != nil || string(data) != `from "scratch" {}
+` {
 		t.Fatalf("definition changed: %q %v", data, err)
 	}
 }

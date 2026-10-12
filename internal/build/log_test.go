@@ -86,9 +86,9 @@ func TestCompletedTagProgressRespectsQuietAndLogfile(t *testing.T) {
 
 func TestCompletedTagProgressDoesNotCallRegistryDigestPublicationATag(t *testing.T) {
 	references := []string{
-		"registry:example.com/app@sha256:" + strings.Repeat("a", 64),
-		"registry:example.com/app:release",
-		"registry:example.com/app",
+		"docker://example.com/app@sha256:" + strings.Repeat("a", 64),
+		"docker://example.com/app:release",
+		"docker://example.com/app",
 	}
 	var destinations []transfer.Destination
 	report := outputReport{}

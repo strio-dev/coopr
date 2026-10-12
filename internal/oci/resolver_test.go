@@ -149,10 +149,10 @@ func TestResolveRegistryImageDoesNotCreateAbsentLocalStore(t *testing.T) {
 	}
 }
 
-func TestValidateComponentReferenceLocalSyntax(t *testing.T) {
+func TestValidateComponentReferenceNamesAndDigests(t *testing.T) {
 	localDigest := digest.FromString("component").String()
 	valid := []string{
-		"local:stable",
+		"stable",
 		localDigest,
 		"registry.example/team/component:stable",
 		"registry.example/team/component@" + localDigest,
@@ -370,7 +370,13 @@ func TestIndexSelectionRejectsWrongConfig(t *testing.T) {
 
 func TestComponentArtifactAndBlobVerification(t *testing.T) {
 	_, repo, resolver, name := testRepository(t, registry.New())
-	def, err := definition.Parse(strings.NewReader("package as=\"pkg\"\nextend as=\"base\"\narg \"channel\"\nenv channel=\"${channel}\"\ncopy \"/src\" \"/dst\" from=\"pkg\"\n"))
+	def, err := definition.Parse(strings.NewReader(`package as="pkg" {}
+extend as="base" {
+    arg "channel"
+    env channel="${channel}"
+    copy "/src" "/dst" from="pkg"
+}
+`))
 	if err != nil {
 		t.Fatal(err)
 	}

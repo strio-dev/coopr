@@ -18,19 +18,20 @@ import (
 func TestRequestFromPlanPreservesInstructionAndCommandForms(t *testing.T) {
 	plan := testPlan(t, `
 arg "mode" "test"
-from "scratch"
-arg "mode"
-env A="one" B="two"
-copy "one/./nested" "two/./nested" "/data/" chown="12:34" chmod="0640" parents="true" { exclude "*.tmp" }
-shell "/bin/bash" "-ceu"
-run "printf '%s' \"$mode\""
-run { exec "/bin/echo" "ok" }
-label "org.example.ready" "yes"
-workdir "/data"
-user "12:34"
-cmd "serve"
-entrypoint { exec "/entry" "--flag" }
-stopsignal "SIGTERM"
+from "scratch" {
+    arg "mode"
+    env A="one" B="two"
+    copy "one/./nested" "two/./nested" "/data/" chown="12:34" chmod="0640" parents="true" { exclude "*.tmp" }
+    shell "/bin/bash" "-ceu"
+    run "printf '%s' \"$mode\""
+    run { exec "/bin/echo" "ok" }
+    label "org.example.ready" "yes"
+    workdir "/data"
+    user "12:34"
+    cmd "serve"
+    entrypoint { exec "/entry" "--flag" }
+    stopsignal "SIGTERM"
+}
 `)
 	request, err := RequestFromPlan(plan, PlanOptions{ContextDir: "/context"})
 	if err != nil {
@@ -69,7 +70,10 @@ func TestRequestFromPlanDoesNotDuplicateGlobalMounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	def, err := definition.Parse(strings.NewReader("from \"scratch\"\nrun \"true\" { mount \"bind\" target=\"/authored\" }\n"))
+	def, err := definition.Parse(strings.NewReader(`from "scratch" {
+    run "true" { mount "bind" target="/authored" }
+}
+`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,9 +100,10 @@ func TestRequestFromPlanDoesNotDuplicateGlobalMounts(t *testing.T) {
 
 func TestRequestFromPlanPreservesAddGitAndUnpackOptions(t *testing.T) {
 	plan := testPlan(t, `
-from "scratch"
-add "https://example.invalid/repository.git#main" "/source/" keep-git-dir="true" checksum="abcdef"
-add "archive.tar" "/archive/" unpack="false"
+from "scratch" {
+    add "https://example.invalid/repository.git#main" "/source/" keep-git-dir="true" checksum="abcdef"
+    add "archive.tar" "/archive/" unpack="false"
+}
 `)
 	request, err := RequestFromPlan(plan, PlanOptions{ContextDir: "/context"})
 	if err != nil {
@@ -117,7 +122,10 @@ add "archive.tar" "/archive/" unpack="false"
 func TestRequestFromPlanRejectsInvalidAddBooleanOptions(t *testing.T) {
 	for _, property := range []string{"keep-git-dir", "unpack"} {
 		t.Run(property, func(t *testing.T) {
-			_, err := RequestFromPlan(testPlan(t, "from \"scratch\"\nadd \"source\" \"/source\" "+property+"=\"sometimes\"\n"), PlanOptions{})
+			_, err := RequestFromPlan(testPlan(t, `from "scratch" {
+    add "source" "/source" `+property+`="sometimes"
+}
+`), PlanOptions{})
 			if err == nil || !strings.Contains(err.Error(), property+" must be true or false") {
 				t.Fatalf("error = %v", err)
 			}
@@ -129,11 +137,23 @@ func TestRequestFromPlanRejectsUnsupportedSemantics(t *testing.T) {
 	tests := []struct {
 		name, source, message string
 	}{
-		{"non-scratch base", `from "alpine:3.20"`, "must be from scratch"},
-		{"multiple stages", "from \"scratch\" as=\"base\"\nfrom \"base\"\n", "exactly one stage"},
-		{"run mount without cache scope", "from \"scratch\"\nrun \"true\" { mount \"cache\" target=\"/cache\" }\n", "requires executor scope"},
-		{"copy invalid parents", "from \"scratch\"\ncopy \"a\" \"/a\" parents=\"sometimes\"\n", "parents must be true or false"},
-		{"copy remote URL", "from \"scratch\"\ncopy \"https://example.invalid/file\" \"/file\"\n", "COPY source must be local"},
+		{"non-scratch base", `from "alpine:3.20" {}
+`, "must be from scratch"},
+		{"multiple stages", `from "scratch" as="base" {}
+from "base" {}
+`, "exactly one stage"},
+		{"run mount without cache scope", `from "scratch" {
+    run "true" { mount "cache" target="/cache" }
+}
+`, "requires executor scope"},
+		{"copy invalid parents", `from "scratch" {
+    copy "a" "/a" parents="sometimes"
+}
+`, "parents must be true or false"},
+		{"copy remote URL", `from "scratch" {
+    copy "https://example.invalid/file" "/file"
+}
+`, "COPY source must be local"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -153,7 +173,10 @@ func TestLowerOperationRejectsUnknownInstruction(t *testing.T) {
 }
 
 func TestRequestFromPlanLowersRunHostNetworkAndSandboxSecurity(t *testing.T) {
-	request, err := RequestFromPlan(testPlan(t, "from \"scratch\"\nrun \"true\" network=\"host\" security=\"sandbox\"\n"), PlanOptions{Allow: []string{"network.host"}})
+	request, err := RequestFromPlan(testPlan(t, `from "scratch" {
+    run "true" network="host" security="sandbox"
+}
+`), PlanOptions{Allow: []string{"network.host"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +188,10 @@ func TestRequestFromPlanLowersRunHostNetworkAndSandboxSecurity(t *testing.T) {
 
 func TestRequestFromPlanLowersNativeRunNetworkModes(t *testing.T) {
 	for _, network := range []string{"private", "slirp4netns:mtu=1400", "ns:/run/netns/example", "buildnet"} {
-		request, err := RequestFromPlan(testPlan(t, "from \"scratch\"\nrun \"true\" network=\""+network+"\"\n"), PlanOptions{})
+		request, err := RequestFromPlan(testPlan(t, `from "scratch" {
+    run "true" network="`+network+`"
+}
+`), PlanOptions{})
 		if err != nil {
 			t.Fatalf("lower %s: %v", network, err)
 		}
@@ -177,10 +203,16 @@ func TestRequestFromPlanLowersNativeRunNetworkModes(t *testing.T) {
 
 func TestRequestFromPlanValidatesDNSAgainstEffectiveRunNetwork(t *testing.T) {
 	controls := RunControls{DNSServers: []string{"1.1.1.1"}}
-	if _, err := RequestFromPlan(testPlan(t, "from \"scratch\"\nrun \"true\" network=\"none\"\n"), PlanOptions{Network: "default", RunControls: controls}); err == nil || !strings.Contains(err.Error(), "DNS controls") {
+	if _, err := RequestFromPlan(testPlan(t, `from "scratch" {
+    run "true" network="none"
+}
+`), PlanOptions{Network: "default", RunControls: controls}); err == nil || !strings.Contains(err.Error(), "DNS controls") {
 		t.Fatalf("authored network none with DNS = %v", err)
 	}
-	request, err := RequestFromPlan(testPlan(t, "from \"scratch\"\nrun \"true\" network=\"default\"\n"), PlanOptions{Network: "none", RunControls: controls})
+	request, err := RequestFromPlan(testPlan(t, `from "scratch" {
+    run "true" network="default"
+}
+`), PlanOptions{Network: "none", RunControls: controls})
 	if err != nil {
 		t.Fatalf("explicit network override rejected: %v", err)
 	}
@@ -190,7 +222,10 @@ func TestRequestFromPlanValidatesDNSAgainstEffectiveRunNetwork(t *testing.T) {
 }
 
 func TestRequestFromPlanLowersRunInsecureSecurity(t *testing.T) {
-	request, err := RequestFromPlan(testPlan(t, "from \"scratch\"\nrun \"true\" security=\"insecure\"\n"), PlanOptions{Allow: []string{"security.insecure"}})
+	request, err := RequestFromPlan(testPlan(t, `from "scratch" {
+    run "true" security="insecure"
+}
+`), PlanOptions{Allow: []string{"security.insecure"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,11 +261,12 @@ func TestLowerImportedInlineSourcesAndMultilineShebang(t *testing.T) {
 		t.Fatal(err)
 	}
 	request, err := RequestFromPlan(testPlan(t, `
-from "scratch"
-run """
-    #!/bin/sh
-    true
-    """
+from "scratch" {
+    run """
+        #!/bin/sh
+        true
+        """
+}
 `), PlanOptions{ContextDir: "/context"})
 	if err != nil {
 		t.Fatal(err)
@@ -257,11 +293,12 @@ func TestLowerHeredocChecksumRequiresPathSource(t *testing.T) {
 
 func TestRequestFromPlanLowersRepeatedRunDevicesAlongsideMounts(t *testing.T) {
 	request, err := RequestFromPlan(testPlan(t, `
-from "scratch"
-run "true" {
-  device "vendor.example/device=one,required"
-  mount "tmpfs" target="/tmp"
-  device "accelerator,required=false"
+from "scratch" {
+    run "true" {
+      device "vendor.example/device=one,required"
+      mount "tmpfs" target="/tmp"
+      device "accelerator,required=false"
+    }
 }
 `), PlanOptions{})
 	if err != nil {
@@ -281,8 +318,9 @@ run "true" {
 }
 
 func TestRequestFromPlanRejectsInvalidRunDeviceOption(t *testing.T) {
-	_, err := RequestFromPlan(testPlan(t, `from "scratch"
-run "true" { device "name=vendor.example/device=one,required=sometimes" }
+	_, err := RequestFromPlan(testPlan(t, `from "scratch" {
+    run "true" { device "name=vendor.example/device=one,required=sometimes" }
+}
 `), PlanOptions{})
 	if err == nil || !strings.Contains(err.Error(), "invalid value for required") {
 		t.Fatalf("invalid RUN device error = %v", err)
@@ -291,8 +329,9 @@ run "true" { device "name=vendor.example/device=one,required=sometimes" }
 
 func TestRequestFromPlanBindsCredentialSourceSpecs(t *testing.T) {
 	plan := testPlan(t, `
-from "scratch"
-run "true" { mount "secret" id="token" required="true"; mount "ssh" id="default" required="true" }
+from "scratch" {
+    run "true" { mount "secret" id="token" required="true"; mount "ssh" id="default" required="true" }
+}
 `)
 	request, err := RequestFromPlan(plan, PlanOptions{
 		Secrets: []string{"id=token,env=TOKEN"}, SSH: []string{"default=/tmp/agent.sock"},
@@ -311,9 +350,10 @@ run "true" { mount "secret" id="token" required="true"; mount "ssh" id="default"
 
 func TestRequestFromPlanLowersHealthcheckAndOnBuild(t *testing.T) {
 	plan := testPlan(t, `
-from "scratch"
-healthcheck interval="30s" timeout="3s" start-period="5s" start-interval="1s" retries=4 { exec "/bin/check" "--ready" }
-onbuild { run "make generated" }
+from "scratch" {
+    healthcheck interval="30s" timeout="3s" start-period="5s" start-interval="1s" retries=4 { exec "/bin/check" "--ready" }
+    onbuild { run "make generated" }
+}
 `)
 	request, err := RequestFromPlan(plan, PlanOptions{})
 	if err != nil {
@@ -331,11 +371,12 @@ onbuild { run "make generated" }
 
 func TestRequestFromPlanLowersLinkForCopyAndAdd(t *testing.T) {
 	plan := testPlan(t, `
-from "scratch"
-copy "linked-copy" "/linked-copy" link="true"
-copy "plain-copy" "/plain-copy" link="false"
-add "linked-add" "/linked-add" link="true"
-add "plain-add" "/plain-add" link="false"
+from "scratch" {
+    copy "linked-copy" "/linked-copy" link="true"
+    copy "plain-copy" "/plain-copy" link="false"
+    add "linked-add" "/linked-add" link="true"
+    add "plain-add" "/plain-add" link="false"
+}
 `)
 	request, err := RequestFromPlan(plan, PlanOptions{ContextDir: "/context"})
 	if err != nil {
@@ -359,7 +400,10 @@ add "plain-add" "/plain-add" link="false"
 func TestRequestFromPlanRejectsMalformedCopyAndAddLink(t *testing.T) {
 	for _, instruction := range []string{"copy", "add"} {
 		t.Run(instruction, func(t *testing.T) {
-			_, err := RequestFromPlan(testPlan(t, "from \"scratch\"\n"+instruction+" \"source\" \"/output\" link=\"sometimes\"\n"), PlanOptions{ContextDir: "/context"})
+			_, err := RequestFromPlan(testPlan(t, `from "scratch" {
+    `+instruction+` "source" "/output" link="sometimes"
+}
+`), PlanOptions{ContextDir: "/context"})
 			if err == nil || !strings.Contains(err.Error(), strings.ToUpper(instruction)+" link must be true or false") {
 				t.Fatalf("malformed %s link error = %v", instruction, err)
 			}
@@ -392,9 +436,10 @@ func TestLowerGraphOperationsPassesLinkForStageCopy(t *testing.T) {
 
 func TestRequestFromPlanLowersParentsForCopyAndAdd(t *testing.T) {
 	plan := testPlan(t, `
-from "scratch"
-copy "copy/./nested" "/copy/" parents="true"
-add "add/./nested" "/add/" parents="true"
+from "scratch" {
+    copy "copy/./nested" "/copy/" parents="true"
+    add "add/./nested" "/add/" parents="true"
+}
 `)
 	request, err := RequestFromPlan(plan, PlanOptions{ContextDir: "/context"})
 	if err != nil {
@@ -412,11 +457,12 @@ add "add/./nested" "/add/" parents="true"
 
 func TestRequestFromPlanLowersOrderedRunMounts(t *testing.T) {
 	plan := testPlan(t, `
-from "scratch"
-run "true" {
- mount "bind" source="input" target="/input" readonly="true"
- mount "cache" target="/cache" sharing="locked"
- mount "tmpfs" target="/ram" size="32m"
+from "scratch" {
+    run "true" {
+     mount "bind" source="input" target="/input" readonly="true"
+     mount "cache" target="/cache" sharing="locked"
+     mount "tmpfs" target="/ram" size="32m"
+    }
 }
 `)
 	resolverCalls := []int{}
@@ -448,7 +494,10 @@ func TestRequestFromPlanRejectsUnboundAndAmbiguousRunMounts(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			plan := testPlan(t, "from \"scratch\"\nrun \"true\" { "+test.mount+" }\n")
+			plan := testPlan(t, `from "scratch" {
+    run "true" { `+test.mount+` }
+}
+`)
 			request, err := RequestFromPlan(plan, PlanOptions{ContextDir: "/context"})
 			if err == nil {
 				fake := &recordingBuilder{}
@@ -489,7 +538,10 @@ func TestLowerRunMountsRejectsStageBackedSources(t *testing.T) {
 }
 
 func TestRequestFromPlanPreservesNoNetworkRun(t *testing.T) {
-	plan := testPlan(t, "from \"scratch\"\nrun \"true\" network=\"none\"\n")
+	plan := testPlan(t, `from "scratch" {
+    run "true" network="none"
+}
+`)
 	request, err := RequestFromPlan(plan, PlanOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -512,10 +564,11 @@ func TestRequestFromPlanBuildsScratchCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 	request, err := RequestFromPlan(testPlan(t, `
-from "scratch"
-copy "proof" "/proof"
-env COOPR_PATH="planned"
-cmd { exec "/proof" }
+from "scratch" {
+    copy "proof" "/proof"
+    env COOPR_PATH="planned"
+    cmd { exec "/proof" }
+}
 `), PlanOptions{
 		Store: StoreOptions{
 			RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs",

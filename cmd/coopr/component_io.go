@@ -25,7 +25,7 @@ func newComponentPullCommand() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		root, err := resolver.PullComponent(cmd.Context(), strings.TrimPrefix(args[0], "registry:"), tag)
+		root, err := resolver.PullComponent(cmd.Context(), strings.TrimPrefix(args[0], "docker://"), tag)
 		if err != nil {
 			return err
 		}
@@ -39,7 +39,7 @@ func newComponentPullCommand() *cobra.Command {
 
 func newComponentPushCommand() *cobra.Command {
 	var registry registryFlags
-	cmd := &cobra.Command{Use: "push <source> <destination>", Short: "Push a local component to a registry", Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "push <source> <destination>", Short: "Push a local component to a registry or OCI archive", Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
 		destination, err := transfer.ParsePushDestination(args[1], oci.Component)
 		if err != nil {
 			return err
@@ -56,11 +56,11 @@ func newComponentPushCommand() *cobra.Command {
 }
 
 func newComponentTagCommand() *cobra.Command {
-	return &cobra.Command{Use: "tag <source> <name>...", Short: "Assign local component names without rebuilding", Args: cobra.MinimumNArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
+	return &cobra.Command{Use: "tag <source> <name>...", Aliases: []string{"copy"}, Short: "Assign local component names without rebuilding", Args: cobra.MinimumNArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
 		destinations := make([]transfer.Destination, len(args)-1)
 		for i, name := range args[1:] {
 			var err error
-			destinations[i], err = transfer.ParseDestination("local:"+name, oci.Component)
+			destinations[i], err = transfer.ParseTag(name, oci.Component)
 			if err != nil {
 				return err
 			}
@@ -98,7 +98,11 @@ func newComponentSaveCommand() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		root, err := store.Resolve(cmd.Context(), strings.TrimPrefix(args[0], "local:"))
+		selector, err := componentstore.LocalSelector(args[0])
+		if err != nil {
+			return err
+		}
+		root, err := store.Resolve(cmd.Context(), selector)
 		if err != nil {
 			return err
 		}
@@ -153,7 +157,11 @@ func newComponentExistsCommand() *cobra.Command {
 		if err != nil {
 			return commandExitError{Code: 125, Err: err}
 		}
-		_, found, err := localstore.Inspect(cmd.Context(), dir, strings.TrimPrefix(args[0], "local:"))
+		selector, err := componentstore.LocalSelector(args[0])
+		if err != nil {
+			return commandExitError{Code: 125, Err: errors.Join(err, activity.Close())}
+		}
+		_, found, err := localstore.Inspect(cmd.Context(), dir, selector)
 		if err := errors.Join(err, activity.Close()); err != nil {
 			return commandExitError{Code: 125, Err: err}
 		}

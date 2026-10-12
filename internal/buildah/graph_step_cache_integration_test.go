@@ -23,7 +23,10 @@ func TestBuildPlanCachesWorkdir(t *testing.T) {
 	defer cancel()
 	root := t.TempDir()
 	store := cacheTestStore(root)
-	plan := testPlan(t, "from \"scratch\"\nworkdir \"/workspace/nested\"\n")
+	plan := testPlan(t, `from "scratch" {
+    workdir "/workspace/nested"
+}
+`)
 	var coldLayer digest.Digest
 	for attempt := range 2 {
 		layout := filepath.Join(root, fmt.Sprintf("layout-%d", attempt))
@@ -63,8 +66,9 @@ func TestBuildPlanCachesDefaultNetworkRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := testPlan(t, fmt.Sprintf(`
-from %q
-run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof"
+from %q {
+    run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof"
+}
 `, base.reference))
 	var coldProof string
 	for attempt := range 2 {
@@ -105,10 +109,11 @@ func TestBuildPlanReusesRunAcrossOutputMetadataChanges(t *testing.T) {
 	build := func(attempt int, metadata string) (string, v1.Image) {
 		t.Helper()
 		plan := testPlan(t, fmt.Sprintf(`
-from %q
-label "org.example.release" %q
-cmd { exec "/bin/echo" %q }
-run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" network="none"
+from %q {
+    label "org.example.release" %q
+    cmd { exec "/bin/echo" %q }
+    run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" network="none"
+}
 `, base.reference, metadata, metadata))
 		layout := filepath.Join(root, fmt.Sprintf("metadata-%d", attempt))
 		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
@@ -155,11 +160,13 @@ func TestBuildPlanReusesRunAcrossSourceStageMetadataChanges(t *testing.T) {
 	build := func(attempt int, metadata string) (string, v1.Image) {
 		t.Helper()
 		plan := testPlan(t, fmt.Sprintf(`
-from %q as="source"
-label "org.example.release" %q
-run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" network="none"
-from "source"
-label "org.example.consumer" "yes"
+from %q as="source" {
+    label "org.example.release" %q
+    run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" network="none"
+}
+from "source" {
+    label "org.example.consumer" "yes"
+}
 `, base.reference, metadata))
 		layout := filepath.Join(root, fmt.Sprintf("source-metadata-%d", attempt))
 		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
@@ -206,9 +213,10 @@ func TestBuildPlanInvalidatesRunForEnvironmentChanges(t *testing.T) {
 	build := func(attempt int, value string) string {
 		t.Helper()
 		plan := testPlan(t, fmt.Sprintf(`
-from %q
-env CACHE_VALUE=%q
-run "printf '%%s:' \"$CACHE_VALUE\" >/proof; od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >>/proof" network="none"
+from %q {
+    env CACHE_VALUE=%q
+    run "printf '%%s:' \"$CACHE_VALUE\" >/proof; od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >>/proof" network="none"
+}
 `, base.reference, value))
 		layout := filepath.Join(root, fmt.Sprintf("environment-%d", attempt))
 		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
@@ -260,10 +268,12 @@ func TestBuildPlanCachesStageCopy(t *testing.T) {
 	write("one\n")
 	store := cacheTestStore(root)
 	plan := testPlan(t, `
-from "scratch" as="source"
-copy "value" "/value"
-from "scratch"
-copy "/value" "/copied" from="source"
+from "scratch" as="source" {
+    copy "value" "/value"
+}
+from "scratch" {
+    copy "/value" "/copied" from="source"
+}
 `)
 	build := func(name, want string) (int, digest.Digest) {
 		t.Helper()
@@ -323,9 +333,10 @@ func TestBuildPlanCachesRunWithContextBind(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := testPlan(t, fmt.Sprintf(`
-from %q
-run "cat /input/value >/proof" network="none" {
-  mount "bind" source="input" target="/input" readonly="true"
+from %q {
+    run "cat /input/value >/proof" network="none" {
+      mount "bind" source="input" target="/input" readonly="true"
+    }
 }
 `, base.reference))
 	build := func(name, want string) (int, digest.Digest) {
@@ -386,11 +397,13 @@ func TestBuildPlanCachesRunWithStageBind(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := testPlan(t, fmt.Sprintf(`
-from "scratch" as="source"
-copy "value" "/input/value"
-from %q
-run "cat /input/value >/proof" network="none" {
-  mount "bind" from="source" source="/input" target="/input" readonly="true"
+from "scratch" as="source" {
+    copy "value" "/input/value"
+}
+from %q {
+    run "cat /input/value >/proof" network="none" {
+      mount "bind" from="source" source="/input" target="/input" readonly="true"
+    }
 }
 `, base.reference))
 	build := func(name, want string) (int, digest.Digest) {
@@ -431,9 +444,12 @@ func TestBuildPlanCachesComponentBeforeMetadataTail(t *testing.T) {
 	resolver, _, _ := localComponentResolver(t, ctx, v1.Platform{OS: "linux", Architecture: runtime.GOARCH})
 	policy := writeComponentTestPolicy(t, root)
 	plan := testPlan(t, `
-from "scratch"
-component "local:tool" channel="stable"
-label final="yes"
+from "scratch" {
+    component "tool" {
+        arg "channel" "stable"
+    }
+    label final="yes"
+}
 `)
 	cacheDir := filepath.Join(root, "cache")
 	var coldLayer digest.Digest
@@ -480,8 +496,9 @@ func TestBuildPlanNoCacheReexecutesRunAndReplacesCachedResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := testPlan(t, fmt.Sprintf(`
-from %q
-run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" network="none"
+from %q {
+    run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" network="none"
+}
 `, base.reference))
 	build := func(attempt int, noCache bool) string {
 		t.Helper()
@@ -546,11 +563,13 @@ func TestPublishPlanPreservesRootMetadataAcrossWarmBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := testPublicationPlan(t, `
-package as="payload"
-add "root.tar" "/"
-copy "artifact" "/artifact"
-extend
-copy "/artifact" "/artifact" from="payload"
+package as="payload" {
+    add "root.tar" "/"
+    copy "artifact" "/artifact"
+}
+extend {
+    copy "/artifact" "/artifact" from="payload"
+}
 `)
 	store := cacheTestStore(root)
 	for attempt := range 2 {

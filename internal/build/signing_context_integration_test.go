@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"coopr/internal/oci"
 	"coopr/internal/transfer"
 )
 
@@ -21,7 +22,10 @@ func TestBuildLocalSigningReusesExclusiveStoreLease(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	definition := filepath.Join(t.TempDir(), "image.coopr")
-	if err := os.WriteFile(definition, []byte("from \"scratch\"\nenv proof=\"signing\"\n"), 0600); err != nil {
+	if err := os.WriteFile(definition, []byte(`from "scratch" {
+    env proof="signing"
+}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Run(ctx, Options{File: definition, Tag: "localhost/coopr-local-signing:test", Signing: transfer.SigningOptions{SignBy: "missing-test-key"}})
@@ -45,7 +49,10 @@ func TestBuildExcludesAmbientGPGKeyringFromCopyDot(t *testing.T) {
 	}
 	t.Setenv("GNUPGHOME", home)
 	definition := filepath.Join(contextDir, "image.coopr")
-	if err := os.WriteFile(definition, []byte("from \"scratch\"\ncopy \".\" \"/captured/\"\n"), 0600); err != nil {
+	if err := os.WriteFile(definition, []byte(`from "scratch" {
+    copy "." "/captured/"
+}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(contextDir, "marker"), []byte("public payload"), 0600); err != nil {
@@ -54,9 +61,18 @@ func TestBuildExcludesAmbientGPGKeyringFromCopyDot(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusBadGateway) }))
 	defer server.Close()
 	archive := filepath.Join(t.TempDir(), "image.tar")
-	_, err := Run(context.Background(), Options{File: definition, TLSVerify: new(false), Tags: []string{"oci-archive:" + archive, "registry:" + strings.TrimPrefix(server.URL, "http://") + "/coopr/signing:latest"}, Signing: transfer.SigningOptions{SignBy: "missing-test-key"}})
+	iid := filepath.Join(t.TempDir(), "iid")
+	store := nativeBuildTestStore(filepath.Join(t.TempDir(), "images"))
+	_, err := Run(context.Background(), Options{File: definition, TLSVerify: new(false), Push: true, Tag: strings.TrimPrefix(server.URL, "http://") + "/coopr/signing:latest", IIDFileRaw: iid, BuildStore: store, Signing: transfer.SigningOptions{SignBy: "missing-test-key"}})
 	if err == nil {
 		t.Fatal("unavailable signed destination succeeded")
+	}
+	imageID, readErr := os.ReadFile(iid)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if _, err := transfer.Copy(context.Background(), oci.Image, strings.TrimSpace(string(imageID)), transfer.Destination{Transport: "oci-archive", Name: archive}, transfer.Options{BuildStore: store}); err != nil {
+		t.Fatal(err)
 	}
 	names := archiveLayerNames(t, archive)
 	if !containsName(names, "captured/marker") {

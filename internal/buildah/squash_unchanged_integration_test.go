@@ -19,7 +19,10 @@ func TestSquashUnchangedAndMetadataOnlyRetainsBaseLayers(t *testing.T) {
 	policy := writeComponentTestPolicy(t, root)
 	var baseline []string
 	for index, tail := range []string{"", "label changed=\"yes\"\n"} {
-		plan := testPlan(t, fmt.Sprintf("from %q\n%s", base.reference, tail))
+		plan := testPlan(t, fmt.Sprintf(`from %q {
+    %s
+}
+`, base.reference, tail))
 		for _, squash := range []bool{false, true} {
 			layout := filepath.Join(root, fmt.Sprintf("output-%d-%t", index, squash))
 			_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{Store: store, ContextDir: root, SignaturePolicyPath: policy, Isolation: "rootless", Runtime: "crun", Output: Output{Path: layout, Squash: squash, DisableCompression: true}, Stdout: io.Discard, Stderr: io.Discard})
@@ -44,7 +47,10 @@ func TestSquashUnchangedAndMetadataOnlyRetainsBaseLayers(t *testing.T) {
 	}
 	var baselineDiffIDs []string
 	for index, tail := range []string{"", "label changed=\"yes\"\n"} {
-		plan := testPlan(t, fmt.Sprintf("from %q\n%s", base.reference, tail))
+		plan := testPlan(t, fmt.Sprintf(`from %q {
+    %s
+}
+`, base.reference, tail))
 		for _, squash := range []bool{false, true} {
 			layout := filepath.Join(root, fmt.Sprintf("gzip-output-%d-%t", index, squash))
 			_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{Store: store, ContextDir: root, SignaturePolicyPath: policy, Isolation: "rootless", Runtime: "crun", Output: Output{Path: layout, Squash: squash}, Stdout: io.Discard, Stderr: io.Discard})

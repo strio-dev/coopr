@@ -80,12 +80,14 @@ func TestBuildPlanKeepsImportedConfigThroughCheckpointsAndStageFork(t *testing.T
 	system := &types.SystemContext{SignaturePolicyPath: policy, BigFilesTemporaryDir: root}
 	importTestImageToNative(t, ctx, store, sourceDir, reference, selected, system)
 	plan := testPlan(t, `
-from "registry.example/team/extended-base:latest" as="source"
-copy "first" "/first"
-copy "second" "/second"
-from "source"
-env FINAL="yes"
-entrypoint { exec "/new-entry" }
+from "registry.example/team/extended-base:latest" as="source" {
+    copy "first" "/first"
+    copy "second" "/second"
+}
+from "source" {
+    env FINAL="yes"
+    entrypoint { exec "/new-entry" }
+}
 `)
 	layout := filepath.Join(root, "layout")
 	result, err := BuildPlan(ctx, plan, PlanOptions{

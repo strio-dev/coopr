@@ -73,10 +73,12 @@ func TestBuildPlanUsesEachStagesSelectedPlatform(t *testing.T) {
 	foreign := foreignLinuxPlatform(t)
 	native := "linux/" + runtime.GOARCH
 	plan := planForPlatform(t, fmt.Sprintf(`
-from "scratch" as="producer" platform=%q
-copy "proof" "/proof"
-from "scratch" platform=%q
-copy "/proof" "/proof" from="producer"
+from "scratch" as="producer" platform=%q {
+    copy "proof" "/proof"
+}
+from "scratch" platform=%q {
+    copy "/proof" "/proof" from="producer"
+}
 `, native, foreign.OS+"/"+foreign.Architecture), foreign)
 	layout := filepath.Join(root, "layout")
 	if _, err := BuildPlan(ctx, plan, PlanOptions{
@@ -112,9 +114,10 @@ func TestBuildPlanExecutesForeignBinaryThroughRegisteredBinfmt(t *testing.T) {
 	binary := buildForeignProofBinary(t, contextDir, platform.Architecture)
 	assertELFArchitecture(t, binary, platform.Architecture)
 	plan := planForPlatform(t, `
-from "scratch"
-copy "foreign-proof" "/foreign-proof" chmod="0755"
-run network="none" { exec "/foreign-proof" }
+from "scratch" {
+    copy "foreign-proof" "/foreign-proof" chmod="0755"
+    run network="none" { exec "/foreign-proof" }
+}
 `, platform)
 	layout := filepath.Join(root, "layout")
 	if _, err := BuildPlan(ctx, plan, PlanOptions{
@@ -144,10 +147,12 @@ func TestForeignComponentPublishesInvokesAndReusesCache(t *testing.T) {
 	platform := foreignLinuxPlatform(t)
 	planning := planner.Options{Mode: planner.Publish, Platform: platform.OS + "/" + platform.Architecture}
 	component := parseWorkerDefinition(t, `
-package as="pkg"
-copy "payload" "/artifact"
-extend
-copy "/artifact" "/installed" from="pkg"
+package as="pkg" {
+    copy "payload" "/artifact"
+}
+extend {
+    copy "/artifact" "/installed" from="pkg"
+}
 `)
 	store := cacheTestStore(root)
 	componentLayout := filepath.Join(root, "component")
@@ -187,7 +192,10 @@ copy "/artifact" "/installed" from="pkg"
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan := planForPlatform(t, "from \"scratch\"\ncomponent \"local:foreign-copy\"\n", platform)
+	plan := planForPlatform(t, `from "scratch" {
+    component "foreign-copy"
+}
+`, platform)
 	var cold Result
 	for attempt := range 2 {
 		result, err := BuildPlan(ctx, plan, PlanOptions{
@@ -235,7 +243,11 @@ func TestBuildDefinitionUsesSelectedForeignExternalBase(t *testing.T) {
 	platformName := platform.OS + "/" + platform.Architecture
 	store := cacheTestStore(root)
 	baseLayout := filepath.Join(root, "base")
-	basePlan := planForPlatform(t, "from \"scratch\"\ncopy \"base-proof\" \"/base-proof\"\nenv BASE=\"foreign\"\n", platform)
+	basePlan := planForPlatform(t, `from "scratch" {
+    copy "base-proof" "/base-proof"
+    env BASE="foreign"
+}
+`, platform)
 	base, err := BuildPlan(ctx, basePlan, PlanOptions{
 		Store: store, ContextDir: contextDir, Isolation: "rootless", Output: Output{Path: baseLayout},
 	})
@@ -259,7 +271,10 @@ func TestBuildDefinitionUsesSelectedForeignExternalBase(t *testing.T) {
 	importTestImageToNative(t, ctx, store, baseLayout, reference, baseRoot, system)
 
 	output := filepath.Join(root, "derived")
-	result, err := BuildDefinitionSupervised(ctx, parseWorkerDefinition(t, "from \""+reference+"\"\nenv DERIVED=\"yes\"\n"), planner.Options{
+	result, err := BuildDefinitionSupervised(ctx, parseWorkerDefinition(t, "from \""+reference+`" {
+    env DERIVED="yes"
+}
+`), planner.Options{
 		Mode: planner.Build, Platform: platformName,
 	}, SupervisedPlanOptions{
 		Store: store, ContextDir: contextDir, Isolation: "rootless", Output: Output{Path: output},
@@ -297,7 +312,10 @@ func buildScratchCopyForPlatform(t *testing.T, ctx context.Context, store StoreO
 	if err := os.WriteFile(filepath.Join(contextDir, "proof"), []byte("cross-platform\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	plan := planForPlatform(t, "from \"scratch\"\ncopy \"proof\" \"/proof\"\n", platform)
+	plan := planForPlatform(t, `from "scratch" {
+    copy "proof" "/proof"
+}
+`, platform)
 	if _, err := BuildPlan(ctx, plan, PlanOptions{
 		Store: store, ContextDir: contextDir, Isolation: "rootless",
 		Output: Output{Path: layout, Reference: platform.Architecture},

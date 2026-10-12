@@ -62,15 +62,17 @@ func TestExpansionUsesDockerfileUnsetArgumentSemantics(t *testing.T) {
 func TestPlannerExpandsStructuralAndPlatformVariables(t *testing.T) {
 	plan := makePlan(t, `arg "base_image" "alpine"
 arg "source_stage" "base"
-from "$base_image" as="base" platform="$TARGETPLATFORM"
-arg "TARGETOS"
-arg "TARGETARCH"
-arg "TARGETVARIANT"
-arg "BUILDPLATFORM"
-env TARGET="${TARGETOS}/${TARGETARCH}/${TARGETVARIANT}" BUILD="$BUILDPLATFORM"
-run "printf '%s' $TARGETARCH ${base_image}"
-from "scratch"
-copy "/payload" "/payload" from="$source_stage"
+from "$base_image" as="base" platform="$TARGETPLATFORM" {
+    arg "TARGETOS"
+    arg "TARGETARCH"
+    arg "TARGETVARIANT"
+    arg "BUILDPLATFORM"
+    env TARGET="${TARGETOS}/${TARGETARCH}/${TARGETVARIANT}" BUILD="$BUILDPLATFORM"
+    run "printf '%s' $TARGETARCH ${base_image}"
+}
+from "scratch" {
+    copy "/payload" "/payload" from="$source_stage"
+}
 `, Options{Mode: Build, Platform: "linux/arm64/v8"})
 
 	if got := plan.Stages[0].Source; got != "alpine" {
@@ -103,12 +105,13 @@ copy "/payload" "/payload" from="$source_stage"
 }
 
 func TestAutomaticPlatformArgumentsIncludeTargetStageAndOSVersions(t *testing.T) {
-	definition := parse(t, `from "scratch" as="release"
-env BEFORE="$TARGETSTAGE:$TARGETOSVERSION"
-arg "TARGETSTAGE"
-arg "TARGETOSVERSION"
-arg "BUILDOSVERSION"
-env AFTER="$TARGETSTAGE:$TARGETOSVERSION:$BUILDOSVERSION"
+	definition := parse(t, `from "scratch" as="release" {
+    env BEFORE="$TARGETSTAGE:$TARGETOSVERSION"
+    arg "TARGETSTAGE"
+    arg "TARGETOSVERSION"
+    arg "BUILDOSVERSION"
+    env AFTER="$TARGETSTAGE:$TARGETOSVERSION:$BUILDOSVERSION"
+}
 `)
 	for _, test := range []struct {
 		name      string
@@ -139,9 +142,10 @@ env AFTER="$TARGETSTAGE:$TARGETOSVERSION:$BUILDOSVERSION"
 }
 
 func TestAutomaticPlatformBuildArgumentOverrideAppliesToFromResolution(t *testing.T) {
-	definition := parse(t, `from "scratch" platform="$TARGETPLATFORM"
-arg "TARGETPLATFORM"
-env RESOLVED="$TARGETPLATFORM"
+	definition := parse(t, `from "scratch" platform="$TARGETPLATFORM" {
+    arg "TARGETPLATFORM"
+    env RESOLVED="$TARGETPLATFORM"
+}
 `)
 	opts := Options{Mode: Build, Platform: "linux/amd64", Arguments: map[string]string{"TARGETPLATFORM": "linux/arm64"}}
 	sources, err := ResolveFromSources(definition, opts)
@@ -161,9 +165,10 @@ env RESOLVED="$TARGETPLATFORM"
 }
 
 func TestAutomaticPlatformVariablesDoNotLeakIntoComponentMetadata(t *testing.T) {
-	publication := makePlan(t, `extend
-arg "TARGETARCH"
-env TARGET="$TARGETARCH"
+	publication := makePlan(t, `extend {
+    arg "TARGETARCH"
+    env TARGET="$TARGETARCH"
+}
 `, Options{Mode: Publish, Platform: "linux/arm64"})
 	if len(publication.PackageArguments) != 0 || len(publication.Component.PackageArguments) != 0 {
 		t.Fatalf("automatic variables leaked into package metadata: plan=%v component=%v", publication.PackageArguments, publication.Component.PackageArguments)

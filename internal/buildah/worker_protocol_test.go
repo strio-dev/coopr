@@ -89,10 +89,31 @@ func TestStoredTransferTLSVerifyPolicy(t *testing.T) {
 	}
 }
 
+func TestPlanOptionsPreserveExecutionOrigin(t *testing.T) {
+	origin, err := currentRunSequenceOrigin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, explicit := range []string{"", "/opt/coopr/bin/coopr"} {
+		options, err := normalizePlanOptions(PlanOptions{executableOrigin: explicit})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := explicit
+		if want == "" {
+			want = origin
+		}
+		if options.executableOrigin != want {
+			t.Fatalf("executable origin = %q, want %q", options.executableOrigin, want)
+		}
+	}
+}
+
 func TestPlanWorkerMessagePreservesRequestExecutionOptions(t *testing.T) {
 	root := t.TempDir()
 	request := planWorkerRequest{
-		Mode: "build", NoCache: true, Network: "none", AddHosts: []string{"example.test:127.0.0.1"}, RewriteTimestamp: true, Allow: []string{"network.host"},
+		ExecutableOrigin: "/opt/coopr/bin/coopr",
+		Mode:             "build", NoCache: true, Network: "none", AddHosts: []string{"example.test:127.0.0.1"}, RewriteTimestamp: true, Allow: []string{"network.host"},
 		RunControls: RunControls{HTTPProxy: true, Memory: 64 << 20, DNSServers: []string{"1.1.1.1"}}, Jobs: 3,
 		AuthFile: "/tmp/auth.json", CertDir: "/tmp/certs", TLSVerify: new(false),
 		PullPolicy:    string(oci.PullNever),
@@ -111,6 +132,9 @@ func TestPlanWorkerMessagePreservesRequestExecutionOptions(t *testing.T) {
 	}
 	if !decoded.NoCache {
 		t.Fatal("plan worker request lost no-cache setting")
+	}
+	if decoded.ExecutableOrigin != request.ExecutableOrigin {
+		t.Fatalf("plan worker request executable origin = %q", decoded.ExecutableOrigin)
 	}
 	if decoded.Network != "none" || !slices.Equal(decoded.AddHosts, request.AddHosts) {
 		t.Fatalf("plan worker request network options = %q, %#v", decoded.Network, decoded.AddHosts)
@@ -136,7 +160,8 @@ func TestPlanWorkerMessagePreservesRequestExecutionOptions(t *testing.T) {
 }
 
 func TestPlanWorkerRequestRequiresExactlyOneBuildInput(t *testing.T) {
-	def := parseWorkerDefinition(t, `from "scratch"`)
+	def := parseWorkerDefinition(t, `from "scratch" {}
+`)
 	plan, err := planner.Create(def, planner.Options{Mode: planner.Build})
 	if err != nil {
 		t.Fatal(err)
@@ -179,7 +204,8 @@ func TestPlanWorkerImportRequestRequiresLayoutAndManifest(t *testing.T) {
 }
 
 func TestDefinitionSupervisedRequiresMatchingPlannerMode(t *testing.T) {
-	def := parseWorkerDefinition(t, `from "scratch"`)
+	def := parseWorkerDefinition(t, `from "scratch" {}
+`)
 	root := t.TempDir()
 	options := SupervisedPlanOptions{
 		Store:  StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"},
@@ -229,7 +255,10 @@ func TestBuildPlanSupervisedPromotesCompleteLayout(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(contextDir, "proof"), []byte("supervised\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	plan := testPlan(t, "from \"scratch\"\ncopy \"proof\" \"/proof\"\n")
+	plan := testPlan(t, `from "scratch" {
+    copy "proof" "/proof"
+}
+`)
 	layout := filepath.Join(root, "layout")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
@@ -257,7 +286,10 @@ func TestBuildDefinitionSupervisedMatchesPlannedBuildBehavior(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "proof"), []byte("raw supervised\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	def := parseWorkerDefinition(t, "from \"scratch\"\ncopy \"proof\" \"/proof\"\n")
+	def := parseWorkerDefinition(t, `from "scratch" {
+    copy "proof" "/proof"
+}
+`)
 	layout := filepath.Join(root, "layout")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
@@ -292,13 +324,16 @@ func TestPublishPlanSupervisedPromotesSortedComponentLayout(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := testPublicationPlan(t, `
-package as="z-last"
-copy "proof" "/z"
-package as="a-first"
-copy "proof" "/a"
-extend
-copy "/z" "/z" from="z-last"
-copy "/a" "/a" from="a-first"
+package as="z-last" {
+    copy "proof" "/z"
+}
+package as="a-first" {
+    copy "proof" "/a"
+}
+extend {
+    copy "/z" "/z" from="z-last"
+    copy "/a" "/a" from="a-first"
+}
 `)
 	layout := filepath.Join(root, "layout")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
@@ -335,13 +370,16 @@ func TestPublishDefinitionSupervisedMatchesPlannedPublicationBehavior(t *testing
 		t.Fatal(err)
 	}
 	def := parseWorkerDefinition(t, `
-package as="z-last"
-copy "proof" "/z"
-package as="a-first"
-copy "proof" "/a"
-extend
-copy "/z" "/z" from="z-last"
-copy "/a" "/a" from="a-first"
+package as="z-last" {
+    copy "proof" "/z"
+}
+package as="a-first" {
+    copy "proof" "/a"
+}
+extend {
+    copy "/z" "/z" from="z-last"
+    copy "/a" "/a" from="a-first"
+}
 `)
 	layout := filepath.Join(root, "layout")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
@@ -415,7 +453,10 @@ func TestBuildPlanSupervisedCopyDotExcludesCooprArtifacts(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	plan := testPlan(t, "from \"scratch\"\ncopy \".\" \"/ctx/\"\n")
+	plan := testPlan(t, `from "scratch" {
+    copy "." "/ctx/"
+}
+`)
 	layout := filepath.Join(root, "layout")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
@@ -494,8 +535,9 @@ func TestBuildPlanSupervisedCancelsRunAndCleansBuilder(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := testPlan(t, fmt.Sprintf(`
-from %q
-run "trap '' TERM; sleep 60" network="none"
+from %q {
+    run "trap '' TERM; sleep 60" network="none"
+}
 `, base.reference))
 	layout := filepath.Join(root, "layout")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -623,7 +665,10 @@ func TestBuildPlanSupervisedCancelsStalledRemoteAdd(t *testing.T) {
 		server.Close()
 	}()
 	root := t.TempDir()
-	plan := testPlan(t, fmt.Sprintf("from \"scratch\"\nadd %q \"/hang\"\n", server.URL+"/hang"))
+	plan := testPlan(t, fmt.Sprintf(`from "scratch" {
+    add %q "/hang"
+}
+`, server.URL+"/hang"))
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
 	go func() {
@@ -682,10 +727,12 @@ func TestPublishPlanSupervisedCancelsStalledRemoteAdd(t *testing.T) {
 	}()
 	root := t.TempDir()
 	plan := testPublicationPlan(t, fmt.Sprintf(`
-package as="payload"
-add %q "/payload"
-extend
-copy "/payload" "/payload" from="payload"
+package as="payload" {
+    add %q "/payload"
+}
+extend {
+    copy "/payload" "/payload" from="payload"
+}
 `, server.URL+"/hang"))
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()

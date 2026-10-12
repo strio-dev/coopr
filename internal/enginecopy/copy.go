@@ -1,4 +1,4 @@
-// Package enginecopy transfers Coopr images to and from Docker Engine.
+// Package enginecopy delivers Coopr images to Docker Engine.
 package enginecopy
 
 import (
@@ -23,7 +23,7 @@ func Copy(ctx context.Context, layout string, root v1.Descriptor, engine, name s
 	if err != nil {
 		return "", err
 	}
-	return engine + ":" + result, nil
+	return "docker-daemon:" + result, nil
 }
 
 func copyDocker(ctx context.Context, layout string, root v1.Descriptor, name string) (string, error) {

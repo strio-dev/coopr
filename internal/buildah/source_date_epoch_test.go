@@ -106,7 +106,11 @@ func TestBuildPlanSourceDateEpochMetadataAndCache(t *testing.T) {
 	}
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	build := func(epoch int64, name string) (string, any) {
-		def, err := definition.Parse(strings.NewReader("from \"scratch\"\ncopy \"one\" \"/one\"\ncopy \"two\" \"/two\"\n"))
+		def, err := definition.Parse(strings.NewReader(`from "scratch" {
+    copy "one" "/one"
+    copy "two" "/two"
+}
+`))
 		if err != nil {
 			t.Fatal(err)
 		}

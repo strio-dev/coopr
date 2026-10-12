@@ -37,10 +37,12 @@ func TestPublishPlanReusesRegistryPackageCacheAcrossBuildStores(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := testPublicationPlan(t, `
-package as="payload"
-copy "payload" "/payload"
-extend
-copy "/payload" "/payload" from="payload"
+package as="payload" {
+    copy "payload" "/payload"
+}
+extend {
+    copy "/payload" "/payload" from="payload"
+}
 `)
 	repository := strings.TrimPrefix(server.URL, "http://") + "/coopr/package-cache"
 	build := func(name string, noCache bool) (oci.Package, StoreOptions) {
@@ -133,12 +135,15 @@ func TestPublishPlanReusesNetworkedPackageFromRegistryCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := testPublicationPlan(t, `
-from "`+base+`" as="producer"
-run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/payload"
-package as="payload"
-copy "/payload" "/payload" from="producer"
-extend
-copy "/payload" "/payload" from="payload"
+from "`+base+`" as="producer" {
+    run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/payload"
+}
+package as="payload" {
+    copy "/payload" "/payload" from="producer"
+}
+extend {
+    copy "/payload" "/payload" from="payload"
+}
 `)
 	build := func(name string) (oci.Package, StoreOptions) {
 		t.Helper()

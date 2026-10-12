@@ -16,16 +16,21 @@ func TestLocalComponentNativeOctalPermissionsBuildAndCache(t *testing.T) {
 	base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
 	f.write(t, "payload", "native permissions\n")
 	f.write(t, "token", "mounted secret\n")
-	f.write(t, "components/native.coopr", `package as="assets"
-copy "payload" "/payload" chmod=0o640
-extend
-copy "/payload" "/payload" from="assets"
-copy "/payload" "/tool" from="assets" chmod=0o755
-run "test \"$(/bin/busybox stat -c %a /payload)\" = 640 && test \"$(/bin/busybox stat -c %a /tool)\" = 755 && test \"$(/bin/busybox stat -c %a /run/token)\" = 400 && cat /tool /run/token >/proof && od -An -N16 -tx1 /dev/urandom >>/proof" {
-    mount "secret" id="token" target="/run/token" required=#true mode=0o400
+	f.write(t, "components/native.coopr", `package as="assets" {
+    copy "payload" "/payload" chmod=0o640
+}
+extend {
+    copy "/payload" "/payload" from="assets"
+    copy "/payload" "/tool" from="assets" chmod=0o755
+    run "test \"$(/bin/busybox stat -c %a /payload)\" = 640 && test \"$(/bin/busybox stat -c %a /tool)\" = 755 && test \"$(/bin/busybox stat -c %a /run/token)\" = 400 && cat /tool /run/token >/proof && od -An -N16 -tx1 /dev/urandom >>/proof" {
+        mount "secret" id="token" target="/run/token" required=#true mode=0o400
+    }
 }
 `)
-	plan := testPlan(t, fmt.Sprintf("from %q\ncomponent \"./components/native.coopr\"\n", base.reference))
+	plan := testPlan(t, fmt.Sprintf(`from %q {
+    component "./components/native.coopr"
+}
+`, base.reference))
 	var coldManifest v1.Manifest
 	var coldImage v1.Image
 	var coldProof string

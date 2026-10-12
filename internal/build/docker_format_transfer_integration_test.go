@@ -36,9 +36,10 @@ func TestDockerFormatSurvivesCatalogCopyToArchiveAndRegistry(t *testing.T) {
 
 	root := t.TempDir()
 	definition := filepath.Join(root, "app.coopr")
-	if err := os.WriteFile(definition, []byte(`from "scratch"
-healthcheck interval="30s" retries=2 { exec "/bin/check" }
-onbuild { env FROM_PARENT="yes" }
+	if err := os.WriteFile(definition, []byte(`from "scratch" {
+    healthcheck interval="30s" retries=2 { exec "/bin/check" }
+    onbuild { env FROM_PARENT="yes" }
+}
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +79,7 @@ onbuild { env FROM_PARENT="yes" }
 	server := httptest.NewServer(registry.New())
 	defer server.Close()
 	registryRef := strings.TrimPrefix(server.URL, "http://") + "/coopr/docker-transfer:latest"
-	registryDestination, err := transfer.ParseDestination("registry:"+registryRef, oci.Image)
+	registryDestination, err := transfer.ParseDestination("docker://"+registryRef, oci.Image)
 	if err != nil {
 		t.Fatal(err)
 	}

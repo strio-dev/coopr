@@ -87,10 +87,24 @@ func TestBuildPlanSupervisedPreservesOutputManifestFormat(t *testing.T) {
 		name, format, manifest, config, layer, definition string
 		disableCompression                                bool
 	}{
-		{name: "default OCI", manifest: v1.MediaTypeImageManifest, config: v1.MediaTypeImageConfig, definition: "from \"scratch\"\ncopy \"proof\" \"/proof\"\nenv FORMAT=\"proof\"\n"},
-		{name: "Docker schema 2", format: outputFormatDocker, manifest: dockerManifestMediaType, config: dockerImageConfigMediaType, definition: "from \"scratch\"\ncopy \"proof\" \"/proof\"\nenv FORMAT=\"proof\"\n"},
-		{name: "Docker uncompressed", format: outputFormatDocker, manifest: dockerManifestMediaType, config: dockerImageConfigMediaType, layer: "application/vnd.docker.image.rootfs.diff.tar", definition: "from \"scratch\"\ncopy \"proof\" \"/proof\"\n", disableCompression: true},
-		{name: "Docker config only", format: outputFormatDocker, manifest: dockerManifestMediaType, config: dockerImageConfigMediaType, definition: "from \"scratch\"\nenv FORMAT=\"proof\"\n"},
+		{name: "default OCI", manifest: v1.MediaTypeImageManifest, config: v1.MediaTypeImageConfig, definition: `from "scratch" {
+    copy "proof" "/proof"
+    env FORMAT="proof"
+}
+`},
+		{name: "Docker schema 2", format: outputFormatDocker, manifest: dockerManifestMediaType, config: dockerImageConfigMediaType, definition: `from "scratch" {
+    copy "proof" "/proof"
+    env FORMAT="proof"
+}
+`},
+		{name: "Docker uncompressed", format: outputFormatDocker, manifest: dockerManifestMediaType, config: dockerImageConfigMediaType, layer: "application/vnd.docker.image.rootfs.diff.tar", definition: `from "scratch" {
+    copy "proof" "/proof"
+}
+`, disableCompression: true},
+		{name: "Docker config only", format: outputFormatDocker, manifest: dockerManifestMediaType, config: dockerImageConfigMediaType, definition: `from "scratch" {
+    env FORMAT="proof"
+}
+`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			layout := filepath.Join(root, test.name)
@@ -135,7 +149,11 @@ func TestDockerGzipMetadataTailPreservesFormatColdAndWarm(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
-	plan := testPlan(t, "from \"scratch\"\ncopy \"proof\" \"/proof\"\nenv FORMAT=\"proof\"\n")
+	plan := testPlan(t, `from "scratch" {
+    copy "proof" "/proof"
+    env FORMAT="proof"
+}
+`)
 	var firstDiffID string
 	for _, attempt := range []string{"cold", "warm"} {
 		layout := filepath.Join(root, attempt)
@@ -179,8 +197,9 @@ func TestDockerOutputInstructionCacheIsFormatScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := testPlan(t, fmt.Sprintf(`
-from %q
-run "od -An -N16 -tx1 /dev/urandom | tr -d ' \n' >/proof" network="none"
+from %q {
+    run "od -An -N16 -tx1 /dev/urandom | tr -d ' \n' >/proof" network="none"
+}
 `, base.reference))
 	build := func(name, format string) string {
 		t.Helper()
@@ -217,7 +236,12 @@ func TestDockerOutputInvokesAndCachesComponent(t *testing.T) {
 	root := t.TempDir()
 	resolver, _, _ := localComponentResolver(t, ctx, v1.Platform{OS: "linux", Architecture: runtime.GOARCH})
 	policy := writeComponentTestPolicy(t, root)
-	plan := testPlan(t, "from \"scratch\"\ncomponent \"local:tool\" channel=\"stable\"\n")
+	plan := testPlan(t, `from "scratch" {
+    component "tool" {
+        arg "channel" "stable"
+    }
+}
+`)
 	cacheDir := filepath.Join(root, "cache")
 	for attempt, name := range []string{"cold", "warm"} {
 		options := componentTestOptions(root, filepath.Join(root, name), resolver, policy)

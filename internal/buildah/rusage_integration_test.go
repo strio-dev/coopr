@@ -16,7 +16,11 @@ func TestSupervisedBuildLogsResourceUsagePerInstruction(t *testing.T) {
 	defer cancel()
 	root := t.TempDir()
 	logPath := filepath.Join(root, "rusage.log")
-	_, err := BuildPlanSupervised(ctx, testPlan(t, "from \"scratch\"\nenv ONE=\"1\"\nlabel two=\"2\"\n"), SupervisedPlanOptions{
+	_, err := BuildPlanSupervised(ctx, testPlan(t, `from "scratch" {
+    env ONE="1"
+    label two="2"
+}
+`), SupervisedPlanOptions{
 		Store: cacheTestStore(root), ContextDir: root, Isolation: "rootless", Runtime: "crun",
 		SignaturePolicyPath: writeComponentTestPolicy(t, root), Output: Output{Path: filepath.Join(root, "layout")},
 		LogRusage: true, RusageLogFile: logPath, Stdout: io.Discard, Stderr: io.Discard,

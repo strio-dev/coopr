@@ -45,7 +45,7 @@ func TestRewrittenImageIndexPreservesMetadataAndDuplicateMembers(t *testing.T) {
 	first, second := normalized, normalized
 	first.Platform, second.Platform = platform, platform
 	first.Annotations, second.Annotations = map[string]string{"instance": "gzip"}, map[string]string{"instance": "zstd"}
-	changed, data, err := rewrittenImageIndex(root, original, []v1.Descriptor{first, second})
+	changed, data, err := oci.RewriteImageIndex(root, original, []v1.Descriptor{first, second})
 	if err != nil {
 		t.Fatal(err)
 	}

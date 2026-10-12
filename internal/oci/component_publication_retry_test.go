@@ -28,7 +28,13 @@ import (
 
 func TestComponentLayoutIdenticalPackagesAndRepeatRemainValidated(t *testing.T) {
 	data := packageTar(t, "same")
-	def, err := definition.Parse(strings.NewReader("package as=\"one\"\npackage as=\"two\"\nextend\ncopy \"/src\" \"/one\" from=\"one\"\ncopy \"/src\" \"/two\" from=\"two\"\n"))
+	def, err := definition.Parse(strings.NewReader(`package as="one" {}
+package as="two" {}
+extend {
+    copy "/src" "/one" from="one"
+    copy "/src" "/two" from="two"
+}
+`))
 	if err != nil {
 		t.Fatal(err)
 	}

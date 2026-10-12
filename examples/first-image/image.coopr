@@ -1,7 +1,9 @@
-from "docker.io/redhat/ubi9:latest"
-run "dnf install -y nginx && dnf clean all"
-copy "index.html" "/usr/share/nginx/html/index.html"
-expose "80/tcp"
-cmd {
-    exec "nginx" "-g" "daemon off;"
+from "docker.io/redhat/ubi9:latest" {
+    // Package and apply the local component.
+    component "./components/greeting.coopr"
+
+    // Print the greeting when the container starts.
+    cmd {
+        exec "cat" "/hello.txt"
+    }
 }

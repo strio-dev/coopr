@@ -31,7 +31,11 @@ func TestBuildPlanContextCopyAndAddCache(t *testing.T) {
 	store := cacheTestStore(root)
 	build := func(name, contents string) (int, []digest.Digest) {
 		t.Helper()
-		plan := testPlan(t, "from \"scratch\"\ncopy \"message\" \"/message\" chmod=\"0755\"\nadd \"other\" \"/other\"\n")
+		plan := testPlan(t, `from "scratch" {
+    copy "message" "/message" chmod="0755"
+    add "other" "/other"
+}
+`)
 		layout := filepath.Join(root, name)
 		if _, err := BuildPlan(ctx, plan, PlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Output: Output{Path: layout, Reference: name},

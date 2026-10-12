@@ -35,27 +35,40 @@ func TestComponentInvocationTransportSources(t *testing.T) {
 			componentSourceLayout(t, f)
 			base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
 			f.options.Lifecycle.NoLayers = mode == "static-no-layers"
-			source := `extend as="caller"
-from "oci:input:latest" as="tool" after="caller"
-run "printf transport >/proof"
-from "caller" as="result"
-copy "/proof" "/proof" from="tool"
+			source := `extend as="caller" {}
+extend {
+    from "oci:input:latest" as="tool" after="caller" {
+        run "printf transport >/proof"
+    }
+    from "caller" as="result" {
+        copy "/proof" "/proof" from="tool"
+    }
+}
 `
 			if mode == "generated" {
-				source = `extend as="caller"
-run "cp -a /ctx/input /ctx/out" { mount "bind" target="/ctx" rw="true" }
-from "oci:out:latest" as="tool" after="caller"
-run "printf transport >/proof"
-from "caller" as="result"
-copy "/proof" "/proof" from="tool"
+				source = `extend as="caller" {
+    run "cp -a /ctx/input /ctx/out" { mount "bind" target="/ctx" rw="true" }
+}
+extend {
+    from "oci:out:latest" as="tool" after="caller" {
+        run "printf transport >/proof"
+    }
+    from "caller" as="result" {
+        copy "/proof" "/proof" from="tool"
+    }
+}
 `
 			}
 			if mode == "named" || mode == "named-native" {
-				source = `extend as="caller"
-from "tools" as="tool"
-run "printf transport >/proof"
-from "caller" as="result"
-copy "/proof" "/proof" from="tool"
+				source = `extend as="caller" {}
+extend {
+    from "tools" as="tool" {
+        run "printf transport >/proof"
+    }
+    from "caller" as="result" {
+        copy "/proof" "/proof" from="tool"
+    }
+}
 `
 				f.options.BuildContexts = []buildcontext.Spec{{Name: "tools", Kind: buildcontext.DockerImage, Reference: "registry.invalid/component:latest"}}
 				policy := filepath.Join(f.root, "source-policy.json")
@@ -70,7 +83,10 @@ copy "/proof" "/proof" from="tool"
 			}
 			f.write(t, "component.coopr", source)
 			for _, run := range []string{"cold", "warm"} {
-				_, layout := f.build(t, run, fmt.Sprintf("from %q\ncomponent \"./component.coopr\"\n", base.reference))
+				_, layout := f.build(t, run, fmt.Sprintf(`from %q {
+    component "./component.coopr"
+}
+`, base.reference))
 				if got := localComponentLastFile(t, layout, "proof"); got != "transport" {
 					t.Fatalf("proof=%q", got)
 				}
@@ -91,31 +107,41 @@ func TestLocalComponentPackageTransportSources(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			f := newLocalComponentFixture(t)
 			componentSourceLayout(t, f)
-			source := `from "oci:input:latest" as="tool"
-run "printf packaged >/proof"
-package as="assets"
-copy "/proof" "/proof" from="tool"
-extend
-copy "/proof" "/proof" from="assets"
+			source := `from "oci:input:latest" as="tool" {
+    run "printf packaged >/proof"
+}
+package as="assets" {
+    copy "/proof" "/proof" from="tool"
+}
+extend {
+    copy "/proof" "/proof" from="assets"
+}
 `
 			if mode == "generated" {
-				source = `from "oci:input:latest" as="producer"
-run "cp -a /ctx/input /ctx/out" { mount "bind" target="/ctx" rw="true" }
-from "oci:out:latest" as="tool" after="producer"
-run "printf packaged >/proof"
-package as="assets"
-copy "/proof" "/proof" from="tool"
-extend
-copy "/proof" "/proof" from="assets"
+				source = `from "oci:input:latest" as="producer" {
+    run "cp -a /ctx/input /ctx/out" { mount "bind" target="/ctx" rw="true" }
+}
+from "oci:out:latest" as="tool" after="producer" {
+    run "printf packaged >/proof"
+}
+package as="assets" {
+    copy "/proof" "/proof" from="tool"
+}
+extend {
+    copy "/proof" "/proof" from="assets"
+}
 `
 			}
 			if mode == "named" {
-				source = `from "tools" as="tool"
-run "printf packaged >/proof"
-package as="assets"
-copy "/proof" "/proof" from="tool"
-extend
-copy "/proof" "/proof" from="assets"
+				source = `from "tools" as="tool" {
+    run "printf packaged >/proof"
+}
+package as="assets" {
+    copy "/proof" "/proof" from="tool"
+}
+extend {
+    copy "/proof" "/proof" from="assets"
+}
 `
 				f.options.BuildContexts = []buildcontext.Spec{{Name: "tools", Kind: buildcontext.DockerImage, Reference: "registry.invalid/component:latest"}}
 				policy := filepath.Join(f.root, "source-policy.json")
@@ -142,7 +168,10 @@ copy "/proof" "/proof" from="assets"
 				if got := readLayerFile(t, filepath.Join(publication.Layout, "blobs", "sha256", metadata.Packages[0].Descriptor.Digest.Encoded()), "proof"); got != "packaged" {
 					t.Fatalf("standalone proof=%q", got)
 				}
-				_, layout := f.build(t, run, "from \"scratch\"\ncomponent \"./component.coopr\"\n")
+				_, layout := f.build(t, run, `from "scratch" {
+    component "./component.coopr"
+}
+`)
 				if got := localComponentLastFile(t, layout, "proof"); got != "packaged" {
 					t.Fatalf("proof=%q", got)
 				}

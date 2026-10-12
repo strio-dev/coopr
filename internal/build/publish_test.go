@@ -12,7 +12,8 @@ import (
 func TestPublishRejectsContainerDefinitionBeforeBuilder(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "app.coopr")
-	if err := os.WriteFile(file, []byte("from \"scratch\"\n"), 0600); err != nil {
+	if err := os.WriteFile(file, []byte(`from "scratch" {}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := PublishComponent(context.Background(), PublishOptions{
@@ -27,7 +28,8 @@ func TestPublishCancelledCleansOwnedDirectories(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("TMPDIR", dir)
 	file := filepath.Join(dir, "component.coopr")
-	if err := os.WriteFile(file, []byte("extend as=\"base\"\n"), 0600); err != nil {
+	if err := os.WriteFile(file, []byte(`extend as="base" {}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -52,25 +54,27 @@ func TestPublishCancelledCleansOwnedDirectories(t *testing.T) {
 func TestBuildComponentRejectsInvalidLocalTagBeforeExecution(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "component.coopr")
-	if err := os.WriteFile(file, []byte("extend as=\"base\"\n"), 0600); err != nil {
+	if err := os.WriteFile(file, []byte(`extend as="base" {}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := BuildComponent(context.Background(), ComponentOptions{
-		File: file, Tag: "team/component",
+		File: file, Tag: "team/component:bad:tag", StoreDir: filepath.Join(dir, "components"), BuildStore: nativeBuildTestStore(filepath.Join(dir, "images")),
 	})
-	if err == nil || !strings.Contains(err.Error(), "invalid local component tag") {
+	if err == nil || !strings.Contains(err.Error(), "invalid component reference") {
 		t.Fatalf("invalid local tag reached execution: %v", err)
 	}
 }
 
-func TestBuildComponentRejectsDefinitionAsArchiveOutput(t *testing.T) {
+func TestBuildComponentRejectsDefinitionAsMetadataOutput(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "component.coopr")
-	if err := os.WriteFile(file, []byte("extend as=\"base\"\n"), 0600); err != nil {
+	if err := os.WriteFile(file, []byte(`extend as="base" {}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := BuildComponent(context.Background(), ComponentOptions{
-		File: file, Tag: "oci-archive:" + file,
+		File: file, MetadataFile: file,
 	})
 	if err == nil || !strings.Contains(err.Error(), "overwrite an input") {
 		t.Fatalf("definition overwrite reached execution: %v", err)
@@ -78,11 +82,12 @@ func TestBuildComponentRejectsDefinitionAsArchiveOutput(t *testing.T) {
 }
 
 func TestBuildComponentRejectsAllFileOutputAliasesBeforeExecution(t *testing.T) {
-	for _, kind := range []string{"log-definition", "rusage-definition", "metadata-log", "archive-log", "rusage-log", "symlink-definition", "hardlink-definition", "metadata-log-symlink", "archive-log-hardlink", "split-metadata-log"} {
+	for _, kind := range []string{"log-definition", "rusage-definition", "metadata-log", "rusage-log", "symlink-definition", "hardlink-definition", "metadata-log-symlink", "metadata-log-hardlink", "split-metadata-log"} {
 		t.Run(kind, func(t *testing.T) {
 			dir := t.TempDir()
 			file := filepath.Join(dir, "component.coopr")
-			source := []byte("extend as=\"base\"\n")
+			source := []byte(`extend as="base" {}
+`)
 			if err := os.WriteFile(file, source, 0600); err != nil {
 				t.Fatal(err)
 			}
@@ -98,8 +103,6 @@ func TestBuildComponentRejectsAllFileOutputAliasesBeforeExecution(t *testing.T) 
 				opts.RusageLogFile = file
 			case "metadata-log":
 				opts.LogFile, opts.MetadataFile = log, log
-			case "archive-log":
-				opts.LogFile, opts.Tag = log, "oci-archive:"+log
 			case "rusage-log":
 				opts.LogFile, opts.RusageLogFile = log, log
 			case "metadata-log-symlink":
@@ -108,12 +111,12 @@ func TestBuildComponentRejectsAllFileOutputAliasesBeforeExecution(t *testing.T) 
 					t.Fatal(err)
 				}
 				opts.LogFile, opts.MetadataFile = log, alias
-			case "archive-log-hardlink":
+			case "metadata-log-hardlink":
 				alias := filepath.Join(dir, "alias")
 				if err := os.Link(log, alias); err != nil {
 					t.Fatal(err)
 				}
-				opts.LogFile, opts.Tag = log, "oci-archive:"+alias
+				opts.LogFile, opts.MetadataFile = log, alias
 			case "split-metadata-log":
 				opts.LogFile, opts.LogSplit = log, true
 				opts.Platforms = []string{"linux/arm/v6", "linux/arm/v7"}

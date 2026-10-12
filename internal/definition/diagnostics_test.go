@@ -7,9 +7,9 @@ import (
 
 func TestSchemaErrorsIncludeSourceLocations(t *testing.T) {
 	for _, tc := range []struct{ name, source, location, message string }{
-		{"instruction", "from \"scratch\"\n  RUN \"true\"\n", "2:3", `use "run"`},
-		{"nested", "layer {\n  copy \"a\" \"/a\" parnets=#true\n}\n", "2:3", `unsupported property "parnets"`},
-		{"crlf", "from \"scratch\"\r\n  run \"true\" netwrok=\"none\"\r\n", "2:3", `unsupported property "netwrok"`},
+		{"instruction", "from \"scratch\" {\n  RUN \"true\"\n}\n", "2:3", `use "run"`},
+		{"nested", "from \"scratch\" {\n layer {\n  copy \"a\" \"/a\" parnets=#true\n }\n}\n", "3:3", `unsupported property "parnets"`},
+		{"crlf", "from \"scratch\" {\r\n  run \"true\" netwrok=\"none\"\r\n}\r\n", "2:3", `unsupported property "netwrok"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := Parse(strings.NewReader(tc.source))
