@@ -51,6 +51,56 @@ func TestComponentIOCommandsRoundTripWithoutNativeImageStore(t *testing.T) {
 	if err := componentstore.Put(ctx, dir, source, root, "source"); err != nil {
 		t.Fatal(err)
 	}
+	t.Run("save literal output paths", func(t *testing.T) {
+		for _, test := range []struct {
+			name     string
+			path     string
+			relative bool
+		}{
+			{"absolute", "component:v1.tar", false},
+			{"relative", "component:v1.tar", true},
+			{"spaces", "component:release candidate.tar", false},
+			{"directory", "components:v1/archive.tar", false},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				directory := t.TempDir()
+				output := filepath.Join(directory, test.path)
+				if err := os.MkdirAll(filepath.Dir(output), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				truncated, _, _ := strings.Cut(output, ":")
+				if err := os.WriteFile(truncated, []byte("keep this file"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				argument := output
+				if test.relative {
+					t.Chdir(directory)
+					argument = test.path
+				}
+				var out, errs bytes.Buffer
+				status := run([]string{"component", "save", "--output", argument, "source"}, &out, &errs)
+				data, err := os.ReadFile(truncated)
+				if err != nil || string(data) != "keep this file" {
+					t.Fatalf("save changed truncated output path %q (read %d bytes): %v", truncated, len(data), err)
+				}
+				if status != 0 || out.Len() != 0 {
+					t.Fatalf("save status=%d stdout=%q stderr=%q", status, &out, &errs)
+				}
+				archived, err := oci.ArchiveRoot(output)
+				if err != nil || archived.Digest != root.Digest {
+					t.Fatalf("literal output archive = %v, %v; want %s", archived, err, root.Digest)
+				}
+			})
+		}
+		output := filepath.Join(dir, "component:v1.tar")
+		var out, errs bytes.Buffer
+		if status := run([]string{"component", "save", "--output", output, "source"}, &out, &errs); status == 0 {
+			t.Fatal("save accepted an output inside the component store")
+		}
+		if _, err := os.Stat(output); !os.IsNotExist(err) {
+			t.Fatalf("save wrote inside the component store: %v", err)
+		}
+	})
 	server := httptest.NewServer(registry.New())
 	defer server.Close()
 	remote := strings.TrimPrefix(server.URL, "http://") + "/coopr/component:one"

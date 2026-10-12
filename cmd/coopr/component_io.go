@@ -78,11 +78,8 @@ func newComponentSaveCommand() *cobra.Command {
 	var output string
 	cmd := &cobra.Command{Use: "save <name-or-digest>", Short: "Save a component and all its platforms as an OCI archive", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) (retErr error) {
 		if output != "" && output != "-" {
-			destination, err := transfer.ParseDestination("oci-archive:"+output, oci.Component)
-			if err != nil {
-				return err
-			}
-			_, err = transfer.Copy(cmd.Context(), oci.Component, args[0], destination, transfer.Options{})
+			destination := transfer.Destination{Transport: "oci-archive", Name: output}
+			_, err := transfer.Copy(cmd.Context(), oci.Component, args[0], destination, transfer.Options{})
 			return err
 		}
 		dir, err := componentstore.DefaultDir()
