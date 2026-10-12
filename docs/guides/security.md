@@ -1,59 +1,102 @@
 # Security and rootless builds
 
-Build definitions and components execute code. Review their inputs, transformations, and requested privileges before running them. A verified digest establishes byte identity; it does not establish publisher trust.
+Coopr embeds Buildah and can build as your regular Linux user. Review definitions and components before running them: their instructions execute code with the privileges available to Coopr.
 
 ## Native rootless requirements
 
-For native rootless builds, provide:
+Configure your host with [Podman's rootless setup](https://github.com/podman-container-tools/podman/blob/main/docs/tutorials/rootless_tutorial.md). Coopr needs:
 
-- Linux user and mount namespaces, subordinate UID/GID mappings, and a supported storage driver.
-- An OCI runtime and, for networked RUNs, the configured network stack and helper.
-- Delegated cgroup controllers when using memory or CPU limits. Rootless cgroup v1 or missing delegation fails explicitly.
+- User and mount namespaces, subordinate UID/GID ranges, and working `newuidmap` and `newgidmap` helpers.
+- Supported container storage and an OCI runtime such as `crun`. Overlay storage may need `fuse-overlayfs`.
+- The network helpers selected by your native configuration for networked RUNs.
 
-Authorize host-network RUNs explicitly:
+Memory and CPU limits need cgroup v2 with the required controllers delegated to your user. Unsupported limits fail explicitly.
 
-```sh
-coopr build image.coopr --allow network.host
-```
-
-`run network="host"` requires `network.host`, including on cache hits. Setting `--network=host` on the build command also grants this permission; an additional `--allow network.host` is unnecessary. Insecure RUNs require `--allow security.insecure` and OCI/rootless isolation; chroot is rejected. CDI devices require `device` or a matching `device=SELECTOR` entitlement unless authorized by CDI metadata. These authorizations cannot grant privileges unavailable in the outer environment.
+Run Coopr and Podman as the same user with the same storage settings to share images. See [host setup](../getting-started/index.md#set-up-your-host) for a basic check.
 
 ## Credentials and remote sources
 
-`coopr login REGISTRY` and `coopr logout REGISTRY` use the native credential file and helpers shared with Podman and Buildah. Supply `--authfile PATH` to choose another file. In automation, use `login --username USER --password-stdin`; avoid passing a password as a command-line argument. Authentication applies to both image and component registries.
-
-Supply secret and SSH sources per build:
+### Log in to a registry
 
 ```sh
-coopr build image.coopr --secret id=token,src=./token --ssh default
+coopr login docker.io
 ```
 
-Keep credentials out of the context and image layers. Use `--no-cache` when changed credentials must change a cached result; credential bytes and SSH agent contents do not invalidate it. See [caching](caching.md#refresh-deliberately).
+Coopr prompts for credentials and uses the credential file and helpers shared with Podman and Buildah, for both images and components.
 
-HTTPS Git accepts host-scoped `GIT_AUTH_HEADER.<host>` or `GIT_AUTH_TOKEN.<host>` secrets. Authenticated Git rejects redirects and withholds parent credentials from out-of-scope submodules. SSH Git needs `GIT_KNOWN_HOSTS[.host]` and an SSH source. HTTP ADD selects authorization per redirect host. Registry requests use the configured authentication, certificate, TLS, and retry options.
+Use `--authfile PATH` to select another file, or `coopr logout docker.io` to remove the login.
 
-Image inputs honor native registry routing and signature policy. Images, components, and registry caches share native registry TLS settings; see [configuration](../reference/configuration.md#runtime-and-trust). Keep TLS verification enabled outside deliberately configured test registries. For immutable selection, pin image and component references by digest, including nested references. A component digest alone does not establish publisher trust or signature policy.
+For automation, use `--username USER --password-stdin` rather than passing passwords in command-line arguments.
 
-Archive processing has no size quota. A small compressed context or image archive can consume substantial disk, memory, or CPU. Review the source and apply resource limits to the Coopr process or its outer container; RUN limits do not cover input preparation.
+### Mount a build secret
+
+Supply credentials with a secret mount rather than an ARG, ENV, or copied context file. The mount is temporary; commands can still expose its contents through logs or files they write.
+
+Save this as `image.coopr` to check that a secret is available without printing it:
+
+```kdl
+from "docker.io/redhat/ubi9:latest" {
+    run {
+        script "test -s /run/secrets/token"
+        mount "secret" id="token" target="/run/secrets/token" required=#true
+    }
+}
+```
+
+With a nonempty token file outside the context at `../token`, build with:
+
+```sh
+coopr build image.coopr --secret id=token,src=../token
+```
+
+The ID connects the CLI input to the mount. `required` fails an executing RUN if the secret is missing. To read an existing environment variable instead, use `--secret id=token,env=TOKEN`.
+
+Secret values and SSH agents do not invalidate cached results. A cache hit skips the RUN, including its required-secret check. Use `--no-cache` when changed credentials or their availability must affect execution. See [refresh rules](caching.md#refresh-deliberately).
+
+### Forward SSH and authenticate remote inputs
+
+Supply `--ssh default` to forward `SSH_AUTH_SOCK` through a RUN's [SSH mount](../reference/definition.md#run-mount-options). This grants the build access to the agent. Configure host-key verification inside the image for commands such as `git` or `ssh`.
+
+Remote inputs fetched outside RUN use separate credential inputs:
+
+- **HTTPS Git:** host-scoped `GIT_AUTH_HEADER.<host>` or `GIT_AUTH_TOKEN.<host>` secrets. Authenticated redirects are rejected; out-of-scope submodules receive no parent credentials.
+- **SSH Git:** an SSH source and `GIT_KNOWN_HOSTS` or `GIT_KNOWN_HOSTS.<host>` secret for host-key verification.
+- **HTTP ADD:** host-scoped authorization secrets, selected separately for each redirect host.
+- **Registry images, components, and caches:** native registry credentials, certificates, TLS settings, and retry options.
+
+See [remote inputs](../reference/definition.md#remote-inputs) for exact secret names and [configuration](../reference/configuration.md#runtime-and-trust) for registry settings.
+
+## Grant additional RUN access
+
+Entitlements are checked even on cache hits. Grants cannot supply privileges missing from the host or outer container.
+
+- **Host networking:** `run network="host"` requires `--allow network.host`. Build-wide `--network=host` both selects host networking and grants this permission.
+- **Insecure execution:** `run security="insecure"` requires `--allow security.insecure` and OCI/rootless isolation. Chroot isolation is rejected.
+- **CDI devices:** a RUN `device` child requires `--allow device` or a matching `--allow device=SELECTOR`, unless the CDI metadata authorizes the device.
+
+## Trust images and components
+
+Pin image and component references by digest for fixed content, including external inputs inside components. A digest identifies bytes, not a trusted publisher; a component pin does not pin mutable inputs in its definition.
+
+Image inputs honor native registry routing and `policy.json` signature policy; this does not verify component signatures. Keep TLS verification enabled. See [runtime and trust configuration](../reference/configuration.md#runtime-and-trust).
+
+Image publication supports keyed signing. Keyless signing is unsupported, and keyed Sigstore signatures do not include a Rekor transparency-log entry.
 
 ## Nested container profile
 
-The scratch-based container image includes Coopr's embedded Buildah backend, `fuse-overlayfs`, `crun`, network and UID-map helpers, Git/SSH, GPGME/GnuPG, certificates, and archive support. It runs as UID/GID 0 inside the container; with rootless Podman, that identity maps to the invoking host user. It has no distribution package manager or builder daemon.
+The published scratch-based image includes Coopr and its build helpers, without a distribution package manager or builder daemon. UID/GID 0 inside rootless Podman maps to your host user.
 
-Use the [getting-started command](../getting-started/index.md#run-the-published-container) to expose `/dev/fuse`, permit the required mounts with unconfined seccomp and disabled labeling, mount a writable project, and persist `/var/lib`. The image configures `fuse-overlayfs` for its overlay store and keeps images, components, and caches in that volume.
+The [container build command](container.md#build-an-image) exposes `/dev/fuse`, mounts the project, persists `/var/lib`, and disables seccomp filtering and SELinux labeling for that container. Images, components, and caches stay in the volume; storage uses `fuse-overlayfs`.
 
-Volumes mounted at the previous UID/GID 1000 image's `/home/user/.local/share` path are no longer used; preserve or back up their state before replacing them.
+The default `BUILDAH_ISOLATION=chroot` shares the outer container's network, IPC, PID, and cgroup namespaces. Apply network restrictions and resource limits to outer Podman. Chroot rejects requests for `none`, private, or named RUN network namespaces, including build-wide `--network=none`, before execution or cache reuse.
 
-The packaged default is `BUILDAH_ISOLATION=chroot`. RUNs share the outer container's network, IPC, PID, and cgroup namespaces. Apply offline restrictions with outer Podman `--network=none`, and resource limits with outer Podman memory and CPU options. Chroot rejects RUN requests for `none`, private, or named network namespaces, including build-wide `--network=none`, before execution or cache reuse. Select OCI/rootless isolation to use these modes; cgroup memory or CPU controls also require OCI isolation.
-
-Select OCI explicitly with `coopr build --isolation=rootless` or `--isolation=oci` (after the image name when using Podman). Nested OCI execution also needs user/mount namespaces, working UID-map helpers, and outer policies permitting clone/unshare/mount; network helpers may need `/dev/net/tun`. Insecure RUNs still require their entitlement and OCI/rootless isolation. OCI failures are reported without an automatic chroot fallback.
+Separate RUN network namespaces or cgroup controls require `--isolation=rootless` or `--isolation=oci` on `coopr build`. Place Coopr options after the image name when using Podman. Nested OCI execution needs user/mount namespaces, UID-map helpers, and outer policies permitting clone/unshare/mount. Network helpers may need `/dev/net/tun`; resource limits need cgroup delegation. OCI failures do not trigger a chroot fallback.
 
 ## Supported limitations
 
-- Only Linux target platforms are supported. Foreign RUNs need host `binfmt_misc` emulation; Coopr neither registers handlers nor bundles QEMU.
-- Root-directory mode, ownership, and portable xattrs can be lost by the upstream image commit path even when Coopr captures them in package/cache state. The build can succeed with this limitation.
+- Foreign-architecture RUNs need host `binfmt_misc` emulation. Coopr supports Linux targets and neither registers emulators nor bundles QEMU.
+- Root-directory mode, ownership, and portable xattrs may be lost by upstream image commits, even though package/cache snapshots capture them. See [filesystem metadata](../reference/execution.md#state-identity-and-metadata-limits).
 - Healthcheck and ONBUILD extensions are preserved with OCI/Docker output; receiving runtimes decide whether to honor them.
-- Docker's classic store requires a selected child for multi-platform transfer. Engine imports reject auxiliary attestation descriptors and duplicate runnable platform entries. OCI archive loading omits descriptors with missing or `unknown` platforms.
-- Keyless signing is unsupported. Keyed Sigstore signatures do not include a Rekor transparency-log entry.
-- Mutable external inputs may not invalidate caches; see [refresh rules](caching.md#refresh-deliberately).
-- The tested host profile does not establish support for every kernel or CI runtime policy.
+- Docker's classic store requires a selected child for multi-platform transfer. OCI archive loading omits descriptors with missing or `unknown` platforms. See [image transfers](../reference/execution.md#layers-storage-and-copying) and [archive loading](../reference/cli.md#archives-and-directories).
+
+Context and image archives have no size quota: expansion can exhaust disk, memory, or CPU. Use trusted sources and bound the Coopr process or its outer container when needed. RUN resource options do not limit input preparation. Kernel features and runtime policy also determine which CI environments can run Coopr.

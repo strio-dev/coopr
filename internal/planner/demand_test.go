@@ -9,12 +9,15 @@ import (
 )
 
 func TestCreateDemandDrivenResolvesOnlySelectedClosure(t *testing.T) {
-	def := parse(t, `from "assets.example/image:latest" as="assets"
-env ASSET_READY="$asset_arg"
-from "unused.example/image:latest" as="unused"
-env BROKEN="$undeclared"
-from "final.example/image:latest" as="final"
-env FINAL_READY="$final_arg"
+	def := parse(t, `from "assets.example/image:latest" as="assets" {
+    env ASSET_READY="$asset_arg"
+}
+from "unused.example/image:latest" as="unused" {
+    env BROKEN="$undeclared"
+}
+from "final.example/image:latest" as="final" {
+    env FINAL_READY="$final_arg"
+}
 `)
 
 	var calls []FromSource
@@ -56,10 +59,12 @@ env FINAL_READY="$final_arg"
 }
 
 func TestCreateDemandDrivenDoesNotResolveLocalOrScratchBases(t *testing.T) {
-	def := parse(t, `from "scratch" as="base"
-run "prepare"
-from "base" as="final"
-run "finish"
+	def := parse(t, `from "scratch" as="base" {
+    run "prepare"
+}
+from "base" as="final" {
+    run "finish"
+}
 `)
 	plan, err := CreateDemandDriven(def, Options{Target: "final"}, func(source FromSource) (StageBind, error) {
 		t.Fatalf("resolver called for non-external FROM: %+v", source)
@@ -76,10 +81,12 @@ run "finish"
 func TestCreateDemandDrivenResolvesExternalCopyImageInSelectedClosure(t *testing.T) {
 	const source = "registry.example/tools:latest"
 	var calls []FromSource
-	plan, err := CreateDemandDriven(parse(t, `from "scratch" as="unused"
-copy "/ignored" "/ignored" from="registry.example/unused:latest"
-from "scratch" as="final"
-copy "/bin/tool" "/usr/bin/tool" from="registry.example/tools:latest"
+	plan, err := CreateDemandDriven(parse(t, `from "scratch" as="unused" {
+    copy "/ignored" "/ignored" from="registry.example/unused:latest"
+}
+from "scratch" as="final" {
+    copy "/bin/tool" "/usr/bin/tool" from="registry.example/tools:latest"
+}
 `), Options{Target: "final"}, func(input FromSource) (StageBind, error) {
 		calls = append(calls, input)
 		return StageBind{}, nil
@@ -98,20 +105,21 @@ copy "/bin/tool" "/usr/bin/tool" from="registry.example/tools:latest"
 	}
 }
 
-func TestCreateDemandDrivenPlansInheritedExternalAndForwardCopySources(t *testing.T) {
+func TestCreateDemandDrivenPlansInheritedExternalAndEarlierCopySources(t *testing.T) {
 	const base = "registry.example/parent:latest"
 	const external = "registry.example/asset:latest"
 	var calls []FromSource
 	plan, err := CreateDemandDriven(parse(t, `
-from "registry.example/parent:latest" as="final"
-from "scratch" as="later"
-copy "fixture" "/fixture"
+from "scratch" as="assets" {
+    copy "fixture" "/fixture"
+}
+from "registry.example/parent:latest" as="final" {}
 `), Options{Target: "final"}, func(input FromSource) (StageBind, error) {
 		calls = append(calls, input)
 		if input.Source == base {
 			return StageBind{Inherited: []definition.Instruction{
 				{Name: "copy", Arguments: []string{"/asset", "/external"}, Properties: map[string]string{"from": external}},
-				{Name: "copy", Arguments: []string{"/fixture", "/forward"}, Properties: map[string]string{"from": "later"}},
+				{Name: "copy", Arguments: []string{"/fixture", "/earlier"}, Properties: map[string]string{"from": "assets"}},
 			}}, nil
 		}
 		return StageBind{}, nil
@@ -120,28 +128,30 @@ copy "fixture" "/fixture"
 		t.Fatal(err)
 	}
 	if got, want := calls, []FromSource{
-		{StageID: "0", Source: base, Platform: "linux/amd64", Kind: FromSourceImage},
-		{StageID: "0", Source: external, Platform: "linux/amd64", Kind: FromSourceCopyImage},
+		{StageID: "1", Source: base, Platform: "linux/amd64", Kind: FromSourceImage},
+		{StageID: "1", Source: external, Platform: "linux/amd64", Kind: FromSourceCopyImage},
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("selected image sources = %+v, want %+v", got, want)
 	}
-	if got, want := stageIDs(plan), []string{"1", "0"}; !reflect.DeepEqual(got, want) {
+	if got, want := stageIDs(plan), []string{"0", "1"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("selected stages = %v, want %v", got, want)
 	}
-	if got, want := plan.Stages[1].Dependencies, []string{"1"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("inherited forward dependency = %v, want %v", got, want)
+	if got, want := plan.Stages[1].Dependencies, []string{"0"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("inherited earlier dependency = %v, want %v", got, want)
 	}
 }
 
 func TestCreateDemandDrivenResolvesExternalRunMountImageInSelectedClosure(t *testing.T) {
 	const source = "registry.example/tools:latest"
 	var calls []FromSource
-	plan, err := CreateDemandDriven(parse(t, `from "scratch" as="unused"
-run "true" { mount "bind" from="registry.example/unused:latest" source="/" target="/unused" }
-from "scratch" as="final"
-run "true" {
-  mount "bind" from="registry.example/tools:latest" source="/bin" target="/tools" readonly="true"
-  mount "cache" from="registry.example/tools:latest" source="/var/cache" target="/cache" id="tools"
+	plan, err := CreateDemandDriven(parse(t, `from "scratch" as="unused" {
+    run "true" { mount "bind" from="registry.example/unused:latest" source="/" target="/unused" }
+}
+from "scratch" as="final" {
+    run "true" {
+      mount "bind" from="registry.example/tools:latest" source="/bin" target="/tools" readonly="true"
+      mount "cache" from="registry.example/tools:latest" source="/var/cache" target="/cache" id="tools"
+    }
 }
 `), Options{Target: "final"}, func(input FromSource) (StageBind, error) {
 		calls = append(calls, input)
@@ -163,21 +173,21 @@ run "true" {
 }
 
 func TestCreateDemandDrivenChecksHiddenDependencyCycles(t *testing.T) {
-	def := parse(t, `from "first.example/image:latest" as="first"
-from "first" as="final"
+	def := parse(t, `from "first.example/image:latest" as="first" {}
+from "first" as="final" {}
 `)
 	_, err := CreateDemandDriven(def, Options{Target: "final"}, func(source FromSource) (StageBind, error) {
 		return StageBind{Inherited: []definition.Instruction{{
 			Name: "copy", Arguments: []string{"/payload", "/payload"}, Properties: map[string]string{"from": "final"},
 		}}}, nil
 	})
-	if err == nil || !strings.Contains(err.Error(), "cycle") {
+	if err == nil || !strings.Contains(err.Error(), "requires an earlier stage") {
 		t.Fatalf("hidden dependency cycle error = %v", err)
 	}
 }
 
 func TestCreateDemandDrivenValidatesResolvedBind(t *testing.T) {
-	_, err := CreateDemandDriven(parse(t, `from "base.example/image:latest"
+	_, err := CreateDemandDriven(parse(t, `from "base.example/image:latest" {}
 `), Options{}, func(FromSource) (StageBind, error) {
 		return StageBind{BaseEnvironment: map[string]string{"BAD=NAME": "value"}}, nil
 	})
@@ -187,10 +197,12 @@ func TestCreateDemandDrivenValidatesResolvedBind(t *testing.T) {
 }
 
 func TestCreateDemandDrivenInheritsLocalOnBuildArgument(t *testing.T) {
-	plan, err := CreateDemandDriven(parse(t, `from "scratch" as="base"
-onbuild { arg "flavor" "local" }
-from "base" as="final"
-env RESULT="$flavor"
+	plan, err := CreateDemandDriven(parse(t, `from "scratch" as="base" {
+    onbuild { arg "flavor" "local" }
+}
+from "base" as="final" {
+    env RESULT="$flavor"
+}
 `), Options{Target: "final"}, unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
@@ -208,12 +220,15 @@ env RESULT="$flavor"
 }
 
 func TestCreateDemandDrivenLocalOnBuildAddsHiddenDependency(t *testing.T) {
-	plan, err := CreateDemandDriven(parse(t, `from "scratch" as="assets"
-run "prepare"
-from "scratch" as="base"
-onbuild { copy "/payload" "/payload" from="assets" }
-from "base" as="final"
-run "finish"
+	plan, err := CreateDemandDriven(parse(t, `from "scratch" as="assets" {
+    run "prepare"
+}
+from "scratch" as="base" {
+    onbuild { copy "/payload" "/payload" from="assets" }
+}
+from "base" as="final" {
+    run "finish"
+}
 `), Options{Target: "final"}, unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
@@ -230,12 +245,15 @@ run "finish"
 }
 
 func TestCreateDemandDrivenLocalOnBuildChainConsumesEachParentOnce(t *testing.T) {
-	plan, err := CreateDemandDriven(parse(t, `from "scratch" as="base"
-onbuild { env LEVEL="base" }
-from "base" as="middle"
-onbuild { env LEVEL="middle" }
-from "middle" as="final"
-env SEEN="$LEVEL"
+	plan, err := CreateDemandDriven(parse(t, `from "scratch" as="base" {
+    onbuild { env LEVEL="base" }
+}
+from "base" as="middle" {
+    onbuild { env LEVEL="middle" }
+}
+from "middle" as="final" {
+    env SEEN="$LEVEL"
+}
 `), Options{Target: "final"}, unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
@@ -259,12 +277,15 @@ env SEEN="$LEVEL"
 }
 
 func TestCreateDemandDrivenDefersAndReplansLocalBaseWithDynamicComponentConfig(t *testing.T) {
-	plan, err := CreateDemandDriven(parse(t, `from "scratch" as="helper"
-run "make helper"
-from "scratch" as="base"
-component "registry.example/component:latest"
-from "base" as="final"
-env RESULT="$COMPONENT_VALUE"
+	plan, err := CreateDemandDriven(parse(t, `from "scratch" as="helper" {
+    run "make helper"
+}
+from "scratch" as="base" {
+    component "registry.example/component:latest"
+}
+from "base" as="final" {
+    env RESULT="$COMPONENT_VALUE"
+}
 `), Options{Target: "final"}, unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
@@ -307,12 +328,15 @@ env RESULT="$COMPONENT_VALUE"
 }
 
 func TestCreateDemandDrivenDefersDynamicConfigInTransitiveLocalAncestry(t *testing.T) {
-	plan, err := CreateDemandDriven(parse(t, `from "scratch" as="base"
-component "registry.example/component:latest"
-from "base" as="middle"
-run "middle"
-from "middle" as="final"
-run "finish"
+	plan, err := CreateDemandDriven(parse(t, `from "scratch" as="base" {
+    component "registry.example/component:latest"
+}
+from "base" as="middle" {
+    run "middle"
+}
+from "middle" as="final" {
+    run "finish"
+}
 `), Options{Target: "final"}, unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
@@ -325,18 +349,28 @@ run "finish"
 	}
 }
 
-func TestCreateDemandDrivenPromotesSharedStageToPackagePhase(t *testing.T) {
-	plan, err := CreateDemandDriven(parse(t, `from "scratch" as="helper"
-package as="pkg"
-copy "/payload" "/payload" from="helper"
-extend as="base"
-from "base" as="branch"
-copy "/payload" "/payload" from="pkg"
-from "registry.invalid/coopr/invocation-only:tag" as="remote"
-from "base" as="output"
-copy "/helper" "/helper" from="helper"
-copy "/branch" "/branch" from="branch"
-copy "/remote" "/remote" from="remote"
+func TestCreateDemandDrivenPublishesSharedProducerThroughPackage(t *testing.T) {
+	plan, err := CreateDemandDriven(parse(t, `from "scratch" as="helper" {}
+package as="pkg" {
+    copy "/payload" "/payload" from="helper"
+    copy "/helper" "/helper" from="helper"
+}
+extend as="base" {}
+extend as="branch" {
+    from "base" {
+        copy "/payload" "/payload" from="pkg"
+    }
+}
+extend as="remote" {
+    from "registry.invalid/coopr/invocation-only:tag" {}
+}
+extend as="output" {
+    from "base" {
+        copy "/helper" "/helper" from="pkg"
+        copy "/branch" "/branch" from="branch"
+        copy "/remote" "/remote" from="remote"
+    }
+}
 `), Options{Mode: Publish, Target: "output"}, func(source FromSource) (StageBind, error) {
 		t.Fatalf("invocation-only image was resolved during publication: %+v", source)
 		return StageBind{}, nil
@@ -352,20 +386,29 @@ copy "/remote" "/remote" from="remote"
 	}
 }
 
-func TestCreateDemandDrivenReplansLocalDescendantAfterPackagePromotion(t *testing.T) {
+func TestCreateDemandDrivenResolvesPackagedDescendantInheritedMetadata(t *testing.T) {
 	var calls []FromSource
-	plan, err := CreateDemandDriven(parse(t, `from "registry.example/helper:latest" as="helper"
-from "helper" as="child"
-arg "inherited"
-env CHILD_VALUE="$inherited"
-package as="pkg"
-copy "/payload" "/payload" from="helper"
-extend as="base"
-from "base" as="branch"
-copy "/payload" "/payload" from="pkg"
-from "base" as="output"
-copy "/child" "/child" from="child"
-copy "/branch" "/branch" from="branch"
+	plan, err := CreateDemandDriven(parse(t, `from "registry.example/helper:latest" as="helper" {}
+from "helper" as="child" {
+    arg "inherited"
+    env CHILD_VALUE="$inherited"
+}
+package as="pkg" {
+    copy "/payload" "/payload" from="helper"
+    copy "/child" "/child" from="child"
+}
+extend as="base" {}
+extend as="branch" {
+    from "base" {
+        copy "/payload" "/payload" from="pkg"
+    }
+}
+extend as="output" {
+    from "base" {
+        copy "/child" "/child" from="pkg"
+        copy "/branch" "/branch" from="branch"
+    }
+}
 `), Options{Mode: Publish, Target: "output"}, func(source FromSource) (StageBind, error) {
 		calls = append(calls, source)
 		if source.Source != "registry.example/helper:latest" {
@@ -383,22 +426,33 @@ copy "/branch" "/branch" from="branch"
 	}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("base resolution calls = %+v, want %+v", got, want)
 	}
-	if got, want := stageIDs(plan), []string{"0", "2"}; !reflect.DeepEqual(got, want) {
+	if got, want := stageIDs(plan), []string{"0", "1", "2"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("package production closure = %v, want %v", got, want)
+	}
+	if got := plan.Stages[1].Operations[0].Properties["CHILD_VALUE"]; got != "resolved" {
+		t.Fatalf("packaged child inherited argument = %q", got)
 	}
 }
 
-func TestCreateDemandDrivenRetriesActiveLocalDescendantAfterPackagePromotion(t *testing.T) {
-	def := parse(t, `from "registry.example/helper:latest" as="helper"
-from "helper" as="child"
-arg "flag"
-env CHILD_VALUE="$flag"
-copy "/payload" "/payload" from="pkg"
-package as="pkg"
-copy "/payload" "/payload" from="helper"
-extend as="base"
-from "base" as="output"
-copy "/child" "/child" from="child"
+func TestCreateDemandDrivenResolvesPackageDependentProducerDescendant(t *testing.T) {
+	def := parse(t, `from "registry.example/helper:latest" as="helper" {}
+package as="pkg" {
+    copy "/payload" "/payload" from="helper"
+}
+from "helper" as="child" {
+    arg "flag"
+    env CHILD_VALUE="$flag"
+    copy "/payload" "/payload" from="pkg"
+}
+package as="child-output" {
+    copy "/child" "/child" from="child"
+}
+extend as="base" {}
+extend as="output" {
+    from "base" {
+        copy "/child" "/child" from="child-output"
+    }
+}
 `)
 	var calls []FromSource
 	resolver := func(source FromSource) (StageBind, error) {
@@ -419,34 +473,44 @@ copy "/child" "/child" from="child"
 	}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("base resolution calls = %+v, want %+v", got, want)
 	}
-	if got, want := stageIDs(plan), []string{"0", "2"}; !reflect.DeepEqual(got, want) {
+	if got, want := stageIDs(plan), []string{"0", "1", "2", "3"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("package production closure = %v, want %v", got, want)
 	}
 
 	graph := demandGraphForTest(t, def, Options{Mode: Publish, Target: "output"}, resolver)
-	if err := graph.resolve(4); err != nil {
+	if err := graph.resolve(graph.aliases["output"]); err != nil {
 		t.Fatal(err)
 	}
-	if got := graph.finalEnvironments[1]["CHILD_VALUE"]; got != "from-onbuild" {
+	if got := graph.finalEnvironments[2]["CHILD_VALUE"]; got != "from-onbuild" {
 		t.Fatalf("active local child retained stale base environment: CHILD_VALUE=%q", got)
 	}
 }
 
-func TestCreateDemandDrivenSettlesResetChildBehindCompletedConsumer(t *testing.T) {
-	def := parse(t, `from "registry.example/base:latest" as="base-image"
-from "base-image" as="child"
-arg "flag"
-env CHILD_VALUE="$flag"
-from "scratch" as="consumer"
-copy "/child" "/child" from="child"
-package as="pkg"
-copy "/payload" "/payload" from="base-image"
-extend as="base"
-from "base" as="branch"
-copy "/payload" "/payload" from="pkg"
-from "base" as="output"
-copy "/consumer" "/consumer" from="consumer"
-copy "/branch" "/branch" from="branch"
+func TestCreateDemandDrivenSettlesDescendantBehindPackagedConsumer(t *testing.T) {
+	def := parse(t, `from "registry.example/base:latest" as="base-image" {}
+from "base-image" as="child" {
+    arg "flag"
+    env CHILD_VALUE="$flag"
+}
+from "scratch" as="consumer" {
+    copy "/child" "/child" from="child"
+}
+package as="pkg" {
+    copy "/payload" "/payload" from="base-image"
+    copy "/consumer" "/consumer" from="consumer"
+}
+extend as="base" {}
+extend as="branch" {
+    from "base" {
+        copy "/payload" "/payload" from="pkg"
+    }
+}
+extend as="output" {
+    from "base" {
+        copy "/consumer" "/consumer" from="pkg"
+        copy "/branch" "/branch" from="branch"
+    }
+}
 `)
 	resolver := func(source FromSource) (StageBind, error) {
 		if source.Source != "registry.example/base:latest" {
@@ -461,7 +525,7 @@ copy "/branch" "/branch" from="branch"
 	}
 
 	graph := demandGraphForTest(t, def, Options{Mode: Publish, Target: "output"}, resolver)
-	if err := graph.resolve(6); err != nil {
+	if err := graph.resolve(graph.aliases["output"]); err != nil {
 		t.Fatal(err)
 	}
 	if graph.states[1] != 2 {

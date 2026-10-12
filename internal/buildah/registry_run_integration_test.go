@@ -37,9 +37,10 @@ func TestBuildPlanRunsWithAndWithoutNetworkFromRegistryBase(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := testPlan(t, fmt.Sprintf(`
-from %q
-run "printf default >/default"
-run "printf isolated >/isolated" network="none"
+from %q {
+    run "printf default >/default"
+    run "printf isolated >/isolated" network="none"
+}
 `, base))
 	layout := filepath.Join(root, "layout")
 	_, err = BuildPlan(ctx, plan, PlanOptions{
@@ -71,7 +72,10 @@ func TestBuildPlanAddsCustomHostToRun(t *testing.T) {
 	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	plan := testPlan(t, fmt.Sprintf("from %q\nrun \"found=; while read ip name rest; do if test x$ip = x127.0.0.42 && test x$name = xcoopr.test; then found=yes; fi; done </etc/hosts; test x$found = xyes || exit 1; printf custom-host >/proof\"\n", base.reference))
+	plan := testPlan(t, fmt.Sprintf(`from %q {
+    run "found=; while read ip name rest; do if test x$ip = x127.0.0.42 && test x$name = xcoopr.test; then found=yes; fi; done </etc/hosts; test x$found = xyes || exit 1; printf custom-host >/proof"
+}
+`, base.reference))
 	layout := filepath.Join(root, "layout")
 	_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
@@ -103,9 +107,10 @@ func TestBuildPlanSupervisedKeepsCacheMountAcrossBuilds(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := testPlan(t, fmt.Sprintf(`
-from %q
-run "if test -e /cache/proof; then printf hit >/result; else printf miss >/result; fi; touch /cache/proof" network="none" {
-  mount "cache" target="/cache"
+from %q {
+    run "if test -e /cache/proof; then printf hit >/result; else printf miss >/result; fi; touch /cache/proof" network="none" {
+      mount "cache" target="/cache"
+    }
 }
 `, base.reference))
 	for attempt, want := range []string{"miss", "hit"} {
@@ -141,7 +146,8 @@ func TestBuildPlanSupervisedRunsIndependentJobsConcurrently(t *testing.T) {
 	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	warm := testPlan(t, "from \""+base.reference+"\"\n")
+	warm := testPlan(t, "from \""+base.reference+`" {}
+`)
 	_, err := BuildPlanSupervised(ctx, warm, SupervisedPlanOptions{
 		Store: store, Isolation: "rootless", Runtime: "crun", Output: Output{Path: filepath.Join(root, "warm")},
 		Pull: false, SignaturePolicyPath: policy,
@@ -162,9 +168,12 @@ func TestBuildPlanSupervisedRunsIndependentJobsConcurrently(t *testing.T) {
 		if name == "a" {
 			other = "b"
 		}
-		plan := testPlan(t, "from \""+base.reference+"\"\n"+
-			"run \"touch /cache/"+name+"; for i in $(seq 1 15); do if test -e /cache/"+other+"; then echo concurrent >/proof; exit 0; fi; sleep 1; done; exit 1\" network=\"none\" {\n"+
-			"  mount \"cache\" target=\"/cache\" id=\"coopr-concurrency-proof\" sharing=\"shared\"\n}\n")
+		plan := testPlan(t, "from \""+base.reference+`" {
+    run "touch /cache/`+name+"; for i in $(seq 1 15); do if test -e /cache/"+other+`; then echo concurrent >/proof; exit 0; fi; sleep 1; done; exit 1" network="none" {
+      mount "cache" target="/cache" id="coopr-concurrency-proof" sharing="shared"
+    }
+}
+`)
 		go func() {
 			<-start
 			_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{

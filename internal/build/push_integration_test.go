@@ -23,7 +23,10 @@ func TestRunPushPublishesAndReturnsImmutableReference(t *testing.T) {
 	target := strings.TrimPrefix(server.URL, "http://") + "/coopr/app:stable"
 	dir := t.TempDir()
 	file := filepath.Join(dir, "app.coopr")
-	if err := os.WriteFile(file, []byte("from \"scratch\"\nlabel coopr_test=\"push\"\n"), 0600); err != nil {
+	if err := os.WriteFile(file, []byte(`from "scratch" {
+    label coopr_test="push"
+}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 

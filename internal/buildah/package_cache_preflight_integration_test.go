@@ -55,14 +55,17 @@ func TestPublishDefinitionPackageCacheHitSkipsProducersAndBaseLayers(t *testing.
 	componentStoreDir := filepath.Join(root, "components")
 	policy := writeComponentTestPolicy(t, root)
 	component := parseWorkerDefinition(t, `
-from "`+reference+`" as="producer"
-package as="from-bundle"
-copy "/bin/busybox" "/from-busybox" from="producer"
-package as="copy-bundle"
-copy "/bin/busybox" "/copy-busybox" from="`+reference+`"
-extend
-copy "/from-busybox" "/from-busybox" from="from-bundle"
-copy "/copy-busybox" "/copy-busybox" from="copy-bundle"
+from "`+reference+`" as="producer" {}
+package as="from-bundle" {
+    copy "/bin/busybox" "/from-busybox" from="producer"
+}
+package as="copy-bundle" {
+    copy "/bin/busybox" "/copy-busybox" from="`+reference+`"
+}
+extend {
+    copy "/from-busybox" "/from-busybox" from="from-bundle"
+    copy "/copy-busybox" "/copy-busybox" from="copy-bundle"
+}
 `)
 	build := func(name string) (string, StoreOptions) {
 		storeRoot := filepath.Join(root, name)

@@ -53,7 +53,8 @@ func TestFinalizationAcceptsSharedMultiPlatformOutputs(t *testing.T) {
 func TestFinalizationRejectsOutputOverlaps(t *testing.T) {
 	root := t.TempDir()
 	definition := filepath.Join(root, "image.coopr")
-	if err := os.WriteFile(definition, []byte("from scratch"), 0600); err != nil {
+	if err := os.WriteFile(definition, []byte(`from scratch {}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	for _, options := range []Options{

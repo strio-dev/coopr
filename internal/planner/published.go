@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"coopr/internal/definition"
+	"coopr/internal/onbuildparse"
 )
 
 // ValidatePublished checks the graph that can be checked without caller
@@ -33,31 +34,43 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 		}
 		canonicalReservations[canonical] = true
 	}
+	projected, err := projectRaw(component.Definition)
+	if err != nil {
+		return nil, err
+	}
 	type stage struct {
 		head definition.Instruction
 		body []definition.Instruction
 	}
-	var stages []stage
+	stages := make([]stage, len(projected.Stages))
 	aliases := map[string]int{}
-	for _, inst := range definition.FlattenLayers(component.Definition.Instructions) {
-		switch inst.Name {
-		case "from", "extend", "package":
-			if name := inst.Properties["as"]; name != "" {
-				canonical := canonicalStageName(name)
-				if _, exists := aliases[canonical]; exists || !canonicalReservations[canonical] {
-					return nil, fmt.Errorf("invalid or unreserved stage name %q", name)
-				}
-				aliases[canonical] = len(stages)
-			}
-			stages = append(stages, stage{head: inst})
-		default:
-			if len(stages) == 0 {
-				if inst.Name != "arg" {
-					return nil, fmt.Errorf("instruction %q precedes first stage", inst.Name)
-				}
-				continue
-			}
-			stages[len(stages)-1].body = append(stages[len(stages)-1].body, inst)
+	for name, id := range projected.Aliases {
+		if !canonicalReservations[name] {
+			return nil, fmt.Errorf("invalid or unreserved stage name %q", name)
+		}
+		aliases[name] = mustStageIndex(id)
+	}
+	for id, s := range projected.Stages {
+		stages[id] = stage{head: s.Head, body: s.Body}
+	}
+	if component.SourceStageCount < len(stages) || len(component.SourceStageIDs) != len(stages) {
+		return nil, fmt.Errorf("invalid original stage identity mapping")
+	}
+	mappedIDs := map[string]bool{}
+	originalIDs := make([]int, 0, len(stages))
+	for original, mapped := range component.SourceStageIDs {
+		index, err := strconv.Atoi(original)
+		target, targetErr := strconv.Atoi(mapped)
+		if err != nil || index < 0 || index >= component.SourceStageCount || strconv.Itoa(index) != original || targetErr != nil || target < 0 || target >= len(stages) || strconv.Itoa(target) != mapped || mappedIDs[mapped] {
+			return nil, fmt.Errorf("invalid original stage identity mapping")
+		}
+		mappedIDs[mapped] = true
+		originalIDs = append(originalIDs, index)
+	}
+	slices.Sort(originalIDs)
+	for index, original := range originalIDs {
+		if component.SourceStageIDs[strconv.Itoa(original)] != strconv.Itoa(index) {
+			return nil, fmt.Errorf("original stage identity mapping changes source order")
 		}
 	}
 	output, err := strconv.Atoi(component.Output)
@@ -81,11 +94,17 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 					return nil, fmt.Errorf("invalid FROM after binding for stage %d", id)
 				}
 				if binding.AfterIndex != "" {
+					if component.SourceStageIDs[binding.AfterIndex] != binding.AfterStage {
+						return nil, fmt.Errorf("FROM after binding conflicts with original stage identity")
+					}
 					if !canonicalSourceIndex(binding.AfterIndex) || !strings.Contains(after, "$") && after != binding.AfterIndex {
 						return nil, fmt.Errorf("FROM after binding conflicts with numeric source %q", after)
 					}
-				} else if name := stages[target].head.Properties["as"]; name == "" || !strings.Contains(after, "$") && canonicalStageName(after) != canonicalStageName(name) {
+				} else if !strings.Contains(after, "$") && aliases[canonicalStageName(after)] != target || !strings.Contains(after, "$") && projected.Aliases[canonicalStageName(after)] == "" {
 					return nil, fmt.Errorf("FROM after binding conflicts with source %q", after)
+				}
+				if err := projected.requireEarlier(id, target, -1, after); err != nil {
+					return nil, err
 				}
 				deps[id] = append(deps[id], target)
 			} else if binding.AfterStage != "" || binding.AfterIndex != "" {
@@ -99,11 +118,17 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 					return nil, fmt.Errorf("invalid FROM stage binding %d", id)
 				}
 				if binding.SourceIndex != "" {
+					if component.SourceStageIDs[binding.SourceIndex] != binding.Stage {
+						return nil, fmt.Errorf("FROM stage binding conflicts with original stage identity")
+					}
 					if !canonicalSourceIndex(binding.SourceIndex) || !strings.Contains(source, "$") && source != binding.SourceIndex {
 						return nil, fmt.Errorf("FROM stage binding %d conflicts with numeric source %q", id, source)
 					}
-				} else if name := stages[target].head.Properties["as"]; name == "" || !strings.Contains(source, "$") && canonicalStageName(source) != canonicalStageName(name) {
+				} else if !strings.Contains(source, "$") && aliases[canonicalStageName(source)] != target || !strings.Contains(source, "$") && projected.Aliases[canonicalStageName(source)] == "" {
 					return nil, fmt.Errorf("FROM stage binding %d conflicts with source %q", id, source)
+				}
+				if err := projected.requireEarlier(id, target, -1, source); err != nil {
+					return nil, err
 				}
 				deps[id] = append(deps[id], target)
 			case "scratch":
@@ -129,14 +154,14 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 			}
 			if (inst.Name == "copy" || inst.Name == "add") && inst.Properties["from"] != "" {
 				referenceCount++
-				if err := checkPublishedReference(component.StageReferences, &deps[id], aliases, component.ReservedStageNames, len(stages), id, operation, -1, inst.Properties["from"]); err != nil {
+				if err := checkPublishedReference(component.StageReferences, &deps[id], aliases, component.ReservedStageNames, projected, id, operation, -1, inst.Properties["from"], operation); err != nil {
 					return nil, err
 				}
 			}
 			for child, mount := range inst.Children {
 				if mount.Properties["from"] != "" {
 					referenceCount++
-					if err := checkPublishedReference(component.StageReferences, &deps[id], aliases, component.ReservedStageNames, len(stages), id, operation, child, mount.Properties["from"]); err != nil {
+					if err := checkPublishedReference(component.StageReferences, &deps[id], aliases, component.ReservedStageNames, projected, id, operation, child, mount.Properties["from"], operation); err != nil {
 						return nil, err
 					}
 				}
@@ -144,8 +169,88 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 			operation++
 		}
 	}
+	// A local FROM's authored ONBUILD is part of the retained source. Unlike
+	// external triggers, its reference positions can be checked before execution.
+	scratchLineage := func(id int) bool {
+		for steps := 0; steps < len(stages); steps++ {
+			if stages[id].head.Name != "from" {
+				return false
+			}
+			for _, inst := range stages[id].body {
+				if inst.Name == "component" {
+					return false
+				}
+			}
+			binding := component.FromBindings[strconv.Itoa(id)]
+			if binding.Kind == "scratch" {
+				return true
+			}
+			if binding.Kind != "stage" {
+				return false
+			}
+			id = mustStageIndex(binding.Stage)
+		}
+		return false
+	}
+	localTriggers := map[int][]definition.Instruction{}
+	for id := range stages {
+		binding, ok := component.FromBindings[strconv.Itoa(id)]
+		if !ok || binding.Kind != "stage" {
+			continue
+		}
+		base := mustStageIndex(binding.Stage)
+		if stages[base].head.Name != "from" {
+			continue
+		}
+		claimed := slices.ContainsFunc(component.StageReferences, func(ref StageReferenceBinding) bool {
+			return ref.Origin == "local-onbuild" && ref.Stage == strconv.Itoa(id)
+		})
+		if !claimed && !scratchLineage(base) {
+			continue
+		}
+		if slices.ContainsFunc(stages[base].body, func(inst definition.Instruction) bool { return inst.Name == "component" }) {
+			continue // A component can replace the image's final ONBUILD configuration.
+		}
+		for _, inst := range stages[base].body {
+			if inst.Name != "onbuild" {
+				continue
+			}
+			parsed, err := onbuildparse.ParseDeferred(inst.Arguments[0])
+			if err != nil {
+				return nil, fmt.Errorf("local ONBUILD at stage %d: %w", base, err)
+			}
+			for _, trigger := range parsed {
+				if trigger.Name != "arg" {
+					localTriggers[id] = append(localTriggers[id], trigger)
+				}
+			}
+		}
+		for operation, trigger := range localTriggers[id] {
+			check := func(source string, mount int) error {
+				if source == "" {
+					return nil
+				}
+				for _, ref := range component.StageReferences {
+					if ref.Origin == "local-onbuild" && ref.Stage == strconv.Itoa(id) && ref.Operation == operation && ref.MountIndex == mount {
+						return nil
+					}
+				}
+				return fmt.Errorf("published local ONBUILD reference missing for stage %d operation %d", id, operation)
+			}
+			if trigger.Name == "copy" || trigger.Name == "add" {
+				if err := check(trigger.Properties["from"], -1); err != nil {
+					return nil, err
+				}
+			}
+			for child, mount := range trigger.Children {
+				if err := check(mount.Properties["from"], child); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
 	for _, ref := range component.StageReferences {
-		if ref.Origin != "onbuild" {
+		if ref.Origin != "onbuild" && ref.Origin != "local-onbuild" {
 			continue
 		}
 		referenceCount++
@@ -155,19 +260,6 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 		}
 		if ref.Operation < 0 || ref.MountIndex < -1 || ref.SourceIndex != "" && !canonicalSourceIndex(ref.SourceIndex) {
 			return nil, fmt.Errorf("invalid ONBUILD stage reference at stage %s operation %d", ref.Stage, ref.Operation)
-		}
-		if ref.Kind == "image" {
-			if ref.Target != "" || ref.SourceIndex != "" {
-				return nil, fmt.Errorf("invalid ONBUILD image reference target %q", ref.Target)
-			}
-			continue
-		}
-		if ref.Kind != "stage" {
-			return nil, fmt.Errorf("invalid ONBUILD stage reference at stage %s operation %d", ref.Stage, ref.Operation)
-		}
-		target, err := strconv.Atoi(ref.Target)
-		if err != nil || target < 0 || target >= len(stages) || strconv.Itoa(target) != ref.Target || ref.SourceIndex == "" && stages[target].head.Properties["as"] == "" {
-			return nil, fmt.Errorf("invalid ONBUILD stage reference target %q", ref.Target)
 		}
 		packageBase := false
 		ancestor := stageID
@@ -182,8 +274,50 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 				break
 			}
 		}
+		triggers := localTriggers[stageID]
+		if ref.Origin == "local-onbuild" {
+			if ref.Operation >= len(triggers) {
+				return nil, fmt.Errorf("invalid local ONBUILD operation at stage %s", ref.Stage)
+			}
+			trigger := triggers[ref.Operation]
+			source := ""
+			if ref.MountIndex == -1 && (trigger.Name == "copy" || trigger.Name == "add") {
+				source = trigger.Properties["from"]
+			} else if ref.MountIndex >= 0 && ref.MountIndex < len(trigger.Children) {
+				source = trigger.Children[ref.MountIndex].Properties["from"]
+			}
+			if source == "" {
+				return nil, fmt.Errorf("invalid local ONBUILD reference at stage %s", ref.Stage)
+			}
+			authored := ref
+			authored.Origin = "authored"
+			if err := checkPublishedReference([]StageReferenceBinding{authored}, &deps[stageID], aliases, component.ReservedStageNames, projected, stageID, ref.Operation, ref.MountIndex, source, -1); err != nil {
+				return nil, fmt.Errorf("local ONBUILD: %w", err)
+			}
+			continue
+		}
 		if !packageBase {
-			return nil, fmt.Errorf("ONBUILD stage reference %s is not inherited from a package", ref.Stage)
+			return nil, fmt.Errorf("ONBUILD stage reference %s is not inherited from a package or authored local FROM", ref.Stage)
+		}
+		if ref.Kind == "image" {
+			if ref.Target != "" || ref.SourceIndex != "" {
+				return nil, fmt.Errorf("invalid ONBUILD image reference target %q", ref.Target)
+			}
+			continue
+		}
+		if ref.Kind != "stage" {
+			return nil, fmt.Errorf("invalid ONBUILD stage reference at stage %s operation %d", ref.Stage, ref.Operation)
+		}
+		target, err := strconv.Atoi(ref.Target)
+		aliased := false
+		for _, id := range aliases {
+			aliased = aliased || id == target
+		}
+		if err != nil || target < 0 || target >= len(stages) || strconv.Itoa(target) != ref.Target || ref.SourceIndex == "" && !aliased {
+			return nil, fmt.Errorf("invalid ONBUILD stage reference target %q", ref.Target)
+		}
+		if err := projected.requireEarlier(stageID, target, -1, ref.Target); err != nil {
+			return nil, err
 		}
 		deps[stageID] = append(deps[stageID], target)
 	}
@@ -197,10 +331,13 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 	// extra, duplicate, or out-of-order records too.
 	lastStage, lastOrigin, lastOperation, lastMount := -1, -1, -1, -2
 	for _, ref := range component.StageReferences {
+		if ref.SourceIndex != "" && component.SourceStageIDs[ref.SourceIndex] != ref.Target {
+			return nil, fmt.Errorf("stage reference conflicts with original stage identity")
+		}
 		stageID, stageErr := strconv.Atoi(ref.Stage)
 		origin := -1
 		switch ref.Origin {
-		case "onbuild":
+		case "onbuild", "local-onbuild":
 			origin = 0
 		case "authored":
 			origin = 1
@@ -252,16 +389,46 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 		if selected[id] {
 			return nil, fmt.Errorf("dormant root %d is already in selected output closure", id)
 		}
-		eligible := stages[id].head.Name == "extend"
+		// An unfinished enclosing EXTEND may be retained as structural ownership
+		// for a selected nested result. Other roots need a visible FROM consumer.
+		eligible := stages[id].head.Name == "extend" && slices.ContainsFunc(projected.Stages, func(stage RawStage) bool {
+			nested := mustStageIndex(stage.ID)
+			return nested != id && stage.Owner == strconv.Itoa(id) && (selected[nested] || slices.Contains(dormant, nested))
+		})
 		for source := range stages {
+			if !selected[source] {
+				continue
+			}
+			if projected.requireEarlier(source, id, -1, strconv.Itoa(id)) != nil {
+				continue
+			}
 			binding, ok := component.FromBindings[strconv.Itoa(source)]
-			if selected[source] && ok && binding.Kind == "image" {
+			if !ok {
+				continue
+			}
+			if binding.Kind == "image" {
 				eligible = true
+				break
+			}
+			// Component-produced configuration can introduce ONBUILD dependencies
+			// only when a selected FROM consumes that configuration.
+			for steps := 0; binding.Kind == "stage" && steps < len(stages); steps++ {
+				base := mustStageIndex(binding.Stage)
+				if stages[base].head.Name == "package" {
+					break
+				}
+				if slices.ContainsFunc(stages[base].body, func(inst definition.Instruction) bool { return inst.Name == "component" }) {
+					eligible = true
+					break
+				}
+				binding = component.FromBindings[strconv.Itoa(base)]
+			}
+			if eligible {
 				break
 			}
 		}
 		if !eligible {
-			return nil, fmt.Errorf("dormant root %d has no selected external FROM", id)
+			return nil, fmt.Errorf("dormant root %d has no selected external FROM or component-produced base", id)
 		}
 		if err := visit(id); err != nil {
 			return nil, err
@@ -272,12 +439,14 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 			return nil, fmt.Errorf("retained stage %d is outside selected output closure", id)
 		}
 	}
-	hasExtend := false
-	for id, s := range stages {
-		hasExtend = hasExtend || id <= output && s.head.Name == "extend"
+	callable := false
+	for _, root := range projected.Roots {
+		if stages[mustStageIndex(root)].head.Name == "extend" && projected.Results[root] == component.Output {
+			callable = true
+		}
 	}
-	if !hasExtend {
-		return nil, fmt.Errorf("published component output requires a preceding extend")
+	if !callable {
+		return nil, fmt.Errorf("published component output must belong to an extend target")
 	}
 	var packages []string
 	for id, s := range stages {
@@ -308,7 +477,7 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 	return packages, nil
 }
 
-func checkPublishedReference(refs []StageReferenceBinding, deps *[]int, aliases map[string]int, reserved []string, stageCount, stage, operation, mount int, source string) error {
+func checkPublishedReference(refs []StageReferenceBinding, deps *[]int, aliases map[string]int, reserved []string, projected *RawGraph, stage, operation, mount int, source string, referencePosition int) error {
 	for _, ref := range refs {
 		if ref.Origin != "authored" || ref.Stage != strconv.Itoa(stage) || ref.Operation != operation || ref.MountIndex != mount {
 			continue
@@ -331,7 +500,7 @@ func checkPublishedReference(refs []StageReferenceBinding, deps *[]int, aliases 
 			return fmt.Errorf("invalid stage reference kind %q", ref.Kind)
 		}
 		target, err := strconv.Atoi(ref.Target)
-		if err != nil || target < 0 || target >= stageCount || strconv.Itoa(target) != ref.Target {
+		if err != nil || target < 0 || target >= len(projected.Stages) || strconv.Itoa(target) != ref.Target {
 			return fmt.Errorf("invalid stage reference target %q", ref.Target)
 		}
 		aliased := false
@@ -350,6 +519,9 @@ func checkPublishedReference(refs []StageReferenceBinding, deps *[]int, aliases 
 			if !ok || actual != target {
 				return fmt.Errorf("stage reference %q changed from publication", source)
 			}
+		}
+		if err := projected.requireEarlier(stage, target, referencePosition, source); err != nil {
+			return err
 		}
 		*deps = append(*deps, target)
 		return nil

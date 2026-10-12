@@ -8,12 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"coopr/internal/build"
+	"coopr/internal/buildah"
 	"coopr/internal/oci"
 	"coopr/internal/testutil"
 	"coopr/internal/transfer"
@@ -30,7 +30,11 @@ func TestExplicitDockerImportThenOfflineFrom(t *testing.T) {
 	modern := dockerEngineSupportsIndexes(t, ctx)
 	work := dockerEngineWorkspace(t)
 	file := filepath.Join(work, "base.coopr")
-	if err := os.WriteFile(file, []byte("from \"scratch\"\ncopy \"marker\" \"/marker\"\nlabel engine_import=\"yes\"\n"), 0600); err != nil {
+	if err := os.WriteFile(file, []byte(`from "scratch" {
+    copy "marker" "/marker"
+    label engine_import="yes"
+}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(work, "marker"), []byte("unique Docker import\n"), 0600); err != nil {
@@ -41,11 +45,14 @@ func TestExplicitDockerImportThenOfflineFrom(t *testing.T) {
 			name := fmt.Sprintf("localhost/coopr-import-%d-%d:latest", os.Getpid(), time.Now().UnixNano())
 			var owned []string
 			t.Cleanup(func() { removeDockerEngineImages(t, owned) })
-			producer := build.Options{File: file, Platform: "linux/" + runtime.GOARCH, Tag: "docker:" + name, BuildStore: dockerTestStore(filepath.Join(work, "producer")), Jobs: 1}
+			producer := build.Options{File: file, Platform: "linux/" + runtime.GOARCH, Tag: name, BuildStore: dockerTestStore(filepath.Join(work, "producer")), Jobs: 1}
 			if multi {
 				producer.Platforms = []string{"linux/amd64", "linux/arm64"}
 			}
-			_, err := build.Run(ctx, producer)
+			if _, err := build.Run(ctx, producer); err != nil {
+				t.Fatal(err)
+			}
+			_, err := transfer.Copy(ctx, oci.Image, name, transfer.Destination{Transport: "docker", Name: name}, transfer.Options{BuildStore: producer.BuildStore})
 			if multi && !modern {
 				if err == nil || !strings.Contains(err.Error(), "classic image store") {
 					t.Fatalf("classic Docker must reject a complete index: %v", err)
@@ -57,32 +64,39 @@ func TestExplicitDockerImportThenOfflineFrom(t *testing.T) {
 			}
 			owned = append(owned, name)
 			storeDir := filepath.Join(work, fmt.Sprintf("import-%t", multi))
-			destination, err := transfer.ParseDestination("imported:latest", oci.Image)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := transfer.Copy(ctx, oci.Image, "docker:"+name, destination, transfer.Options{BuildStore: dockerTestStore(storeDir)}); err != nil {
-				t.Fatal(err)
-			}
-			importedPlatforms := inspectDockerImportedPlatforms(t, ctx, dockerTestStore(storeDir), "imported:latest", multi)
-			if multi && len(importedPlatforms) != 2 {
-				t.Fatalf("imported Docker index incomplete: platforms=%v", importedPlatforms)
-			}
-			if !slices.Contains(importedPlatforms, "linux/"+runtime.GOARCH) {
-				t.Fatalf("imported engine image missing host platform: %v", importedPlatforms)
-			}
 			consumer := filepath.Join(work, "consumer.coopr")
-			if err := os.WriteFile(consumer, []byte("from \"imported:latest\"\nlabel offline=\"yes\"\n"), 0600); err != nil {
-				t.Fatal(err)
-			}
 			platforms := []v1.Platform{{OS: "linux", Architecture: runtime.GOARCH}}
 			if multi {
 				platforms = []v1.Platform{{OS: "linux", Architecture: "amd64"}, {OS: "linux", Architecture: "arm64"}}
 			}
 			for _, platform := range platforms {
 				t.Run(platform.Architecture, func(t *testing.T) {
+					id, err := buildah.PullImage(ctx, dockerTestStore(storeDir), oci.Options{PullPolicy: "always"}, "docker-daemon:"+name, platform)
+					if err != nil {
+						t.Fatal(err)
+					}
+					base := "imported:" + platform.Architecture
+					destination, err := transfer.ParseTag(base, oci.Image)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := transfer.Copy(ctx, oci.Image, id, destination, transfer.Options{BuildStore: dockerTestStore(storeDir), Platform: platform, PlatformExplicit: true}); err != nil {
+						t.Fatal(err)
+					}
+					if got := inspectDockerImportedPlatforms(t, ctx, dockerTestStore(storeDir), base); len(got) != 1 || got[0] != platform.OS+"/"+platform.Architecture {
+						t.Fatalf("pulled Engine platform = %v, want %s/%s", got, platform.OS, platform.Architecture)
+					}
+					if err := os.WriteFile(consumer, []byte(fmt.Sprintf(`from %q {
+    label offline="yes"
+}
+`, base)), 0600); err != nil {
+						t.Fatal(err)
+					}
 					archive := filepath.Join(work, fmt.Sprintf("imported-%t-%s.oci.tar", multi, platform.Architecture))
-					if _, err := build.Run(ctx, build.Options{File: consumer, BuildStore: dockerTestStore(storeDir), Tag: "oci-archive:" + archive, Platform: platform.OS + "/" + platform.Architecture, PullPolicy: "never", Jobs: 1}); err != nil {
+					if _, err := build.Run(ctx, build.Options{File: consumer, BuildStore: dockerTestStore(storeDir), Tag: "coopr-imported-child:" + platform.Architecture, Platform: platform.OS + "/" + platform.Architecture, PullPolicy: "never", Jobs: 1}); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := transfer.Copy(ctx, oci.Image, "coopr-imported-child:"+platform.Architecture, transfer.Destination{Transport: "oci-archive", Name: archive}, transfer.Options{BuildStore: dockerTestStore(storeDir), Platform: platform, PlatformExplicit: true}); err != nil {
 						t.Fatal(err)
 					}
 					_, config := testutil.ReadImage(t, ctx, archive)

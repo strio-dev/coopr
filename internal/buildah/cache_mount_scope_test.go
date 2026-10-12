@@ -10,9 +10,18 @@ import (
 )
 
 func TestGraphCacheMountIDsAreStableAndScoped(t *testing.T) {
-	first := testPlan(t, "from \"scratch\"\nrun \"true\" { mount \"cache\" target=\"/cache\" }\n")
-	again := testPlan(t, "from \"scratch\"\nrun \"true\" { mount \"cache\" target=\"/cache\" }\n")
-	changed := testPlan(t, "from \"scratch\"\nrun \"false\" { mount \"cache\" target=\"/cache\" }\n")
+	first := testPlan(t, `from "scratch" {
+    run "true" { mount "cache" target="/cache" }
+}
+`)
+	again := testPlan(t, `from "scratch" {
+    run "true" { mount "cache" target="/cache" }
+}
+`)
+	changed := testPlan(t, `from "scratch" {
+    run "false" { mount "cache" target="/cache" }
+}
+`)
 	id := func(planIndex int, otherTarget bool) string {
 		plans := []*planner.Plan{first, again, changed}
 		plan := plans[planIndex]
@@ -45,7 +54,10 @@ func TestGraphCacheMountIDsAreStableAndScoped(t *testing.T) {
 }
 
 func TestComponentCacheMountIDsBindSelectedArtifactAndParameters(t *testing.T) {
-	plan := testPlan(t, "from \"scratch\"\nrun \"true\" { mount \"cache\" target=\"/cache\" }\n")
+	plan := testPlan(t, `from "scratch" {
+    run "true" { mount "cache" target="/cache" }
+}
+`)
 	operation := plan.Stages[0].Operations[0]
 	scope := CacheMountScope{
 		Kind: "component", Source: digest.FromString("artifact-with-package-a"),

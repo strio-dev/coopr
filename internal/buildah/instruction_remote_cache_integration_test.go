@@ -47,9 +47,15 @@ func testExactInstructionImageFromRegistryAcrossStores(t *testing.T, format stri
 	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	definition := "from \"" + base + "\" as=\"producer\"\nrun \"od -An -N16 -tx1 /dev/urandom | tr -d ' \\\\n' >/proof\" network=\"none\"\n"
+	definition := "from \"" + base + `" as="producer" {
+    run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" network="none"
+}
+`
 	if stages == 2 {
-		definition += "from \"producer\"\nrun \"cat /proof >/forwarded\" network=\"none\"\n"
+		definition += `from "producer" {
+    run "cat /proof >/forwarded" network="none"
+}
+`
 	}
 	plan := testPlan(t, definition)
 	localCache := filepath.Join(root, "local-cache")
@@ -129,7 +135,10 @@ func TestBuildPlanReusesDeclaredInputInstructionsFromRegistryAcrossStores(t *tes
 	}
 
 	t.Run("default network RUN", func(t *testing.T) {
-		planText := "from \"" + base + "\"\nrun \"od -An -N16 -tx1 /dev/urandom | tr -d ' \\\\n' >/proof\"\n"
+		planText := "from \"" + base + `" {
+    run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof"
+}
+`
 		cold := build("network-cold", "network", planText)
 		warm := build("network-warm", "network", planText)
 		if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 1 || warm.CacheStats.Hits != 1 {
@@ -141,7 +150,12 @@ func TestBuildPlanReusesDeclaredInputInstructionsFromRegistryAcrossStores(t *tes
 	})
 
 	t.Run("cache mount RUN", func(t *testing.T) {
-		planText := "from \"" + base + "\"\nrun \"od -An -N16 -tx1 /dev/urandom | tr -d ' \\\\n' >/proof; touch /cache/used\" network=\"none\" {\n  mount \"cache\" target=\"/cache\" id=\"portable-compile\"\n}\n"
+		planText := "from \"" + base + `" {
+    run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof; touch /cache/used" network="none" {
+      mount "cache" target="/cache" id="portable-compile"
+    }
+}
+`
 		cold := build("cache-mount-cold", "cache-mount", planText)
 		warm := build("cache-mount-warm", "cache-mount", planText)
 		if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 1 || warm.CacheStats.Hits != 1 || warm.ManifestDigest != cold.ManifestDigest {
@@ -150,7 +164,10 @@ func TestBuildPlanReusesDeclaredInputInstructionsFromRegistryAcrossStores(t *tes
 	})
 
 	t.Run("secret mount RUN", func(t *testing.T) {
-		planText := "from \"" + base + "\"\nrun \"cat /run/secrets/token >/proof\" network=\"none\" { mount \"secret\" id=\"token\" required=\"true\" }\n"
+		planText := "from \"" + base + `" {
+    run "cat /run/secrets/token >/proof" network="none" { mount "secret" id="token" required="true" }
+}
+`
 		secret := func(name, value string) func(*SupervisedPlanOptions) {
 			path := filepath.Join(root, name+"-secret")
 			if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
@@ -166,7 +183,10 @@ func TestBuildPlanReusesDeclaredInputInstructionsFromRegistryAcrossStores(t *tes
 	})
 
 	t.Run("SSH mount RUN", func(t *testing.T) {
-		planText := "from \"" + base + "\"\nrun \"test -S /run/buildkit/ssh_agent.0; od -An -N16 -tx1 /dev/urandom | tr -d ' \\\\n' >/proof\" network=\"none\" { mount \"ssh\" id=\"default\" required=\"true\" }\n"
+		planText := "from \"" + base + `" {
+    run "test -S /run/buildkit/ssh_agent.0; od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" network="none" { mount "ssh" id="default" required="true" }
+}
+`
 		withAgent := func(name string) func(*SupervisedPlanOptions) {
 			dir, err := os.MkdirTemp("", "coopr-"+name+"-*")
 			if err != nil {
@@ -198,7 +218,12 @@ func TestBuildPlanReusesDeclaredInputInstructionsFromRegistryAcrossStores(t *tes
 				t.Fatal(err)
 			}
 		}
-		planText := "from \"" + base + "\"\nrun \"cat /input/value >/proof\" network=\"none\" {\n  mount \"bind\" source=\"input\" target=\"/input\" readonly=\"true\"\n}\n"
+		planText := "from \"" + base + `" {
+    run "cat /input/value >/proof" network="none" {
+      mount "bind" source="input" target="/input" readonly="true"
+    }
+}
+`
 		write("one\n")
 		cold := build("bind-cold", "bind", planText)
 		warm := build("bind-warm", "bind", planText)
@@ -219,7 +244,13 @@ func TestBuildPlanReusesDeclaredInputInstructionsFromRegistryAcrossStores(t *tes
 		if err := os.WriteFile(filepath.Join(contextDir, "stage-value"), []byte("stage source\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		planText := "from \"" + base + "\" as=\"source\"\ncopy \"stage-value\" \"/value\"\nfrom \"" + base + "\"\ncopy \"/value\" \"/proof\" from=\"source\"\n"
+		planText := "from \"" + base + `" as="source" {
+    copy "stage-value" "/value"
+}
+from "` + base + `" {
+    copy "/value" "/proof" from="source"
+}
+`
 		cold := build("stage-cold", "stage", planText)
 		warm := build("stage-warm", "stage", planText)
 		if cold.CacheStats.Misses != 2 || cold.CacheStats.Stored != 2 || warm.CacheStats.Hits != 2 {
@@ -239,7 +270,10 @@ func TestBuildPlanReusesDeclaredInputInstructionsFromRegistryAcrossStores(t *tes
 			_, _ = response.Write(payload)
 		}))
 		t.Cleanup(server.Close)
-		planText := "from \"" + base + "\"\nadd \"" + server.URL + "/payload\" \"/proof\" checksum=\"" + digest.FromBytes(payload).String() + "\"\n"
+		planText := "from \"" + base + `" {
+    add "` + server.URL + "/payload\" \"/proof\" checksum=\"" + digest.FromBytes(payload).String() + `"
+}
+`
 		cold := build("remote-add-cold", "remote-add", planText)
 		warm := build("remote-add-warm", "remote-add", planText)
 		if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 1 || warm.CacheStats.Hits != 1 || warm.ManifestDigest != cold.ManifestDigest {
@@ -260,7 +294,10 @@ func TestBuildPlanReusesDeclaredInputInstructionsFromRegistryAcrossStores(t *tes
 				keep = " keep-git-dir=\"true\""
 			}
 			t.Run(name, func(t *testing.T) {
-				planText := "from \"" + base + "\"\nadd \"" + source + "#" + commit + "\" \"/source/\" checksum=\"" + commit[:12] + "\"" + keep + "\n"
+				planText := "from \"" + base + `" {
+    add "` + source + "#" + commit + "\" \"/source/\" checksum=\"" + commit[:12] + "\"" + keep + `
+}
+`
 				cold := build(name+"-cold", name, planText)
 				warm := build(name+"-warm", name, planText)
 				if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 1 || warm.CacheStats.Hits != 1 || warm.ManifestDigest != cold.ManifestDigest {
@@ -290,7 +327,10 @@ func TestBuildPlanNoCacheReplacesPortableInstructionImage(t *testing.T) {
 	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	plan := testPlan(t, "from \""+base+"\"\nrun \"od -An -N16 -tx1 /dev/urandom | tr -d ' \\\\n' >/proof\" network=\"none\"\n")
+	plan := testPlan(t, "from \""+base+`" {
+    run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" network="none"
+}
+`)
 	repository := host + "/coopr/no-cache-instruction"
 	build := func(name string, noCache bool) Result {
 		t.Helper()
@@ -334,7 +374,10 @@ func TestBuildPlanReusesScratchCopyFromRegistryAcrossStores(t *testing.T) {
 	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	plan := testPlan(t, "from \"scratch\"\ncopy \"payload\" \"/proof\"\n")
+	plan := testPlan(t, `from "scratch" {
+    copy "payload" "/proof"
+}
+`)
 	resolver, err := oci.NewResolver(oci.Options{TLSVerify: new(false)})
 	if err != nil {
 		t.Fatal(err)
@@ -385,7 +428,10 @@ func testOrdinaryInstructionHitPromotion(t *testing.T, format string) {
 	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	plan := testPlan(t, "from \""+base+"\"\nrun \"od -An -N16 -tx1 /dev/urandom | tr -d ' \\\\n' >/proof\" network=\"none\"\n")
+	plan := testPlan(t, "from \""+base+`" {
+    run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" network="none"
+}
+`)
 	repository := host + "/coopr/promoted-cache"
 	sharedDir := filepath.Join(root, "shared")
 	build := func(name, baseDir, cacheRepository string) Result {
@@ -425,7 +471,11 @@ func TestFailedBuildDoesNotPublishInstructionImages(t *testing.T) {
 	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	failed := testPlan(t, "from \""+base+"\"\nrun \"printf checkpoint >/proof\" network=\"none\"\nrun \"exit 17\" network=\"none\"\n")
+	failed := testPlan(t, "from \""+base+`" {
+    run "printf checkpoint >/proof" network="none"
+    run "exit 17" network="none"
+}
+`)
 	options := SupervisedPlanOptions{
 		Store:      StoreOptions{RunRoot: filepath.Join(root, "failed", "run"), GraphRoot: filepath.Join(root, "failed", "graph"), GraphDriverName: "vfs"},
 		ContextDir: root, Isolation: "rootless", Runtime: "crun", Output: Output{Path: filepath.Join(root, "failed", "layout")},
@@ -435,7 +485,10 @@ func TestFailedBuildDoesNotPublishInstructionImages(t *testing.T) {
 	if _, err := BuildPlanSupervised(ctx, failed, options); err == nil || !strings.Contains(err.Error(), "exit status") {
 		t.Fatalf("failed build error = %v", err)
 	}
-	success := testPlan(t, "from \""+base+"\"\nrun \"printf checkpoint >/proof\" network=\"none\"\n")
+	success := testPlan(t, "from \""+base+`" {
+    run "printf checkpoint >/proof" network="none"
+}
+`)
 	options.Store = StoreOptions{RunRoot: filepath.Join(root, "success", "run"), GraphRoot: filepath.Join(root, "success", "graph"), GraphDriverName: "vfs"}
 	options.Output.Path = filepath.Join(root, "success", "layout")
 	result, err := BuildPlanSupervised(ctx, success, options)

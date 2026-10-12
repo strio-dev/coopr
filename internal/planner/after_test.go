@@ -7,7 +7,11 @@ import (
 )
 
 func TestFromAfterDefersGeneratedSource(t *testing.T) {
-	def, err := definition.Parse(strings.NewReader("from \"scratch\" as=\"producer\"\nfrom \"oci:out\" after=\"producer\"\nenv result=\"yes\"\n"))
+	def, err := definition.Parse(strings.NewReader(`from "scratch" as="producer" {}
+from "oci:out" after="producer" {
+    env result="yes"
+}
+`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +38,9 @@ func TestFromAfterDefersGeneratedSource(t *testing.T) {
 
 func TestFromAfterRejectsForwardAndMissingStages(t *testing.T) {
 	for _, after := range []string{"missing", "1"} {
-		def, err := definition.Parse(strings.NewReader("from \"scratch\" after=\"" + after + "\"\nfrom \"scratch\"\n"))
+		def, err := definition.Parse(strings.NewReader("from \"scratch\" after=\"" + after + `" {}
+from "scratch" {}
+`))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -45,12 +51,13 @@ func TestFromAfterRejectsForwardAndMissingStages(t *testing.T) {
 }
 
 func TestPublishedAfterPreservesNumericDependency(t *testing.T) {
-	def, err := definition.Parse(strings.NewReader(`package as="unused"
-from "scratch" as="producer"
-extend as="base"
-from "oci:out" as="generated" after="1"
-from "base" as="result"
-copy "/file" "/file" from="generated"
+	def, err := definition.Parse(strings.NewReader(`package as="unused" {}
+extend as="base" {}
+extend as="result" {
+    from "scratch" as="producer" {}
+    from "oci:out" as="generated" after="3" {}
+    copy "/file" "/file" from="generated"
+}
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -84,7 +91,9 @@ copy "/file" "/file" from="generated"
 }
 
 func TestFilesystemFromDefersWithoutExplicitAfter(t *testing.T) {
-	def, err := definition.Parse(strings.NewReader("from \"scratch\" as=\"producer\"\nfrom \"oci:out\"\n"))
+	def, err := definition.Parse(strings.NewReader(`from "scratch" as="producer" {}
+from "oci:out" {}
+`))
 	if err != nil {
 		t.Fatal(err)
 	}

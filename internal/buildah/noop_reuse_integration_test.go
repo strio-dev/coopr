@@ -44,7 +44,8 @@ func TestFromOnlyBuildReusesExactBaseUnlessOutputPolicyChanges(t *testing.T) {
 	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	def, err := definition.Parse(strings.NewReader(fmt.Sprintf("from %q\n", base.reference)))
+	def, err := definition.Parse(strings.NewReader(fmt.Sprintf(`from %q {}
+`, base.reference)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +121,8 @@ func TestFromOnlyBuildReusesExactBaseUnlessOutputPolicyChanges(t *testing.T) {
 	}
 	// A mutable native name now uses the native default manifest. Pin the OCI
 	// manifest to prove alternate formats sharing its config ID stay selectable.
-	def, err = definition.Parse(strings.NewReader(fmt.Sprintf("from %q\n", base.reference+"@"+selected.Manifest.Digest.String())))
+	def, err = definition.Parse(strings.NewReader(fmt.Sprintf(`from %q {}
+`, base.reference+"@"+selected.Manifest.Digest.String())))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +160,10 @@ func TestInstructionCacheExportsSelectedManifestAfterFormatCollision(t *testing.
 	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	plan := testPlan(t, fmt.Sprintf("from %q\nrun \"printf cache >/proof\" network=\"none\"\n", base.reference))
+	plan := testPlan(t, fmt.Sprintf(`from %q {
+    run "printf cache >/proof" network="none"
+}
+`, base.reference))
 	epoch := int64(1_700_000_000)
 	plan.SourceDateEpoch = &epoch
 	build := func(name, format string) Result {

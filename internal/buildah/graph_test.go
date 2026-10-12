@@ -26,12 +26,15 @@ import (
 
 func TestValidateStandaloneGraphPreservesSelectedNamedStageClosure(t *testing.T) {
 	plan := testPlanWithTarget(t, `
-from "scratch" as="Source"
-env SOURCE="yes"
-from "source" as="Final"
-env FINAL="yes"
-from "scratch" as="unused"
-env UNUSED="yes"
+from "scratch" as="Source" {
+    env SOURCE="yes"
+}
+from "source" as="Final" {
+    env FINAL="yes"
+}
+from "scratch" as="unused" {
+    env UNUSED="yes"
+}
 `, "fInAl")
 	stages, output, err := validateStandaloneGraph(plan)
 	if err != nil {
@@ -46,7 +49,8 @@ env UNUSED="yes"
 }
 
 func TestValidateStandaloneGraphRejectsStageAfterSelectedOutput(t *testing.T) {
-	plan := testPlan(t, "from \"scratch\"\n")
+	plan := testPlan(t, `from "scratch" {}
+`)
 	plan.Stages = append(plan.Stages, planner.Stage{ID: "later", Kind: "from", Source: "scratch", Platform: plan.Platform})
 	if _, _, err := validateStandaloneGraph(plan); err == nil || !strings.Contains(err.Error(), "selected output must be the final stage") {
 		t.Fatalf("post-output stage error = %v", err)
@@ -54,7 +58,10 @@ func TestValidateStandaloneGraphRejectsStageAfterSelectedOutput(t *testing.T) {
 }
 
 func TestGraphLowersCacheAndTmpfsMountsWithoutContainerfile(t *testing.T) {
-	plan := testPlan(t, "from \"scratch\"\nrun \"true\" { mount \"cache\" target=\"/cache\"; mount \"tmpfs\" target=\"/tmp\" }\n")
+	plan := testPlan(t, `from "scratch" {
+    run "true" { mount "cache" target="/cache"; mount "tmpfs" target="/tmp" }
+}
+`)
 	stages, _, err := validateStandaloneGraph(plan)
 	if err != nil {
 		t.Fatal(err)
@@ -74,7 +81,10 @@ func TestGraphLowersCacheAndTmpfsMountsWithoutContainerfile(t *testing.T) {
 }
 
 func TestGraphLowersContextBindMountForFilteredExecution(t *testing.T) {
-	plan := testPlan(t, "from \"scratch\"\nrun \"true\" { mount \"bind\" source=\"src\" target=\"/src\" }\n")
+	plan := testPlan(t, `from "scratch" {
+    run "true" { mount "bind" source="src" target="/src" }
+}
+`)
 	stages, _, err := validateStandaloneGraph(plan)
 	if err != nil {
 		t.Fatal(err)
@@ -94,7 +104,13 @@ func TestGraphLowersContextBindMountForFilteredExecution(t *testing.T) {
 }
 
 func TestValidateStandaloneGraphIncludesCopyFromDependency(t *testing.T) {
-	plan := testPlan(t, "from \"scratch\" as=\"source\"\ncopy \"payload\" \"/payload\"\nfrom \"scratch\"\ncopy \"/payload\" \"/copied\" from=\"SOURCE\"\n")
+	plan := testPlan(t, `from "scratch" as="source" {
+    copy "payload" "/payload"
+}
+from "scratch" {
+    copy "/payload" "/copied" from="SOURCE"
+}
+`)
 	stages, _, err := validateStandaloneGraph(plan)
 	if err != nil {
 		t.Fatal(err)
@@ -106,11 +122,12 @@ func TestValidateStandaloneGraphIncludesCopyFromDependency(t *testing.T) {
 
 func TestValidateStandaloneGraphIncludesRunMountDependencies(t *testing.T) {
 	plan := testPlan(t, `
-from "scratch" as="source"
-from "scratch"
-run "true" {
-  mount "bind" from="SOURCE" source="/input" target="/input"
-  mount "cache" from="source" source="/cache" target="/cache"
+from "scratch" as="source" {}
+from "scratch" {
+    run "true" {
+      mount "bind" from="SOURCE" source="/input" target="/input"
+      mount "cache" from="source" source="/cache" target="/cache"
+    }
 }
 `)
 	stages, _, err := validateStandaloneGraph(plan)
@@ -124,11 +141,12 @@ run "true" {
 
 func TestGraphBindsRunMountsToStageImages(t *testing.T) {
 	plan := testPlan(t, `
-from "scratch" as="source"
-from "scratch"
-run "true" {
-  mount "bind" from="SOURCE" source="/input" target="/input"
-  mount "cache" from="source" source="/cache" target="/cache" id="stage-cache"
+from "scratch" as="source" {}
+from "scratch" {
+    run "true" {
+      mount "bind" from="SOURCE" source="/input" target="/input"
+      mount "cache" from="source" source="/cache" target="/cache" id="stage-cache"
+    }
 }
 `)
 	const imageID = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -155,7 +173,11 @@ run "true" {
 }
 
 func TestBuildPlanRequiresResolverForExternalBaseWithCopyDependency(t *testing.T) {
-	plan := testPlan(t, "from \"scratch\" as=\"source\"\nfrom \"alpine:3.20\"\ncopy \"/a\" \"/b\" from=\"source\"\n")
+	plan := testPlan(t, `from "scratch" as="source" {}
+from "alpine:3.20" {
+    copy "/a" "/b" from="source"
+}
+`)
 	_, err := BuildPlan(context.Background(), plan, PlanOptions{})
 	if err == nil || !strings.Contains(err.Error(), "requires a Coopr image resolver") {
 		t.Fatalf("external base with COPY --from dependency: %v", err)
@@ -163,7 +185,8 @@ func TestBuildPlanRequiresResolverForExternalBaseWithCopyDependency(t *testing.T
 }
 
 func TestBuildPlanRequiresCooprResolverForExternalBase(t *testing.T) {
-	plan := testPlan(t, `from "alpine:3.20"`)
+	plan := testPlan(t, `from "alpine:3.20" {}
+`)
 	if _, _, err := validateStandaloneGraph(plan); err != nil {
 		t.Fatal(err)
 	}
@@ -194,14 +217,17 @@ func TestBuildPlanNamedStageTargetCreatesOneLayerPerCopy(t *testing.T) {
 		}
 	}
 	plan := testPlanWithTarget(t, `
-from "scratch" as="source"
-copy "base" "/base"
-from "SOURCE" as="final"
-copy "second" "/second"
-env COOPR_GRAPH="yes"
-copy "third" "/third"
-from "scratch" as="unused"
-copy "base" "/unused"
+from "scratch" as="source" {
+    copy "base" "/base"
+}
+from "SOURCE" as="final" {
+    copy "second" "/second"
+    env COOPR_GRAPH="yes"
+    copy "third" "/third"
+}
+from "scratch" as="unused" {
+    copy "base" "/unused"
+}
 `, "FINAL")
 	layout := filepath.Join(root, "layout")
 	result, err := BuildPlan(ctx, plan, PlanOptions{
@@ -241,7 +267,13 @@ func TestBuildPlanCopiesFromIndependentNamedStage(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(contextDir, "payload"), []byte("copied from a stage\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	plan := testPlan(t, "from \"scratch\" as=\"source\"\ncopy \"payload\" \"/payload\"\nfrom \"scratch\"\ncopy \"/payload\" \"/copied\" from=\"source\"\n")
+	plan := testPlan(t, `from "scratch" as="source" {
+    copy "payload" "/payload"
+}
+from "scratch" {
+    copy "/payload" "/copied" from="source"
+}
+`)
 	layout := filepath.Join(root, "layout")
 	_, err := BuildPlan(ctx, plan, PlanOptions{
 		Store:      StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"},
@@ -323,21 +355,23 @@ func TestBuildPlanRunsWithStageBindAndCacheMounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := testPlan(t, `
-from "`+base.reference+`" as="source"
-run "printf source-data >/proof && printf cache-data >/tmp/seed" network="none"
-from "`+base.reference+`"
-run "cat /input/seed >/bound" network="none" {
-  mount "bind" from="SOURCE" source="/tmp" target="/input"
+from "`+base.reference+`" as="source" {
+    run "printf source-data >/proof && printf cache-data >/tmp/seed" network="none"
 }
-run "cat /single /local >/file-bound" network="none" {
-  mount "bind" from="source" source="/proof" target="/single"
-  mount "bind" source="caller" target="/local"
-}
-run "printf changed >/input/seed && cat /input/seed >/mutated" network="none" {
-  mount "bind" from="source" source="/tmp" target="/input" readonly="false"
-}
-run "cat /cache/seed >/cached" network="none" {
-  mount "cache" from="source" source="/tmp" target="/cache" id="stage-cache"
+from "`+base.reference+`" {
+    run "cat /input/seed >/bound" network="none" {
+      mount "bind" from="SOURCE" source="/tmp" target="/input"
+    }
+    run "cat /single /local >/file-bound" network="none" {
+      mount "bind" from="source" source="/proof" target="/single"
+      mount "bind" source="caller" target="/local"
+    }
+    run "printf changed >/input/seed && cat /input/seed >/mutated" network="none" {
+      mount "bind" from="source" source="/tmp" target="/input" readonly="false"
+    }
+    run "cat /cache/seed >/cached" network="none" {
+      mount "cache" from="source" source="/tmp" target="/cache" id="stage-cache"
+    }
 }
 `)
 	layout := filepath.Join(root, "layout")
@@ -366,14 +400,16 @@ run "cat /cache/seed >/cached" network="none" {
 		}
 	}
 	writable := testPlan(t, `
-from "`+base.reference+`" as="source"
-run "printf source-data >/proof" network="none"
-from "`+base.reference+`"
-run "printf changed >/input && cat /input >/written" network="none" {
-  mount "bind" from="source" source="/proof" target="/input" readonly="false"
+from "`+base.reference+`" as="source" {
+    run "printf source-data >/proof" network="none"
 }
-run "cat /input >/original" network="none" {
-  mount "bind" from="source" source="/proof" target="/input"
+from "`+base.reference+`" {
+    run "printf changed >/input && cat /input >/written" network="none" {
+      mount "bind" from="source" source="/proof" target="/input" readonly="false"
+    }
+    run "cat /input >/original" network="none" {
+      mount "bind" from="source" source="/proof" target="/input"
+    }
 }
 `)
 	writableLayout := filepath.Join(root, "writable-layout")
@@ -419,7 +455,13 @@ func TestBuildPlanMetadataOnlyFinalStageKeepsBaseLayers(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(contextDir, "proof"), []byte("one\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	plan := testPlan(t, "from \"scratch\" as=\"source\"\ncopy \"proof\" \"/proof\"\nfrom \"source\"\nenv FLAG=\"yes\"\n")
+	plan := testPlan(t, `from "scratch" as="source" {
+    copy "proof" "/proof"
+}
+from "source" {
+    env FLAG="yes"
+}
+`)
 	layout := filepath.Join(root, "layout")
 	_, err := BuildPlan(ctx, plan, PlanOptions{
 		Store: StoreOptions{
@@ -465,7 +507,10 @@ func TestBuildPlanUsesSelectedLocalImageAsBase(t *testing.T) {
 	}
 	system := &types.SystemContext{SignaturePolicyPath: policy, BigFilesTemporaryDir: root}
 	importTestImageToNative(t, ctx, store, sourceDir, reference, selected, system)
-	plan := testPlan(t, "from \""+reference+"\"\nenv COOPR_GRAPH=\"yes\"\n")
+	plan := testPlan(t, "from \""+reference+`" {
+    env COOPR_GRAPH="yes"
+}
+`)
 	layout := filepath.Join(root, "layout")
 	_, err = BuildPlan(ctx, plan, PlanOptions{
 		Store:      store,

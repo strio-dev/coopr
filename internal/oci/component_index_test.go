@@ -17,7 +17,10 @@ import (
 
 func TestAssembleComponentIndexResolvesBothPlatforms(t *testing.T) {
 	ctx := context.Background()
-	def, err := definition.Parse(strings.NewReader("extend\nenv COMPONENT=multi\n"))
+	def, err := definition.Parse(strings.NewReader(`extend {
+    env COMPONENT=multi
+}
+`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +73,7 @@ func TestAssembleComponentIndexResolvesBothPlatforms(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, arch := range []string{"amd64", "arm64"} {
-		resolved, err := resolver.Resolve(ctx, "local:multi", v1.Platform{OS: "linux", Architecture: arch}, Component)
+		resolved, err := resolver.Resolve(ctx, "multi", v1.Platform{OS: "linux", Architecture: arch}, Component)
 		if err != nil || resolved.Root.Digest != root.Digest || resolved.Component == nil || resolved.Component.Platform.Architecture != arch {
 			t.Fatalf("resolve component for %s = %+v, %v", arch, resolved, err)
 		}

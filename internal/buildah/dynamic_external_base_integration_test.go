@@ -31,8 +31,15 @@ func TestDynamicComponentOnbuildMaterializesLateExternalImageAndContext(t *testi
 				from = "late"
 				contexts = []buildcontext.Spec{{Name: "late", Kind: buildcontext.DockerImage, Reference: external}}
 			}
-			localConfigComponentResolver(t, ctx, root, fmt.Sprintf("extend\nonbuild { copy \"/bin/busybox\" \"/late-tool\" from=%q }\n", from), false)
-			def := parseWorkerDefinition(t, fmt.Sprintf("from %q as=\"base\"\ncomponent \"local:config\"\nfrom \"base\"\n", base.reference))
+			localConfigComponentResolver(t, ctx, root, fmt.Sprintf(`extend {
+    onbuild { copy "/bin/busybox" "/late-tool" from=%q }
+}
+`, from), false)
+			def := parseWorkerDefinition(t, fmt.Sprintf(`from %q as="base" {
+    component "config"
+}
+from "base" {}
+`, base.reference))
 			layout := filepath.Join(root, "result")
 			_, err := BuildDefinitionSupervised(ctx, def, planner.Options{Mode: planner.Build, Platform: "linux/" + runtime.GOARCH}, SupervisedPlanOptions{
 				Store: store, ContextDir: root, Isolation: "rootless", ComponentStoreDir: filepath.Join(root, "components"),

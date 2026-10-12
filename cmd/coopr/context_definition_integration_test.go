@@ -39,8 +39,17 @@ func TestBuildCommandsReadExplicitHTTPDefinitionWithLocalAndRemoteContexts(t *te
 		t.Fatal(err)
 	}
 	definitions := map[string]string{
-		"/image.coopr":     "from \"scratch\"\ncopy \"proof\" \"/proof\"\n",
-		"/component.coopr": "package as=\"bundle\"\ncopy \"proof\" \"/proof\"\nextend\ncopy \"/proof\" \"/proof\" from=\"bundle\"\n",
+		"/image.coopr": `from "scratch" {
+    copy "proof" "/proof"
+}
+`,
+		"/component.coopr": `package as="bundle" {
+    copy "proof" "/proof"
+}
+extend {
+    copy "/proof" "/proof" from="bundle"
+}
+`,
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if source, ok := definitions[request.URL.Path]; ok {
@@ -66,12 +75,15 @@ func TestBuildCommandsReadExplicitHTTPDefinitionWithLocalAndRemoteContexts(t *te
 				output := filepath.Join(t.TempDir(), "output")
 				args := []string{"build", contextSource, "--file", server.URL + "/image.coopr", "--quiet", "--output", output}
 				if component {
-					args = []string{"component", "build", contextSource, "--file", server.URL + "/component.coopr", "--quiet", "--tag", "oci-archive:" + output}
+					args = []string{"component", "build", contextSource, "--file", server.URL + "/component.coopr", "--quiet", "--tag", "context-component"}
 				}
 				if code := run(args, &stdout, &stderr); code != 0 {
 					t.Fatalf("HTTP definition build failed: %s", stderr.String())
 				}
 				if component {
+					if code := run([]string{"component", "save", "--output", output, "context-component"}, &bytes.Buffer{}, &stderr); code != 0 {
+						t.Fatalf("context component save failed: %s", &stderr)
+					}
 					if info, err := os.Stat(output); err != nil || info.Size() == 0 {
 						t.Fatalf("component archive missing: %v", err)
 					}
@@ -92,9 +104,18 @@ func TestBuildCommandsReadExplicitDefinitionInsideExtractedContext(t *testing.T)
 	}
 	root := t.TempDir()
 	files := map[string]string{
-		"image.coopr":     "from \"scratch\"\ncopy \"proof\" \"/proof\"\n",
-		"component.coopr": "package as=\"bundle\"\ncopy \"proof\" \"/proof\"\nextend\ncopy \"/proof\" \"/proof\" from=\"bundle\"\n",
-		"proof":           "context definition\n",
+		"image.coopr": `from "scratch" {
+    copy "proof" "/proof"
+}
+`,
+		"component.coopr": `package as="bundle" {
+    copy "proof" "/proof"
+}
+extend {
+    copy "/proof" "/proof" from="bundle"
+}
+`,
+		"proof": "context definition\n",
 	}
 	files["custom-image.coopr"] = files["image.coopr"]
 	var data bytes.Buffer
@@ -146,12 +167,15 @@ func TestBuildCommandsReadExplicitDefinitionInsideExtractedContext(t *testing.T)
 				output := filepath.Join(t.TempDir(), "output")
 				args := []string{"build", source, "--file", "image.coopr", "--quiet", "--output", output}
 				if component {
-					args = []string{"component", "build", source, "--file", "component.coopr", "--quiet", "--tag", "oci-archive:" + output}
+					args = []string{"component", "build", source, "--file", "component.coopr", "--quiet", "--tag", "context-component"}
 				}
 				if code := run(args, &stdout, &stderr); code != 0 {
 					t.Fatalf("context build failed: %s", stderr.String())
 				}
 				if component {
+					if code := run([]string{"component", "save", "--output", output, "context-component"}, &bytes.Buffer{}, &stderr); code != 0 {
+						t.Fatalf("context component save failed: %s", &stderr)
+					}
 					if info, err := os.Stat(output); err != nil || info.Size() == 0 {
 						t.Fatalf("component artifact missing: %v", err)
 					}

@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 
 	"coopr/internal/buildcontext"
 	"coopr/internal/componentstore"
@@ -22,6 +24,18 @@ import (
 	"go.podman.io/buildah/copier"
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
+
+func splitLocalComponentReference(reference string) (string, string, error) {
+	path, target, selected := strings.Cut(reference, "#")
+	if selected && (target == "" || strings.Contains(target, "#")) {
+		return "", "", fmt.Errorf("local component %q requires exactly one non-empty target after #", reference)
+	}
+	return path, target, nil
+}
+
+func localComponentSourceIdentity(canonical, target string) string {
+	return "path:" + strconv.Quote(canonical) + "#" + strconv.Quote(strings.ToLower(target))
+}
 
 // readLocalComponent uses the same confined source reader and context policy
 // as COPY. In particular, absolute paths and parent traversal are interpreted
@@ -112,18 +126,14 @@ func (executor *graphExecutor) materializeLocalComponent(ctx context.Context, re
 	if executor.options.Resolver == nil {
 		return "", "", errors.New("local component requires a component resolver")
 	}
-	source, canonical, err := readLocalComponent(ctx, executor.options, reference)
+	path, selectedTarget, err := splitLocalComponentReference(reference)
 	if err != nil {
 		return "", "", err
 	}
-	// COPY's canonical source identity also catches symlink and traversal aliases.
-	// Identical definitions at different paths may form a finite parameterized DAG.
-	identity := "path:" + canonical
-	release, err := executor.enterLocalComponent(identity)
+	source, canonical, err := readLocalComponent(ctx, executor.options, path)
 	if err != nil {
 		return "", "", err
 	}
-	defer release()
 	def, err := definition.Parse(bytes.NewReader(source))
 	if err != nil {
 		return "", "", fmt.Errorf("parse local component %q: %w", reference, err)
@@ -133,7 +143,7 @@ func (executor *graphExecutor) materializeLocalComponent(ctx context.Context, re
 		return "", "", err
 	}
 	plan, selected, err := planDefinitionWithExternalBaseState(ctx, def, planner.Options{
-		Mode: planner.Publish, Platform: platform, Arguments: maps.Clone(parameters),
+		Mode: planner.Publish, Target: selectedTarget, Platform: platform, Arguments: maps.Clone(parameters),
 		BuildContexts: executor.options.BuildContexts, DeferImageSource: deferredPolicySource(executor.sourcePolicy),
 		TransientRunMounts:      TransientMountInstructions(executor.options.TransientRunMounts),
 		SourceDateEpochResolver: sourceDateEpochResolver(ctx, buildCredentialSource{secretSpecs: executor.options.Secrets, sshSpecs: executor.options.SSH}),
@@ -143,6 +153,15 @@ func (executor *graphExecutor) materializeLocalComponent(ctx context.Context, re
 	if err != nil {
 		return "", "", fmt.Errorf("plan local component %q: %w", reference, err)
 	}
+	// Planning resolves the selected stage name without invoking components.
+	// Canonical paths catch COPY aliases; the selected name permits finite
+	// same-file calls across outputs and identifies default and explicit aliases.
+	identity := localComponentSourceIdentity(canonical, plan.Target)
+	release, err := executor.enterLocalComponent(identity)
+	if err != nil {
+		return "", "", err
+	}
+	defer release()
 	workspace, err := os.MkdirTemp("", "coopr-local-component-*")
 	if err != nil {
 		return "", "", err

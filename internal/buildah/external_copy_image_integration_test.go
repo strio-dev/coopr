@@ -26,7 +26,10 @@ func TestBuildDefinitionCopiesFromSelectedExternalImage(t *testing.T) {
 	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	definition := parseWorkerDefinition(t, "from \"scratch\"\ncopy \"/bin/busybox\" \"/tool\" from=\""+base.reference+"\"\n")
+	definition := parseWorkerDefinition(t, `from "scratch" {
+    copy "/bin/busybox" "/tool" from="`+base.reference+`"
+}
+`)
 	layout := filepath.Join(root, "result")
 	_, err := BuildDefinitionSupervised(ctx, definition, planner.Options{
 		Mode: planner.Build, Platform: "linux/" + runtime.GOARCH,
@@ -59,10 +62,11 @@ func TestBuildDefinitionMountsSelectedExternalImageForRun(t *testing.T) {
 	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	definition := parseWorkerDefinition(t, `from "`+base.reference+`"
-run "cp /external-busybox /bind-proof && cp /external-cache/busybox /cache-proof" network="none" {
-  mount "bind" from="`+base.reference+`" source="/bin/busybox" target="/external-busybox" readonly="true"
-  mount "cache" from="`+base.reference+`" source="/bin" target="/external-cache" id="external-image-seed"
+	definition := parseWorkerDefinition(t, "from \""+base.reference+`" {
+    run "cp /external-busybox /bind-proof && cp /external-cache/busybox /cache-proof" network="none" {
+      mount "bind" from="`+base.reference+`" source="/bin/busybox" target="/external-busybox" readonly="true"
+      mount "cache" from="`+base.reference+`" source="/bin" target="/external-cache" id="external-image-seed"
+    }
 }
 `)
 	layout := filepath.Join(root, "result")
@@ -96,12 +100,15 @@ func TestParallelStagesCopyFromSelectedExternalImage(t *testing.T) {
 		t.Fatal(err)
 	}
 	definition := parseWorkerDefinition(t, `
-from "scratch" as="left"
-copy "/bin/busybox" "/left" from="fixture.local/coopr/busybox:latest"
-from "scratch" as="right"
-copy "/bin/busybox" "/right" from="fixture.local/coopr/busybox:latest"
-from "left"
-copy "/right" "/right" from="right"
+from "scratch" as="left" {
+    copy "/bin/busybox" "/left" from="fixture.local/coopr/busybox:latest"
+}
+from "scratch" as="right" {
+    copy "/bin/busybox" "/right" from="fixture.local/coopr/busybox:latest"
+}
+from "left" {
+    copy "/right" "/right" from="right"
+}
 `)
 	layout := filepath.Join(root, "result")
 	_, err := BuildDefinitionSupervised(ctx, definition, planner.Options{
@@ -139,13 +146,17 @@ func TestComponentInvocationCopiesFromSelectedExternalImage(t *testing.T) {
 		t.Fatal(err)
 	}
 	platform := v1.Platform{OS: "linux", Architecture: runtime.GOARCH}
-	resolver, _, _ := localComponentResolverWithDefinition(t, ctx, platform, `package as="pkg"
-extend
-copy "/artifact" "/artifact" from="pkg"
-copy "/bin/busybox" "/tool" from="fixture.local/coopr/busybox:latest"
+	resolver, _, _ := localComponentResolverWithDefinition(t, ctx, platform, `package as="pkg" {}
+extend {
+    copy "/artifact" "/artifact" from="pkg"
+    copy "/bin/busybox" "/tool" from="fixture.local/coopr/busybox:latest"
+}
 `)
 	layout := filepath.Join(root, "result")
-	_, err := BuildPlan(ctx, testPlan(t, "from \"scratch\"\ncomponent \"local:tool\"\n"), PlanOptions{
+	_, err := BuildPlan(ctx, testPlan(t, `from "scratch" {
+    component "tool"
+}
+`), PlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Output: Output{Path: layout}, Resolver: resolver,
 		SystemContext: &types.SystemContext{SignaturePolicyPath: policy, BigFilesTemporaryDir: root},
 	})

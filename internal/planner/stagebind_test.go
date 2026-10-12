@@ -9,13 +9,14 @@ import (
 )
 
 func TestStageBindARGAndEnvironmentOrder(t *testing.T) {
-	source := `from "alpine" as="final"
-run "before"
-arg "flavor" "child"
-env AFTER="${flavor}-${SEEN}"
-run "middle"
-env flavor="${AFTER}"
-run "last"
+	source := `from "alpine" as="final" {
+    run "before"
+    arg "flavor" "child"
+    env AFTER="${flavor}-${SEEN}"
+    run "middle"
+    env flavor="${AFTER}"
+    run "last"
+}
 `
 	bind := StageBind{
 		BaseEnvironment: map[string]string{"BASE": "base", "flavor": "base-image"},
@@ -71,9 +72,10 @@ run "last"
 }
 
 func TestStageBindBaseEnvironmentSatisfiesUnsetARG(t *testing.T) {
-	plan, err := Create(parse(t, `from "alpine"
-env COPIED="${base_value}"
-run "check"
+	plan, err := Create(parse(t, `from "alpine" {
+    env COPIED="${base_value}"
+    run "check"
+}
 `), Options{Mode: Build, StageBinds: map[string]StageBind{"0": {
 		BaseEnvironment: map[string]string{"base_value": "from-image"},
 		Inherited:       []definition.Instruction{{Name: "arg", Arguments: []string{"base_value"}}},
@@ -90,8 +92,9 @@ run "check"
 }
 
 func TestStageBindMultiValueENVUsesPriorEnvironment(t *testing.T) {
-	plan, err := Create(parse(t, `from "alpine"
-run "check"
+	plan, err := Create(parse(t, `from "alpine" {
+    run "check"
+}
 `), Options{Mode: Build, StageBinds: map[string]StageBind{"0": {
 		BaseEnvironment: map[string]string{"A": "base"},
 		Inherited: []definition.Instruction{{Name: "env", Properties: map[string]string{
@@ -107,8 +110,9 @@ run "check"
 }
 
 func TestStageBindDoesNotExposeUndeclaredAutomaticArguments(t *testing.T) {
-	plan, err := Create(parse(t, `from "scratch"
-env TARGET="$TARGETARCH"
+	plan, err := Create(parse(t, `from "scratch" {
+    env TARGET="$TARGETARCH"
+}
 `), Options{Mode: Build, StageBinds: map[string]StageBind{"0": {}}})
 	if err != nil {
 		t.Fatal(err)
@@ -119,8 +123,8 @@ env TARGET="$TARGETARCH"
 }
 
 func TestStageBindRejectsComponentWithoutFrozenMetadata(t *testing.T) {
-	_, err := Create(parse(t, `from "scratch" as="builder"
-extend
+	_, err := Create(parse(t, `from "scratch" as="builder" {}
+extend {}
 `), Options{Mode: Publish, StageBinds: map[string]StageBind{"0": {}}})
 	if err == nil || !strings.Contains(err.Error(), "require frozen publication metadata") {
 		t.Fatalf("component stage bind was accepted without publication binding: %v", err)
@@ -128,12 +132,15 @@ extend
 }
 
 func TestStageBindAddsHiddenStageDependencyBeforeClosure(t *testing.T) {
-	plan, err := Create(parse(t, `from "scratch" as="assets"
-run "prepare"
-from "scratch" as="unused"
-run "unused"
-from "alpine" as="final"
-run "finish"
+	plan, err := Create(parse(t, `from "scratch" as="assets" {
+    run "prepare"
+}
+from "scratch" as="unused" {
+    run "unused"
+}
+from "alpine" as="final" {
+    run "finish"
+}
 `), Options{Mode: Build, Target: "final", StageBinds: map[string]StageBind{"2": {
 		Inherited: []definition.Instruction{{Name: "copy", Arguments: []string{"/artifact", "/artifact"}, Properties: map[string]string{"from": "assets"}}},
 	}}})
@@ -152,8 +159,8 @@ run "finish"
 }
 
 func TestStageBindRunMountAddsHiddenStageDependency(t *testing.T) {
-	plan, err := Create(parse(t, `from "scratch" as="assets"
-from "alpine" as="final"
+	plan, err := Create(parse(t, `from "scratch" as="assets" {}
+from "alpine" as="final" {}
 `), Options{Mode: Build, Target: "final", StageBinds: map[string]StageBind{"1": {
 		Inherited: []definition.Instruction{{
 			Name: "run", Form: "shell", Arguments: []string{"cat /mnt"},
@@ -174,22 +181,26 @@ from "alpine" as="final"
 }
 
 func TestStageBindHiddenDependencyCycleFails(t *testing.T) {
-	_, err := Create(parse(t, `from "scratch" as="first"
-from "first" as="second"
+	_, err := Create(parse(t, `from "scratch" as="first" {}
+from "first" as="second" {}
 `), Options{Mode: Build, StageBinds: map[string]StageBind{"0": {
 		Inherited: []definition.Instruction{{Name: "copy", Arguments: []string{"/artifact", "/artifact"},
 			Properties: map[string]string{"from": "second"}}},
 	}}})
-	if err == nil || !strings.Contains(err.Error(), "cycle") {
+	if err == nil || !strings.Contains(err.Error(), "requires an earlier stage") {
 		t.Fatalf("hidden dependency cycle was accepted: %v", err)
 	}
 }
 
 func TestStageBindValidation(t *testing.T) {
-	container := parse(t, `from "alpine"
-run "ok"
+	container := parse(t, `from "alpine" {
+    run "ok"
+}
 `)
-	component := parse(t, "extend\nrun \"ok\"\n")
+	component := parse(t, `extend {
+    run "ok"
+}
+`)
 	tests := []struct {
 		name    string
 		def     *definition.Definition
@@ -223,10 +234,12 @@ func TestStageBindInputsAreNotMutatedOrRetained(t *testing.T) {
 		}},
 	}
 	before := cloneInstruction(bind.Inherited[0])
-	plan, err := Create(parse(t, `from "scratch" as="assets"
-run "prepare"
-from "alpine" as="final"
-run "finish"
+	plan, err := Create(parse(t, `from "scratch" as="assets" {
+    run "prepare"
+}
+from "alpine" as="final" {
+    run "finish"
+}
 `), Options{Mode: Build, Target: "final", StageBinds: map[string]StageBind{"1": bind}})
 	if err != nil {
 		t.Fatal(err)
@@ -246,10 +259,11 @@ run "finish"
 }
 
 func TestStageLocalARGCanBeRedeclared(t *testing.T) {
-	plan, err := Create(parse(t, `from "scratch"
-arg "value" "one"
-arg "value" "two"
-env RESULT="${value}"
+	plan, err := Create(parse(t, `from "scratch" {
+    arg "value" "one"
+    arg "value" "two"
+    env RESULT="${value}"
+}
 `), Options{Mode: Build})
 	if err != nil {
 		t.Fatal(err)
@@ -260,12 +274,14 @@ env RESULT="${value}"
 }
 
 func TestPackageARGRedeclarationStillRejectsConflictingSnapshot(t *testing.T) {
-	_, err := Create(parse(t, `package as="payload"
-arg "value" "one"
-arg "value" "two"
-run "prepare"
-extend
-copy "/" "/" from="payload"
+	_, err := Create(parse(t, `package as="payload" {
+    arg "value" "one"
+    arg "value" "two"
+    run "prepare"
+}
+extend {
+    copy "/" "/" from="payload"
+}
 `), Options{Mode: Publish})
 	if err == nil || !strings.Contains(err.Error(), "changes value within a stage") {
 		t.Fatalf("conflicting package ARG snapshot was accepted: %v", err)
@@ -273,10 +289,11 @@ copy "/" "/" from="payload"
 }
 
 func TestAuthoredENVShadowsARGWithoutStageBind(t *testing.T) {
-	plan, err := Create(parse(t, `from "scratch"
-arg "value" "argument"
-env value="environment"
-run "check"
+	plan, err := Create(parse(t, `from "scratch" {
+    arg "value" "argument"
+    env value="environment"
+    run "check"
+}
 `), Options{Mode: Build})
 	if err != nil {
 		t.Fatal(err)
@@ -288,11 +305,12 @@ run "check"
 }
 
 func TestValuelessARGRedeclarationDoesNotClearENVShadow(t *testing.T) {
-	plan, err := Create(parse(t, `from "scratch"
-arg "value" "argument"
-env value="environment"
-arg "value"
-run "check"
+	plan, err := Create(parse(t, `from "scratch" {
+    arg "value" "argument"
+    env value="environment"
+    arg "value"
+    run "check"
+}
 `), Options{Mode: Build})
 	if err != nil {
 		t.Fatal(err)
@@ -304,14 +322,16 @@ run "check"
 }
 
 func TestLocalFROMInheritsEnvironmentAndShadowOrder(t *testing.T) {
-	plan, err := Create(parse(t, `from "scratch" as="base"
-arg "flavor" "argument"
-env inherited="${flavor}"
-env flavor="environment"
-from "base" as="child"
-env child="${inherited}-${flavor}"
-copy "${child}" "/result"
-run "check"
+	plan, err := Create(parse(t, `from "scratch" as="base" {
+    arg "flavor" "argument"
+    env inherited="${flavor}"
+    env flavor="environment"
+}
+from "base" as="child" {
+    env child="${inherited}-${flavor}"
+    copy "${child}" "/result"
+    run "check"
+}
 `), Options{Mode: Build})
 	if err != nil {
 		t.Fatal(err)

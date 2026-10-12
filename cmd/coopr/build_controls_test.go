@@ -79,14 +79,14 @@ func TestBuildCommandsExposePodmanRunControlFlags(t *testing.T) {
 	}
 }
 
-func TestRegistryFlagsAreSharedByBuildComponentAndCopy(t *testing.T) {
+func TestRegistryFlagsAreSharedByBuildComponentAndPush(t *testing.T) {
 	commands := []struct {
 		name string
 		cmd  *cobra.Command
 	}{
 		{"build", newBuildCommand()},
 		{"component build", newComponentBuildCommand()},
-		{"copy", newCopyCommand(oci.Image)},
+		{"push", newImagePushCommand()},
 	}
 	for _, command := range commands {
 		for _, name := range []string{"authfile", "cert-dir", "tls-verify"} {
@@ -114,7 +114,7 @@ func TestRegistryTLSVerifyPreservesExplicitPolicy(t *testing.T) {
 			t.Fatalf("TLS policy for %v = %v", args, verify)
 		}
 	}
-	for _, command := range []*cobra.Command{newBuildCommand(), newComponentBuildCommand(), newCopyCommand(oci.Image), newCopyCommand(oci.Component)} {
+	for _, command := range []*cobra.Command{newBuildCommand(), newComponentBuildCommand(), newImagePushCommand(), newComponentPushCommand()} {
 		for _, name := range []string{"plain-http", "plain-http-registry"} {
 			if command.Flags().Lookup(name) != nil {
 				t.Errorf("%s retains --%s", command.Use, name)
@@ -152,12 +152,12 @@ func TestPullPolicyFlagsUseMissingByDefault(t *testing.T) {
 	}
 }
 
-func TestBuildAndCopyFlagsHaveCommandLocalScope(t *testing.T) {
+func TestBuildAndPushFlagsHaveCommandLocalScope(t *testing.T) {
 	root := newRootCommand()
 	if root.PersistentFlags().Lookup("signature-policy") != nil {
 		t.Fatal("signature policy must not be global")
 	}
-	for _, path := range [][]string{{"build"}, {"component", "build"}, {"copy"}, {"component", "copy"}} {
+	for _, path := range [][]string{{"build"}, {"component", "build"}, {"push"}, {"component", "push"}} {
 		command, _, err := root.Find(path)
 		if err != nil {
 			t.Fatal(err)
@@ -172,9 +172,9 @@ func TestBuildAndCopyFlagsHaveCommandLocalScope(t *testing.T) {
 			t.Fatalf("%v decryption-key present=%v, want %v", path, got, isBuild)
 		}
 		policy := command.LocalNonPersistentFlags().Lookup("signature-policy")
-		if len(path) == 2 && path[1] == "copy" {
+		if len(path) == 2 && path[1] == "push" {
 			if policy != nil || command.InheritedFlags().Lookup("signature-policy") != nil {
-				t.Fatal("component copy must not have image signature policy")
+				t.Fatal("component push must not have image signature policy")
 			}
 			continue
 		}

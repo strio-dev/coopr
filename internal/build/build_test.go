@@ -11,10 +11,12 @@ import (
 func TestRunRejectsComponentDefinitionBeforeBuilder(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "component.coopr")
-	if err := os.WriteFile(file, []byte("package as=\"payload\"\nextend as=\"base\"\n"), 0600); err != nil {
+	if err := os.WriteFile(file, []byte(`package as="payload" {}
+extend as="base" {}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := Run(context.Background(), Options{File: file, Tag: "oci-archive:" + filepath.Join(dir, "out.tar")})
+	_, err := Run(context.Background(), Options{File: file, Tag: "coopr-test:latest"})
 	if err == nil || !strings.Contains(err.Error(), "requires coopr component build") {
 		t.Fatalf("image build did not reject component definition: %v", err)
 	}
@@ -52,11 +54,12 @@ func TestRequestedPlatforms(t *testing.T) {
 func TestRunRefusesToOverwriteDefinition(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "scratch.coopr")
-	content := []byte("from \"scratch\"\n")
+	content := []byte(`from "scratch" {}
+`)
 	if err := os.WriteFile(path, content, 0600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := Run(context.Background(), Options{File: path, Tag: "oci-archive:" + path})
+	_, err := Run(context.Background(), Options{File: path, MetadataFile: path})
 	if err == nil || !strings.Contains(err.Error(), "would overwrite an input") {
 		t.Fatalf("expected overwrite rejection, got %v", err)
 	}
@@ -69,7 +72,8 @@ func TestRunRefusesToOverwriteDefinition(t *testing.T) {
 func TestRunRefusesSymlinkAliasesOfInputs(t *testing.T) {
 	dir := t.TempDir()
 	definitionPath := filepath.Join(dir, "app.coopr")
-	definitionData := []byte("from \"scratch\"\n")
+	definitionData := []byte(`from "scratch" {}
+`)
 	if err := os.WriteFile(definitionPath, definitionData, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +96,7 @@ func TestRunRefusesSymlinkAliasesOfInputs(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			_, err := Run(context.Background(), Options{File: definitionPath, Tag: "oci-archive:" + output})
+			_, err := Run(context.Background(), Options{File: definitionPath, MetadataFile: output})
 			if err == nil || !strings.Contains(err.Error(), "would overwrite an input") {
 				t.Fatalf("expected alias rejection before builder, got %v", err)
 			}

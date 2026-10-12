@@ -159,11 +159,13 @@ func TestPackageCacheLocalInitializationWarnsAndFallsBack(t *testing.T) {
 func TestPackageCacheKeyChangesWithImmutableExternalBase(t *testing.T) {
 	const reference = "registry.example/coopr/base:latest"
 	plan := testPublicationPlan(t, `
-from "`+reference+`" as="producer"
-package as="bundle"
-copy "/payload" "/payload" from="producer"
-extend
-copy "/payload" "/payload" from="bundle"
+from "`+reference+`" as="producer" {}
+package as="bundle" {
+    copy "/payload" "/payload" from="producer"
+}
+extend {
+    copy "/payload" "/payload" from="bundle"
+}
 `)
 	root := t.TempDir()
 	stages, outputs, err := validatePublicationGraph(plan, map[string]string{"bundle": filepath.Join(root, "bundle.tar")})
@@ -210,7 +212,14 @@ func TestPackageCacheDoesNotSkipUnplannedOnBuildChecks(t *testing.T) {
 		{name: "planned inherited request", config: `{"config":{"OnBuild":["RUN --network=none true"]}}`, planned: true, eligible: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			plan := testPublicationPlan(t, "from \""+reference+"\" as=\"producer\"\npackage as=\"bundle\"\ncopy \"/payload\" \"/payload\" from=\"producer\"\nextend\ncopy \"/payload\" \"/payload\" from=\"bundle\"\n")
+			plan := testPublicationPlan(t, "from \""+reference+`" as="producer" {}
+package as="bundle" {
+    copy "/payload" "/payload" from="producer"
+}
+extend {
+    copy "/payload" "/payload" from="bundle"
+}
+`)
 			root := t.TempDir()
 			stages, outputs, err := validatePublicationGraph(plan, map[string]string{"bundle": filepath.Join(root, "bundle.tar")})
 			if err != nil {
@@ -233,7 +242,13 @@ func TestPackageCacheDoesNotSkipUnplannedOnBuildChecks(t *testing.T) {
 
 func TestPackageCacheKeysExcludeGlobalDeviceRun(t *testing.T) {
 	for _, instruction := range []string{`run "true"`, `env proof="metadata"`} {
-		plan := testPublicationPlan(t, "package as=\"bundle\"\n"+instruction+"\nextend\ncopy \"/payload\" \"/payload\" from=\"bundle\"\n")
+		plan := testPublicationPlan(t, `package as="bundle" {
+    `+instruction+`
+}
+extend {
+    copy "/payload" "/payload" from="bundle"
+}
+`)
 		root := t.TempDir()
 		stages, outputs, err := validatePublicationGraph(plan, map[string]string{"bundle": filepath.Join(root, "bundle.tar")})
 		if err != nil {
@@ -253,10 +268,12 @@ func TestPackageCacheKeysExcludeGlobalDeviceRun(t *testing.T) {
 
 func TestPackageCacheKeyChangesWithImmutableNamedContext(t *testing.T) {
 	contextSpec := buildcontext.Spec{Name: "assets", Kind: buildcontext.Local, Path: t.TempDir()}
-	plan := testPublicationPlanWithContexts(t, `package as="bundle"
-copy "/payload" "/payload" from="assets"
-extend
-copy "/payload" "/payload" from="bundle"
+	plan := testPublicationPlanWithContexts(t, `package as="bundle" {
+    copy "/payload" "/payload" from="assets"
+}
+extend {
+    copy "/payload" "/payload" from="bundle"
+}
 `, contextSpec)
 	root := t.TempDir()
 	stages, outputs, err := validatePublicationGraph(plan, map[string]string{"bundle": filepath.Join(root, "bundle.tar")})

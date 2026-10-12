@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -44,7 +43,10 @@ func TestBuildPlanInvokesComponentPreservingCopyLayer(t *testing.T) {
 	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	plan := testPlan(t, "from \"scratch\"\ncomponent \"local:tool\" channel=\"stable\"\n")
+	plan := testPlan(t, `from "scratch" {
+    component "tool" { arg "channel" "stable"; }
+}
+`)
 	layout := filepath.Join(root, "layout")
 	_, err := BuildPlan(ctx, plan, PlanOptions{
 		Store: StoreOptions{
@@ -87,19 +89,23 @@ func TestBuildPlanOverlapsIndependentComponentStages(t *testing.T) {
 	root := t.TempDir()
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	base := newLiveBusyBoxStorage(t, ctx, root, store)
-	resolver := localConfigComponentResolver(t, ctx, root, fmt.Sprintf(`extend
-arg "branch"
-add %q "/component-proof"
+	resolver := localConfigComponentResolver(t, ctx, root, fmt.Sprintf(`extend {
+    arg "branch"
+    add %q "/component-proof"
+}
 `, server.URL+"/${branch}"), false)
 	policy := writeComponentTestPolicy(t, root)
 	plan := testPlan(t, fmt.Sprintf(`
-from %q as="left"
-component "local:config" branch="left"
-from %q as="right"
-component "local:config" branch="right"
-from "scratch"
-copy "/component-proof" "/left" from="left"
-copy "/component-proof" "/right" from="right"
+from %q as="left" {
+    component "config" { arg "branch" "left"; }
+}
+from %q as="right" {
+    component "config" { arg "branch" "right"; }
+}
+from "scratch" {
+    copy "/component-proof" "/left" from="left"
+    copy "/component-proof" "/right" from="right"
+}
 `, base.reference, base.reference))
 	if _, err := BuildPlan(ctx, plan, PlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun", Resolver: resolver, Jobs: 2,
@@ -123,15 +129,23 @@ func TestBuildPlanOverlapsIndependentBranchesInsideComponent(t *testing.T) {
 	root := t.TempDir()
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	base := newLiveBusyBoxStorage(t, ctx, root, store)
-	resolver := localConfigComponentResolver(t, ctx, root, `extend as="left"
-run "sleep 10; touch /left" network="none"
-extend as="right"
-run "sleep 10; touch /right" network="none"
-from "left"
-copy "/right" "/right" from="right"
+	resolver := localConfigComponentResolver(t, ctx, root, `extend as="left" {
+    run "sleep 10; touch /left" network="none"
+}
+extend as="right" {
+    run "sleep 10; touch /right" network="none"
+}
+extend {
+    from "left" {
+        copy "/right" "/right" from="right"
+    }
+}
 `, false)
 	policy := writeComponentTestPolicy(t, root)
-	plan := testPlan(t, fmt.Sprintf("from %q\ncomponent \"local:config\"\n", base.reference))
+	plan := testPlan(t, fmt.Sprintf(`from %q {
+    component "config"
+}
+`, base.reference))
 	started := time.Now()
 	if _, err := BuildPlan(ctx, plan, PlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun", Resolver: resolver, Jobs: 2,
@@ -176,18 +190,27 @@ func TestComponentBranchesRespectJobsBound(t *testing.T) {
 	}))
 	defer server.Close()
 	root := t.TempDir()
-	resolver := localConfigComponentResolver(t, ctx, root, fmt.Sprintf(`extend as="a"
-add %q "/a"
-extend as="b"
-add %q "/b"
-extend as="c"
-add %q "/c"
-from "a"
-copy "/b" "/b" from="b"
-copy "/c" "/c" from="c"
+	resolver := localConfigComponentResolver(t, ctx, root, fmt.Sprintf(`extend as="a" {
+    add %q "/a"
+}
+extend as="b" {
+    add %q "/b"
+}
+extend as="c" {
+    add %q "/c"
+}
+extend {
+    from "a" {
+        copy "/b" "/b" from="b"
+        copy "/c" "/c" from="c"
+    }
+}
 `, server.URL+"/a", server.URL+"/b", server.URL+"/c"), false)
 	policy := writeComponentTestPolicy(t, root)
-	if _, err := BuildPlan(ctx, testPlan(t, "from \"scratch\"\ncomponent \"local:config\"\n"), PlanOptions{
+	if _, err := BuildPlan(ctx, testPlan(t, `from "scratch" {
+    component "config"
+}
+`), PlanOptions{
 		Store:      StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"},
 		ContextDir: root, Isolation: "rootless", Runtime: "crun", Resolver: resolver, Jobs: 2,
 		Output:        Output{Path: filepath.Join(root, "layout")},
@@ -221,29 +244,35 @@ func TestComponentParallelBranchesHonorCacheMountSharing(t *testing.T) {
 			store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 			base := newLiveBusyBoxStorage(t, ctx, root, store)
 			critical := "if /bin/busybox mkdir /cache/held 2>/dev/null; then /bin/busybox sleep 6; /bin/busybox rmdir /cache/held; else /bin/busybox touch /cache/overlap; fi"
-			source := fmt.Sprintf(`extend as="init"
-run "/bin/busybox rm -rf /cache/held /cache/overlap" network="none" {
-  mount "cache" target="/cache" id="component-critical-%s" sharing=%q
+			source := fmt.Sprintf(`extend as="init" {
+    run "/bin/busybox rm -rf /cache/held /cache/overlap" network="none" {
+      mount "cache" target="/cache" id="component-critical-%s" sharing=%q
+    }
 }
-from "init" as="left"
-run %q network="none" {
-  mount "cache" target="/cache" id="component-critical-%s" sharing=%q
-}
-run "touch /left" network="none"
-from "init" as="right"
-run %q network="none" {
-  mount "cache" target="/cache" id="component-critical-%s" sharing=%q
-}
-run "touch /right" network="none"
-from "left"
-copy "/right" "/right" from="right"
-run %q network="none" {
-  mount "cache" target="/cache" id="component-critical-%s" sharing=%q
+extend {
+    from "init" as="left" {
+        run %q network="none" {
+          mount "cache" target="/cache" id="component-critical-%s" sharing=%q
+        }
+        run "touch /left" network="none"
+    }
+    from "init" as="right" {
+        run %q network="none" {
+          mount "cache" target="/cache" id="component-critical-%s" sharing=%q
+        }
+        run "touch /right" network="none"
+    }
+    from "left" {
+        copy "/right" "/right" from="right"
+        run %q network="none" {
+          mount "cache" target="/cache" id="component-critical-%s" sharing=%q
+        }
+    }
 }
 `, cacheSuffix, test.sharing, critical, cacheSuffix, test.sharing, critical, cacheSuffix, test.sharing, test.assertion, cacheSuffix, test.sharing)
 			resolver := localConfigComponentResolver(t, ctx, root, source, false)
 			_, err := ResolveComponentPlan(ctx, ComponentPlanRequest{
-				Resolver: resolver, Reference: "local:config", Platform: v1.Platform{OS: "linux", Architecture: runtime.GOARCH},
+				Resolver: resolver, Reference: "config", Platform: v1.Platform{OS: "linux", Architecture: runtime.GOARCH},
 				ResolveBase: func(context.Context, string, v1.Platform) (ResolvedImageSource, error) {
 					return ResolvedImageSource{}, errors.New("unexpected external base")
 				},
@@ -252,7 +281,10 @@ run %q network="none" {
 				t.Fatal(err)
 			}
 			policy := writeComponentTestPolicy(t, root)
-			plan := testPlan(t, fmt.Sprintf("from %q\ncomponent \"local:config\"\n", base.reference))
+			plan := testPlan(t, fmt.Sprintf(`from %q {
+    component "config"
+}
+`, base.reference))
 			if _, err := BuildPlan(ctx, plan, PlanOptions{
 				Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun", Resolver: resolver, Jobs: 2,
 				NoCache:       true,
@@ -275,17 +307,19 @@ func TestCallerAndComponentCanSequenceSameLockedCacheMount(t *testing.T) {
 	cacheID := "component-caller-" + digest.FromString(root).Encoded()[:16]
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	base := newLiveBusyBoxStorage(t, ctx, root, store)
-	componentSource := fmt.Sprintf(`extend
-run "/bin/busybox touch /cache/from-component" network="none" {
-  mount "cache" target="/cache" id=%q sharing="locked"
+	componentSource := fmt.Sprintf(`extend {
+    run "/bin/busybox touch /cache/from-component" network="none" {
+      mount "cache" target="/cache" id=%q sharing="locked"
+    }
 }
 `, cacheID)
 	resolver := localConfigComponentResolver(t, ctx, root, componentSource, false)
 	policy := writeComponentTestPolicy(t, root)
-	plan := testPlan(t, fmt.Sprintf(`from %q
-component "local:config"
-run "/bin/busybox test -e /cache/from-component" network="none" {
-  mount "cache" target="/cache" id=%q sharing="locked"
+	plan := testPlan(t, fmt.Sprintf(`from %q {
+    component "config"
+    run "/bin/busybox test -e /cache/from-component" network="none" {
+      mount "cache" target="/cache" id=%q sharing="locked"
+    }
 }
 `, base.reference, cacheID))
 	if _, err := BuildPlan(ctx, plan, PlanOptions{
@@ -305,21 +339,25 @@ func TestBuildPlanReplansFromCompletedComponentConfiguration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	root := t.TempDir()
-	localConfigComponentResolver(t, ctx, root, `extend
-env COMPONENT_VALUE="ready"
-onbuild { env TRIGGERED="$COMPONENT_VALUE" }
-onbuild { copy "/payload" "/inherited" from="helper" }
+	localConfigComponentResolver(t, ctx, root, `extend {
+    env COMPONENT_VALUE="ready"
+    onbuild { env TRIGGERED="$COMPONENT_VALUE" }
+    onbuild { copy "/payload" "/inherited" from="helper" }
+}
 `, false)
 	policy := writeComponentTestPolicy(t, root)
 	if err := os.WriteFile(filepath.Join(root, "payload"), []byte("component-onbuild\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	def, err := definition.Parse(strings.NewReader(`from "scratch" as="helper"
-copy "payload" "/payload"
-from "scratch" as="base"
-component "local:config"
-from "base" as="final"
-env RESULT="$COMPONENT_VALUE"
+	def, err := definition.Parse(strings.NewReader(`from "scratch" as="helper" {
+    copy "payload" "/payload"
+}
+from "scratch" as="base" {
+    component "config"
+}
+from "base" as="final" {
+    env RESULT="$COMPONENT_VALUE"
+}
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -382,7 +420,10 @@ func TestBuildPlanReusesPortableFilesystemComponentCache(t *testing.T) {
 	root := t.TempDir()
 	resolver, _, _ := localComponentResolver(t, ctx, v1.Platform{OS: "linux", Architecture: runtime.GOARCH})
 	policy := writeComponentTestPolicy(t, root)
-	plan := testPlan(t, "from \"scratch\"\ncomponent \"local:tool\" channel=\"stable\"\n")
+	plan := testPlan(t, `from "scratch" {
+    component "tool" { arg "channel" "stable"; }
+}
+`)
 	cacheDir := filepath.Join(root, "cache")
 	build := func(layout, storeName string, noCache bool) (Result, v1.Manifest, v1.Image) {
 		t.Helper()
@@ -416,7 +457,10 @@ func TestBuildPlanReusesPortableFilesystemComponentCache(t *testing.T) {
 	if crossStore.CacheStats.Hits != 1 || len(crossManifest.Layers) != 1 {
 		t.Fatalf("independent store cache stats = %+v, layers=%d", crossStore.CacheStats, len(crossManifest.Layers))
 	}
-	different := testPlan(t, "from \"scratch\"\ncomponent \"local:tool\" channel=\"other\"\n")
+	different := testPlan(t, `from "scratch" {
+    component "tool" { arg "channel" "other"; }
+}
+`)
 	differentOptions := componentTestOptions(root, filepath.Join(root, "different-parameter"), resolver, policy)
 	differentOptions.CacheLocalDir = cacheDir
 	differentResult, err := BuildPlan(ctx, different, differentOptions)
@@ -437,46 +481,6 @@ func TestBuildPlanReusesPortableFilesystemComponentCache(t *testing.T) {
 	}
 }
 
-func TestPublishedCompatibilityAllowListsSurviveColdAndWarmComponentCache(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping live compatibility allow-list cache coverage in short mode")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	root := t.TempDir()
-	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
-	base := newLiveBusyBoxStorage(t, ctx, root, store)
-	componentSource := fmt.Sprintf(`
-extend {
-  architecture %q %q
-  package-manager "missing-manager" "sh"
-}
-env COMPATIBILITY_LIST="yes"
-`, differentArchitecture(runtime.GOARCH), runtime.GOARCH)
-	resolver := localConfigComponentResolver(t, ctx, root, componentSource, false)
-	policy := writeComponentTestPolicy(t, root)
-	plan := testPlan(t, "from \""+base.reference+"\"\ncomponent \"local:config\"\n")
-	cacheDir := filepath.Join(root, "cache")
-	for index, name := range []string{"cold", "warm"} {
-		options := componentTestOptions(root, filepath.Join(root, name), resolver, policy)
-		options.CacheLocalDir = cacheDir
-		result, err := BuildPlan(ctx, plan, options)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if index == 0 && (result.CacheStats.Misses != 1 || result.CacheStats.Stored != 1 || result.CacheStats.Hits != 0) {
-			t.Fatalf("cold compatibility-list cache stats = %+v", result.CacheStats)
-		}
-		if index == 1 && (result.CacheStats.Hits != 1 || result.CacheStats.Misses != 0) {
-			t.Fatalf("warm compatibility-list cache stats = %+v", result.CacheStats)
-		}
-		_, image := readPlanImage(t, options.Output.Path)
-		if !slices.Contains(image.Config.Env, "COMPATIBILITY_LIST=yes") {
-			t.Fatalf("%s compatibility-list component env = %v", name, image.Config.Env)
-		}
-	}
-}
-
 func TestComponentCacheReusesNonemptyCaller(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping a live nonempty caller cache in short mode")
@@ -486,9 +490,15 @@ func TestComponentCacheReusesNonemptyCaller(t *testing.T) {
 	root := t.TempDir()
 	storeOptions := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	base := newLiveBusyBoxStorage(t, ctx, root, storeOptions)
-	resolver := localConfigComponentResolver(t, ctx, root, "extend\nenv CACHE_BASE=\"yes\"\n", false)
+	resolver := localConfigComponentResolver(t, ctx, root, `extend {
+    env CACHE_BASE="yes"
+}
+`, false)
 	policy := writeComponentTestPolicy(t, root)
-	plan := testPlan(t, "from \""+base.reference+"\"\ncomponent \"local:config\"\n")
+	plan := testPlan(t, "from \""+base.reference+`" {
+    component "config"
+}
+`)
 	cacheDir := filepath.Join(root, "cache")
 	var coldManifest v1.Manifest
 	var coldImage v1.Image
@@ -526,14 +536,18 @@ func TestBuildPlanInvokesComponentWithPackageStageMount(t *testing.T) {
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	base := newLiveBusyBoxStorage(t, ctx, root, store)
 	resolver, _, _ := localComponentResolverWithDefinition(t, ctx, v1.Platform{OS: "linux", Architecture: runtime.GOARCH}, `
-package as="pkg"
-extend
-run "cat /package/artifact >/proof" network="none" {
-  mount "bind" from="pkg" source="/" target="/package"
+package as="pkg" {}
+extend {
+    run "cat /package/artifact >/proof" network="none" {
+      mount "bind" from="pkg" source="/" target="/package"
+    }
 }
 `)
 	policy := writeComponentTestPolicy(t, root)
-	plan := testPlan(t, "from \""+base.reference+"\"\ncomponent \"local:tool\"\n")
+	plan := testPlan(t, "from \""+base.reference+`" {
+    component "tool"
+}
+`)
 	layout := filepath.Join(root, "layout")
 	_, err := BuildPlan(ctx, plan, PlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun", Output: Output{Path: layout},
@@ -556,9 +570,15 @@ func TestBuildPlanInvokesConfigOnlyComponentFromScratch(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	root := t.TempDir()
-	resolver := localConfigComponentResolver(t, ctx, root, "extend\nenv CONFIG_ONLY=\"yes\"\n", false)
+	resolver := localConfigComponentResolver(t, ctx, root, `extend {
+    env CONFIG_ONLY="yes"
+}
+`, false)
 	policy := writeComponentTestPolicy(t, root)
-	plan := testPlan(t, "from \"scratch\"\ncomponent \"local:config\"\n")
+	plan := testPlan(t, `from "scratch" {
+    component "config"
+}
+`)
 	layout := filepath.Join(root, "layout")
 	_, err := BuildPlan(ctx, plan, componentTestOptions(root, layout, resolver, policy))
 	if err != nil {
@@ -580,9 +600,15 @@ func TestBuildPlanReusesPortableConfigOnlyComponentCache(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	root := t.TempDir()
-	resolver := localConfigComponentResolver(t, ctx, root, "extend\nenv CACHE_PROOF=\"yes\"\n", false)
+	resolver := localConfigComponentResolver(t, ctx, root, `extend {
+    env CACHE_PROOF="yes"
+}
+`, false)
 	policy := writeComponentTestPolicy(t, root)
-	plan := testPlan(t, "from \"scratch\"\ncomponent \"local:config\"\n")
+	plan := testPlan(t, `from "scratch" {
+    component "config"
+}
+`)
 	cacheDir := filepath.Join(root, "cache")
 	build := func(layout string) (Result, v1.Manifest, v1.Image) {
 		t.Helper()
@@ -669,9 +695,15 @@ func TestSupervisedBuildReusesComponentCacheAcrossWorkers(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	root := t.TempDir()
-	_ = localConfigComponentResolver(t, ctx, root, "extend\nenv WORKER_CACHE=\"yes\"\n", false)
+	_ = localConfigComponentResolver(t, ctx, root, `extend {
+    env WORKER_CACHE="yes"
+}
+`, false)
 	policy := writeComponentTestPolicy(t, root)
-	plan := testPlan(t, "from \"scratch\"\ncomponent \"local:config\"\n")
+	plan := testPlan(t, `from "scratch" {
+    component "config"
+}
+`)
 	build := func(layout string) Result {
 		t.Helper()
 		result, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
@@ -717,7 +749,10 @@ func TestBuildPlanReusesRegistryComponentCacheAcrossStores(t *testing.T) {
 		t.Fatal(err)
 	}
 	policy := writeComponentTestPolicy(t, root)
-	plan := testPlan(t, "from \"scratch\"\ncomponent \"local:tool\" channel=\"stable\"\n")
+	plan := testPlan(t, `from "scratch" {
+    component "tool" { arg "channel" "stable"; }
+}
+`)
 	localCache := filepath.Join(root, "local-cache")
 	registryWritable := true
 	build := func(layout, name string, useLocal bool) Result {
@@ -776,9 +811,16 @@ func TestBuildPlanUsesComponentShellForFollowingRun(t *testing.T) {
 	root := t.TempDir()
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	base := newLiveBusyBoxStorage(t, ctx, root, store)
-	resolver := localConfigComponentResolver(t, ctx, root, "extend\nshell \"/bin/sh\" \"-c\" \"printf component-shell >/shell-selected\"\n", false)
+	resolver := localConfigComponentResolver(t, ctx, root, `extend {
+    shell "/bin/sh" "-c" "printf component-shell >/shell-selected"
+}
+`, false)
 	policy := writeComponentTestPolicy(t, root)
-	plan := testPlan(t, "from \""+base.reference+"\"\ncomponent \"local:config\"\nrun \"printf default-shell >/default-shell\" network=\"none\"\n")
+	plan := testPlan(t, "from \""+base.reference+`" {
+    component "config"
+    run "printf default-shell >/default-shell" network="none"
+}
+`)
 	layout := filepath.Join(root, "layout")
 	options := componentTestOptions(root, layout, resolver, policy)
 	options.Store = store
@@ -803,10 +845,16 @@ func TestBuildPlanAppliesNetworkOptionsToComponentRun(t *testing.T) {
 	root := t.TempDir()
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	base := newLiveBusyBoxStorage(t, ctx, root, store)
-	component := "extend\nrun \"found=; while read ip name rest; do if test x$ip = x127.0.0.43 && test x$name = xcomponent.test; then found=yes; fi; done </etc/hosts; test x$found = xyes || exit 1; printf component-host >/component-proof\"\n"
+	component := `extend {
+    run "found=; while read ip name rest; do if test x$ip = x127.0.0.43 && test x$name = xcomponent.test; then found=yes; fi; done </etc/hosts; test x$found = xyes || exit 1; printf component-host >/component-proof"
+}
+`
 	resolver := localConfigComponentResolver(t, ctx, root, component, false)
 	policy := writeComponentTestPolicy(t, root)
-	plan := testPlan(t, "from \""+base.reference+"\"\ncomponent \"local:config\"\n")
+	plan := testPlan(t, "from \""+base.reference+`" {
+    component "config"
+}
+`)
 	layout := filepath.Join(root, "layout")
 	options := componentTestOptions(root, layout, resolver, policy)
 	options.Store = store
@@ -831,12 +879,25 @@ func TestBuildPlanInvokesNestedComponentsAndRejectsCycles(t *testing.T) {
 	defer cancel()
 	root := t.TempDir()
 	resolver := localConfigComponentResolverWithDefinitions(t, ctx, root, []componentDefinitionFixture{
-		{name: "inner", source: "extend\nenv INNER=\"yes\"\n"},
-		{name: "outer", source: "extend\ncomponent \"local:inner\"\nenv OUTER=\"yes\"\n"},
-		{name: "cycle", source: "extend\ncomponent \"local:cycle\"\n"},
+		{name: "inner", source: `extend {
+    env INNER="yes"
+}
+`},
+		{name: "outer", source: `extend {
+    component "inner"
+    env OUTER="yes"
+}
+`},
+		{name: "cycle", source: `extend {
+    component "cycle"
+}
+`},
 	}, false)
 	policy := writeComponentTestPolicy(t, root)
-	plan := testPlan(t, "from \"scratch\"\ncomponent \"local:outer\"\n")
+	plan := testPlan(t, `from "scratch" {
+    component "outer"
+}
+`)
 	layout := filepath.Join(root, "nested-layout")
 	if _, err := BuildPlan(ctx, plan, componentTestOptions(root, layout, resolver, policy)); err != nil {
 		t.Fatal(err)
@@ -846,7 +907,10 @@ func TestBuildPlanInvokesNestedComponentsAndRejectsCycles(t *testing.T) {
 		t.Fatalf("nested component layers=%d env=%#v", len(manifest.Layers), image.Config.Env)
 	}
 
-	cycle := testPlan(t, "from \"scratch\"\ncomponent \"local:cycle\"\n")
+	cycle := testPlan(t, `from "scratch" {
+    component "cycle"
+}
+`)
 	cycleLayout := filepath.Join(root, "cycle-layout")
 	if _, err := BuildPlan(ctx, cycle, componentTestOptions(root, cycleLayout, resolver, policy)); err == nil || !strings.Contains(err.Error(), "cycle") {
 		t.Fatalf("self-recursive component error = %v, want cycle", err)

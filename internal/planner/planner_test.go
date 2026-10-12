@@ -64,23 +64,33 @@ func stageIDs(p *Plan) []string {
 }
 
 func TestNormalizePreservesExecRunForm(t *testing.T) {
-	plan := makePlan(t, "from \"alpine\"\nrun { exec \"/usr/local/bin/gofmt\" \"-h\" }\n", Options{})
+	plan := makePlan(t, `from "alpine" {
+    run { exec "/usr/local/bin/gofmt" "-h" }
+}
+`, Options{})
 	if got := plan.Stages[0].Operations[0].Instruction; got.Form != "exec" || len(got.Arguments) != 2 {
 		t.Fatalf("exec run was changed by planning: %+v", got)
 	}
 }
 
 const packaged = `
-from "compiler:1" as="builder"
-run "compile"
-package as="tools"
-copy "/out" "/tools" from="builder"
-from "tools" as="prepared"
-run "prepare"
-extend as="base"
-run "configure"
-from "base"
-copy "/tools" "/usr/local/bin" from="prepared"
+from "compiler:1" as="builder" {
+    run "compile"
+}
+package as="tools" {
+    copy "/out" "/tools" from="builder"
+}
+extend as="base" {
+    run "configure"
+}
+extend {
+    from "tools" as="prepared" {
+        run "prepare"
+    }
+    from "base" {
+        copy "/tools" "/usr/local/bin" from="prepared"
+    }
+}
 `
 
 func TestPackageBoundary(t *testing.T) {
@@ -89,7 +99,7 @@ func TestPackageBoundary(t *testing.T) {
 		t.Fatalf("publication = %+v", publication)
 	}
 	invocation := invokePublished(t, publication, Options{})
-	if !reflect.DeepEqual(stageIDs(invocation), []string{"2", "0", "1", "3"}) {
+	if !reflect.DeepEqual(stageIDs(invocation), []string{"1", "0", "3", "4"}) {
 		t.Fatalf("invocation order = %v", stageIDs(invocation))
 	}
 	for _, s := range invocation.Stages {
@@ -100,7 +110,7 @@ func TestPackageBoundary(t *testing.T) {
 			t.Fatalf("package is executable: %+v", s)
 		}
 	}
-	if !reflect.DeepEqual(invocation.Outputs, []string{"3"}) {
+	if !reflect.DeepEqual(invocation.Outputs, []string{"4"}) {
 		t.Fatalf("outputs = %v", invocation.Outputs)
 	}
 	if !reflect.DeepEqual(invocation.Inputs, []Input{{Kind: "package", Reference: "tools"}}) {
@@ -108,37 +118,41 @@ func TestPackageBoundary(t *testing.T) {
 	}
 }
 
-func TestSharedProducerRunsInBothPhases(t *testing.T) {
-	source := packaged
-	source += `copy "/other" "/other" from="builder"` + "\n"
-	p := invokePublished(t, makePlan(t, source, Options{Mode: Publish}), Options{})
-	found := false
-	for _, s := range p.Stages {
-		if s.Name == "builder" {
-			found = true
-			if len(s.Operations) != 1 {
-				t.Fatal("shared producer lost operation")
+func TestInvocationRunsDirectlyReferencedPackageProducer(t *testing.T) {
+	source := strings.Replace(packaged, `copy "/tools" "/usr/local/bin" from="prepared"`, `copy "/tools" "/usr/local/bin" from="prepared"
+        copy "/other" "/other" from="builder"`, 1)
+	publication := makePlan(t, source, Options{Mode: Publish})
+	invocation := invokePublished(t, publication, Options{})
+	for _, stage := range invocation.Stages {
+		if stage.Name == "builder" {
+			if stage.Kind != "from" || len(stage.Operations) != 1 || stage.Operations[0].Name != "run" {
+				t.Fatalf("direct producer dependency is not executable: %+v", stage)
 			}
+			return
 		}
 	}
-	if !found {
-		t.Fatal("directly referenced producer must execute")
-	}
+	t.Fatal("direct producer dependency was omitted from invocation")
 }
 
 func TestMultiplePackagesAndPackageBasedProducer(t *testing.T) {
-	source := `from "compiler:1" as="builder"
-run "compile"
-package as="tools"
-copy "/out" "/" from="builder"
-from "tools" as="combined"
-run "assemble"
-package as="bundle"
-copy "/" "/" from="combined"
-package as="unused"
-copy "./static" "/static"
-extend
-copy "/" "/opt" from="bundle"
+	source := `from "compiler:1" as="builder" {
+    run "compile"
+}
+package as="tools" {
+    copy "/out" "/" from="builder"
+}
+from "tools" as="combined" {
+    run "assemble"
+}
+package as="bundle" {
+    copy "/" "/" from="combined"
+}
+package as="unused" {
+    copy "./static" "/static"
+}
+extend {
+    copy "/" "/opt" from="bundle"
+}
 `
 	publish := makePlan(t, source, Options{Mode: Publish})
 	if !reflect.DeepEqual(publish.Outputs, []string{"1", "3"}) {
@@ -154,12 +168,14 @@ copy "/" "/opt" from="bundle"
 }
 
 func TestBindMountDependency(t *testing.T) {
-	source := `from "compiler:1" as="builder"
-package as="tools"
-copy "/out" "/" from="builder"
-extend
-run "install" {
- mount "bind" from="tools" source="/" target="/tools"
+	source := `from "compiler:1" as="builder" {}
+package as="tools" {
+    copy "/out" "/" from="builder"
+}
+extend {
+    run "install" {
+     mount "bind" from="tools" source="/" target="/tools"
+    }
 }
 `
 	p := makePlan(t, source, Options{Mode: Invoke})
@@ -174,27 +190,79 @@ func TestRejectedGraphs(t *testing.T) {
 		mode         Mode
 		message      string
 	}{
-		{"component as image", "extend\n", Build, "does not match"},
-		{"image as component", "from \"debian\"\n", Publish, "does not match"},
-		{"duplicate names", "from \"debian\" as=\"base\"\nextend as=\"base\"\n", Publish, "duplicate stage"},
-		{"case-variant duplicate names", "from \"debian\" as=\"Base\"\nextend as=\"base\"\n", Publish, "duplicate stage"},
-		{"dynamic alias", "from \"debian\" as=\"${name}\"\n", Build, "invalid stage name"},
-		{"leading underscore alias", "from \"debian\" as=\"_base\"\n", Build, "invalid stage name"},
-		{"unknown numeric copy stage", "extend\ncopy \"/a\" \"/b\" from=\"12\"\n", Publish, "unknown numeric stage"},
-		{"copy cycle", "from \"debian\" as=\"a\"\ncopy \"/a\" \"/a\" from=\"b\"\nfrom \"a\" as=\"b\"\n", Build, "cycle"},
-		{"from cycle", "from \"b\" as=\"a\"\nfrom \"a\" as=\"b\"\n", Build, "cycle"},
-		{"unused cycle", "from \"b\" as=\"a\"\nfrom \"a\" as=\"b\"\nextend\n", Publish, "cycle"},
-		{"package depends on extend", "extend as=\"base\"\npackage as=\"p\"\ncopy \"/a\" \"/a\" from=\"base\"\nfrom \"base\"\ncopy \"/a\" \"/a\" from=\"p\"\n", Publish, "depends on extend"},
-		{"indirect extend dependency", "extend as=\"base\"\nfrom \"base\" as=\"builder\"\npackage as=\"p\"\ncopy \"/a\" \"/a\" from=\"builder\"\nfrom \"base\"\ncopy \"/a\" \"/a\" from=\"p\"\n", Publish, "depends on extend"},
-		{"package in image", "from \"debian\"\npackage as=\"p\"\n", Build, "require a component"},
-		{"operation before base", "run \"echo hi\"\nfrom \"debian\"\n", Build, "requires a stage"},
-		{"missing structural arg", "arg \"base\"\nfrom \"${base}\"\n", Build, "invalid from source"},
-		{"undeclared structural arg", "from \"${base}\"\n", Build, "invalid from source"},
-		{"bad argument name", "arg \"bad-name\" \"x\"\nfrom \"debian\"\n", Build, "invalid argument"},
+		{"component as image", "extend {}", Build, "does not match"},
+		{"image as component", `from "debian" {}
+`, Publish, "does not match"},
+		{"duplicate names", `from "debian" as="base" {}
+extend as="base" {}
+`, Publish, "duplicate stage"},
+		{"case-variant duplicate names", `from "debian" as="Base" {}
+extend as="base" {}
+`, Publish, "duplicate stage"},
+		{"dynamic alias", `from "debian" as="${name}" {}
+`, Build, "invalid stage name"},
+		{"leading underscore alias", `from "debian" as="_base" {}
+`, Build, "invalid stage name"},
+		{"unknown numeric copy stage", `extend {
+    copy "/a" "/b" from="12"
+}
+`, Publish, "unknown numeric stage"},
+		{"copy cycle", `from "debian" as="a" {
+    copy "/a" "/a" from="b"
+}
+from "a" as="b" {}
+`, Build, "requires an earlier stage"},
+		{"from cycle", `from "b" as="a" {}
+from "a" as="b" {}
+`, Build, "requires an earlier stage"},
+		{"unused cycle", `from "b" as="a" {}
+from "a" as="b" {}
+extend {}
+`, Publish, "requires an earlier stage"},
+		{"package depends on extend", `extend as="base" {}
+package as="p" {
+    copy "/a" "/a" from="base"
+}
+extend {
+    from "base" {
+        copy "/a" "/a" from="p"
+    }
+}
+`, Publish, "depends on invocation stage"},
+		{"indirect extend dependency", `extend as="base" {}
+extend as="builder" {
+    from "base" {}
+}
+package as="p" {
+    copy "/a" "/a" from="builder"
+}
+extend {
+    from "base" {
+        copy "/a" "/a" from="p"
+    }
+}
+`, Publish, "depends on invocation stage"},
+		{"package in image", `from "debian" {}
+package as="p" {}
+`, Build, "require a component"},
+		{"operation before base", `run "echo hi"
+from "debian" {}
+`, Build, "must be inside"},
+		{"missing structural arg", `arg "base"
+from "${base}" {}
+`, Build, "invalid from source"},
+		{"undeclared structural arg", `from "${base}" {}
+`, Build, "invalid from source"},
+		{"bad argument name", `arg "bad-name" "x"
+from "debian" {}
+`, Build, "invalid argument"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := Create(parse(t, tc.source), Options{Mode: tc.mode})
+			def, err := definition.Parse(strings.NewReader(tc.source))
+			if err == nil {
+				_, err = Create(def, Options{Mode: tc.mode})
+			}
 			if err == nil || !strings.Contains(err.Error(), tc.message) {
 				t.Fatalf("want %q, got %v", tc.message, err)
 			}
@@ -203,15 +271,18 @@ func TestRejectedGraphs(t *testing.T) {
 }
 
 const parameterized = `arg "builder_image" "compiler:1"
-from "${builder_image}" as="builder"
-run "compile"
-package as="tools"
-copy "/out" "/" from="builder"
-extend
-arg "channel"
-env CHANNEL="${channel}"
-run "echo $channel; echo ${channel}"
-copy "/tool" "/tool" from="tools"
+from "${builder_image}" as="builder" {
+    run "compile"
+}
+package as="tools" {
+    copy "/out" "/" from="builder"
+}
+extend {
+    arg "channel"
+    env CHANNEL="${channel}"
+    run "echo $channel; echo ${channel}"
+    copy "/tool" "/tool" from="tools"
+}
 `
 
 func TestArgumentPhasesAndShellBoundary(t *testing.T) {
@@ -283,25 +354,30 @@ func TestArgumentErrors(t *testing.T) {
 	}
 }
 
-func TestForwardStageReferencesAreResolved(t *testing.T) {
-	source := `from "later" as="first"
-run "first"
-from "debian" as="later"
-run "later"
-from "first"
+func TestEarlierStageReferencesAreResolved(t *testing.T) {
+	source := `from "debian" as="base" { run "base"; }
+from "base" as="first" { run "first"; }
+from "first" {}
 `
 	p := makePlan(t, source, Options{})
-	if !reflect.DeepEqual(stageIDs(p), []string{"1", "0", "2"}) {
+	if !reflect.DeepEqual(stageIDs(p), []string{"0", "1", "2"}) {
 		t.Fatalf("order = %v", stageIDs(p))
 	}
 }
 
 func TestNoPackagesAndAutoMode(t *testing.T) {
-	p := makePlan(t, "extend\narg \"required\"\nrun \"echo $required\"\n", Options{})
+	p := makePlan(t, `extend {
+    arg "required"
+    run "echo $required"
+}
+`, Options{})
 	if p.Mode != Publish || len(p.Stages) != 0 || len(p.Outputs) != 0 {
 		t.Fatalf("plan = %+v", p)
 	}
-	p = makePlan(t, "from \"debian\"\nrun \"hello\"\n", Options{})
+	p = makePlan(t, `from "debian" {
+    run "hello"
+}
+`, Options{})
 	if p.Mode != Build || p.Inputs[0].Reference != "debian" {
 		t.Fatalf("plan = %+v", p)
 	}
@@ -331,7 +407,8 @@ func TestEmptyInvalidAndPlatformOptions(t *testing.T) {
 	if _, err := Create(nil, Options{}); err == nil {
 		t.Fatal("nil definition accepted")
 	}
-	d := parse(t, "from \"debian\"\n")
+	d := parse(t, `from "debian" {}
+`)
 	for _, opts := range []Options{{Mode: "bad"}, {Platform: "linux"}, {Platform: "linux/"}, {Platform: "windows/amd64"}} {
 		if _, err := Create(d, opts); err == nil {
 			t.Fatalf("accepted %+v", opts)
@@ -346,7 +423,8 @@ func TestEmptyInvalidAndPlatformOptions(t *testing.T) {
 		t.Fatalf("variant plan = %v err=%v", p, err)
 	}
 	for _, platform := range []string{"windows/amd64", "darwin/arm64"} {
-		_, err = Create(parse(t, `from "debian" platform="`+platform+`"`), Options{})
+		_, err = Create(parse(t, "from \"debian\" platform=\""+platform+`" {}
+`), Options{})
 		if err == nil || !strings.Contains(err.Error(), "requires Linux") {
 			t.Fatalf("non-Linux stage platform %q accepted: %v", platform, err)
 		}
@@ -354,8 +432,14 @@ func TestEmptyInvalidAndPlatformOptions(t *testing.T) {
 }
 
 func TestRunNetworkDefaultsExplicitly(t *testing.T) {
-	implicit := makePlan(t, "from \"debian\"\nrun \"echo hi\"\n", Options{})
-	explicit := makePlan(t, "from \"debian\"\nrun \"echo hi\" network=\"default\"\n", Options{})
+	implicit := makePlan(t, `from "debian" {
+    run "echo hi"
+}
+`, Options{})
+	explicit := makePlan(t, `from "debian" {
+    run "echo hi" network="default"
+}
+`, Options{})
 	a := implicit.Stages[0].Operations[0]
 	b := explicit.Stages[0].Operations[0]
 	if a.Properties["network"] != "default" || b.Properties["network"] != "default" || a.NetworkExplicit || !b.NetworkExplicit {
@@ -364,9 +448,10 @@ func TestRunNetworkDefaultsExplicitly(t *testing.T) {
 }
 
 func TestPlanPlatformFollowsSelectedOutput(t *testing.T) {
-	p := makePlan(t, `from "debian" platform="linux/arm64" as="arm"
-run "compile"
-from "alpine" platform="linux/amd64" as="other"
+	p := makePlan(t, `from "debian" platform="linux/arm64" as="arm" {
+    run "compile"
+}
+from "alpine" platform="linux/amd64" as="other" {}
 `, Options{Mode: Build, Target: "arm", Platform: "linux/amd64"})
 	if p.Platform != "linux/arm64" || p.Stages[0].Platform != "linux/arm64" {
 		t.Fatalf("selected output platform = %q, stage = %+v", p.Platform, p.Stages)
@@ -375,7 +460,7 @@ from "alpine" platform="linux/amd64" as="other"
 
 func TestExplicitArgumentReplacesUnevaluableDefault(t *testing.T) {
 	source := `arg "base" "${unspecified}"
-from "${base}"
+from "${base}" {}
 `
 	p := makePlan(t, source, Options{Arguments: map[string]string{"base": "debian"}})
 	if p.Stages[0].Source != "debian" {
@@ -385,14 +470,17 @@ from "${base}"
 
 func TestConflictingPublishedArgumentValues(t *testing.T) {
 	source := `arg "x" "before"
-from "compiler" as="builder"
-run "echo $x"
-arg "x" "after"
-run "echo $x"
-package as="assets"
-copy "/out" "/" from="builder"
-extend
-copy "/out" "/out" from="assets"
+from "compiler" as="builder" {
+    run "echo $x"
+    arg "x" "after"
+    run "echo $x"
+}
+package as="assets" {
+    copy "/out" "/" from="builder"
+}
+extend {
+    copy "/out" "/out" from="assets"
+}
 `
 	_, err := Create(parse(t, source), Options{Mode: Publish})
 	if err == nil || !strings.Contains(err.Error(), "changes value") {
@@ -402,10 +490,11 @@ copy "/out" "/out" from="assets"
 
 func TestArgumentDeclarationDoesNotFillEarlierRunRetroactively(t *testing.T) {
 	source := `arg "x"
-from "debian"
-run "echo $x"
-arg "x" "later"
-run "echo $x"
+from "debian" {
+    run "echo $x"
+    arg "x" "later"
+    run "echo $x"
+}
 `
 	plan := makePlan(t, source, Options{})
 	operations := plan.Stages[0].Operations
@@ -459,14 +548,19 @@ func TestRepositoryExamples(t *testing.T) {
 	}
 }
 
-const targets = `extend as="runtime"
-arg "flavor" "runtime"
-run "configure-runtime"
-extend as="debug"
-arg "flavor" "debug"
-run "configure-debug"
-from "runtime" as="release"
-run "finish-runtime"
+const targets = `extend as="runtime" {
+    arg "flavor" "runtime"
+    run "configure-runtime"
+}
+extend as="debug" {
+    arg "flavor" "debug"
+    run "configure-debug"
+}
+extend as="release" {
+    from "runtime" {
+        run "finish-runtime"
+    }
+}
 `
 
 func TestMultipleExtendTargets(t *testing.T) {
@@ -477,8 +571,8 @@ func TestMultipleExtendTargets(t *testing.T) {
 	}{
 		{"runtime", []string{"0"}, "runtime"},
 		{"debug", []string{"0"}, "debug"},
-		{"release", []string{"0", "1"}, "runtime"},
-		{"", []string{"0", "1"}, "runtime"},
+		{"release", []string{"0", "2"}, "runtime"},
+		{"", []string{"0", "2"}, "runtime"},
 	} {
 		t.Run("target="+tc.target, func(t *testing.T) {
 			publication := makePlan(t, targets, Options{Mode: Publish, Target: tc.target})
@@ -504,19 +598,27 @@ func TestMultipleExtendTargets(t *testing.T) {
 }
 
 func TestSelectContainerBuildTarget(t *testing.T) {
-	p := makePlan(t, "from \"debian\" as=\"base\"\nrun \"base\"\nfrom \"alpine\"\nrun \"other\"\n", Options{Target: "base"})
+	p := makePlan(t, `from "debian" as="base" {
+    run "base"
+}
+from "alpine" {
+    run "other"
+}
+`, Options{Target: "base"})
 	if p.Mode != Build || !reflect.DeepEqual(stageIDs(p), []string{"0"}) {
 		t.Fatalf("plan = %+v", p)
 	}
 }
 
 func TestStageAliasesAndTargetAreCaseInsensitive(t *testing.T) {
-	p := makePlan(t, `from "scratch" as="Source"
-run "prepare"
-from "SOURCE" as="Final"
-copy "/artifact" "/copied" from="sOuRcE"
-run "consume" {
-  mount "bind" from="SoUrCe" source="/" target="/source"
+	p := makePlan(t, `from "scratch" as="Source" {
+    run "prepare"
+}
+from "SOURCE" as="Final" {
+    copy "/artifact" "/copied" from="sOuRcE"
+    run "consume" {
+      mount "bind" from="SoUrCe" source="/" target="/source"
+    }
 }
 `, Options{Mode: Build, Target: "fInAl"})
 	if p.Target != "Final" || !reflect.DeepEqual(stageIDs(p), []string{"0", "1"}) {
@@ -531,10 +633,13 @@ run "consume" {
 }
 
 func TestComponentMetadataCanonicalizesStageReservations(t *testing.T) {
-	publication := makePlan(t, `package as="Pkg"
-extend as="Base"
-copy "/artifact" "/artifact" from="pKg"
-from "BASE" as="Final"
+	publication := makePlan(t, `package as="Pkg" {}
+extend as="Base" {
+    copy "/artifact" "/artifact" from="pKg"
+}
+extend as="Final" {
+    from "BASE" {}
+}
 `, Options{Mode: Publish, Target: "fInAl"})
 	if !reflect.DeepEqual(publication.Component.ReservedStageNames, []string{"base", "final", "pkg"}) {
 		t.Fatalf("reserved stage names = %v", publication.Component.ReservedStageNames)
@@ -545,11 +650,13 @@ from "BASE" as="Final"
 }
 
 func TestUnselectedTargetDoesNotConsumeArguments(t *testing.T) {
-	source := `extend as="runtime"
-run "runtime"
-extend as="debug"
-arg "debug_option"
-run "debug"
+	source := `extend as="runtime" {
+    run "runtime"
+}
+extend as="debug" {
+    arg "debug_option"
+    run "debug"
+}
 `
 	p := invokePublished(t, makePlan(t, source, Options{Mode: Publish, Target: "runtime"}), Options{})
 	if !reflect.DeepEqual(stageIDs(p), []string{"0"}) {
@@ -563,19 +670,20 @@ run "debug"
 }
 
 func TestTargetSelectionErrors(t *testing.T) {
-	source := `from "compiler" as="builder"
-package as="tools"
-copy "/out" "/" from="builder"
-extend as="runtime"
-extend as="debug"
+	source := `from "compiler" as="builder" {}
+package as="tools" {
+    copy "/out" "/" from="builder"
+}
+extend as="runtime" {}
+extend as="debug" {}
 `
 	for _, tc := range []struct {
 		mode            Mode
 		target, message string
 	}{
 		{Publish, "missing", "unknown target"},
-		{Publish, "builder", "must follow extend"},
-		{Publish, "tools", "selected output cannot be a package"},
+		{Publish, "builder", "must be an extend target"},
+		{Publish, "tools", "must be an extend target"},
 	} {
 		t.Run(string(tc.mode)+tc.target, func(t *testing.T) {
 			_, err := Create(parse(t, source), Options{Mode: tc.mode, Target: tc.target})
@@ -588,29 +696,37 @@ extend as="debug"
 
 func TestPackageCannotReachAnyExtend(t *testing.T) {
 	for _, alias := range []string{"first", "second"} {
-		source := `extend as="first"
-extend as="second"
-package as="bad"
-copy "/data" "/data" from="` + alias + `"
-from "first"
-copy "/data" "/data" from="bad"
+		source := `extend as="first" {}
+extend as="second" {}
+package as="bad" {
+    copy "/data" "/data" from="` + alias + `"
+}
+extend {
+    from "first" {
+        copy "/data" "/data" from="bad"
+    }
+}
 `
 		_, err := Create(parse(t, source), Options{Mode: Publish})
-		if err == nil || !strings.Contains(err.Error(), "depends on extend") {
+		if err == nil || !strings.Contains(err.Error(), "depends on invocation stage") {
 			t.Fatalf("dependency on %s accepted: %v", alias, err)
 		}
 	}
 }
 
 func TestSelectedTargetKeepsPackageBoundary(t *testing.T) {
-	source := `from "compiler" as="builder"
-run "compile"
-package as="tools"
-copy "/out" "/" from="builder"
-extend as="runtime"
-copy "/binary" "/binary" from="tools"
-extend as="debug"
-run "debug-only"
+	source := `from "compiler" as="builder" {
+    run "compile"
+}
+package as="tools" {
+    copy "/out" "/" from="builder"
+}
+extend as="runtime" {
+    copy "/binary" "/binary" from="tools"
+}
+extend as="debug" {
+    run "debug-only"
+}
 `
 	p := invokePublished(t, makePlan(t, source, Options{Mode: Publish, Target: "runtime"}), Options{})
 	if !reflect.DeepEqual(stageIDs(p), []string{"0", "1"}) || p.Stages[0].Kind != "package-input" {
@@ -623,27 +739,28 @@ run "debug-only"
 }
 
 func TestNamedTargetCanPrecedePrivateFinalStage(t *testing.T) {
-	source := `extend as="runtime"
-from "compiler" as="builder"
+	source := `extend as="runtime" {}
+from "compiler" as="builder" {}
 `
 	makePlan(t, source, Options{Mode: Publish, Target: "runtime"})
-	replacement := makePlan(t, source, Options{Mode: Publish})
-	if replacement.Component.Output != "1" {
-		t.Fatalf("default replacement output: %+v", replacement.Component)
+	publication := makePlan(t, source, Options{Mode: Publish})
+	if publication.Target != "runtime" || len(publication.Stages) != 0 {
+		t.Fatalf("default extend output: %+v", publication)
 	}
 }
 
-func TestComponentTargetIsAnArgumentProperty(t *testing.T) {
-	source := `from "debian"
-arg "selected" "debug"
-component "registry.example.com/setup:v1" target="${selected}"
+func TestComponentTargetIsAnInvocationArgument(t *testing.T) {
+	source := `from "debian" {
+    arg "selected" "debug"
+    component "registry.example.com/setup:v1" { arg "target" "${selected}" }
+}
 `
 	p := makePlan(t, source, Options{})
 	if len(p.Inputs) != 2 || p.Inputs[1].Reference != "registry.example.com/setup:v1" {
 		t.Fatalf("component input = %+v", p.Inputs)
 	}
 	op := p.Stages[0].Operations[0]
-	if len(op.Arguments) != 1 || op.Properties["target"] != "debug" {
+	if len(op.Arguments) != 1 || op.Children[0].Arguments[1] != "debug" {
 		t.Fatalf("component argument = %+v", op)
 	}
 }
@@ -653,7 +770,7 @@ func TestPublishedTargetAndPlatformCannotBeChangedAtInvocation(t *testing.T) {
 	if publication.Component.Platform != "linux/arm64" || publication.Component.Output != "0" {
 		t.Fatalf("publication metadata = %+v", publication.Component)
 	}
-	if len(publication.Component.Definition.Instructions) != 3 {
+	if len(publication.Component.Definition.Instructions) != 1 {
 		t.Fatalf("unrelated stages retained: %+v", publication.Component.Definition.Instructions)
 	}
 	p := invokePublished(t, publication, Options{})
@@ -696,21 +813,24 @@ func TestPublishedFromBindingsRejectTopologyChanges(t *testing.T) {
 		name, source, override, message string
 	}{
 		{"image to retained stage", `arg "source" "debian"
-from "${source}" as="builder"
-extend as="base"
-copy "/file" "/file" from="builder"
-`, "base", "FROM binding changed"},
+extend as="base" {
+    from "${source}" as="builder" {}
+    copy "/file" "/file" from="builder"
+}
+`, "base", "requires an earlier stage"},
 		{"retained stage to image", `arg "source" "base"
-from "debian" as="base"
-from "${source}" as="builder"
-extend
-copy "/file" "/file" from="builder"
+extend {
+    from "debian" as="base" {}
+    from "${source}" as="builder" {}
+    copy "/file" "/file" from="builder"
+}
 `, "ubuntu", "FROM binding changed"},
 		{"pruned stage alias", `arg "source" "debian"
-from "${source}" as="builder"
-extend as="used"
-copy "/file" "/file" from="builder"
-extend as="discarded"
+extend as="used" {
+    from "${source}" as="builder" {}
+    copy "/file" "/file" from="builder"
+}
+extend as="discarded" {}
 `, "discarded", "was a stage name at publication"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -737,9 +857,10 @@ extend as="discarded"
 
 func TestPublishedExternalImageArgumentMayChange(t *testing.T) {
 	source := `arg "source" "debian"
-from "${source}" as="builder"
-extend
-copy "/file" "/file" from="builder"
+extend {
+    from "${source}" as="builder" {}
+    copy "/file" "/file" from="builder"
+}
 `
 	publish := makePlan(t, source, Options{Mode: Publish})
 	invoke := invokePublished(t, publish, Options{Arguments: map[string]string{"source": "ubuntu"}})
@@ -756,11 +877,12 @@ func TestPublishedStageReferencesCannotChange(t *testing.T) {
 }`,
 	} {
 		source := `arg "source" "a"
-from "debian" as="a"
-from "alpine" as="b"
-extend
-` + operation + `
-copy "/other" "/other" from="b"
+extend {
+    from "debian" as="a" {}
+    from "alpine" as="b" {}
+    ` + operation + `
+    copy "/other" "/other" from="b"
+}
 `
 		publish := makePlan(t, source, Options{Mode: Publish})
 		_, err := Instantiate(publish.Component, Options{Arguments: map[string]string{"source": "b"}})
@@ -776,17 +898,20 @@ func TestOperationLocalInputContexts(t *testing.T) {
 		source  string
 		context string
 	}{
-		{Build, `from "debian"
-copy "./local" "/dest"
-add "./archive.tar" "/dest"
-run "cat /src" {
- mount "bind" source="./local" target="/src"
+		{Build, `from "debian" {
+    copy "./local" "/dest"
+    add "./archive.tar" "/dest"
+    run "cat /src" {
+     mount "bind" source="./local" target="/src"
+    }
 }
 `, "build"},
-		{Publish, `package as="assets"
-copy "./local" "/dest"
-extend
-copy "/dest" "/dest" from="assets"
+		{Publish, `package as="assets" {
+    copy "./local" "/dest"
+}
+extend {
+    copy "/dest" "/dest" from="assets"
+}
 `, "publisher"},
 	} {
 		p := makePlan(t, tc.source, Options{Mode: tc.mode})
@@ -800,10 +925,11 @@ copy "/dest" "/dest" from="assets"
 			}
 		}
 	}
-	source := `extend
-copy "./caller-file" "/dest"
-run "cat /src" {
- mount "bind" source="./caller-file" target="/src"
+	source := `extend {
+    copy "./caller-file" "/dest"
+    run "cat /src" {
+     mount "bind" source="./caller-file" target="/src"
+    }
 }
 `
 	publish := makePlan(t, source, Options{Mode: Publish})
@@ -857,7 +983,7 @@ func TestPlannerRejectsInvalidParameterEncoding(t *testing.T) {
 	invalid := string([]byte{0xff})
 	for _, params := range []map[string]string{{invalid: "value"}, {"x": invalid}} {
 		_, err := Create(parse(t, `arg "x" "default"
-from "debian"
+from "debian" {}
 `), Options{Arguments: params})
 		if err == nil || !strings.Contains(err.Error(), "UTF-8") {
 			t.Fatalf("invalid direct argument accepted: %v", err)

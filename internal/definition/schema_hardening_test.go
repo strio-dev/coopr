@@ -15,7 +15,7 @@ func TestQuotedPermissionFormatting(t *testing.T) {
 		{"quoted mode closing brace", `layer { copy "app" "/app" chmod="0755"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			def, err := Parse(strings.NewReader(tc.source))
+			def, err := parseFragment(strings.NewReader(tc.source))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -31,7 +31,7 @@ func TestQuotedPermissionFormatting(t *testing.T) {
 }
 
 func TestQuotedPermissionDefaultsRemainParameterized(t *testing.T) {
-	def, err := Parse(strings.NewReader(`
+	def, err := parseFragment(strings.NewReader(`
 arg "mode" "0755"
 copy "app" "/app" chmod="${mode}"
 add "app" "/other-app" chmod="${mode:-0755}"
@@ -56,10 +56,14 @@ run "true" { mount "secret" target="/run/secret" mode="${secret_mode:-0400}" }
 
 func TestSchemaRejectsStaticTypos(t *testing.T) {
 	for _, tc := range []struct{ source, want string }{
-		{`from "scratch" as="unused"; frobnicate "x"; from "scratch"`, `unknown instruction "frobnicate"`},
+		{`from "scratch" as="unused" {
+     frobnicate "x";
+}
+from "scratch" {}
+`, `unknown instruction "frobnicate"`},
 		{`run "true" netwrok="none"`, `unsupported property "netwrok"`},
 		{`copy "a" "/a" parnets=#true`, `unsupported property "parnets"`},
-		{`from "scratch" platfrom="linux/amd64"`, `unsupported property "platfrom"`},
+		{`from "scratch" platfrom="linux/amd64" {}`, `unsupported property "platfrom"`},
 		{`RUN "true"`, `use "run"`},
 		{`run "true" { mount "cahce" target="/tmp" }`, `mount type "cahce"`},
 		{`run "true" { mount "cache" targte="/tmp" }`, `unsupported property "targte"`},
@@ -68,7 +72,7 @@ func TestSchemaRejectsStaticTypos(t *testing.T) {
 		{`stopsignal "TERM" typo="x"`, `unsupported property "typo"`},
 	} {
 		t.Run(tc.source, func(t *testing.T) {
-			_, err := Parse(strings.NewReader(tc.source))
+			_, err := parseFragment(strings.NewReader(tc.source))
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("Parse error = %v; want %q", err, tc.want)
 			}
@@ -84,8 +88,8 @@ func TestSchemaAllowsDeferredValues(t *testing.T) {
 		`run "true" { mount "bind" target="/tmp" U=#true Z=#true }`,
 		`healthcheck "true" interval="${interval}" retries="${retries}"`,
 	} {
-		if _, err := Parse(strings.NewReader(source)); err != nil {
-			t.Errorf("Parse(%q): %v", source, err)
+		if _, err := parseFragment(strings.NewReader(source)); err != nil {
+			t.Errorf("parseFragment(%q): %v", source, err)
 		}
 	}
 }
@@ -105,7 +109,7 @@ func TestResolvedSchemaRejectsUnresolvedTypedValues(t *testing.T) {
 
 func TestSchemaPropertyErrorsAreDeterministic(t *testing.T) {
 	for range 30 {
-		_, err := Parse(strings.NewReader(`run "true" zzz=#true aaa=#true`))
+		_, err := parseFragment(strings.NewReader(`run "true" zzz=#true aaa=#true`))
 		if err == nil || !strings.Contains(err.Error(), `unsupported property "aaa"`) {
 			t.Fatalf("error = %v", err)
 		}
@@ -118,8 +122,8 @@ func TestPublishedSchemaRejectsStaticTypos(t *testing.T) {
 		{Name: "run", Arguments: []string{"true"}, Properties: map[string]string{"netwrok": "none"}},
 		{Name: "layer", Children: []Instruction{{Name: "copy", Arguments: []string{"a", "/a"}, Properties: map[string]string{"parnets": "true"}}}},
 	} {
-		if err := Validate(&Definition{Instructions: []Instruction{inst}}); err == nil {
-			t.Errorf("Validate(%#v) succeeded", inst)
+		if err := validateFragment(&Definition{Instructions: []Instruction{inst}}); err == nil {
+			t.Errorf("validateFragment(%#v) succeeded", inst)
 		}
 	}
 }
@@ -131,8 +135,8 @@ func TestSchemaLiteralEnumsAndDeferredEnums(t *testing.T) {
 		`run "true" { mount "bind" relabel="typo" target="/src" }`,
 		`run "true" { mount "bind" bind-propagation="typo" target="/src" }`,
 	} {
-		if _, err := Parse(strings.NewReader(source)); err == nil {
-			t.Errorf("Parse(%q) succeeded", source)
+		if _, err := parseFragment(strings.NewReader(source)); err == nil {
+			t.Errorf("parseFragment(%q) succeeded", source)
 		}
 	}
 	for _, source := range []string{
@@ -140,8 +144,8 @@ func TestSchemaLiteralEnumsAndDeferredEnums(t *testing.T) {
 		`run "true" { mount "cache" sharing="${sharing}" target="/cache" }`,
 		`run "true" { mount "bind" relabel="${relabel}" target="/src" }`,
 	} {
-		if _, err := Parse(strings.NewReader(source)); err != nil {
-			t.Errorf("Parse(%q): %v", source, err)
+		if _, err := parseFragment(strings.NewReader(source)); err != nil {
+			t.Errorf("parseFragment(%q): %v", source, err)
 		}
 	}
 }

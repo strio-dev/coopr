@@ -18,6 +18,7 @@ import (
 	"coopr/internal/oci"
 	"coopr/internal/transfer"
 
+	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
@@ -47,11 +48,16 @@ func TestBuildAndCopyToDockerEngine(t *testing.T) {
 			t.Cleanup(func() { removeDockerEngineImages(t, created) })
 			options := build.Options{
 				File: file, Platform: "linux/" + runtime.GOARCH,
-				Tag: "docker:" + name, Format: format, BuildStore: dockerTestStore(storeDir),
+				Tag: name, Format: format, BuildStore: dockerTestStore(storeDir),
 			}
 			got, err := build.Run(ctx, options)
-			if err != nil || (len(got.References) != 1 || got.References[0] != "docker:"+name) {
-				t.Fatalf("build directly into Docker: result=%q error=%v", got, err)
+			if err != nil || len(got.References) != 1 || got.References[0] != name {
+				t.Fatalf("build local image: result=%q error=%v", got, err)
+			}
+			copied, err := transfer.Copy(ctx, oci.Image, name, transfer.Destination{Transport: "docker", Name: name}, transfer.Options{BuildStore: dockerTestStore(storeDir)})
+			copiedDigest, named := strings.CutPrefix(copied, "docker-daemon:"+name+"@")
+			if err != nil || !named || digest.Digest(copiedDigest).Validate() != nil {
+				t.Fatalf("copy build into Docker: result=%q error=%v", copied, err)
 			}
 			created = append(created, name)
 			localName := "coopr-docker-source-" + marker + "-" + format + ":latest"
@@ -59,7 +65,7 @@ func TestBuildAndCopyToDockerEngine(t *testing.T) {
 			if _, err := build.Run(ctx, options); err != nil {
 				t.Fatalf("build local image for later Docker copy: %v", err)
 			}
-			destination, err := transfer.ParseDestination("docker:"+copiedName, oci.Image)
+			destination, err := transfer.ParseDestination("docker-daemon:"+copiedName, oci.Image)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -141,11 +147,12 @@ func main() {
 		}
 	}
 	file := filepath.Join(work, "image.coopr")
-	if err := os.WriteFile(file, []byte(`from "scratch"
-arg "TARGETARCH"
-copy "proof-$TARGETARCH" "/proof" chmod="0755"
-run network="none" { exec "/proof" }
-cmd { exec "/proof" }
+	if err := os.WriteFile(file, []byte(`from "scratch" {
+    arg "TARGETARCH"
+    copy "proof-$TARGETARCH" "/proof" chmod="0755"
+    run network="none" { exec "/proof" }
+    cmd { exec "/proof" }
+}
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -157,16 +164,21 @@ cmd { exec "/proof" }
 			var created []string
 			t.Cleanup(func() { removeDockerEngineImages(t, created) })
 			options := build.Options{File: file, BuildStore: dockerTestStore(storeDir), Format: format,
-				Platforms: []string{"linux/amd64", "linux/arm64"}, Tag: "docker:" + name}
+				Platforms: []string{"linux/amd64", "linux/arm64"}, Tag: name}
 			got, err := build.Run(ctx, options)
+			if err != nil || len(got.References) != 1 || got.References[0] != name {
+				t.Fatalf("build local multi-platform image: %q, %v", got, err)
+			}
+			copied, err := transfer.Copy(ctx, oci.Image, name, transfer.Destination{Transport: "docker", Name: name}, transfer.Options{BuildStore: dockerTestStore(storeDir)})
 			if !modern {
 				if err == nil || !strings.Contains(err.Error(), "classic image store") {
-					t.Fatalf("classic Docker must reject a complete index: %q, %v", got, err)
+					t.Fatalf("classic Docker must reject a complete index: %q, %v", copied, err)
 				}
 				return
 			}
-			if err != nil || (len(got.References) != 1 || got.References[0] != "docker:"+name) {
-				t.Fatalf("build multi-platform image into Docker: %q, %v", got, err)
+			copiedDigest, named := strings.CutPrefix(copied, "docker-daemon:"+name+"@")
+			if err != nil || !named || digest.Digest(copiedDigest).Validate() != nil {
+				t.Fatalf("copy multi-platform build into Docker: %q, %v", copied, err)
 			}
 			created = append(created, name)
 			options.Tag = "coopr-docker-source-" + marker + "-" + format + ":latest"
@@ -174,6 +186,9 @@ cmd { exec "/proof" }
 				t.Fatal(err)
 			}
 			root := exportDockerTestImage(t, ctx, dockerTestStore(storeDir), options.Tag)
+			if copiedDigest != root.Digest.String() {
+				t.Fatalf("copied index digest %s differs from exported index %s", copiedDigest, root.Digest)
+			}
 			copiedName := name + "-copy"
 			if _, err := transfer.Copy(ctx, oci.Image, options.Tag, transfer.Destination{Transport: "docker", Name: copiedName}, transfer.Options{BuildStore: dockerTestStore(storeDir)}); err != nil {
 				t.Fatalf("copy complete local index into Docker: %v", err)

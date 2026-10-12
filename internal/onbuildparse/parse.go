@@ -297,7 +297,7 @@ func parse(raw string, expand, expandRaw Expander, retainExpansion, deferMounts 
 	for _, inst := range result {
 		var err error
 		if retainExpansion {
-			err = definition.Validate(&definition.Definition{Instructions: []definition.Instruction{inst}})
+			err = definition.ValidateOperation(inst)
 		} else {
 			err = definition.ValidateResolved(inst)
 		}

@@ -131,7 +131,7 @@ func TestOnBuildMetadataRejectsUnknownOrInstructionSpecificProperties(t *testing
 		`onbuild { expose 80 typo="x" }`,
 		`onbuild { volume "/data" typo="x" }`,
 	} {
-		_, err := definition.Parse(strings.NewReader(source))
+		_, err := parseFragment(strings.NewReader(source))
 		if err == nil || !strings.Contains(err.Error(), "unsupported property") {
 			t.Errorf("Parse(%q) error = %v, want unsupported property", source, err)
 		}
@@ -140,7 +140,7 @@ func TestOnBuildMetadataRejectsUnknownOrInstructionSpecificProperties(t *testing
 
 func parseOnBuildRoundTrip(t *testing.T, child string) (string, []definition.Instruction) {
 	t.Helper()
-	parsed, err := definition.Parse(strings.NewReader("onbuild {\n" + child + "\n}"))
+	parsed, err := parseFragment(strings.NewReader("onbuild {\n" + child + "\n}"))
 	if err != nil {
 		t.Fatal(err)
 	}

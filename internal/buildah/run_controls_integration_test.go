@@ -26,8 +26,9 @@ func TestBuildDefinitionAppliesProxyDNSShmAndUlimitControls(t *testing.T) {
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	base := newLiveBusyBoxStorage(t, ctx, root, store)
 	def, err := definition.Parse(strings.NewReader(fmt.Sprintf(`
-from %q
-run "set -e; test \"$HTTP_PROXY\" = http://host-proxy.example:3128; /bin/busybox grep -q '^nameserver 203.0.113.53$' /etc/resolv.conf; test \"$(ulimit -n)\" = 512; test \"$(/bin/busybox df -k /dev/shm | /bin/busybox awk 'NR == 2 { print $2 }')\" -ge 16384; printf ready >/proof" network="default"
+from %q {
+    run "set -e; test \"$HTTP_PROXY\" = http://host-proxy.example:3128; /bin/busybox grep -q '^nameserver 203.0.113.53$' /etc/resolv.conf; test \"$(ulimit -n)\" = 512; test \"$(/bin/busybox df -k /dev/shm | /bin/busybox awk 'NR == 2 { print $2 }')\" -ge 16384; printf ready >/proof" network="default"
+}
 `, base.reference)))
 	if err != nil {
 		t.Fatal(err)
@@ -64,8 +65,9 @@ func TestBuildDefinitionMemoryCPUControlsEnforceOrRejectHost(t *testing.T) {
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	base := newLiveBusyBoxStorage(t, ctx, root, store)
 	def, err := definition.Parse(strings.NewReader(fmt.Sprintf(`
-from %q
-run "set -ex; cat /proc/self/cgroup; cgroup=$( /bin/busybox awk -F: '$1 == 0 { print $3 }' /proc/self/cgroup ); test \"$(cat /sys/fs/cgroup$cgroup/memory.max)\" = 67108864; test \"$(cat /sys/fs/cgroup$cgroup/cpu.max)\" = '5000 10000'; printf enforced >/proof" network="none"
+from %q {
+    run "set -ex; cat /proc/self/cgroup; cgroup=$( /bin/busybox awk -F: '$1 == 0 { print $3 }' /proc/self/cgroup ); test \"$(cat /sys/fs/cgroup$cgroup/memory.max)\" = 67108864; test \"$(cat /sys/fs/cgroup$cgroup/cpu.max)\" = '5000 10000'; printf enforced >/proof" network="none"
+}
 `, base.reference)))
 	if err != nil {
 		t.Fatal(err)
@@ -111,8 +113,9 @@ func TestBuildDefinitionAppliesBuildWideHostVolume(t *testing.T) {
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	base := newLiveBusyBoxStorage(t, ctx, root, store)
 	def, err := definition.Parse(strings.NewReader(fmt.Sprintf(`
-from %q
-run "set -e; test \"$(cat /host-input/message)\" = mounted; printf ready >/proof" network="none"
+from %q {
+    run "set -e; test \"$(cat /host-input/message)\" = mounted; printf ready >/proof" network="none"
+}
 `, base.reference)))
 	if err != nil {
 		t.Fatal(err)
@@ -147,8 +150,9 @@ func TestBuildDefinitionDisablesGeneratedHostFiles(t *testing.T) {
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	base := newLiveBusyBoxStorage(t, ctx, root, store)
 	def, err := definition.Parse(strings.NewReader(fmt.Sprintf(`
-from %q
-run "set -e; test ! -e /etc/hostname; test ! -e /etc/hosts; printf ready >/proof" network="none"
+from %q {
+    run "set -e; test ! -e /etc/hostname; test ! -e /etc/hosts; printf ready >/proof" network="none"
+}
 `, base.reference)))
 	if err != nil {
 		t.Fatal(err)
@@ -189,8 +193,9 @@ func TestBuildDefinitionUsesContainersConfigRuntimeDefaults(t *testing.T) {
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	base := newLiveBusyBoxStorage(t, ctx, root, store)
 	def, err := definition.Parse(strings.NewReader(fmt.Sprintf(`
-from %q
-run "set -e; test \"$(ulimit -n)\" = 333; test \"$(/bin/busybox df -k /dev/shm | /bin/busybox awk 'NR == 2 { print $2 }')\" -ge 12288; printf ready >/proof" network="none"
+from %q {
+    run "set -e; test \"$(ulimit -n)\" = 333; test \"$(/bin/busybox df -k /dev/shm | /bin/busybox awk 'NR == 2 { print $2 }')\" -ge 12288; printf ready >/proof" network="none"
+}
 `, base.reference)))
 	if err != nil {
 		t.Fatal(err)
@@ -228,7 +233,10 @@ func TestBuildDefinitionExecutesNativeBuildNetworkModes(t *testing.T) {
 			root := t.TempDir()
 			store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 			base := newLiveBusyBoxStorage(t, ctx, root, store)
-			def, err := definition.Parse(strings.NewReader(fmt.Sprintf("from %q\nrun \"printf ready >/proof\"\n", base.reference)))
+			def, err := definition.Parse(strings.NewReader(fmt.Sprintf(`from %q {
+    run "printf ready >/proof"
+}
+`, base.reference)))
 			if err != nil {
 				t.Fatal(err)
 			}

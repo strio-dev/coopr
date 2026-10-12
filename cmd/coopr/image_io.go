@@ -15,6 +15,7 @@ import (
 
 	"github.com/containerd/platforms"
 	"github.com/docker/go-units"
+	"github.com/opencontainers/go-digest"
 	"github.com/spf13/cobra"
 	"go.podman.io/common/libimage"
 	"go.podman.io/common/pkg/download"
@@ -93,12 +94,11 @@ func newImagePushCommand() *cobra.Command {
 	var pushOptions pushTransferFlags
 	var platformValue, digestFile string
 	var quiet bool
-	cmd := imageIOCommand("push <image> [destination]", "Push a local image to a registry", cobra.RangeArgs(1, 2), func(cmd *cobra.Command, args []string) error {
+	cmd := imageIOCommand("push <image> [destination]", "Push a local image to a destination", cobra.RangeArgs(1, 2), func(cmd *cobra.Command, args []string) error {
 		target := args[0]
 		if len(args) == 2 {
 			target = args[1]
 		}
-		target = strings.TrimPrefix(target, "docker://")
 		destination, err := transfer.ParsePushDestination(target, oci.Image)
 		if err != nil {
 			return err
@@ -129,11 +129,15 @@ func newImagePushCommand() *cobra.Command {
 			return err
 		}
 		if digestFile != "" {
-			_, digest, found := strings.Cut(result, "@")
-			if !found {
+			separator := strings.LastIndex(result, "@")
+			if separator < 0 {
 				return fmt.Errorf("push result has no digest: %s", result)
 			}
-			if err := os.WriteFile(digestFile, []byte(digest), 0o644); err != nil {
+			value := result[separator+1:]
+			if _, err := digest.Parse(value); err != nil {
+				return fmt.Errorf("invalid pushed manifest digest %q: %w", value, err)
+			}
+			if err := os.WriteFile(digestFile, []byte(value), 0o644); err != nil {
 				return err
 			}
 		}
@@ -150,10 +154,10 @@ func newImagePushCommand() *cobra.Command {
 }
 
 func newImageTagCommand() *cobra.Command {
-	return imageIOCommand("tag <image> <name>...", "Add local names to a stored image", cobra.MinimumNArgs(2), func(cmd *cobra.Command, args []string) error {
+	cmd := imageIOCommand("tag <image> <name>...", "Add local names to a stored image", cobra.MinimumNArgs(2), func(cmd *cobra.Command, args []string) error {
 		destinations := make([]transfer.Destination, 0, len(args)-1)
 		for _, name := range args[1:] {
-			destination, err := transfer.ParseDestination("local:"+name, oci.Image)
+			destination, err := transfer.ParseTag(name, oci.Image)
 			if err != nil {
 				return err
 			}
@@ -171,6 +175,8 @@ func newImageTagCommand() *cobra.Command {
 		}
 		return nil
 	})
+	cmd.Aliases = []string{"copy"}
+	return cmd
 }
 
 func newImageSaveCommand() *cobra.Command {

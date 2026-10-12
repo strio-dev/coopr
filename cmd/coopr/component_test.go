@@ -14,7 +14,8 @@ import (
 )
 
 func TestComponentBuildCommandValidation(t *testing.T) {
-	file := definitionFile(t, "extend as=\"base\"\n")
+	file := definitionFile(t, `extend as="base" {}
+`)
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -155,7 +156,10 @@ func TestComponentBuildPushCommandLive(t *testing.T) {
 	server := httptest.NewServer(registry.New())
 	defer server.Close()
 	ref := strings.TrimPrefix(server.URL, "http://") + "/coopr/cli:stable"
-	file := definitionFile(t, "extend as=\"base\"\nenv FROM_CLI=\"yes\"\n")
+	file := definitionFile(t, `extend as="base" {
+    env FROM_CLI="yes"
+}
+`)
 	var output, stderr bytes.Buffer
 	code := run([]string{"component", "build", file, "--push", "--tag", ref, "--tls-verify=false", "--platform", "linux/amd64"}, &output, &stderr)
 	if code != 0 {
@@ -180,7 +184,10 @@ func TestComponentBuildRegistryTLSPolicyCommandLive(t *testing.T) {
 	t.Setenv("CONTAINERS_REGISTRIES_CONF", config)
 	sysregistriesv2.InvalidateCache()
 	t.Cleanup(sysregistriesv2.InvalidateCache)
-	file := definitionFile(t, "extend\nenv registry_policy=\"native\"\n")
+	file := definitionFile(t, `extend {
+    env registry_policy="native"
+}
+`)
 	for _, test := range []struct {
 		name        string
 		flag        string
@@ -208,17 +215,27 @@ func TestComponentBuildArchiveCommandLive(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live Buildah tests in short mode")
 	}
-	file := definitionFile(t, "package as=\"payload\"\ncopy \"source\" \"/payload\"\nextend as=\"base\"\ncopy \"/payload\" \"/installed\" from=\"payload\"\n")
+	file := definitionFile(t, `package as="payload" {
+    copy "source" "/payload"
+}
+extend as="base" {
+    copy "/payload" "/installed" from="payload"
+}
+`)
 	if err := os.WriteFile(filepath.Join(filepath.Dir(file), "source"), []byte("archived\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	archive := filepath.Join(t.TempDir(), "component.oci.tar")
 	var output, stderr bytes.Buffer
-	if code := run([]string{"component", "build", file, "--tag", "oci-archive:" + archive, "--platform", "linux/amd64"}, &output, &stderr); code != 0 {
+	if code := run([]string{"component", "build", file, "--tag", "component-archive", "--platform", "linux/amd64"}, &output, &stderr); code != 0 {
 		t.Fatalf("CLI component archive failed: %s", stderr.String())
 	}
-	if got := strings.TrimSpace(output.String()); got != archive {
-		t.Fatalf("CLI component archive printed %q, want %q", got, archive)
+	output.Reset()
+	if code := run([]string{"component", "save", "component-archive", "--output", archive}, &output, &stderr); code != 0 {
+		t.Fatalf("CLI component save failed: %s", &stderr)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("CLI component save printed %q", &output)
 	}
 	if info, err := os.Stat(archive); err != nil || info.Size() == 0 {
 		t.Fatalf("component archive is missing or empty: %v", err)
@@ -250,7 +267,13 @@ func TestComponentBuildLocalThenInvokeCommandLive(t *testing.T) {
 		}
 	})
 	t.Setenv("XDG_DATA_HOME", dataDir)
-	component := definitionFile(t, "package as=\"pkg\"\ncopy \"source\" \"/payload\"\nextend as=\"base\"\ncopy \"/payload\" \"/installed\" from=\"pkg\"\n")
+	component := definitionFile(t, `package as="pkg" {
+    copy "source" "/payload"
+}
+extend as="base" {
+    copy "/payload" "/installed" from="pkg"
+}
+`)
 	source := filepath.Join(filepath.Dir(component), "source")
 	if err := os.WriteFile(source, []byte("local component\n"), 0600); err != nil {
 		t.Fatal(err)
@@ -266,13 +289,19 @@ func TestComponentBuildLocalThenInvokeCommandLive(t *testing.T) {
 	if err := os.Remove(source); err != nil {
 		t.Fatal(err)
 	}
-	app := definitionFile(t, "from \"scratch\"\ncomponent \""+ref+"\"\n")
+	app := definitionFile(t, `from "scratch" {
+    component "`+ref+`"
+}
+`)
 	archive := filepath.Join(t.TempDir(), "app.oci.tar")
 	cacheDir := filepath.Join(dataDir, "component-cache")
 	output.Reset()
 	stderr.Reset()
-	if code := run([]string{"build", app, "--tag", "oci-archive:" + archive, "--cache-from", "type=local,src=" + cacheDir, "--cache-to", "type=local,dest=" + cacheDir, "--platform", "linux/amd64"}, &output, &stderr); code != 0 {
+	if code := run([]string{"build", app, "--tag", "component-consumer", "--cache-from", "type=local,src=" + cacheDir, "--cache-to", "type=local,dest=" + cacheDir, "--platform", "linux/amd64"}, &output, &stderr); code != 0 {
 		t.Fatalf("local component invocation failed: %s", stderr.String())
+	}
+	if code := run([]string{"save", "--quiet", "--format", "oci-archive", "--output", archive, "component-consumer"}, &bytes.Buffer{}, &stderr); code != 0 {
+		t.Fatalf("component consumer save failed: %s", &stderr)
 	}
 	if info, err := os.Stat(archive); err != nil || info.Size() == 0 {
 		t.Fatalf("invocation did not produce an OCI archive: %v", err)
@@ -283,8 +312,11 @@ func TestComponentBuildLocalThenInvokeCommandLive(t *testing.T) {
 	secondArchive := filepath.Join(t.TempDir(), "cached-app.oci.tar")
 	output.Reset()
 	stderr.Reset()
-	if code := run([]string{"build", app, "--tag", "oci-archive:" + secondArchive, "--cache-from", "type=local,src=" + cacheDir, "--cache-to", "type=local,dest=" + cacheDir, "--platform", "linux/amd64"}, &output, &stderr); code != 0 {
+	if code := run([]string{"build", app, "--tag", "component-consumer", "--cache-from", "type=local,src=" + cacheDir, "--cache-to", "type=local,dest=" + cacheDir, "--platform", "linux/amd64"}, &output, &stderr); code != 0 {
 		t.Fatalf("second component invocation with CLI cache failed: %s", stderr.String())
+	}
+	if code := run([]string{"save", "--quiet", "--format", "oci-archive", "--output", secondArchive, "component-consumer"}, &bytes.Buffer{}, &stderr); code != 0 {
+		t.Fatalf("cached component consumer save failed: %s", &stderr)
 	}
 	if info, err := os.Stat(secondArchive); err != nil || info.Size() == 0 {
 		t.Fatalf("second invocation did not produce an OCI archive: %v", err)

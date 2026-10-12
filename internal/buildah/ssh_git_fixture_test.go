@@ -127,7 +127,10 @@ func TestBuildPlanAddsSSHGitSourceWithPinnedHostKey(t *testing.T) {
 	layout := filepath.Join(root, "layout")
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	plan := testPlan(t, "from \"scratch\"\nadd \""+source+"#main\" \"/source/\"\n")
+	plan := testPlan(t, `from "scratch" {
+    add "`+source+`#main" "/source/"
+}
+`)
 	if _, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 		Store: cacheTestStore(root), ContextDir: root, Isolation: "rootless", Runtime: "crun", Output: Output{Path: layout},
 		Secrets: []string{"id=GIT_KNOWN_HOSTS.127.0.0.1,src=" + knownHostsPath},

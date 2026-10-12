@@ -79,17 +79,23 @@ func localComponentLastFile(t *testing.T, layout, name string) string {
 func TestLocalComponentSharedByContainersRunsAgainstCaller(t *testing.T) {
 	f := newLocalComponentFixture(t)
 	base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
-	f.write(t, "components/shared.coopr", `package as="assets"
-copy "payload" "/payload"
-extend
-copy "/payload" "/payload" from="assets"
-copy "caller" "/call-context"
-run "cat /caller /call-context /payload > /proof" network="none"
+	f.write(t, "components/shared.coopr", `package as="assets" {
+    copy "payload" "/payload"
+}
+extend {
+    copy "/payload" "/payload" from="assets"
+    copy "caller" "/call-context"
+    run "cat /caller /call-context /payload > /proof" network="none"
+}
 `)
 	f.write(t, "payload", "shared\n")
 	for _, caller := range []string{"first", "second"} {
 		f.write(t, "caller", caller+"\n")
-		_, layout := f.build(t, caller, fmt.Sprintf("from %q\ncopy \"caller\" \"/caller\"\ncomponent \"./components/shared.coopr\"\n", base.reference))
+		_, layout := f.build(t, caller, fmt.Sprintf(`from %q {
+    copy "caller" "/caller"
+    component "./components/shared.coopr"
+}
+`, base.reference))
 		if got := localComponentLastFile(t, layout, "proof"); got != caller+"\n"+caller+"\nshared\n" {
 			t.Fatalf("caller proof = %q", got)
 		}
@@ -98,15 +104,20 @@ run "cat /caller /call-context /payload > /proof" network="none"
 
 func TestLocalComponentInvalidatesDefinitionAndPackageInputs(t *testing.T) {
 	f := newLocalComponentFixture(t)
-	definition := `package as="assets"
-copy "payload" "/payload"
-extend
-copy "/payload" "/payload" from="assets"
-env revision="one"
+	definition := `package as="assets" {
+    copy "payload" "/payload"
+}
+extend {
+    copy "/payload" "/payload" from="assets"
+    env revision="one"
+}
 `
 	f.write(t, "shared.coopr", definition)
 	f.write(t, "payload", "one")
-	source := "from \"scratch\"\ncomponent \"./shared.coopr\"\n"
+	source := `from "scratch" {
+    component "./shared.coopr"
+}
+`
 	cold, _ := f.build(t, "cold", source)
 	warm, warmLayout := f.build(t, "warm", source)
 	if cold.CacheStats.Stored == 0 || warm.CacheStats.Hits == 0 {
@@ -134,20 +145,29 @@ func TestLocalComponentParametersRemainDistinctInParallelBranches(t *testing.T) 
 	f.write(t, "left", "left payload")
 	f.write(t, "right", "right payload")
 	f.write(t, "shared.coopr", `arg "value" "default"
-package as="assets"
-arg "value"
-copy "$value" "/payload"
-extend
-arg "value"
-copy "/payload" "/$value" from="assets"
+package as="assets" {
+    arg "value"
+    copy "$value" "/payload"
+}
+extend {
+    arg "value"
+    copy "/payload" "/$value" from="assets"
+}
 `)
-	_, layout := f.build(t, "parallel", `from "scratch" as="left"
-component "./shared.coopr" value="left"
-from "scratch" as="right"
-component "./shared.coopr" value="right"
-from "scratch"
-copy "/left" "/left" from="left"
-copy "/right" "/right" from="right"
+	_, layout := f.build(t, "parallel", `from "scratch" as="left" {
+    component "./shared.coopr" {
+        arg "value" "left"
+    }
+}
+from "scratch" as="right" {
+    component "./shared.coopr" {
+        arg "value" "right"
+    }
+}
+from "scratch" {
+    copy "/left" "/left" from="left"
+    copy "/right" "/right" from="right"
+}
 `)
 	// The final COPY layer contains only right; left is in the preceding layer.
 	manifest, _ := readPlanImage(t, layout)
@@ -161,9 +181,18 @@ copy "/right" "/right" from="right"
 
 func TestLocalComponentNestedReferencesUseContextRoot(t *testing.T) {
 	f := newLocalComponentFixture(t)
-	f.write(t, "nested/outer.coopr", "extend\ncomponent \"./nested/inner.coopr\"\n")
-	f.write(t, "nested/inner.coopr", "extend\nenv nested=\"yes\"\n")
-	_, layout := f.build(t, "nested", "from \"scratch\"\ncomponent \"./nested/outer.coopr\"\n")
+	f.write(t, "nested/outer.coopr", `extend {
+    component "./nested/inner.coopr"
+}
+`)
+	f.write(t, "nested/inner.coopr", `extend {
+    env nested="yes"
+}
+`)
+	_, layout := f.build(t, "nested", `from "scratch" {
+    component "./nested/outer.coopr"
+}
+`)
 	_, image := readPlanImage(t, layout)
 	if strings.Join(image.Config.Env, "\n") != "nested=yes" {
 		t.Fatalf("nested config = %v", image.Config.Env)
@@ -173,19 +202,35 @@ func TestLocalComponentNestedReferencesUseContextRoot(t *testing.T) {
 func TestLocalComponentIdenticalDefinitionsCanFormFinitePackageGraph(t *testing.T) {
 	f := newLocalComponentFixture(t)
 	f.write(t, "proof", "finite graph")
-	f.write(t, "leaf.coopr", "package as=\"files\"\ncopy \"proof\" \"/proof\"\nextend\ncopy \"/proof\" \"/proof\" from=\"files\"\n")
+	f.write(t, "leaf.coopr", `package as="files" {
+    copy "proof" "/proof"
+}
+extend {
+    copy "/proof" "/proof" from="files"
+}
+`)
 	const wrapper = `arg "next" "./leaf.coopr"
-from "scratch" as="producer"
-arg "next"
-component "${next}" next="./leaf.coopr"
-package as="payload"
-copy "/proof" "/proof" from="producer"
-extend
-copy "/proof" "/proof" from="payload"
+from "scratch" as="producer" {
+    arg "next"
+    component "${next}" {
+        arg "next" "./leaf.coopr"
+    }
+}
+package as="payload" {
+    copy "/proof" "/proof" from="producer"
+}
+extend {
+    copy "/proof" "/proof" from="payload"
+}
 `
 	f.write(t, "a.coopr", wrapper)
 	f.write(t, "b.coopr", wrapper)
-	_, layout := f.build(t, "finite", "from \"scratch\"\ncomponent \"./a.coopr\" next=\"./b.coopr\"\n")
+	_, layout := f.build(t, "finite", `from "scratch" {
+    component "./a.coopr" {
+        arg "next" "./b.coopr"
+    }
+}
+`)
 	if got := localComponentLastFile(t, layout, "proof"); got != "finite graph" {
 		t.Fatalf("finite graph proof = %q", got)
 	}
@@ -195,10 +240,16 @@ func TestLocalComponentCyclesIncludeAliasedPaths(t *testing.T) {
 	for _, reference := range []string{"./cycle.coopr", "./nested/../cycle.coopr"} {
 		t.Run(reference, func(t *testing.T) {
 			f := newLocalComponentFixture(t)
-			f.write(t, "cycle.coopr", fmt.Sprintf("extend\ncomponent %q\n", reference))
+			f.write(t, "cycle.coopr", fmt.Sprintf(`extend {
+    component %q
+}
+`, reference))
 			options := f.options
 			options.Output = Output{Path: filepath.Join(f.root, "result")}
-			_, err := BuildPlan(f.ctx, testPlan(t, "from \"scratch\"\ncomponent \"./cycle.coopr\"\n"), options)
+			_, err := BuildPlan(f.ctx, testPlan(t, `from "scratch" {
+    component "./cycle.coopr"
+}
+`), options)
 			if err == nil || !strings.Contains(err.Error(), "component invocation cycle at") {
 				t.Fatalf("cycle error = %v", err)
 			}
@@ -210,12 +261,21 @@ func TestLocalComponentHonorsIgnoredDefinitionsAndPayloads(t *testing.T) {
 	for _, ignored := range []string{"shared.coopr", "payload"} {
 		t.Run(ignored, func(t *testing.T) {
 			f := newLocalComponentFixture(t)
-			f.write(t, "shared.coopr", "package as=\"assets\"\ncopy \"payload\" \"/payload\"\nextend\ncopy \"/payload\" \"/payload\" from=\"assets\"\n")
+			f.write(t, "shared.coopr", `package as="assets" {
+    copy "payload" "/payload"
+}
+extend {
+    copy "/payload" "/payload" from="assets"
+}
+`)
 			f.write(t, "payload", "secret")
 			f.write(t, ".containerignore", ignored+"\n")
 			options := f.options
 			options.Output = Output{Path: filepath.Join(f.root, "result")}
-			_, err := BuildPlan(f.ctx, testPlan(t, "from \"scratch\"\ncomponent \"./shared.coopr\"\n"), options)
+			_, err := BuildPlan(f.ctx, testPlan(t, `from "scratch" {
+    component "./shared.coopr"
+}
+`), options)
 			if err == nil {
 				t.Fatalf("ignored %s was consumed", ignored)
 			}
@@ -225,10 +285,17 @@ func TestLocalComponentHonorsIgnoredDefinitionsAndPayloads(t *testing.T) {
 
 func TestLocalComponentPathsFollowCopyNormalization(t *testing.T) {
 	f := newLocalComponentFixture(t)
-	f.write(t, "shared.coopr", "extend\nenv selected=\"context-root\"\n")
+	f.write(t, "shared.coopr", `extend {
+    env selected="context-root"
+}
+`)
 	for index, reference := range []string{"./shared.coopr", "/shared.coopr", "../shared.coopr", "./missing/../shared.coopr"} {
 		t.Run(reference, func(t *testing.T) {
-			_, layout := f.build(t, fmt.Sprintf("normalized-%d", index), fmt.Sprintf("from \"scratch\"\ncopy %q \"/definition\"\ncomponent %q\n", reference, reference))
+			_, layout := f.build(t, fmt.Sprintf("normalized-%d", index), fmt.Sprintf(`from "scratch" {
+    copy %q "/definition"
+    component %q
+}
+`, reference, reference))
 			_, image := readPlanImage(t, layout)
 			if strings.Join(image.Config.Env, "\n") != "selected=context-root" {
 				t.Fatalf("%s config = %v", reference, image.Config.Env)
@@ -240,7 +307,10 @@ func TestLocalComponentPathsFollowCopyNormalization(t *testing.T) {
 func TestLocalComponentSymlinkCannotConsumeOutsideContext(t *testing.T) {
 	f := newLocalComponentFixture(t)
 	outside := filepath.Join(f.root, "outside.coopr")
-	if err := os.WriteFile(outside, []byte("extend\nenv leaked=\"yes\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(outside, []byte(`extend {
+    env leaked="yes"
+}
+`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(outside, filepath.Join(f.contextDir, "linked.coopr")); err != nil {
@@ -248,7 +318,10 @@ func TestLocalComponentSymlinkCannotConsumeOutsideContext(t *testing.T) {
 	}
 	options := f.options
 	options.Output = Output{Path: filepath.Join(f.root, "result")}
-	_, err := BuildPlan(f.ctx, testPlan(t, "from \"scratch\"\ncomponent \"./linked.coopr\"\n"), options)
+	_, err := BuildPlan(f.ctx, testPlan(t, `from "scratch" {
+    component "./linked.coopr"
+}
+`), options)
 	if err == nil {
 		t.Fatal("component consumed a symlink target outside its COPY context")
 	}
@@ -256,12 +329,21 @@ func TestLocalComponentSymlinkCannotConsumeOutsideContext(t *testing.T) {
 
 func TestLocalComponentSupervisedBuildPackagesWithoutPrebuild(t *testing.T) {
 	f := newLocalComponentFixture(t)
-	f.write(t, "components/shared.coopr", "package as=\"assets\"\ncopy \"payload\" \"/payload\"\nextend\ncopy \"/payload\" \"/payload\" from=\"assets\"\n")
+	f.write(t, "components/shared.coopr", `package as="assets" {
+    copy "payload" "/payload"
+}
+extend {
+    copy "/payload" "/payload" from="assets"
+}
+`)
 	f.write(t, "payload", "supervised payload")
 	// A conflicting file beside the component must not replace the caller context.
 	f.write(t, "components/payload", "wrong definition-directory payload")
 	layout := filepath.Join(f.root, "supervised")
-	_, err := BuildDefinitionSupervised(f.ctx, parseWorkerDefinition(t, "from \"scratch\"\ncomponent \"./components/shared.coopr\"\n"), planner.Options{Mode: planner.Build}, SupervisedPlanOptions{
+	_, err := BuildDefinitionSupervised(f.ctx, parseWorkerDefinition(t, `from "scratch" {
+    component "./components/shared.coopr"
+}
+`), planner.Options{Mode: planner.Build}, SupervisedPlanOptions{
 		Store: f.options.Store, ContextDir: f.contextDir, Isolation: "rootless", Runtime: "crun", Output: Output{Path: layout},
 		ComponentStoreDir: filepath.Join(f.root, "components"),
 		CacheLocalDir:     f.options.CacheLocalDir, SignaturePolicyPath: f.options.SystemContext.SignaturePolicyPath,
@@ -276,11 +358,18 @@ func TestLocalComponentSupervisedBuildPackagesWithoutPrebuild(t *testing.T) {
 
 func TestLocalComponentInternalSymlinkResolvesLikeCopy(t *testing.T) {
 	f := newLocalComponentFixture(t)
-	f.write(t, "shared.coopr", "extend\nenv symlink=\"resolved\"\n")
+	f.write(t, "shared.coopr", `extend {
+    env symlink="resolved"
+}
+`)
 	if err := os.Symlink("shared.coopr", filepath.Join(f.contextDir, "linked.coopr")); err != nil {
 		t.Fatal(err)
 	}
-	_, layout := f.build(t, "internal-symlink", "from \"scratch\"\ncopy \"linked.coopr\" \"/definition\"\ncomponent \"./linked.coopr\"\n")
+	_, layout := f.build(t, "internal-symlink", `from "scratch" {
+    copy "linked.coopr" "/definition"
+    component "./linked.coopr"
+}
+`)
 	_, image := readPlanImage(t, layout)
 	if strings.Join(image.Config.Env, "\n") != "symlink=resolved" {
 		t.Fatalf("internal symlink component config = %v", image.Config.Env)
@@ -289,10 +378,22 @@ func TestLocalComponentInternalSymlinkResolvesLikeCopy(t *testing.T) {
 
 func TestLocalComponentPackageProductionCycleFails(t *testing.T) {
 	f := newLocalComponentFixture(t)
-	f.write(t, "cycle.coopr", "from \"scratch\" as=\"producer\"\ncomponent \"./cycle.coopr\"\npackage as=\"assets\"\ncopy \"/payload\" \"/payload\" from=\"producer\"\nextend\ncopy \"/payload\" \"/payload\" from=\"assets\"\n")
+	f.write(t, "cycle.coopr", `from "scratch" as="producer" {
+    component "./cycle.coopr"
+}
+package as="assets" {
+    copy "/payload" "/payload" from="producer"
+}
+extend {
+    copy "/payload" "/payload" from="assets"
+}
+`)
 	options := f.options
 	options.Output = Output{Path: filepath.Join(f.root, "result")}
-	_, err := BuildPlan(f.ctx, testPlan(t, "from \"scratch\"\ncomponent \"./cycle.coopr\"\n"), options)
+	_, err := BuildPlan(f.ctx, testPlan(t, `from "scratch" {
+    component "./cycle.coopr"
+}
+`), options)
 	if err == nil || !strings.Contains(err.Error(), "component invocation cycle at") {
 		t.Fatalf("package production cycle error = %v", err)
 	}
@@ -301,9 +402,24 @@ func TestLocalComponentPackageProductionCycleFails(t *testing.T) {
 func TestLocalComponentPackageProducerConsumesNestedComponent(t *testing.T) {
 	f := newLocalComponentFixture(t)
 	f.write(t, "payload", "nested package producer")
-	f.write(t, "inner.coopr", "extend\ncopy \"payload\" \"/payload\"\n")
-	f.write(t, "outer.coopr", "from \"scratch\" as=\"producer\"\ncomponent \"./inner.coopr\"\npackage as=\"assets\"\ncopy \"/payload\" \"/payload\" from=\"producer\"\nextend\ncopy \"/payload\" \"/payload\" from=\"assets\"\n")
-	_, layout := f.build(t, "nested-producer", "from \"scratch\"\ncomponent \"./outer.coopr\"\n")
+	f.write(t, "inner.coopr", `extend {
+    copy "payload" "/payload"
+}
+`)
+	f.write(t, "outer.coopr", `from "scratch" as="producer" {
+    component "./inner.coopr"
+}
+package as="assets" {
+    copy "/payload" "/payload" from="producer"
+}
+extend {
+    copy "/payload" "/payload" from="assets"
+}
+`)
+	_, layout := f.build(t, "nested-producer", `from "scratch" {
+    component "./outer.coopr"
+}
+`)
 	if got := localComponentLastFile(t, layout, "payload"); got != "nested package producer" {
 		t.Fatalf("nested package producer output = %q", got)
 	}
@@ -312,10 +428,15 @@ func TestLocalComponentPackageProducerConsumesNestedComponent(t *testing.T) {
 func TestLocalComponentWritableContextIsReplayedOnWarmBuild(t *testing.T) {
 	f := newLocalComponentFixture(t)
 	base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
-	f.write(t, "components/generate.coopr", `extend
-run "printf component >/src/generated" network="none" { mount "bind" target="/src" rw="true" }
+	f.write(t, "components/generate.coopr", `extend {
+    run "printf component >/src/generated" network="none" { mount "bind" target="/src" rw="true" }
+}
 `)
-	source := fmt.Sprintf("from %q\ncomponent \"./components/generate.coopr\"\ncopy \"generated\" \"/proof\"\n", base.reference)
+	source := fmt.Sprintf(`from %q {
+    component "./components/generate.coopr"
+    copy "generated" "/proof"
+}
+`, base.reference)
 	for _, name := range []string{"cold", "warm"} {
 		_, layout := f.build(t, name, source)
 		if got := localComponentLastFile(t, layout, "proof"); got != "component" {
@@ -330,15 +451,22 @@ run "printf component >/src/generated" network="none" { mount "bind" target="/sr
 func TestLocalComponentPackageWritableContextIsReplayedOnWarmBuild(t *testing.T) {
 	f := newLocalComponentFixture(t)
 	base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
-	f.write(t, "generate.coopr", fmt.Sprintf(`from %q as="producer"
-run "printf package-generated >/src/generated" network="none" { mount "bind" target="/src" rw="true" }
-package as="assets"
-copy "/bin/busybox" "/tool" from="producer"
-extend
-copy "/tool" "/tool" from="assets"
+	f.write(t, "generate.coopr", fmt.Sprintf(`from %q as="producer" {
+    run "printf package-generated >/src/generated" network="none" { mount "bind" target="/src" rw="true" }
+}
+package as="assets" {
+    copy "/bin/busybox" "/tool" from="producer"
+}
+extend {
+    copy "/tool" "/tool" from="assets"
+}
 `, base.reference))
 	for _, name := range []string{"cold", "warm"} {
-		_, layout := f.build(t, name, "from \"scratch\"\ncomponent \"./generate.coopr\"\ncopy \"generated\" \"/proof\"\n")
+		_, layout := f.build(t, name, `from "scratch" {
+    component "./generate.coopr"
+    copy "generated" "/proof"
+}
+`)
 		if got := localComponentLastFile(t, layout, "proof"); got != "package-generated" {
 			t.Fatalf("%s package context output=%q", name, got)
 		}
@@ -351,14 +479,17 @@ copy "/tool" "/tool" from="assets"
 func TestStandaloneComponentPackageWritableContextPersists(t *testing.T) {
 	f := newLocalComponentFixture(t)
 	base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
-	def := parseWorkerDefinition(t, fmt.Sprintf(`from %q as="producer"
-run "printf standalone >/src/generated" network="none" { mount "bind" target="/src" rw="true" }
-run "cat /src/generated >/proof" network="none" { mount "bind" target="/src" }
-package as="assets"
-copy "/proof" "/proof" from="producer"
-copy "generated" "/generated"
-extend
-copy "/generated" "/generated" from="assets"
+	def := parseWorkerDefinition(t, fmt.Sprintf(`from %q as="producer" {
+    run "printf standalone >/src/generated" network="none" { mount "bind" target="/src" rw="true" }
+    run "cat /src/generated >/proof" network="none" { mount "bind" target="/src" }
+}
+package as="assets" {
+    copy "/proof" "/proof" from="producer"
+    copy "generated" "/generated"
+}
+extend {
+    copy "/generated" "/generated" from="assets"
+}
 `, base.reference))
 	layout := filepath.Join(f.root, "standalone")
 	result, err := PublishDefinitionSupervised(f.ctx, def, planner.Options{Mode: planner.Publish}, SupervisedPlanOptions{
@@ -383,8 +514,9 @@ copy "/generated" "/generated" from="assets"
 func TestLocalComponentGlobalNamedContextMountTracksChanges(t *testing.T) {
 	f := newLocalComponentFixture(t)
 	base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
-	f.write(t, "components/read.coopr", `extend
-run "cat /src/value >/proof" network="none"
+	f.write(t, "components/read.coopr", `extend {
+    run "cat /src/value >/proof" network="none"
+}
 `)
 	f.write(t, "assets/value", "original")
 	var err error
@@ -393,7 +525,10 @@ run "cat /src/value >/proof" network="none"
 		t.Fatal(err)
 	}
 	f.options.BuildContexts = []buildcontext.Spec{{Name: "assets", Kind: buildcontext.Local, Path: filepath.Join(f.contextDir, "assets")}}
-	source := fmt.Sprintf("from %q\ncomponent \"./components/read.coopr\"\n", base.reference)
+	source := fmt.Sprintf(`from %q {
+    component "./components/read.coopr"
+}
+`, base.reference)
 	for _, test := range []struct{ name, want string }{{"cold", "original"}, {"warm", "original"}, {"changed", "changed"}} {
 		f.write(t, "assets/value", test.want)
 		_, layout := f.build(t, test.name, source)

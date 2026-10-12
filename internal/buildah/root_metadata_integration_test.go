@@ -25,7 +25,10 @@ func TestBuildPlanAcceptsRootMetadataChanges(t *testing.T) {
 	root := t.TempDir()
 	writeRootMetadataArchive(t, root)
 	layout := filepath.Join(root, "layout")
-	if _, err := BuildPlan(ctx, testPlan(t, "from \"scratch\"\nadd \"root.tar\" \"/\"\n"), PlanOptions{
+	if _, err := BuildPlan(ctx, testPlan(t, `from "scratch" {
+    add "root.tar" "/"
+}
+`), PlanOptions{
 		Store: cacheTestStore(root), ContextDir: root, Isolation: "rootless", Output: Output{Path: layout},
 	}); err != nil {
 		t.Fatal(err)
@@ -44,7 +47,11 @@ func TestBuildPlanAcceptsRootMetadataChangesAcrossCheckpointAndWarmCache(t *test
 		t.Fatal(err)
 	}
 	store := cacheTestStore(root)
-	plan := testPlan(t, "from \"scratch\"\nadd \"root.tar\" \"/\"\ncopy \"checkpoint-control\" \"/checkpoint-control\"\n")
+	plan := testPlan(t, `from "scratch" {
+    add "root.tar" "/"
+    copy "checkpoint-control" "/checkpoint-control"
+}
+`)
 	var coldLayers []digest.Digest
 	for attempt := range 2 {
 		layout := filepath.Join(root, fmt.Sprintf("layout-%d", attempt))
@@ -81,10 +88,14 @@ func TestBuildPlanComponentAcceptsRootMetadataChanges(t *testing.T) {
 	root := t.TempDir()
 	store := cacheTestStore(root)
 	base := newLiveBusyBoxStorage(t, ctx, root, store)
-	resolver := localConfigComponentResolver(t, ctx, root, `extend
-run "/bin/busybox echo child control >/child-control; /bin/busybox chmod 0640 /child-control; /bin/busybox chown 3:4 /child-control; /bin/busybox chmod 0711 /; /bin/busybox chown 1:2 /" network="none"
+	resolver := localConfigComponentResolver(t, ctx, root, `extend {
+    run "/bin/busybox echo child control >/child-control; /bin/busybox chmod 0640 /child-control; /bin/busybox chown 3:4 /child-control; /bin/busybox chmod 0711 /; /bin/busybox chown 1:2 /" network="none"
+}
 `, false)
-	plan := testPlan(t, "from \""+base.reference+"\"\ncomponent \"local:config\"\n")
+	plan := testPlan(t, "from \""+base.reference+`" {
+    component "config"
+}
+`)
 	policy := writeComponentTestPolicy(t, root)
 	cacheDir := filepath.Join(root, "cache")
 	var coldLayers []digest.Digest

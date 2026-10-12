@@ -56,15 +56,18 @@ func TestPublishPlanPartialPackageCacheMissRestoresSelectedBaseAcrossStores(t *t
 			t.Fatal(err)
 		}
 		plan := testPublicationPlan(t, `
-from "`+reference+`" as="producer"
-package as="cached"
-copy "/variant" "/cached-variant" from="producer"
-package as="rebuilt"
-copy "/variant" "/rebuilt-variant" from="producer"
-copy "revision" "/revision"
-extend
-copy "/cached-variant" "/cached-variant" from="cached"
-copy "/rebuilt-variant" "/rebuilt-variant" from="rebuilt"
+from "`+reference+`" as="producer" {}
+package as="cached" {
+    copy "/variant" "/cached-variant" from="producer"
+}
+package as="rebuilt" {
+    copy "/variant" "/rebuilt-variant" from="producer"
+    copy "revision" "/revision"
+}
+extend {
+    copy "/cached-variant" "/cached-variant" from="cached"
+    copy "/rebuilt-variant" "/rebuilt-variant" from="rebuilt"
+}
 `)
 		store := StoreOptions{
 			RunRoot: filepath.Join(root, name, "run"), GraphRoot: filepath.Join(root, name, "graph"), GraphDriverName: "vfs",

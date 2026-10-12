@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -89,10 +90,112 @@ func TestStoredTransferTLSVerifyPolicy(t *testing.T) {
 	}
 }
 
+func TestOrdinaryBuildWithoutExecutableOrigin(t *testing.T) {
+	if len(os.Args) >= 4 && os.Args[len(os.Args)-3] == "--" {
+		mode, origin := os.Args[len(os.Args)-2], os.Args[len(os.Args)-1]
+		if mode != "normalize" && mode != "supervised" {
+			t.Fatalf("unexpected subprocess mode %q", mode)
+		}
+		if !filepath.IsAbs(origin) || origin != currentRunSequenceOrigin() {
+			t.Fatalf("subprocess unlink path %q is not its launch origin", origin)
+		}
+		if err := os.Remove(origin); err != nil {
+			t.Fatal(err)
+		}
+		switch mode {
+		case "normalize":
+			if _, err := normalizePlanOptions(PlanOptions{}); err != nil {
+				t.Fatalf("ordinary options require removed executable origin: %v", err)
+			}
+		case "supervised":
+			root := t.TempDir()
+			plan := testPlan(t, `from "scratch" {}`)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			result, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{Store: StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}, ContextDir: root, Isolation: "rootless", Output: Output{Path: filepath.Join(root, "layout")}, Stdout: io.Discard, Stderr: io.Discard})
+			if err != nil {
+				t.Fatalf("ordinary supervised build requires removed executable origin: %v", err)
+			}
+			if result.ManifestDigest == "" {
+				t.Fatal("scratch build emitted no manifest")
+			}
+		}
+		if _, _, _, err := prepareRunSequence(nativeBuilder{executableOrigin: origin}, [][]string{{"first"}, {"second"}}); err == nil || !strings.Contains(err.Error(), "RUN sequence helper") {
+			t.Fatalf("multi-command RUN missing origin error = %v", err)
+		}
+		return
+	}
+	for _, mode := range []string{"normalize", "supervised"} {
+		t.Run(mode, func(t *testing.T) {
+			if mode == "supervised" && testing.Short() {
+				t.Skip("requires live rootless worker")
+			}
+			origin := filepath.Join(t.TempDir(), "deleted-origin.test")
+			source, err := os.Open("/proc/self/exe")
+			if err != nil {
+				t.Fatal(err)
+			}
+			destination, err := os.OpenFile(origin, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0700)
+			if err != nil {
+				t.Fatal(errors.Join(err, source.Close()))
+			}
+			_, copyErr := io.Copy(destination, source)
+			if err := errors.Join(copyErr, source.Close(), destination.Close()); err != nil {
+				t.Fatal(err)
+			}
+			args := []string{"-test.run=^TestOrdinaryBuildWithoutExecutableOrigin$"}
+			if testing.Short() {
+				args = append(args, "-test.short")
+			}
+			command := exec.Command(origin, append(args, "--", mode, origin)...)
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("%s without executable origin: %v\n%s", mode, err, output)
+			}
+		})
+	}
+}
+
+func TestOrdinaryBuildRejectsUnrelatedUnlinkPath(t *testing.T) {
+	for _, mode := range []string{"normalize", "invalid-mode"} {
+		t.Run(mode, func(t *testing.T) {
+			unrelated := filepath.Join(t.TempDir(), "keep")
+			if err := os.WriteFile(unrelated, []byte("keep this file"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			command := exec.Command("/proc/self/exe", "-test.short", "-test.run=^TestOrdinaryBuildWithoutExecutableOrigin$", "--", mode, unrelated)
+			if output, err := command.CombinedOutput(); err == nil {
+				t.Fatalf("accepted unrelated unlink path: %s", output)
+			}
+			data, err := os.ReadFile(unrelated)
+			if err != nil || string(data) != "keep this file" {
+				t.Fatalf("malformed subprocess changed unrelated file: %q, %v", data, err)
+			}
+		})
+	}
+}
+
+func TestPlanOptionsPreserveExecutionOrigin(t *testing.T) {
+	origin := currentRunSequenceOrigin()
+	for _, explicit := range []string{"", "/opt/coopr/bin/coopr"} {
+		options, err := normalizePlanOptions(PlanOptions{executableOrigin: explicit})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := explicit
+		if want == "" {
+			want = origin
+		}
+		if options.executableOrigin != want {
+			t.Fatalf("executable origin = %q, want %q", options.executableOrigin, want)
+		}
+	}
+}
+
 func TestPlanWorkerMessagePreservesRequestExecutionOptions(t *testing.T) {
 	root := t.TempDir()
 	request := planWorkerRequest{
-		Mode: "build", NoCache: true, Network: "none", AddHosts: []string{"example.test:127.0.0.1"}, RewriteTimestamp: true, Allow: []string{"network.host"},
+		ExecutableOrigin: "/opt/coopr/bin/coopr",
+		Mode:             "build", NoCache: true, Network: "none", AddHosts: []string{"example.test:127.0.0.1"}, RewriteTimestamp: true, Allow: []string{"network.host"},
 		RunControls: RunControls{HTTPProxy: true, Memory: 64 << 20, DNSServers: []string{"1.1.1.1"}}, Jobs: 3,
 		AuthFile: "/tmp/auth.json", CertDir: "/tmp/certs", TLSVerify: new(false),
 		PullPolicy:    string(oci.PullNever),
@@ -111,6 +214,9 @@ func TestPlanWorkerMessagePreservesRequestExecutionOptions(t *testing.T) {
 	}
 	if !decoded.NoCache {
 		t.Fatal("plan worker request lost no-cache setting")
+	}
+	if decoded.ExecutableOrigin != request.ExecutableOrigin {
+		t.Fatalf("plan worker request executable origin = %q", decoded.ExecutableOrigin)
 	}
 	if decoded.Network != "none" || !slices.Equal(decoded.AddHosts, request.AddHosts) {
 		t.Fatalf("plan worker request network options = %q, %#v", decoded.Network, decoded.AddHosts)
@@ -136,7 +242,8 @@ func TestPlanWorkerMessagePreservesRequestExecutionOptions(t *testing.T) {
 }
 
 func TestPlanWorkerRequestRequiresExactlyOneBuildInput(t *testing.T) {
-	def := parseWorkerDefinition(t, `from "scratch"`)
+	def := parseWorkerDefinition(t, `from "scratch" {}
+`)
 	plan, err := planner.Create(def, planner.Options{Mode: planner.Build})
 	if err != nil {
 		t.Fatal(err)
@@ -179,7 +286,8 @@ func TestPlanWorkerImportRequestRequiresLayoutAndManifest(t *testing.T) {
 }
 
 func TestDefinitionSupervisedRequiresMatchingPlannerMode(t *testing.T) {
-	def := parseWorkerDefinition(t, `from "scratch"`)
+	def := parseWorkerDefinition(t, `from "scratch" {}
+`)
 	root := t.TempDir()
 	options := SupervisedPlanOptions{
 		Store:  StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"},
@@ -229,7 +337,10 @@ func TestBuildPlanSupervisedPromotesCompleteLayout(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(contextDir, "proof"), []byte("supervised\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	plan := testPlan(t, "from \"scratch\"\ncopy \"proof\" \"/proof\"\n")
+	plan := testPlan(t, `from "scratch" {
+    copy "proof" "/proof"
+}
+`)
 	layout := filepath.Join(root, "layout")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
@@ -257,7 +368,10 @@ func TestBuildDefinitionSupervisedMatchesPlannedBuildBehavior(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "proof"), []byte("raw supervised\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	def := parseWorkerDefinition(t, "from \"scratch\"\ncopy \"proof\" \"/proof\"\n")
+	def := parseWorkerDefinition(t, `from "scratch" {
+    copy "proof" "/proof"
+}
+`)
 	layout := filepath.Join(root, "layout")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
@@ -292,13 +406,16 @@ func TestPublishPlanSupervisedPromotesSortedComponentLayout(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := testPublicationPlan(t, `
-package as="z-last"
-copy "proof" "/z"
-package as="a-first"
-copy "proof" "/a"
-extend
-copy "/z" "/z" from="z-last"
-copy "/a" "/a" from="a-first"
+package as="z-last" {
+    copy "proof" "/z"
+}
+package as="a-first" {
+    copy "proof" "/a"
+}
+extend {
+    copy "/z" "/z" from="z-last"
+    copy "/a" "/a" from="a-first"
+}
 `)
 	layout := filepath.Join(root, "layout")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
@@ -335,13 +452,16 @@ func TestPublishDefinitionSupervisedMatchesPlannedPublicationBehavior(t *testing
 		t.Fatal(err)
 	}
 	def := parseWorkerDefinition(t, `
-package as="z-last"
-copy "proof" "/z"
-package as="a-first"
-copy "proof" "/a"
-extend
-copy "/z" "/z" from="z-last"
-copy "/a" "/a" from="a-first"
+package as="z-last" {
+    copy "proof" "/z"
+}
+package as="a-first" {
+    copy "proof" "/a"
+}
+extend {
+    copy "/z" "/z" from="z-last"
+    copy "/a" "/a" from="a-first"
+}
 `)
 	layout := filepath.Join(root, "layout")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
@@ -415,7 +535,10 @@ func TestBuildPlanSupervisedCopyDotExcludesCooprArtifacts(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	plan := testPlan(t, "from \"scratch\"\ncopy \".\" \"/ctx/\"\n")
+	plan := testPlan(t, `from "scratch" {
+    copy "." "/ctx/"
+}
+`)
 	layout := filepath.Join(root, "layout")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
@@ -494,8 +617,9 @@ func TestBuildPlanSupervisedCancelsRunAndCleansBuilder(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := testPlan(t, fmt.Sprintf(`
-from %q
-run "trap '' TERM; sleep 60" network="none"
+from %q {
+    run "trap '' TERM; sleep 60" network="none"
+}
 `, base.reference))
 	layout := filepath.Join(root, "layout")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -623,7 +747,10 @@ func TestBuildPlanSupervisedCancelsStalledRemoteAdd(t *testing.T) {
 		server.Close()
 	}()
 	root := t.TempDir()
-	plan := testPlan(t, fmt.Sprintf("from \"scratch\"\nadd %q \"/hang\"\n", server.URL+"/hang"))
+	plan := testPlan(t, fmt.Sprintf(`from "scratch" {
+    add %q "/hang"
+}
+`, server.URL+"/hang"))
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
 	go func() {
@@ -682,10 +809,12 @@ func TestPublishPlanSupervisedCancelsStalledRemoteAdd(t *testing.T) {
 	}()
 	root := t.TempDir()
 	plan := testPublicationPlan(t, fmt.Sprintf(`
-package as="payload"
-add %q "/payload"
-extend
-copy "/payload" "/payload" from="payload"
+package as="payload" {
+    add %q "/payload"
+}
+extend {
+    copy "/payload" "/payload" from="payload"
+}
 `, server.URL+"/hang"))
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()

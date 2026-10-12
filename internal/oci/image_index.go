@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/containerd/platforms"
+	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2"
@@ -342,4 +343,28 @@ func validateImageVariant(ctx context.Context, variant ImageVariant) (*orasoci.S
 		return nil, fmt.Errorf("image config platform %s differs from requested %s", platformKey(actual), platformKey(variant.Platform))
 	}
 	return source, nil
+}
+
+// Rewrite only member identities; retain index metadata and ordered duplicate
+// entries even when distinct input compression variants normalize identically.
+func RewriteImageIndex(root v1.Descriptor, original []byte, members []v1.Descriptor) (v1.Descriptor, []byte, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(original, &fields); err != nil {
+		return root, nil, err
+	}
+	data, err := json.Marshal(members)
+	if err != nil {
+		return root, nil, err
+	}
+	fields["manifests"] = data
+	data, err = json.Marshal(fields)
+	if err != nil {
+		return root, nil, err
+	}
+	root.Digest = digest.FromBytes(data)
+	root.Size = int64(len(data))
+	if len(root.Data) != 0 {
+		root.Data = data
+	}
+	return root, data, nil
 }

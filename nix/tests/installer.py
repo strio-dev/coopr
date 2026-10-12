@@ -53,20 +53,7 @@ class InstallerTests(unittest.TestCase):
             tool = self.root / "tools" / name
             tool.write_text(MOCK.format(python=sys.executable))
             tool.chmod(0o755)
-        checksums = []
-        for arch in ("amd64", "arm64"):
-            asset = self.root / "assets" / f"coopr-linux-{arch}.tar.gz"
-            with tarfile.open(asset, "w:gz") as archive:
-                for name, contents, mode in [
-                    ("coopr", b"#!/bin/sh\nprintf 'coopr fixture\\n'\n", 0o555),
-                    ("LICENSE", b"MIT license fixture\n", 0o444),
-                    ("third-party/NOTICE", b"Dependency notices fixture\n", 0o444),
-                ]:
-                    info = tarfile.TarInfo(name)
-                    info.size, info.mode = len(contents), mode
-                    archive.addfile(info, io.BytesIO(contents))
-            checksums.append(f"{hashlib.sha256(asset.read_bytes()).hexdigest()}  ./{asset.name}\n")
-        (self.root / "assets" / "SHA256SUMS").write_text("".join(checksums))
+        self.write_assets()
         self.env = {
             **os.environ,
             "PATH": f"{self.root / 'tools'}:{os.environ['PATH']}",
@@ -83,6 +70,29 @@ class InstallerTests(unittest.TestCase):
         }
         self.env.pop("COOPR_INSTALL_PREFIX", None)
 
+    def write_assets(self, *, helper=True):
+        checksums = []
+        for arch in ("amd64", "arm64"):
+            asset = self.root / "assets" / f"coopr-linux-{arch}.tar.gz"
+            entries = [
+                ("coopr", b"#!/bin/sh\nprintf 'coopr fixture\\n'\n", 0o555),
+                ("LICENSE", b"MIT license fixture\n", 0o444),
+                ("third-party/NOTICE", b"Dependency notices fixture\n", 0o444),
+            ]
+            if helper:
+                entries.append((
+                    "libexec/coopr/coopr-run-sequence",
+                    b"#!/bin/sh\nprintf 'sequence fixture\\n'\n",
+                    0o555,
+                ))
+            with tarfile.open(asset, "w:gz") as archive:
+                for name, contents, mode in entries:
+                    info = tarfile.TarInfo(name)
+                    info.size, info.mode = len(contents), mode
+                    archive.addfile(info, io.BytesIO(contents))
+            checksums.append(f"{hashlib.sha256(asset.read_bytes()).hexdigest()}  ./{asset.name}\n")
+        (self.root / "assets" / "SHA256SUMS").write_text("".join(checksums))
+
     def run_installer(self, *args, success=True):
         result = subprocess.run(["sh", str(INSTALLER), *args], env=self.env, capture_output=True, text=True)
         self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
@@ -94,6 +104,11 @@ class InstallerTests(unittest.TestCase):
         prefix = self.root / "system"
         self.assertEqual(subprocess.check_output([prefix / "bin/coopr"], text=True), "coopr fixture\n")
         self.assertEqual((prefix / "share/licenses/coopr/LICENSE").read_text(), "MIT license fixture\n")
+        helper = prefix / "libexec/coopr/coopr-run-sequence"
+        # write_assets() authors this helper in our private temporary installation.
+        # nosemgrep: cache.semgrep-rules.python.lang.security.audit.dangerous-subprocess-use-audit
+        self.assertEqual(subprocess.check_output([helper], text=True), "sequence fixture\n")
+        self.assertEqual(helper.stat().st_mode & 0o777, 0o755)
         self.assertEqual((prefix / "share/licenses/coopr/third-party/NOTICE").read_text(), "Dependency notices fixture\n")
         self.assertEqual((self.root / "requests").read_text().splitlines(), [
             f"{RELEASES}/latest", f"{RELEASES}/download/1.2.3/coopr-linux-amd64.tar.gz",
@@ -104,6 +119,38 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue(commands)
         self.assertTrue(all(command.startswith(("mkdir ", "cp ", "install ")) for command in commands), commands)
         self.assertTrue(all("/usr/local/" in command for command in commands), commands)
+
+    def test_legacy_release_then_upgrade(self):
+        self.write_assets(helper=False)
+        self.run_installer("1.2.3")
+        prefix = self.root / "system"
+        self.assertTrue((prefix / "bin/coopr").is_file())
+        helper = prefix / "libexec/coopr/coopr-run-sequence"
+        self.assertFalse(helper.exists())
+        self.write_assets()
+        self.run_installer()
+        # write_assets() authors this helper in our private temporary installation.
+        # nosemgrep: cache.semgrep-rules.python.lang.security.audit.dangerous-subprocess-use-audit
+        self.assertEqual(subprocess.check_output([helper], text=True), "sequence fixture\n")
+        self.assertEqual(helper.stat().st_mode & 0o777, 0o755)
+        self.run_installer()
+        self.assertEqual(helper.stat().st_mode & 0o777, 0o755)
+
+    def test_help(self):
+        result = self.run_installer("--help")
+        self.assertIn("Usage: sh install.sh [VERSION]", result.stdout)
+        self.assertFalse((self.root / "requests").exists())
+        self.assertEqual(list((self.root / "system").iterdir()), [])
+
+    def test_corrupt_archive_with_valid_checksum(self):
+        asset = self.root / "assets/coopr-linux-amd64.tar.gz"
+        asset.write_bytes(b"not an archive")
+        (self.root / "assets/SHA256SUMS").write_text(
+            f"{hashlib.sha256(asset.read_bytes()).hexdigest()}  {asset.name}\n"
+        )
+        self.run_installer(success=False)
+        self.assertEqual(list((self.root / "system").iterdir()), [])
+        self.assertFalse((self.root / "sudo-commands").exists())
 
     def test_missing_sudo(self):
         tools = self.root / "tools"
@@ -129,6 +176,11 @@ class InstallerTests(unittest.TestCase):
         self.env.update(TEST_ARCH="aarch64", COOPR_INSTALL_PREFIX=str(self.root / "custom prefix"))
         self.run_installer("1.2.3")
         self.assertTrue((self.root / "custom prefix/bin/coopr").is_file())
+        helper = self.root / "custom prefix/libexec/coopr/coopr-run-sequence"
+        # write_assets() authors this helper in our private temporary installation.
+        # nosemgrep: cache.semgrep-rules.python.lang.security.audit.dangerous-subprocess-use-audit
+        self.assertEqual(subprocess.check_output([helper], text=True), "sequence fixture\n")
+        self.assertEqual(helper.stat().st_mode & 0o777, 0o755)
         self.assertIn("coopr-linux-arm64.tar.gz", (self.root / "requests").read_text())
         self.assertNotIn("/latest", (self.root / "requests").read_text())
         self.assertFalse((self.root / "sudo-commands").exists())

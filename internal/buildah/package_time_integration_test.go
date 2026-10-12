@@ -30,7 +30,13 @@ func TestPublicationTimestampAndTTLAcrossFreshBuildStores(t *testing.T) {
 	if err := os.Chtimes(filepath.Join(contextDir, "payload"), old, old); err != nil {
 		t.Fatal(err)
 	}
-	plan := testPublicationPlan(t, "package as=\"artifact\"\ncopy \"payload\" \"/payload\"\nextend\ncopy \"/payload\" \"/payload\" from=\"artifact\"\n")
+	plan := testPublicationPlan(t, `package as="artifact" {
+    copy "payload" "/payload"
+}
+extend {
+    copy "/payload" "/payload" from="artifact"
+}
+`)
 	hour, expired := time.Hour, time.Nanosecond
 	for _, test := range []struct {
 		name   string

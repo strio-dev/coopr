@@ -12,20 +12,35 @@ func TestPublishedPrunedNumericSelectorsRoundTrip(t *testing.T) {
 	for _, operation := range []string{"from", "copy", "add", "bind", "cache"} {
 		for _, parameterized := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/parameterized=%v", operation, parameterized), func(t *testing.T) {
-				selector := "4"
+				selector := "5"
 				globals := ""
 				if parameterized {
 					selector = "$SELECTOR"
-					globals = "arg \"SELECTOR\" \"4\"\n"
+					globals = "arg \"SELECTOR\" \"5\"\n"
 				}
-				source := globals + "from \"scratch\" as=\"unused\"\nfrom \"scratch\" as=\"unused2\"\nfrom \"scratch\" as=\"unused3\"\nfrom \"scratch\" as=\"unused4\"\nfrom \"scratch\"\nenv MARKER=\"source\"\n"
+				source := globals + `extend {
+from "scratch" as="unused" {}
+from "scratch" as="unused2" {}
+from "scratch" as="unused3" {}
+from "scratch" as="unused4" {}
+from "scratch" {
+    env MARKER="source"
+}
+`
 				switch operation {
 				case "from":
-					source += "from \"" + selector + "\" as=\"selected\"\nextend\ncopy \"/src\" \"/dst\" from=\"selected\"\n"
+					source += "from \"" + selector + `" as="selected" {}
+    copy "/src" "/dst" from="selected"
+}
+`
 				case "copy", "add":
-					source += "extend\n" + operation + " \"/src\" \"/dst\" from=\"" + selector + "\"\n"
+					source += operation + " \"/src\" \"/dst\" from=\"" + selector + `"
+}
+`
 				default:
-					source += "extend\nrun \"true\" { mount \"" + operation + "\" from=\"" + selector + "\" source=\"/src\" target=\"/dst\"; }\n"
+					source += `run "true" { mount "` + operation + "\" from=\"" + selector + `" source="/src" target="/dst"; }
+}
+`
 				}
 				authored := parse(t, source)
 				authoredBefore, _ := json.Marshal(authored)
@@ -50,7 +65,7 @@ func TestPublishedPrunedNumericSelectorsRoundTrip(t *testing.T) {
 						t.Fatalf("unpruned graph: %+v", invocation.Stages)
 					}
 					if operation == "from" {
-						if invocation.Stages[1].Source != "0" || !slices.Equal(invocation.Stages[1].Dependencies, []string{"0"}) {
+						if invocation.Stages[1].Source != "1" || !slices.Equal(invocation.Stages[1].Dependencies, []string{"1"}) {
 							t.Fatalf("wrong FROM: %+v", invocation.Stages[1])
 						}
 					} else {
@@ -60,7 +75,7 @@ func TestPublishedPrunedNumericSelectorsRoundTrip(t *testing.T) {
 						if operation == "bind" || operation == "cache" {
 							got = op.Children[0].Properties["from"]
 						}
-						if got != "0" || !slices.Equal(stage.Dependencies, []string{"0"}) {
+						if got != "1" || !slices.Equal(stage.Dependencies, []string{"1"}) {
 							t.Fatalf("wrong reference: %+v", stage)
 						}
 					}
@@ -87,18 +102,19 @@ func TestPublishedPrunedNumericSelectorsRoundTrip(t *testing.T) {
 
 func TestPublishedNumericProvenanceRejectsMalformedAndMissingBindings(t *testing.T) {
 	for _, operation := range []string{"from", "copy"} {
-		source := `from "scratch" as="unused"
-from "scratch" as="unused2"
-from "scratch"
+		source := `extend {
+from "scratch" as="unused" {}
+from "scratch" as="unused2" {}
+from "scratch" {}
 `
 		if operation == "from" {
-			source += `from "2" as="selected"
-extend
-copy "/src" "/dst" from="selected"
+			source += `from "3" as="selected" {}
+    copy "/src" "/dst" from="selected"
+}
 `
 		} else {
-			source += `extend
-copy "/src" "/dst" from="2"
+			source += `copy "/src" "/dst" from="3"
+}
 `
 		}
 		publication, err := Create(parse(t, source), Options{Mode: Publish})
@@ -112,9 +128,9 @@ copy "/src" "/dst" from="2"
 				t.Fatal(err)
 			}
 			if operation == "from" {
-				binding := component.FromBindings["1"]
+				binding := component.FromBindings["2"]
 				binding.SourceIndex = invalid
-				component.FromBindings["1"] = binding
+				component.FromBindings["2"] = binding
 			} else {
 				component.StageReferences[0].SourceIndex = invalid
 			}
@@ -126,7 +142,7 @@ copy "/src" "/dst" from="2"
 		var component PublishedComponent
 		_ = json.Unmarshal(data, &component)
 		if operation == "from" {
-			delete(component.FromBindings, "1")
+			delete(component.FromBindings, "2")
 		} else {
 			component.StageReferences = nil
 		}
@@ -135,13 +151,16 @@ copy "/src" "/dst" from="2"
 		}
 	}
 	for _, source := range []string{"scratch", "example.invalid/base:latest"} {
-		publication, err := Create(parse(t, "from \""+source+"\" as=\"base\"\nextend\ncopy \"/src\" \"/dst\" from=\"base\"\n"), Options{Mode: Publish})
+		publication, err := Create(parse(t, "extend {\nfrom \""+source+`" as="base" {}
+    copy "/src" "/dst" from="base"
+}
+`), Options{Mode: Publish})
 		if err != nil {
 			t.Fatal(err)
 		}
-		binding := publication.Component.FromBindings["0"]
+		binding := publication.Component.FromBindings["1"]
 		binding.SourceIndex = "0"
-		publication.Component.FromBindings["0"] = binding
+		publication.Component.FromBindings["1"] = binding
 		if _, err := ValidatePublished(publication.Component); err == nil {
 			t.Fatalf("%s numeric provenance accepted", source)
 		}
@@ -150,22 +169,25 @@ copy "/src" "/dst" from="2"
 }
 
 func TestPublishedNumericBindingsKeepInheritedAndAuthoredARGOffsets(t *testing.T) {
-	source := `from "scratch" as="unused"
-from "scratch" as="unused2"
-package as="assets"
-package as="payload"
-onbuild { arg "INHERITED" "2" }
-onbuild { copy "/asset" "/inherited" from="$INHERITED" }
-from "payload" as="selected"
-arg "AUTHORED" "value"
-copy "/asset" "/authored" from="2"
-add "/asset" "/added" from="2"
-run "true" {
- mount "bind" from="2" source="/asset" target="/bind"
- mount "cache" from="2" source="/asset" target="/cache"
+	source := `from "scratch" as="unused" {}
+from "scratch" as="unused2" {}
+package as="assets" {}
+package as="payload" {
+    onbuild { arg "INHERITED" "2" }
+    onbuild { copy "/asset" "/inherited" from="$INHERITED" }
 }
-extend
-copy "/authored" "/result" from="selected"
+extend {
+from "payload" as="selected" {
+    arg "AUTHORED" "value"
+    copy "/asset" "/authored" from="2"
+    add "/asset" "/added" from="2"
+    run "true" {
+     mount "bind" from="2" source="/asset" target="/bind"
+     mount "cache" from="2" source="/asset" target="/cache"
+    }
+}
+    copy "/authored" "/result" from="selected"
+}
 `
 	publication, err := CreateDemandDriven(parse(t, source), Options{Mode: Publish}, func(FromSource) (StageBind, error) {
 		t.Fatal("unexpected external resolution")
@@ -187,7 +209,7 @@ copy "/authored" "/result" from="selected"
 		{Name: "copy", Arguments: []string{"/asset", "/inherited"}, Properties: map[string]string{"from": "$INHERITED"}},
 	}
 	for i := 0; i < 2; i++ {
-		invocation, err := InstantiateWithPackageBinds(&component, Options{}, map[string]StageBind{"2": {Inherited: inherited}})
+		invocation, err := InstantiateWithPackageBinds(&component, Options{}, map[string]StageBind{"3": {Inherited: inherited}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -221,20 +243,21 @@ copy "/authored" "/result" from="selected"
 			break
 		}
 	}
-	if _, err := InstantiateWithPackageBinds(&component, Options{}, map[string]StageBind{"2": {Inherited: inherited}}); err == nil {
+	if _, err := InstantiateWithPackageBinds(&component, Options{}, map[string]StageBind{"3": {Inherited: inherited}}); err == nil {
 		t.Fatal("missing inherited frozen binding accepted")
 	}
 }
 
 func TestPublishedNoncanonicalNumericFROMRetainsImageRole(t *testing.T) {
-	publication, err := Create(parse(t, `from "01" as="external"
-extend
-copy "/src" "/dst" from="external"
+	publication, err := Create(parse(t, `extend {
+from "01" as="external" {}
+    copy "/src" "/dst" from="external"
+}
 `), Options{Mode: Publish})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if publication.Component.FromBindings["0"].Kind != "image" {
+	if publication.Component.FromBindings["1"].Kind != "image" {
 		t.Fatal("noncanonical numeric image source became a local stage")
 	}
 	invocation, err := Instantiate(publication.Component, Options{})

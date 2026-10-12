@@ -15,7 +15,7 @@ func TestLocalComponentReferences(t *testing.T) {
 			if !IsLocalComponentReference(reference) {
 				t.Fatal("local component path classified as OCI")
 			}
-			def, err := Parse(strings.NewReader(`component "` + reference + `" channel="preview"`))
+			def, err := parseFragment(strings.NewReader(`component "` + reference + `" { arg "channel" "preview" }`))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -31,7 +31,7 @@ func TestOCIComponentReferencesRemainOCI(t *testing.T) {
 		"shared.coopr", "components/shared.coopr", "team/shared.coopr", "shared.coopr:stable",
 		"registry.example.com/team/shared:v1", "registry.example.com/team/shared:variant.coopr",
 		"registry.example.com/team/shared.coopr", "localhost/team/shared.coopr", "localhost:5000/team/shared.coopr",
-		"registry.example.com/team/shared@sha256:deadbeef", "local:shared.coopr", "sha256:deadbeef",
+		"registry.example.com/team/shared@sha256:deadbeef", "sha256:deadbeef",
 		"${component}", "", "shared",
 	} {
 		if IsLocalComponentReference(reference) {
@@ -43,7 +43,7 @@ func TestOCIComponentReferencesRemainOCI(t *testing.T) {
 func TestComponentReferencesAcceptShortRegistryNames(t *testing.T) {
 	for _, reference := range []string{"shared", "shared:stable", "shared.coopr", "shared.coopr:stable", "team/shared.coopr"} {
 		t.Run(reference, func(t *testing.T) {
-			def, err := Parse(strings.NewReader(`component "` + reference + `"`))
+			def, err := parseFragment(strings.NewReader(`component "` + reference + `"`))
 			if err != nil {
 				t.Fatal(err)
 			}

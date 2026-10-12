@@ -17,8 +17,9 @@ func TestDirectionalComponentCacheReusesDefaultNetworkRunAcrossStores(t *testing
 	defer cancel()
 	root := t.TempDir()
 	base, _ := newLiveBusyBoxRegistry(t, ctx)
-	componentResolver := localConfigComponentResolver(t, ctx, root, `extend
-run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof"
+	componentResolver := localConfigComponentResolver(t, ctx, root, `extend {
+    run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof"
+}
 `, false)
 	resolver, err := oci.NewResolver(oci.Options{
 		ComponentStoreDir: componentResolver.ComponentStoreDir(), TLSVerify: new(false),
@@ -27,7 +28,10 @@ run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof"
 		t.Fatal(err)
 	}
 	policy := writeComponentTestPolicy(t, root)
-	plan := testPlan(t, "from \""+base+"\"\ncomponent \"local:config\"\n")
+	plan := testPlan(t, "from \""+base+`" {
+    component "config"
+}
+`)
 	cacheDir := filepath.Join(root, "cache")
 	build := func(name string, cacheFrom, cacheTo []CacheSpec) Result {
 		t.Helper()
@@ -76,13 +80,19 @@ func TestComponentCacheRetainsStageLabelModesAcrossStores(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			root := filepath.Join(root, test.name)
-			componentResolver := localConfigComponentResolver(t, ctx, root, "extend as=\"component-output\"\n"+test.operation, false)
+			componentResolver := localConfigComponentResolver(t, ctx, root, `extend as="component-output" {
+    `+test.operation+`
+}
+`, false)
 			resolver, err := oci.NewResolver(oci.Options{ComponentStoreDir: componentResolver.ComponentStoreDir(), TLSVerify: new(false)})
 			if err != nil {
 				t.Fatal(err)
 			}
 			policy := writeComponentTestPolicy(t, root)
-			plan := testPlan(t, "from \""+base+"\"\ncomponent \"local:config\"\n")
+			plan := testPlan(t, "from \""+base+`" {
+    component "config"
+}
+`)
 			cacheSpec := []CacheSpec{{Transport: "oci-layout", Reference: filepath.Join(root, "cache")}}
 			timestamp := int64(0)
 			for _, attempt := range []struct {

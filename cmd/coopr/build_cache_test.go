@@ -139,7 +139,10 @@ func TestBuildCacheRepositoryCLIReusesResultsAcrossStores(t *testing.T) {
 	server := httptest.NewServer(registry.New())
 	t.Cleanup(server.Close)
 	repository := strings.TrimPrefix(server.URL, "http://") + "/coopr/cache"
-	file := definitionFile(t, "from \"scratch\"\ncopy \"payload\" \"/payload\"\n")
+	file := definitionFile(t, `from "scratch" {
+    copy "payload" "/payload"
+}
+`)
 	if err := os.WriteFile(filepath.Join(filepath.Dir(file), "payload"), []byte("portable CLI cache\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -172,14 +175,20 @@ func TestComponentBuildUsesRegistryCacheWithoutImageInputs(t *testing.T) {
 	server := httptest.NewServer(registry.New())
 	t.Cleanup(server.Close)
 	repository := strings.TrimPrefix(server.URL, "http://") + "/coopr/package-cache"
-	file := definitionFile(t, "package as=\"payload\"\ncopy \"payload\" \"/payload\"\nextend\ncopy \"/payload\" \"/installed\" from=\"payload\"\n")
+	file := definitionFile(t, `package as="payload" {
+    copy "payload" "/payload"
+}
+extend {
+    copy "/payload" "/installed" from="payload"
+}
+`)
 	if err := os.WriteFile(filepath.Join(filepath.Dir(file), "payload"), []byte("component registry cache\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for _, phase := range []string{"cold", "warm"} {
 		root := t.TempDir()
 		archive := filepath.Join(root, "component.oci.tar")
-		args := []string{"--root", filepath.Join(root, "graph"), "--runroot", filepath.Join(root, "run"), "--storage-driver=vfs", "component", "build", file, "--tls-verify=false", "--tag", "oci-archive:" + archive}
+		args := []string{"--root", filepath.Join(root, "graph"), "--runroot", filepath.Join(root, "run"), "--storage-driver=vfs", "component", "build", file, "--tls-verify=false", "--tag", "package-cache"}
 		if phase == "cold" {
 			args = append(args, "--cache-to", repository)
 		} else {
@@ -188,6 +197,9 @@ func TestComponentBuildUsesRegistryCacheWithoutImageInputs(t *testing.T) {
 		var stdout, stderr bytes.Buffer
 		if code := run(args, &stdout, &stderr); code != 0 {
 			t.Fatalf("%s component registry cache build failed: %s", phase, stderr.String())
+		}
+		if code := run([]string{"component", "save", "--output", archive, "package-cache"}, &bytes.Buffer{}, &stderr); code != 0 {
+			t.Fatalf("%s component save failed: %s", phase, &stderr)
 		}
 		if info, err := os.Stat(archive); err != nil || info.Size() == 0 {
 			t.Fatalf("%s component cache build produced no archive: %v", phase, err)

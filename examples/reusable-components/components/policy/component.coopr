@@ -1,6 +1,8 @@
-package as="payload"
-copy "policy.txt" "/policy.txt"
+package as="payload" {
+    copy "policy.txt" "/policy.txt"
+}
 
-extend as="checked"
-run "test -f /etc/demo/settings.conf"
-copy "/policy.txt" "/etc/demo/policy.txt" from="payload"
+extend as="checked" {
+    run "test -f /etc/demo/settings.conf"
+    copy "/policy.txt" "/etc/demo/policy.txt" from="payload"
+}

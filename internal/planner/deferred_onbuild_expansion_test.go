@@ -71,8 +71,20 @@ func TestAuthoredAndInheritedOnBuildWordExpansionAreEquivalent(t *testing.T) {
 		for _, value := range values {
 			t.Run(instructionType.name+"/"+value.name, func(t *testing.T) {
 				instruction := instructionType.instruction(value.value)
-				direct := makePlan(t, fmt.Sprintf("from \"scratch\"\nenv later=\"child\"\n%s\n%s\n", instruction, instructionType.observe), Options{Mode: Build})
-				inheritedDefinition := parse(t, fmt.Sprintf("from \"scratch\" as=\"base\"\nenv later=\"child\"\nonbuild { %s }\nfrom \"base\"\n%s\n", instruction, instructionType.observe))
+				direct := makePlan(t, fmt.Sprintf(`from "scratch" {
+    env later="child"
+    %s
+    %s
+}
+`, instruction, instructionType.observe), Options{Mode: Build})
+				inheritedDefinition := parse(t, fmt.Sprintf(`from "scratch" as="base" {
+    env later="child"
+    onbuild { %s }
+}
+from "base" {
+    %s
+}
+`, instruction, instructionType.observe))
 				inherited, err := CreateDemandDriven(inheritedDefinition, Options{Mode: Build}, unexpectedBindResolver(t))
 				if err != nil {
 					t.Fatal(err)
@@ -126,7 +138,8 @@ func TestDeferredDockerOnBuildWordsExpandOnceInChildScope(t *testing.T) {
 		inherited = append(inherited, parsed...)
 	}
 
-	plan := makePlan(t, `from "registry.example/parent:latest"`, Options{
+	plan := makePlan(t, `from "registry.example/parent:latest" {}
+`, Options{
 		Mode: Build,
 		StageBinds: map[string]StageBind{
 			"0": {
@@ -219,10 +232,11 @@ func TestDeferredOnBuildRunKeepsTransientMounts(t *testing.T) {
 				StageBinds: map[string]StageBind{"1": {Inherited: inherited}},
 			}
 			source := `arg "source" "assets"
-from "scratch" as="assets"
-from "example.invalid/base:latest"
-arg "target" "/input"
-run "true"
+from "scratch" as="assets" {}
+from "example.invalid/base:latest" {
+    arg "target" "/input"
+    run "true"
+}
 `
 			// Inherited triggers run before authored ARG declarations, so use the
 			// base environment for their ordinary mount-property expansion.
@@ -264,14 +278,17 @@ func TestDeferredOnBuildTransientMountsInPackageBuild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	publication, err := CreateDemandDriven(parse(t, `from "scratch" as="assets"
-from "example.invalid/base:latest" as="producer"
-arg "destination" "/transient"
-run "true"
-package as="payload"
-copy "/output" "/output" from="producer"
-extend
-copy "/output" "/output" from="payload"
+	publication, err := CreateDemandDriven(parse(t, `from "scratch" as="assets" {}
+from "example.invalid/base:latest" as="producer" {
+    arg "destination" "/transient"
+    run "true"
+}
+package as="payload" {
+    copy "/output" "/output" from="producer"
+}
+extend {
+    copy "/output" "/output" from="payload"
+}
 `), Options{
 		Mode:               Publish,
 		TransientRunMounts: []definition.Instruction{{Name: "mount", Arguments: []string{"bind"}, Properties: map[string]string{"from": "assets", "target": "${destination:-/transient}"}}},

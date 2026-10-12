@@ -19,7 +19,11 @@ func TestStaticSchemaErrorsPrecedeBaseResolution(t *testing.T) {
 		`shell`,
 	} {
 		t.Run(body, func(t *testing.T) {
-			def, err := definition.Parse(strings.NewReader("from \"example.invalid/base:latest\" as=\"unused\"\n" + body + "\nfrom \"scratch\" as=\"final\"\n"))
+			def, err := definition.Parse(strings.NewReader(`from "example.invalid/base:latest" as="unused" {
+    ` + body + `
+}
+from "scratch" as="final" {}
+`))
 			calls := 0
 			if err == nil {
 				_, err = CreateDemandDriven(def, Options{Mode: Build, Target: "final"}, func(FromSource) (StageBind, error) {
@@ -40,12 +44,13 @@ func TestStaticSchemaErrorsPrecedeBaseResolution(t *testing.T) {
 func TestMountTypeAndDeviceRequiredUseStageArguments(t *testing.T) {
 	for _, expression := range []string{"$kind", "${kind}", "${missing:-cache}"} {
 		t.Run(expression, func(t *testing.T) {
-			plan := makePlan(t, `from "scratch"
-arg "kind" "cache"
-arg "required" #false
-run "true" {
-    mount "`+expression+`" target="/cache"
-    device "vendor.example/gpu=one" required="${required}"
+			plan := makePlan(t, `from "scratch" {
+    arg "kind" "cache"
+    arg "required" #false
+    run "true" {
+        mount "`+expression+`" target="/cache"
+        device "vendor.example/gpu=one" required="${required}"
+    }
 }
 `, Options{Mode: Build})
 			run := plan.Stages[0].Operations[0]
@@ -66,7 +71,11 @@ func TestResolvedOptionValuesAreValidated(t *testing.T) {
 		{"mount type", `run "true" { mount "${invalid}" target="/cache"; }`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			def, err := definition.Parse(strings.NewReader("from \"scratch\"\narg \"invalid\" \"nonsense\"\n" + test.body + "\n"))
+			def, err := definition.Parse(strings.NewReader(`from "scratch" {
+    arg "invalid" "nonsense"
+    ` + test.body + `
+}
+`))
 			if err != nil {
 				t.Fatalf("unresolved expression rejected: %v", err)
 			}
@@ -78,11 +87,12 @@ func TestResolvedOptionValuesAreValidated(t *testing.T) {
 }
 
 func TestQuotedPermissionArgumentPreservesMode(t *testing.T) {
-	plan := makePlan(t, `from "scratch"
-arg "permissions" "0644"
-arg "linked" #true
-copy "payload" "/payload" chmod="${permissions}" link="${linked}"
-run "true" { mount "secret" id="token" mode="${permissions}"; }
+	plan := makePlan(t, `from "scratch" {
+    arg "permissions" "0644"
+    arg "linked" #true
+    copy "payload" "/payload" chmod="${permissions}" link="${linked}"
+    run "true" { mount "secret" id="token" mode="${permissions}"; }
+}
 `, Options{Mode: Build})
 	if got := plan.Stages[0].Operations[0].Properties; got["chmod"] != "0644" || got["link"] != "true" {
 		t.Fatalf("COPY options = %v, want chmod=0644 link=true", got)
@@ -93,10 +103,12 @@ run "true" { mount "secret" id="token" mode="${permissions}"; }
 }
 
 func TestStrictValidationPreservesInheritedEnvironmentAndDormantExpansion(t *testing.T) {
-	def := parse(t, `from "example.invalid/unused:latest" as="unused"
-healthcheck "true" interval="${invalid}"
-from "example.invalid/base:latest" as="final"
-healthcheck "true" interval="${interval}"
+	def := parse(t, `from "example.invalid/unused:latest" as="unused" {
+    healthcheck "true" interval="${invalid}"
+}
+from "example.invalid/base:latest" as="final" {
+    healthcheck "true" interval="${interval}"
+}
 `)
 	var sources []string
 	plan, err := CreateDemandDriven(def, Options{Mode: Build, Target: "final"}, func(source FromSource) (StageBind, error) {
@@ -128,7 +140,8 @@ func TestInheritedMountTypedOptionsExpandInChildScope(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			plan := makePlan(t, `from "example.invalid/base:latest"`, Options{Mode: Build, StageBinds: map[string]StageBind{"0": {Inherited: inherited, BaseEnvironment: test.environment}}})
+			plan := makePlan(t, `from "example.invalid/base:latest" {}
+`, Options{Mode: Build, StageBinds: map[string]StageBind{"0": {Inherited: inherited, BaseEnvironment: test.environment}}})
 			properties := plan.Stages[0].Operations[0].Children[0].Properties
 			for name, want := range map[string]string{"target": test.wantTarget, "required": test.wantRequired, "mode": test.wantMode, "uid": test.wantUID} {
 				if properties[name] != want {
@@ -153,7 +166,8 @@ func TestInheritedMountEnumsFollowDockerExpansionRules(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			plan := makePlan(t, `from "example.invalid/base:latest"`, Options{Mode: Build, StageBinds: map[string]StageBind{"0": {Inherited: inherited, BaseEnvironment: test.environment}}})
+			plan := makePlan(t, `from "example.invalid/base:latest" {}
+`, Options{Mode: Build, StageBinds: map[string]StageBind{"0": {Inherited: inherited, BaseEnvironment: test.environment}}})
 			mount := plan.Stages[0].Operations[0].Children[0]
 			if mount.Arguments[0] != "cache" || mount.Properties["sharing"] != "locked" {
 				t.Fatalf("inherited mount = %#v, want cache with locked sharing", mount)
@@ -167,7 +181,8 @@ func TestInheritedMountRejectsInvalidOverwrittenTypedOption(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = Create(parse(t, `from "example.invalid/base:latest"`), Options{
+	_, err = Create(parse(t, `from "example.invalid/base:latest" {}
+`), Options{
 		Mode:       Build,
 		StageBinds: map[string]StageBind{"0": {Inherited: inherited}},
 	})
@@ -181,7 +196,8 @@ func TestInheritedMountExpansionDoesNotExpandReplacementAgain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan := makePlan(t, `from "example.invalid/base:latest"`, Options{
+	plan := makePlan(t, `from "example.invalid/base:latest" {}
+`, Options{
 		Mode: Build,
 		StageBinds: map[string]StageBind{"0": {
 			Inherited:       inherited,
@@ -207,7 +223,8 @@ func TestInheritedMountSurvivesStageBindTransferAndNormalizesWithoutDeferredMeta
 	if err := json.Unmarshal(encoded, &transferred); err != nil {
 		t.Fatal(err)
 	}
-	plan := makePlan(t, `from "example.invalid/base:latest"`, Options{Mode: Build, StageBinds: map[string]StageBind{"0": transferred}})
+	plan := makePlan(t, `from "example.invalid/base:latest" {}
+`, Options{Mode: Build, StageBinds: map[string]StageBind{"0": transferred}})
 	mount := plan.Stages[0].Operations[0].Children[0]
 	if mount.Arguments[0] != "cache" || mount.Properties["sharing"] != "locked" || mount.Properties["mode"] != "400" {
 		t.Fatalf("transfer lost deferred mount semantics: %#v", mount)

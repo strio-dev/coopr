@@ -8,12 +8,13 @@ import (
 func TestStageHistoryRetainsARGOrderWithoutChangingOperationIndexes(t *testing.T) {
 	plan := makePlan(t, `
 arg "global" "outside"
-from "scratch"
-arg "first" "default"
-env marker="set"
-arg "unset"
-run "true"
-arg "last" "tail"
+from "scratch" {
+    arg "first" "default"
+    env marker="set"
+    arg "unset"
+    run "true"
+    arg "last" "tail"
+}
 `, Options{Mode: Build, Arguments: map[string]string{"first": "override"}})
 	stage := plan.Stages[0]
 	if got := []string{stage.Operations[0].Name, stage.Operations[1].Name}; !reflect.DeepEqual(got, []string{"env", "run"}) {
@@ -33,10 +34,11 @@ arg "last" "tail"
 
 func TestStageHistoryDistinguishesBlankAndUnsetARG(t *testing.T) {
 	plan := makePlan(t, `
-from "scratch"
-arg "blank"
-arg "unset"
-run "true"
+from "scratch" {
+    arg "blank"
+    arg "unset"
+    run "true"
+}
 `, Options{Mode: Build, Arguments: map[string]string{"blank": ""}})
 	history := plan.Stages[0].History
 	if len(history) != 2 || !reflect.DeepEqual(history[0].Operation.Arguments, []string{"blank", ""}) || !reflect.DeepEqual(history[1].Operation.Arguments, []string{"unset"}) {

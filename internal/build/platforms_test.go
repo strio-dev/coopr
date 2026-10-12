@@ -68,7 +68,8 @@ func TestAllPlatformsDiscoversPartiallyCachedRegistryIndexOffline(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	def, err := definition.Parse(strings.NewReader("from \"" + reference + "\"\n"))
+	def, err := definition.Parse(strings.NewReader("from \"" + reference + `" {}
+`))
 	if err != nil {
 		t.Fatal(err)
 	}

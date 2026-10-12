@@ -52,7 +52,7 @@ func TestComponentPackageImporterMemoizesAndClonesConfig(t *testing.T) {
 	platform := v1.Platform{OS: "linux", Architecture: runtime.GOARCH}
 	resolver, _, _ := localComponentResolver(t, ctx, platform)
 	resolved, err := ResolveComponentPlan(ctx, ComponentPlanRequest{
-		Resolver: resolver, Reference: "local:tool", Parameters: map[string]string{"channel": "stable"}, Platform: platform,
+		Resolver: resolver, Reference: "tool", Parameters: map[string]string{"channel": "stable"}, Platform: platform,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -103,7 +103,7 @@ func TestComponentPackageImporterConfigDigestSeparatesMemoEntries(t *testing.T) 
 	platform := v1.Platform{OS: "linux", Architecture: runtime.GOARCH}
 	resolver, _, _ := localComponentResolver(t, ctx, platform)
 	resolved, err := ResolveComponentPlan(ctx, ComponentPlanRequest{
-		Resolver: resolver, Reference: "local:tool", Parameters: map[string]string{"channel": "stable"}, Platform: platform,
+		Resolver: resolver, Reference: "tool", Parameters: map[string]string{"channel": "stable"}, Platform: platform,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -140,7 +140,7 @@ func TestComponentPackageImporterLiveRootless(t *testing.T) {
 	platform := v1.Platform{OS: "linux", Architecture: runtime.GOARCH}
 	resolver, _, _ := localComponentResolver(t, ctx, platform)
 	resolved, err := ResolveComponentPlan(ctx, ComponentPlanRequest{
-		Resolver: resolver, Reference: "local:tool", Parameters: map[string]string{"channel": "stable"}, Platform: platform,
+		Resolver: resolver, Reference: "tool", Parameters: map[string]string{"channel": "stable"}, Platform: platform,
 	})
 	if err != nil {
 		t.Fatal(err)

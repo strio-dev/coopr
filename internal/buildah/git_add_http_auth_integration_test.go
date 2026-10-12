@@ -25,7 +25,10 @@ func TestBuildPlanAddsAuthenticatedGitRepository(t *testing.T) {
 	if err := os.WriteFile(secret, []byte(token), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	plan := testPlan(t, "from \"scratch\"\nadd \""+source+"\" \"/source/\"\n")
+	plan := testPlan(t, `from "scratch" {
+    add "`+source+`" "/source/"
+}
+`)
 	layout := filepath.Join(root, "layout")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

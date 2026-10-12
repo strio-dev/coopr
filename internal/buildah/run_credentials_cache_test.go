@@ -85,7 +85,10 @@ func TestSecretValueChangeReusesInstructionCache(t *testing.T) {
 	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	plan := testPlan(t, fmt.Sprintf("from %q\nrun \"cat /run/secrets/token >/proof\" network=\"none\" { mount \"secret\" id=\"token\" required=\"true\" }\n", base.reference))
+	plan := testPlan(t, fmt.Sprintf(`from %q {
+    run "cat /run/secrets/token >/proof" network="none" { mount "secret" id="token" required="true" }
+}
+`, base.reference))
 	build := func(name, value string) string {
 		t.Helper()
 		secretPath := filepath.Join(root, name+"-token")
@@ -143,7 +146,10 @@ func TestSSHAgentChangeReusesInstructionCache(t *testing.T) {
 	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	plan := testPlan(t, fmt.Sprintf("from %q\nrun \"test -S /run/buildkit/ssh_agent.0 && od -An -N16 -tx1 /dev/urandom | tr -d ' \\\\n' >/proof\" network=\"none\" { mount \"ssh\" id=\"default\" required=\"true\" }\n", base.reference))
+	plan := testPlan(t, fmt.Sprintf(`from %q {
+    run "test -S /run/buildkit/ssh_agent.0 && od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" network="none" { mount "ssh" id="default" required="true" }
+}
+`, base.reference))
 	build := func(name string) string {
 		t.Helper()
 		listener, err := net.Listen("unix", filepath.Join(root, name+".sock"))

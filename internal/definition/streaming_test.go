@@ -51,7 +51,7 @@ func TestParsePreservesValuesAcrossStreamingBufferBoundary(t *testing.T) {
 				`env "ORIGINAL"="` + value + "\"\n" + strings.Repeat("// tail\n", 20000)
 			for _, reader := range readers {
 				t.Run(reader.name, func(t *testing.T) {
-					def, err := Parse(reader.open(t, source))
+					def, err := parseFragment(reader.open(t, source))
 					if err != nil {
 						t.Fatal(err)
 					}

@@ -7,7 +7,7 @@ import (
 )
 
 func TestHealthcheckNONEKeyword(t *testing.T) {
-	def, err := Parse(strings.NewReader(`
+	def, err := parseFragment(strings.NewReader(`
 healthcheck NONE
 healthcheck "NONE"
 healthcheck { exec "NONE" }
@@ -25,7 +25,7 @@ onbuild { healthcheck NONE }
 	if !reflect.DeepEqual(def.Instructions, want) {
 		t.Fatalf("healthcheck forms = %#v, want %#v", def.Instructions, want)
 	}
-	if err := Validate(def); err != nil {
+	if err := validateFragment(def); err != nil {
 		t.Fatal(err)
 	}
 	for _, source := range []string{
@@ -35,7 +35,7 @@ onbuild { healthcheck NONE }
 		`healthcheck #null`,
 		`healthcheck { exec #null }`,
 	} {
-		if _, err := Parse(strings.NewReader(source)); err == nil {
+		if _, err := parseFragment(strings.NewReader(source)); err == nil {
 			t.Errorf("accepted invalid healthcheck %s", source)
 		}
 	}
@@ -50,19 +50,19 @@ func TestQuotedBooleanOptionsMatchNativeValues(t *testing.T) {
 		`run "true" { device "vendor.example/gpu=one" required="true" }`,
 		`run "true" { device "vendor.example/gpu=one" required="false" }`,
 	} {
-		quoted, err := Parse(strings.NewReader(source))
+		quoted, err := parseFragment(strings.NewReader(source))
 		if err != nil {
 			t.Fatal(err)
 		}
 		nativeSource := strings.NewReplacer(`="true"`, `=#true`, `="false"`, `=#false`).Replace(source)
-		native, err := Parse(strings.NewReader(nativeSource))
+		native, err := parseFragment(strings.NewReader(nativeSource))
 		if err != nil {
 			t.Fatal(err)
 		}
 		if !reflect.DeepEqual(quoted, native) {
 			t.Fatalf("quoted options differ from native values for %s", source)
 		}
-		if err := Validate(quoted); err != nil {
+		if err := validateFragment(quoted); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -73,7 +73,7 @@ func TestQuotedBooleanOptionsMatchNativeValues(t *testing.T) {
 		`run "true" { device "vendor.example/gpu=one" required=1 }`,
 		`run "true" { device "vendor.example/gpu=one" required=(flag)"true" }`,
 	} {
-		if _, err := Parse(strings.NewReader(source)); err == nil {
+		if _, err := parseFragment(strings.NewReader(source)); err == nil {
 			t.Errorf("accepted invalid boolean option %s", source)
 		}
 	}

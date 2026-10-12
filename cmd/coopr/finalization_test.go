@@ -41,7 +41,8 @@ func TestNativeCompressionAndConfidentialWorkloadFlags(t *testing.T) {
 	if command.Flags().Lookup("cw") == nil {
 		t.Fatal("missing --cw flag")
 	}
-	definition := definitionFile(t, "from \"scratch\"\n")
+	definition := definitionFile(t, `from "scratch" {}
+`)
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"build", definition, "--cw=invalid"}, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "parse --cw") {
 		t.Fatalf("invalid --cw exit=%d stderr=%q", code, stderr.String())
@@ -52,7 +53,10 @@ func TestBuildFlatTarStdoutLive(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live rootfs stdout export in short mode")
 	}
-	file := definitionFile(t, "from \"scratch\"\ncopy \"marker\" \"/marker\"\n")
+	file := definitionFile(t, `from "scratch" {
+    copy "marker" "/marker"
+}
+`)
 	if err := os.WriteFile(filepath.Join(filepath.Dir(file), "marker"), []byte("flat output\n"), 0600); err != nil {
 		t.Fatal(err)
 	}

@@ -10,12 +10,13 @@ import (
 func TestGlobalARGRequiresStageRedeclarationForRuntimeScope(t *testing.T) {
 	plan := makePlan(t, `
 arg "flavor" "global"
-from "scratch"
-env before="${flavor}"
-run "true"
-arg "flavor"
-env after="${flavor}"
-run "true"
+from "scratch" {
+    env before="${flavor}"
+    run "true"
+    arg "flavor"
+    env after="${flavor}"
+    run "true"
+}
 `, Options{Mode: Build})
 	stage := plan.Stages[0]
 	if got := stage.Operations[0].Properties["before"]; got != "" {
@@ -36,7 +37,7 @@ func TestRepeatedGlobalARGUsesLatestDefaultAndPreservesOverride(t *testing.T) {
 	def := parse(t, `
 arg "base" "alpine:3.19"
 arg "base" "alpine:3.20"
-from "$base"
+from "$base" {}
 `)
 	for _, test := range []struct {
 		name string
@@ -68,9 +69,10 @@ from "$base"
 func TestAuthoredPlatformARGDefaultOverridesAutomaticValue(t *testing.T) {
 	def := parse(t, `
 arg "TARGETOS" "custom"
-from "example.invalid/base:$TARGETOS"
-arg "TARGETOS"
-env target_os="$TARGETOS"
+from "example.invalid/base:$TARGETOS" {
+    arg "TARGETOS"
+    env target_os="$TARGETOS"
+}
 `)
 	plan, err := Create(def, Options{Mode: Build})
 	if err != nil {
@@ -94,11 +96,13 @@ env target_os="$TARGETOS"
 func TestLocalStageRetainsInheritedARGScope(t *testing.T) {
 	plan := makePlan(t, `
 arg "flavor" "global"
-from "scratch" as="base"
-arg "flavor"
-run "true"
-from "base"
-run "true"
+from "scratch" as="base" {
+    arg "flavor"
+    run "true"
+}
+from "base" {
+    run "true"
+}
 `, Options{Mode: Build})
 	child := plan.Stages[len(plan.Stages)-1]
 	if got := child.Operations[0].ArgumentsInScope["flavor"]; got != "global" {
@@ -109,16 +113,20 @@ run "true"
 func TestPackageArgumentsIgnoreLaterAndCrossStageDeclarations(t *testing.T) {
 	plan := makePlan(t, `
 arg "future" "global"
-from "scratch" as="unrelated"
-arg "future"
-env unrelated="${future}"
-from "scratch" as="producer"
-env before="${future}"
-arg "future"
-package as="bundle"
-copy "/asset" "/asset" from="producer"
-extend
-copy "/asset" "/asset" from="bundle"
+from "scratch" as="unrelated" {
+    arg "future"
+    env unrelated="${future}"
+}
+from "scratch" as="producer" {
+    env before="${future}"
+    arg "future"
+}
+package as="bundle" {
+    copy "/asset" "/asset" from="producer"
+}
+extend {
+    copy "/asset" "/asset" from="bundle"
+}
 `, Options{Mode: Publish})
 	if _, fixed := plan.PackageArguments["future"]; fixed {
 		t.Fatalf("later or cross-stage ARG was falsely frozen: %+v", plan.PackageArguments)
@@ -128,11 +136,13 @@ copy "/asset" "/asset" from="bundle"
 func TestPackageArgumentsInspectInheritedOnBuildInOrder(t *testing.T) {
 	def := parse(t, `
 arg "flavor" "stable"
-from "registry.example/parent:latest" as="producer"
-package as="bundle"
-copy "/asset" "/asset" from="producer"
-extend
-copy "/asset" "/asset" from="bundle"
+from "registry.example/parent:latest" as="producer" {}
+package as="bundle" {
+    copy "/asset" "/asset" from="producer"
+}
+extend {
+    copy "/asset" "/asset" from="bundle"
+}
 `)
 	plan, err := CreateDemandDriven(def, Options{Mode: Publish}, func(source FromSource) (StageBind, error) {
 		return StageBind{Inherited: []definition.Instruction{
@@ -151,12 +161,15 @@ copy "/asset" "/asset" from="bundle"
 func TestPackageArgumentsExcludeDeferredAuthoredOnBuild(t *testing.T) {
 	plan := makePlan(t, `
 arg "deferred" "invocation"
-from "scratch" as="producer"
-onbuild { env deferred="$deferred" }
-package as="bundle"
-copy "/asset" "/asset" from="producer"
-extend
-copy "/asset" "/asset" from="bundle"
+from "scratch" as="producer" {
+    onbuild { env deferred="$deferred" }
+}
+package as="bundle" {
+    copy "/asset" "/asset" from="producer"
+}
+extend {
+    copy "/asset" "/asset" from="bundle"
+}
 `, Options{Mode: Publish})
 	if _, fixed := plan.PackageArguments["deferred"]; fixed {
 		t.Fatalf("deferred authored ONBUILD argument was frozen: %+v", plan.PackageArguments)
@@ -166,7 +179,7 @@ copy "/asset" "/asset" from="bundle"
 func TestResolveFromSourcesNormalizesSourceDateEpochLikeCreate(t *testing.T) {
 	def := parseFromSourcesDefinition(t, `
 arg "SOURCE_DATE_EPOCH" "00042"
-from "registry.example/image:${SOURCE_DATE_EPOCH}"
+from "registry.example/image:${SOURCE_DATE_EPOCH}" {}
 `)
 	sources, err := ResolveFromSources(def, Options{})
 	if err != nil {
@@ -180,9 +193,11 @@ from "registry.example/image:${SOURCE_DATE_EPOCH}"
 		def  *definition.Definition
 		opts Options
 	}{
-		{name: "invalid override", def: parseFromSourcesDefinition(t, `from "scratch"`), opts: Options{Arguments: map[string]string{"SOURCE_DATE_EPOCH": "tomorrow"}}},
+		{name: "invalid override", def: parseFromSourcesDefinition(t, `from "scratch" {}
+`), opts: Options{Arguments: map[string]string{"SOURCE_DATE_EPOCH": "tomorrow"}}},
 		{name: "invalid default", def: parseFromSourcesDefinition(t, `arg "SOURCE_DATE_EPOCH" "tomorrow"
-from "scratch"`), opts: Options{}},
+from "scratch" {}
+`), opts: Options{}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			_, err := ResolveFromSources(test.def, test.opts)

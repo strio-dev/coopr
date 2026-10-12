@@ -149,14 +149,15 @@ func TestBuildDefinitionRecordsInstructionHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	def, err := definition.Parse(strings.NewReader(fmt.Sprintf(`
-from %q
-arg "channel" "stable"
-env release="stable"
-label "org.example.release" "stable"
-run "printf history >/proof" network="none"
-user "0"
-workdir "/workspace"
-cmd { exec "/bin/true" }
+from %q {
+    arg "channel" "stable"
+    env release="stable"
+    label "org.example.release" "stable"
+    run "printf history >/proof" network="none"
+    user "0"
+    workdir "/workspace"
+    cmd { exec "/bin/true" }
+}
 `, base.reference)))
 	if err != nil {
 		t.Fatal(err)
@@ -237,9 +238,10 @@ entrypoint { exec "/bin/sh" }`, want: []string{`LABEL release=three`, `CMD ["/bi
 	}
 	for attempt, test := range tests {
 		plan := testPlan(t, fmt.Sprintf(`
-from %q
-%s
-run "od -An -N16 -tx1 /dev/urandom | tr -d ' \n' >/proof" network="none"
+from %q {
+    %s
+    run "od -An -N16 -tx1 /dev/urandom | tr -d ' \n' >/proof" network="none"
+}
 `, base.reference, test.metadata))
 		layout := filepath.Join(root, fmt.Sprintf("layout-%d", attempt))
 		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
@@ -297,14 +299,15 @@ func TestBuildPlanNoOpRunCachePreservesHistoryAfterCopy(t *testing.T) {
 				var coldLayers []v1.Descriptor
 				for attempt, release := range []string{"cold", "warm"} {
 					plan := testPlan(t, fmt.Sprintf(`
-from %q
-run "/bin/busybox true" network="none"
-copy "payload" "/payload"
-env channel="stable"
-label release="%s"
-run "/bin/busybox test -s /payload" network="none"
-%s
-cmd { exec "/bin/cat" "/payload" }
+from %q {
+    run "/bin/busybox true" network="none"
+    copy "payload" "/payload"
+    env channel="stable"
+    label release="%s"
+    run "/bin/busybox test -s /payload" network="none"
+    %s
+    cmd { exec "/bin/cat" "/payload" }
+}
 `, base.reference, release, afterRun))
 					layout := filepath.Join(root, release)
 					var progress strings.Builder
@@ -399,9 +402,10 @@ func TestBuildPlanOrdersMetadataAfterNonCacheableRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := testPlan(t, fmt.Sprintf(`
-from %q
-run "cat /run/secrets/token >/proof" network="none" { mount "secret" id="token" required="true" }
-label after="run"
+from %q {
+    run "cat /run/secrets/token >/proof" network="none" { mount "secret" id="token" required="true" }
+    label after="run"
+}
 `, base.reference))
 	layout := filepath.Join(root, "layout")
 	_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
@@ -427,8 +431,9 @@ func TestBuildPlanLinkedCopyUsesPlannedHistory(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "payload"), []byte("linked\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	plan := testPlan(t, `from "scratch"
-copy "payload" "/payload" link="true"
+	plan := testPlan(t, `from "scratch" {
+    copy "payload" "/payload" link="true"
+}
 `)
 	layout := filepath.Join(root, "layout")
 	_, err := BuildPlan(context.Background(), plan, PlanOptions{
@@ -455,9 +460,12 @@ func TestBuildPlanComponentMetadataTailKeepsLayerHistory(t *testing.T) {
 	resolver, _, _ := localComponentResolver(t, ctx, v1.Platform{OS: "linux", Architecture: runtime.GOARCH})
 	policy := writeComponentTestPolicy(t, root)
 	plan := testPlan(t, `
-from "scratch"
-component "local:tool" channel="stable"
-label final="yes"
+from "scratch" {
+    component "tool" {
+        arg "channel" "stable"
+    }
+    label final="yes"
+}
 `)
 	layout := filepath.Join(root, "layout")
 	options := componentTestOptions(root, layout, resolver, policy)

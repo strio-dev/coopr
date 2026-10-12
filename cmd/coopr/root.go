@@ -7,8 +7,6 @@ import (
 	"io"
 	"strings"
 
-	"coopr/internal/oci"
-
 	"github.com/spf13/cobra"
 )
 
@@ -46,7 +44,6 @@ func newRootCommandWithStorageNamespace(prepareNamespace func() error) *cobra.Co
 		return fmt.Errorf("%w\nSee '%s --help'", err, cmd.CommandPath())
 	})
 	root.AddCommand(newBuildCommandWithGlobals(false))
-	root.AddCommand(newCopyCommand(oci.Image))
 	root.AddCommand(newImageCommand())
 	root.AddCommand(newImagesCommand())
 	root.AddCommand(newComponentCommandWithGlobals(false))

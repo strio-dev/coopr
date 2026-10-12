@@ -350,7 +350,10 @@ func TestBuildPlanWarmSimpleCopySkipsBuildahCopier(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := cacheTestStore(root)
-	plan := testPlan(t, "from \"scratch\"\ncopy \"source\" \"/renamed\"\n")
+	plan := testPlan(t, `from "scratch" {
+    copy "source" "/renamed"
+}
+`)
 	var probes, applies atomic.Int32
 	observer := copyAddDigestObservation(func(dryRun bool) {
 		if dryRun {

@@ -152,7 +152,8 @@ func (executor *graphExecutor) nativeBuilder(builder *upstream.Builder, options 
 	controls := executor.options.RunControls
 	return nativeBuilder{
 		Builder: builder, isolation: options.Isolation,
-		runtime: effectiveRuntime(executor.options.Runtime, controls), runtimeArgs: slices.Clone(controls.RuntimeFlags),
+		executableOrigin: executor.options.executableOrigin,
+		runtime:          effectiveRuntime(executor.options.Runtime, controls), runtimeArgs: slices.Clone(controls.RuntimeFlags),
 		secretSpecs: executor.options.Secrets, sshSpecs: executor.options.SSH,
 		cgroupManager: controls.CgroupManager, cgroupManagerSet: controls.CgroupManagerSet,
 		compatVolumes: executor.options.Lifecycle.CompatVolumes,
@@ -310,6 +311,7 @@ type graphBindings struct {
 	observeManifest    func(string, digest.Digest, string, bool)
 	caller             stageState
 	packages           map[string]stageState
+	bindPackages       func(context.Context, *planner.Plan) error
 	cacheScope         CacheMountScope
 	progressPrefix     string
 	progressStageTotal int
@@ -561,6 +563,11 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 				}
 				if err := validateReplannedStages(stages, nextStages, protected); err != nil {
 					return Result{}, drain(stage.ID, err)
+				}
+				if bindings != nil && bindings.bindPackages != nil {
+					if err := bindings.bindPackages(graphCtx, nextPlan); err != nil {
+						return Result{}, drain(stage.ID, fmt.Errorf("stage %s bind replanned packages: %w", stage.ID, err))
+					}
 				}
 				plan, stages = nextPlan, nextStages
 				replanned = true
@@ -2204,6 +2211,10 @@ func historyInstructionArguments(instruction definition.Instruction) string {
 		fields = append(fields, "--"+name+"="+instruction.Properties[name])
 	}
 	for _, child := range instruction.Children {
+		if instruction.Name == "component" && child.Name == "arg" && len(child.Arguments) == 2 {
+			fields = append(fields, "--build-arg="+child.Arguments[0]+"="+child.Arguments[1])
+			continue
+		}
 		if child.Name == "exclude" || child.Name == "device" {
 			for _, argument := range child.Arguments {
 				value := argument
@@ -2225,7 +2236,15 @@ func historyInstructionArguments(instruction definition.Instruction) string {
 		}
 		fields = append(fields, "--mount="+strings.Join(parts, ","))
 	}
-	if instruction.Form == "exec" {
+	if len(instruction.Commands) != 0 {
+		for _, command := range instruction.Commands {
+			if command.Form == "shell" {
+				fields = append(fields, "script "+historyJSON(command.Arguments))
+			} else {
+				fields = append(fields, "exec "+historyJSON(command.Arguments))
+			}
+		}
+	} else if instruction.Form == "exec" {
 		fields = append(fields, historyJSON(instruction.Arguments))
 	} else {
 		fields = append(fields, instruction.Arguments...)

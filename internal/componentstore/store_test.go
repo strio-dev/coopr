@@ -43,7 +43,7 @@ func TestPutAnchorsDigestAndOptionalTag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tagged, err := store.Resolve(ctx, "stable")
+	tagged, err := store.Resolve(ctx, "stable:latest")
 	if err != nil || tagged.Digest != root.Digest {
 		t.Fatalf("tag root differs: %+v, %v", tagged, err)
 	}
@@ -55,7 +55,7 @@ func TestPutAnchorsDigestAndOptionalTag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tagged, err = store.Resolve(ctx, "stable")
+	tagged, err = store.Resolve(ctx, "stable:latest")
 	if err != nil || tagged.Digest != secondRoot.Digest {
 		t.Fatalf("moved tag differs: %+v, %v", tagged, err)
 	}
@@ -181,18 +181,50 @@ func assertGraphBytes(t *testing.T, ctx context.Context, store content.ReadOnlyS
 	}
 }
 
-func TestValidateTag(t *testing.T) {
-	for _, tag := range []string{"stable", "v1.2_3"} {
-		if err := ValidateTag(tag); err != nil {
-			t.Fatalf("valid tag %q: %v", tag, err)
+func TestNormalizeComponentNames(t *testing.T) {
+	for input, want := range map[string]string{
+		"": "", "settings": "settings:latest", "settings:v1": "settings:v1",
+		"team/settings": "team/settings:latest", "registry.example/team/settings:v1": "registry.example/team/settings:v1",
+		"docker.io/library/settings": "settings:latest", "local:foo": "local:foo",
+	} {
+		got, err := NormalizeTag(input)
+		if err != nil || got != want {
+			t.Errorf("NormalizeTag(%q) = %q, %v; want %q", input, got, err, want)
 		}
 	}
-	for _, tag := range []string{"bad/tag", "bad:tag", "", string(make([]byte, 129))} {
-		if tag == "" {
-			continue
+	dgst := digest.FromString("component").String()
+	for input, want := range map[string]string{dgst: dgst, "settings@" + dgst: "settings@" + dgst, "settings": "settings:latest"} {
+		got, err := NormalizeReference(input)
+		if err != nil || got != want {
+			t.Errorf("NormalizeReference(%q) = %q, %v; want %q", input, got, err, want)
 		}
-		if err := ValidateTag(tag); err == nil {
-			t.Fatalf("invalid tag %q accepted", tag)
+	}
+	for _, input := range []string{"sha256:bad", "settings@sha256:bad", "", "./settings.coopr", "../settings.coopr", "bad name"} {
+		if _, err := NormalizeReference(input); err == nil {
+			t.Errorf("invalid reference %q accepted", input)
+		}
+	}
+	for _, input := range []string{dgst, "settings@" + dgst, "bad name", "Uppercase", "http://registry.example/foo"} {
+		if _, err := NormalizeTag(input); err == nil {
+			t.Errorf("invalid tag %q accepted", input)
+		}
+	}
+}
+
+func TestLocalSelector(t *testing.T) {
+	dgst := digest.FromString("component").String()
+	for input, want := range map[string]string{
+		"settings": "settings:latest", "settings:v1": "settings:v1", "local:foo": "local:foo",
+		dgst: dgst, "settings@" + dgst: dgst, "registry.example/team/settings:v1@" + dgst: dgst,
+	} {
+		got, err := LocalSelector(input)
+		if err != nil || got != want {
+			t.Errorf("LocalSelector(%q) = %q, %v; want %q", input, got, err, want)
+		}
+	}
+	for _, input := range []string{"", "settings@sha256:bad", "sha256:bad", "./settings.coopr"} {
+		if _, err := LocalSelector(input); err == nil {
+			t.Errorf("invalid local selector %q accepted", input)
 		}
 	}
 }

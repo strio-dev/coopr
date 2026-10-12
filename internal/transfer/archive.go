@@ -42,7 +42,7 @@ func copyImageArchive(ctx context.Context, layoutPath string, root v1.Descriptor
 		return "", err
 	}
 	defer func() { retErr = errors.Join(retErr, policyContext.Destroy()) }()
-	if opts.ArchiveUncompressed == nil || *opts.ArchiveUncompressed {
+	if !opts.Push.ChangesManifest() && !opts.Push.RemoveSignatures && (opts.ArchiveUncompressed == nil || *opts.ArchiveUncompressed) {
 		store, err := orasoci.NewWithContext(ctx, layoutPath)
 		if err != nil {
 			return "", err
@@ -72,7 +72,7 @@ func copyImageArchive(ctx context.Context, layoutPath string, root v1.Descriptor
 			} else {
 				err = localstore.WriteArchive(ctx, store, root, destination.Name)
 			}
-			return destination.Name, err
+			return destination.String() + "@" + root.Digest.String(), err
 		}
 	}
 	var target types.ImageReference
@@ -84,8 +84,15 @@ func copyImageArchive(ctx context.Context, layoutPath string, root v1.Descriptor
 	if err != nil {
 		return "", err
 	}
-	_, err = imagecopy.Image(ctx, policyContext, target, source, &imagecopy.Options{SourceCtx: system, DestinationCtx: system, PreserveDigests: system.OCIAcceptUncompressedLayers, ImageListSelection: imagecopy.CopyAllImages, ReportWriter: opts.ProgressWriter})
-	return destination.Name, err
+	options := &imagecopy.Options{SourceCtx: system, DestinationCtx: system, PreserveDigests: system.OCIAcceptUncompressedLayers, ImageListSelection: imagecopy.CopyAllImages, ReportWriter: opts.ProgressWriter}
+	if err := opts.Push.Apply(options); err != nil {
+		return "", err
+	}
+	copied, err := imagecopy.Image(ctx, policyContext, target, source, options)
+	if err != nil {
+		return "", err
+	}
+	return destination.String() + "@" + digest.FromBytes(copied).String(), nil
 }
 
 // Native copying evaluates the policy for each image instance. Keep that same

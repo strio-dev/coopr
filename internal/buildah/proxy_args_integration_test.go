@@ -30,8 +30,9 @@ func TestBuildDefinitionPredefinedProxyArgReusesRunCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	def, err := definition.Parse(strings.NewReader(fmt.Sprintf(`
-from %q
-run "printf '%%s' \"$HTTP_PROXY\" >/proof" network="none"
+from %q {
+    run "printf '%%s' \"$HTTP_PROXY\" >/proof" network="none"
+}
 `, base.reference)))
 	if err != nil {
 		t.Fatal(err)
@@ -91,12 +92,15 @@ func TestPublishDefinitionPredefinedProxyArgReachesPackageRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	def, err := definition.Parse(strings.NewReader(fmt.Sprintf(`
-from %q as="producer"
-run "printf '%%s' \"$HTTP_PROXY\" >/proof" network="none"
-package as="bundle"
-copy "/proof" "/proof" from="producer"
-extend
-copy "/proof" "/proof" from="bundle"
+from %q as="producer" {
+    run "printf '%%s' \"$HTTP_PROXY\" >/proof" network="none"
+}
+package as="bundle" {
+    copy "/proof" "/proof" from="producer"
+}
+extend {
+    copy "/proof" "/proof" from="bundle"
+}
 `, base.reference)))
 	if err != nil {
 		t.Fatal(err)

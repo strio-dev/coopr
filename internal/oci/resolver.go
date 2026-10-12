@@ -15,6 +15,7 @@ import (
 	"coopr/internal/componentstore"
 	"coopr/internal/definition"
 	"coopr/internal/imageconfig"
+	"coopr/internal/localstore"
 	"coopr/internal/planner"
 
 	dockerreference "github.com/distribution/reference"
@@ -27,6 +28,7 @@ import (
 	"go.podman.io/storage"
 	"oras.land/oras-go/v2/content"
 	orasoci "oras.land/oras-go/v2/content/oci"
+	"oras.land/oras-go/v2/errdef"
 	"oras.land/oras-go/v2/registry"
 )
 
@@ -140,7 +142,7 @@ func NewResolver(opts Options) (*Resolver, error) {
 	if err != nil {
 		return nil, err
 	}
-	system := &types.SystemContext{AuthFilePath: opts.AuthFile, DockerCertPath: opts.CertDir, SignaturePolicyPath: opts.SignaturePolicyPath}
+	system := &types.SystemContext{AuthFilePath: opts.AuthFile, DockerCertPath: opts.CertDir, SignaturePolicyPath: opts.SignaturePolicyPath, DockerDaemonHost: os.Getenv("DOCKER_HOST")}
 	ApplyTLSVerify(system, opts.TLSVerify)
 	if opts.Credentials != "" {
 		username, password, _ := strings.Cut(opts.Credentials, ":")
@@ -384,73 +386,85 @@ func ParseReference(value string) (registry.Reference, error) {
 	return ref, nil
 }
 
-type localReference struct {
-	tag    string
-	digest digest.Digest
-}
-
-func parseLocalReference(value string) (localReference, bool, error) {
-	var parsed localReference
-	if strings.HasPrefix(value, "sha256:") {
-		parsed.digest = digest.Digest(value)
-		if parsed.digest.Algorithm() != digest.SHA256 || parsed.digest.Validate() != nil {
-			return parsed, true, fmt.Errorf("invalid local component digest %q", value)
-		}
-		return parsed, true, nil
-	}
-	if !strings.HasPrefix(value, "local:") {
-		return parsed, false, nil
-	}
-	parsed.tag = strings.TrimPrefix(value, "local:")
-	if parsed.tag == "" {
-		return parsed, true, fmt.Errorf("local component tag is empty")
-	}
-	if err := componentstore.ValidateTag(parsed.tag); err != nil {
-		return parsed, true, err
-	}
-	return parsed, true, nil
-}
-
-// ValidateComponentReference accepts registry references and Coopr's explicit
-// local component references without allowing local references for base images.
+// ValidateComponentReference accepts conventional named component references
+// and immutable local digests.
 func ValidateComponentReference(value string) error {
-	_, local, err := parseLocalReference(value)
-	if local {
-		return err
-	}
-	_, err = ParseReference(value)
+	_, err := componentstore.NormalizeReference(value)
 	return err
 }
 
 func (r *Resolver) Resolve(ctx context.Context, reference string, platform v1.Platform, kind Kind) (*Resolved, error) {
 	if kind == Component {
-		local, ok, err := parseLocalReference(reference)
+		selector, err := componentstore.LocalSelector(reference)
 		if err != nil {
 			return nil, err
 		}
-		if ok {
-			store, err := componentstore.Open(ctx, r.componentStoreDir)
-			if err != nil {
-				return nil, err
-			}
-			selector := local.tag
-			if local.digest != "" {
-				selector = local.digest.String()
-			}
-			root, err := store.Resolve(ctx, selector)
-			if err != nil {
-				return nil, fmt.Errorf("resolve %s: %w", reference, err)
-			}
-			if local.digest != "" && root.Digest != local.digest {
-				return nil, fmt.Errorf("local component digest %s differs from resolved %s", local.digest, root.Digest)
-			}
+		store, root, err := r.lookupLocalComponent(ctx, selector)
+		if err == nil {
 			return r.resolveRoot(ctx, store, reference, "local", root, platform, kind)
+		}
+		if !errors.Is(err, errLocalComponentNotFound) || strings.HasPrefix(reference, "sha256:") {
+			return nil, fmt.Errorf("resolve component %s: %w", reference, err)
 		}
 	}
 	if kind == Image {
 		return r.resolveNativeImage(ctx, reference, platform)
 	}
 	return r.resolveRemote(ctx, reference, platform, kind)
+}
+
+var errLocalComponentNotFound = errors.New("local component not found")
+
+func (r *Resolver) lookupLocalComponent(ctx context.Context, selector string) (*orasoci.ReadOnlyStore, v1.Descriptor, error) {
+	// Do not initialize an absent store merely to attempt a named lookup.
+	if _, err := os.Stat(r.componentStoreDir); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, v1.Descriptor{}, errLocalComponentNotFound
+		}
+		return nil, v1.Descriptor{}, err
+	}
+	var store *orasoci.ReadOnlyStore
+	var root v1.Descriptor
+	err := localstore.WithReadLock(ctx, r.componentStoreDir, func() error {
+		indexBytes, err := os.ReadFile(filepath.Join(r.componentStoreDir, v1.ImageIndexFile))
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				if _, layoutErr := os.Stat(filepath.Join(r.componentStoreDir, v1.ImageLayoutFile)); errors.Is(layoutErr, os.ErrNotExist) {
+					entries, readErr := os.ReadDir(r.componentStoreDir)
+					if readErr != nil {
+						return fmt.Errorf("read component directory: %w", readErr)
+					}
+					for _, entry := range entries {
+						if entry.Type().IsRegular() && (entry.Name() == ".coopr-store.lock" || entry.Name() == ".coopr-activity.lock") {
+							continue
+						}
+						return fmt.Errorf("component store is missing OCI metadata with resident entry %q", entry.Name())
+					}
+					return errLocalComponentNotFound
+				}
+			}
+			return fmt.Errorf("read component index: %w", err)
+		}
+		var index v1.Index
+		if err := json.Unmarshal(indexBytes, &index); err != nil {
+			return fmt.Errorf("read component index: %w", err)
+		}
+		if index.SchemaVersion != 2 || index.MediaType != "" && index.MediaType != v1.MediaTypeImageIndex {
+			return fmt.Errorf("invalid component OCI index")
+		}
+		// ORAS's read-only constructor validates layout metadata and the graph
+		// without silently recreating missing OCI files in an existing store.
+		store, err = orasoci.NewFromFS(ctx, os.DirFS(r.componentStoreDir))
+		if err != nil {
+			return fmt.Errorf("open component store: %w", err)
+		}
+		root, err = store.Resolve(ctx, selector)
+		if errors.Is(err, errdef.ErrNotFound) {
+			return errLocalComponentNotFound
+		}
+		return err
+	})
+	return store, root, err
 }
 
 func (r *Resolver) resolveRoot(ctx context.Context, source content.ReadOnlyStorage, reference, repository string, root v1.Descriptor, platform v1.Platform, kind Kind) (*Resolved, error) {

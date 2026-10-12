@@ -46,7 +46,10 @@ func TestPinnedVariantAliasSharesLayersAndSurvivesSourceRemoval(t *testing.T) {
 		}
 		return result
 	}
-	original := build("from \"scratch\"\ncopy \"proof\" \"/proof\"\n", "original")
+	original := build(`from "scratch" {
+    copy "proof" "/proof"
+}
+`, "original")
 	var alternate v1.Descriptor
 	var aliasID string
 	if err := buildah.WithStore(options, func(store storage.Store) error {
@@ -115,13 +118,18 @@ func TestPinnedVariantAliasSharesLayersAndSurvivesSourceRemoval(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	consumed := build("from \"alias:latest\"\n", "consumed")
+	consumed := build(`from "alias:latest" {}
+`, "consumed")
 	if consumed.ImageID != aliasID || consumed.ManifestDigest != alternate.Digest.String() {
 		t.Fatalf("FROM lost native alias identity: %+v, want %s/%s", consumed, aliasID, alternate.Digest)
 	}
-	consumedID := build("from \"sha256:"+aliasID+"\"\n", "consumed-id")
+	consumedID := build("from \"sha256:"+aliasID+`" {}
+`, "consumed-id")
 	if consumedID.ImageID != aliasID || consumedID.ManifestDigest != alternate.Digest.String() {
 		t.Fatalf("FROM lost IID identity: %+v, want %s/%s", consumedID, aliasID, alternate.Digest)
 	}
-	build("from \"alias:latest\"\ncopy \"proof\" \"/second-proof\"\n", "transformed")
+	build(`from "alias:latest" {
+    copy "proof" "/second-proof"
+}
+`, "transformed")
 }

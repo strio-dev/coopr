@@ -729,7 +729,8 @@ func TestBuildPlanConsumesRemoteNamedContexts(t *testing.T) {
 			root := t.TempDir()
 			layout := filepath.Join(root, "result")
 			policy := writeComponentTestPolicy(t, root)
-			plan := namedContextGraphPlan(t, `from "remote"`, test.spec)
+			plan := namedContextGraphPlan(t, `from "remote" {}
+`, test.spec)
 			if _, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 				Store:      StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"},
 				ContextDir: root, Isolation: "rootless", Runtime: "crun", Output: Output{Path: layout},
@@ -771,7 +772,8 @@ func TestBuildPlanConsumesAuthenticatedGitNamedContext(t *testing.T) {
 	layout := filepath.Join(root, "result")
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	if _, err := BuildDefinitionSupervised(ctx, parseWorkerDefinition(t, `from "private"`), planner.Options{
+	if _, err := BuildDefinitionSupervised(ctx, parseWorkerDefinition(t, `from "private" {}
+`), planner.Options{
 		Mode: planner.Build, Platform: runtime.GOOS + "/" + runtime.GOARCH, BuildContexts: []buildcontext.Spec{contextSpec},
 	}, SupervisedPlanOptions{
 		Store:      StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"},
@@ -806,7 +808,8 @@ func TestBuildPlanConsumesSSHGitNamedContext(t *testing.T) {
 	layout := filepath.Join(root, "result")
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	if _, err := BuildDefinitionSupervised(ctx, parseWorkerDefinition(t, `from "private"`), planner.Options{
+	if _, err := BuildDefinitionSupervised(ctx, parseWorkerDefinition(t, `from "private" {}
+`), planner.Options{
 		Mode: planner.Build, Platform: runtime.GOOS + "/" + runtime.GOARCH, BuildContexts: []buildcontext.Spec{contextSpec},
 	}, SupervisedPlanOptions{
 		Store:      StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"},

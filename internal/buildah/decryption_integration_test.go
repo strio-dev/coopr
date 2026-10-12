@@ -169,10 +169,11 @@ func TestEncryptedRegistryInputDecryptsIntoCanonicalStore(t *testing.T) {
 		"from-only": reference,
 	} {
 		t.Run(name, func(t *testing.T) {
-			body := "from \"" + input + "\"\n"
+			body := "from \"" + input + "\" {\n"
 			if name != "from-only" {
-				body += "run \"printf decrypted > /proof\" network=\"none\"\n"
+				body += "    run \"printf decrypted > /proof\" network=\"none\"\n"
 			}
+			body += "}\n"
 			definition := parseWorkerDefinition(t, body)
 			layout := filepath.Join(root, "result-"+name)
 			_, err = BuildDefinitionSupervised(ctx, definition, planner.Options{

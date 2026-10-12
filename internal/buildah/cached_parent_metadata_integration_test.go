@@ -83,8 +83,9 @@ func TestInstructionCacheSeparatesInheritedPlatformMetadata(t *testing.T) {
 		}
 		reference := "fixture.local/coopr/platform:" + change.name
 		importTestImageToNative(t, ctx, store, fixture.layout, reference, selected, system)
-		plan := testPlan(t, fmt.Sprintf(`from %q
-run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" network="none"
+		plan := testPlan(t, fmt.Sprintf(`from %q {
+    run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" network="none"
+}
 `, reference))
 		var coldProof string
 		for attempt := range 2 {
@@ -142,9 +143,11 @@ func testCachedParentAnnotations(t *testing.T, tail string) {
 		reference := "fixture.local/coopr/annotated:" + origin
 		// Both manifests share exactly the original config and root filesystem.
 		importTestImageToNative(t, ctx, store, fixture.layout, reference, manifest, system)
-		plan := testPlan(t, fmt.Sprintf(`from %q
-run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" network="none"
-%s`, reference, tail))
+		plan := testPlan(t, fmt.Sprintf(`from %q {
+    run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" network="none"
+    %s
+}
+`, reference, tail))
 		layout := filepath.Join(root, "output-"+origin)
 		var logs strings.Builder
 		_, err = BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{

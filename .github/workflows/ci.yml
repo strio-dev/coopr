@@ -46,6 +46,7 @@ jobs:
       - &nix-cache
         name: Cache Nix builds
         uses: Mic92/hestia@dfed9ced335d28978ba74e513939a10db1f71025 # v3.1.0
+        continue-on-error: true
         with:
           version: v3.1.0
           upstream-cache-filter: true

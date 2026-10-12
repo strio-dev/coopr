@@ -8,13 +8,13 @@ import (
 )
 
 // InstructionProperties lists the fixed option names for an instruction.
-// ENV, LABEL and component arguments deliberately have user-defined keys.
+// ENV and LABEL deliberately have user-defined keys.
 func InstructionProperties(name string) ([]string, bool) {
 	switch name {
 	case "from":
 		return []string{"as", "platform", "after"}, true
 	case "extend":
-		return []string{"as", "distro", "distro-version", "package-manager", "architecture"}, true
+		return []string{"as"}, true
 	case "package":
 		return []string{"as"}, true
 	case "run":
@@ -27,7 +27,7 @@ func InstructionProperties(name string) ([]string, bool) {
 		return []string{"interval", "timeout", "start-period", "start-interval", "retries"}, true
 	case "device":
 		return []string{"required"}, true
-	case "env", "label", "component", "mount":
+	case "env", "label", "mount":
 		return nil, false
 	default:
 		return nil, true
@@ -75,7 +75,7 @@ func validateInstructionName(name string) error {
 		return fmt.Errorf("invalid instruction name %q; use %q (instruction names are lowercase)", name, strings.ToLower(name))
 	}
 	switch name {
-	case "layer", "exec", "from", "extend", "package", "arg", "run", "copy", "add", "env", "label", "workdir", "user", "cmd", "entrypoint", "healthcheck", "onbuild", "component", "mount", "device", "exclude", "shell", "stopsignal", "expose", "volume", "maintainer":
+	case "layer", "exec", "script", "from", "extend", "package", "arg", "run", "copy", "add", "env", "label", "workdir", "user", "cmd", "entrypoint", "healthcheck", "onbuild", "component", "mount", "device", "exclude", "shell", "stopsignal", "expose", "volume", "maintainer":
 		return nil
 	default:
 		return fmt.Errorf("unknown instruction %q", name)

@@ -18,19 +18,28 @@ import (
 )
 
 func TestOutputDestinationsValidateAndDeduplicate(t *testing.T) {
-	destinations, err := outputDestinations(oci.Image, "app:latest", []string{"app:latest", "app:stable", "docker:app:test"}, false)
+	destinations, err := outputDestinations(oci.Image, "app:latest", []string{"app:latest", "app:stable", "docker:app"}, false)
 	if err != nil || len(destinations) != 3 {
 		t.Fatalf("destinations = %v, %v", destinations, err)
 	}
-	if _, err := outputDestinations(oci.Component, "", []string{"docker:bad"}, false); err == nil {
-		t.Fatal("engine component output accepted")
-	}
-	if _, err := outputDestinations(oci.Image, "", []string{"docker:bad"}, true); err == nil {
-		t.Fatal("push with engine destination accepted")
-	}
-	destinations, err = outputDestinations(oci.Image, "", []string{"podman:dev"}, false)
-	if err != nil || len(destinations) != 1 || destinations[0] != (transfer.Destination{Transport: "local", Name: "podman:dev"}) {
-		t.Fatalf("ordinary image output = %+v, %v", destinations, err)
+	for _, kind := range []oci.Kind{oci.Image, oci.Component} {
+		for _, name := range []string{"local:dev", "registry:dev", "docker:dev", "podman:dev"} {
+			destinations, err := outputDestinations(kind, name, nil, false)
+			if err != nil || len(destinations) != 1 || destinations[0] != (transfer.Destination{Transport: "local", Name: name}) {
+				t.Fatalf("ordinary %s output %q = %+v, %v", kind, name, destinations, err)
+			}
+		}
+		for _, value := range []string{"docker://example.com/app:dev", "docker-daemon:app:dev", "oci-archive:/tmp/image.tar"} {
+			for _, push := range []bool{false, true} {
+				if _, err := outputDestinations(kind, value, nil, push); err == nil {
+					t.Fatalf("transport accepted as %s tag: %q (push=%t)", kind, value, push)
+				}
+			}
+		}
+		destinations, err := outputDestinations(kind, "example.com/app:dev", nil, true)
+		if err != nil || len(destinations) != 1 || destinations[0] != (transfer.Destination{Transport: "registry", Name: "example.com/app:dev"}) {
+			t.Fatalf("push %s output = %+v, %v", kind, destinations, err)
+		}
 	}
 }
 
@@ -57,6 +66,11 @@ func TestDestinationFailureReportsCommittedAndPendingResults(t *testing.T) {
 			}
 			if report.Destinations[0].Status != "complete" || report.Destinations[1].Status != "failed" || report.Destinations[2].Status != "pending" {
 				t.Fatalf("destination states = %+v", report.Destinations)
+			}
+			for i, want := range []string{"first", "docker://second", "third"} {
+				if report.Destinations[i].Destination != want {
+					t.Fatalf("reported destination %d = %q, want %q", i, report.Destinations[i].Destination, want)
+				}
 			}
 			metadata := filepath.Join(t.TempDir(), "result.json")
 			err := finishOutputs(metadata, "", root, nil, nil, report, publicationErr, "", "")

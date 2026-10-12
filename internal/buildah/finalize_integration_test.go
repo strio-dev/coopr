@@ -26,12 +26,14 @@ func TestOutputFinalizationRetainsBaseAndCachesInstructions(t *testing.T) {
 	store := cacheTestStore(root)
 	base := newLiveBusyBoxStorage(t, ctx, root, store)
 	policy := writeComponentTestPolicy(t, root)
-	plan := testPlan(t, fmt.Sprintf(`from %q as="base"
-run "/bin/busybox echo obsolete >/obsolete" network="none"
-from "base"
-run "/bin/busybox rm /obsolete; /bin/busybox echo first >/first; /bin/busybox ln -s /first /link" network="none"
-run "/bin/busybox echo second >/second" network="none"
-label purpose="finalization"
+	plan := testPlan(t, fmt.Sprintf(`from %q as="base" {
+    run "/bin/busybox echo obsolete >/obsolete" network="none"
+}
+from "base" {
+    run "/bin/busybox rm /obsolete; /bin/busybox echo first >/first; /bin/busybox ln -s /first /link" network="none"
+    run "/bin/busybox echo second >/second" network="none"
+    label purpose="finalization"
+}
 `, base.reference))
 	var baseLayers int
 	var baseDigests []string
@@ -104,11 +106,12 @@ func TestConfidentialWorkloadPreservesConvertedImageConfig(t *testing.T) {
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	base := newLiveBusyBoxStorage(t, ctx, root, store)
 	policy := writeComponentTestPolicy(t, root)
-	plan := testPlan(t, fmt.Sprintf(`from %q
-user "1000"
-workdir "/tmp"
-entrypoint { exec "/bin/busybox" }
-cmd { exec "echo" "hello" }
+	plan := testPlan(t, fmt.Sprintf(`from %q {
+    user "1000"
+    workdir "/tmp"
+    entrypoint { exec "/bin/busybox" }
+    cmd { exec "echo" "hello" }
+}
 `, base.reference))
 	layout := filepath.Join(root, "layout")
 	_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
@@ -140,7 +143,10 @@ func TestOutputFinalizationScratchLocalAndUnchangedBase(t *testing.T) {
 	}
 	for _, squash := range []bool{false, true} {
 		output := filepath.Join(root, fmt.Sprintf("local-%t", squash))
-		_, err := BuildPlan(ctx, testPlan(t, "from \"scratch\"\ncopy \"marker\" \"/marker\"\n"), PlanOptions{
+		_, err := BuildPlan(ctx, testPlan(t, `from "scratch" {
+    copy "marker" "/marker"
+}
+`), PlanOptions{
 			Store: cacheTestStore(root), ContextDir: root, Isolation: "rootless", Output: Output{Path: filepath.Join(root, fmt.Sprintf("layout-%t", squash)), Squash: squash, Filesystem: FilesystemOutput{Type: "local", Path: output}},
 		})
 		if err != nil {
@@ -184,7 +190,10 @@ func TestOutputCompressionControl(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			layout := filepath.Join(root, test.name)
-			_, err := BuildPlan(ctx, testPlan(t, "from \"scratch\"\ncopy \"marker\" \"/marker\"\n"), PlanOptions{
+			_, err := BuildPlan(ctx, testPlan(t, `from "scratch" {
+    copy "marker" "/marker"
+}
+`), PlanOptions{
 				Store: cacheTestStore(filepath.Join(root, test.name+"-store")), ContextDir: root, Isolation: "rootless",
 				Output: Output{Path: layout, DisableCompression: test.disableCompression},
 			})
@@ -216,7 +225,10 @@ func TestSBOMScannerImageUsesFilteredContextAndEmbedsOutput(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, ".dockerignore"), []byte("ignored\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	def, err := definition.Parse(strings.NewReader("from \"scratch\"\ncopy \"marker\" \"/marker\"\n"))
+	def, err := definition.Parse(strings.NewReader(`from "scratch" {
+    copy "marker" "/marker"
+}
+`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +325,10 @@ func TestSBOMScannerPreparedContextKeepsExclusions(t *testing.T) {
 		MergeStrategy: define.SBOMMergeStrategyCycloneDXByComponentNameAndVersion,
 		SBOMOutput:    filepath.Join(f.root, "prepared.json"),
 	}}}
-	if _, err := BuildPlan(f.ctx, testPlan(t, "from \"scratch\"\ncopy \"marker\" \"/marker\"\n"), options); err != nil {
+	if _, err := BuildPlan(f.ctx, testPlan(t, `from "scratch" {
+    copy "marker" "/marker"
+}
+`), options); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(options.Output.SBOM[0].SBOMOutput); err != nil {

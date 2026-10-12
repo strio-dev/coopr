@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -11,7 +12,14 @@ import (
 )
 
 func TestPublishedGraphValidation(t *testing.T) {
-	def := parse(t, "package as=\"pkg\"\nextend as=\"base\"\ncopy \"/src\" \"/dst\" from=\"pkg\"\nfrom \"base\" as=\"final\"\n")
+	def := parse(t, `package as="pkg" {}
+extend as="base" {
+    copy "/src" "/dst" from="pkg"
+}
+extend as="final" {
+    from "base" {}
+}
+`)
 	publication, err := Create(def, Options{Mode: Publish, Platform: "linux/arm64"})
 	if err != nil {
 		t.Fatal(err)
@@ -38,10 +46,12 @@ func TestPublishedGraphValidation(t *testing.T) {
 	}{
 		{"selected package", func(c *PublishedComponent) { c.Output = "0" }, "invalid published output"},
 		{"lost copy binding", func(c *PublishedComponent) { c.StageReferences = nil }, "stage reference missing"},
-		{"wrong from binding", func(c *PublishedComponent) { c.FromBindings["2"] = FromBinding{Kind: "image"} }, "image binding reuses stage name"},
+		{"wrong from binding", func(c *PublishedComponent) { c.FromBindings["3"] = FromBinding{Kind: "image"} }, "image binding reuses stage name"},
 		{"unreachable retained package", func(c *PublishedComponent) {
 			c.Definition.Instructions = append(c.Definition.Instructions, definition.Instruction{Name: "package", Properties: map[string]string{"as": "unused"}})
 			c.ReservedStageNames = append(c.ReservedStageNames, "unused")
+			c.SourceStageIDs[strconv.Itoa(c.SourceStageCount)] = strconv.Itoa(len(c.SourceStageIDs))
+			c.SourceStageCount++
 		}, "outside selected output closure"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -56,10 +66,13 @@ func TestPublishedGraphValidation(t *testing.T) {
 
 func TestPublishedGraphValidationMatchesStageAliasesCaseInsensitively(t *testing.T) {
 	publication, err := Create(parse(t, `
-package as="pkg"
-extend as="base"
-copy "/src" "/dst" from="pkg"
-from "base" as="final"
+package as="pkg" {}
+extend as="base" {
+    copy "/src" "/dst" from="pkg"
+}
+extend as="final" {
+    from "base" {}
+}
 `), Options{Mode: Publish})
 	if err != nil {
 		t.Fatal(err)
@@ -70,12 +83,13 @@ from "base" as="final"
 		case "package":
 			inst.Properties["as"] = "Pkg"
 		case "extend":
-			inst.Properties["as"] = "Base"
-		case "copy":
-			inst.Properties["from"] = "pKg"
-		case "from":
-			inst.Arguments[0] = "BASE"
-			inst.Properties["as"] = "Final"
+			if inst.Properties["as"] == "base" {
+				inst.Properties["as"] = "Base"
+				inst.Children[0].Properties["from"] = "pKg"
+			} else {
+				inst.Properties["as"] = "Final"
+				inst.Children[0].Arguments[0] = "BASE"
+			}
 		}
 	}
 	publication.Component.ReservedStageNames = []string{"Base", "Final", "Pkg"}
@@ -97,12 +111,14 @@ from "base" as="final"
 
 func TestPublishedPackageOnBuildReferenceIsFrozen(t *testing.T) {
 	publication, err := CreateDemandDriven(parse(t, `
-package as="assets"
-package as="payload"
-onbuild { copy "/asset" "/selected" from="assets" }
-from "payload" as="prepared"
-extend
-copy "/selected" "/selected" from="prepared"
+package as="assets" {}
+package as="payload" {
+    onbuild { copy "/asset" "/selected" from="assets" }
+}
+extend {
+    from "payload" as="prepared" {}
+    copy "/selected" "/selected" from="prepared"
+}
 `), Options{Mode: Publish}, func(source FromSource) (StageBind, error) {
 		t.Fatalf("unexpected external source %+v", source)
 		return StageBind{}, nil
@@ -185,11 +201,13 @@ copy "/selected" "/selected" from="prepared"
 }
 
 func TestDemandDrivenInvocationRetainsPackageForExternalOnBuild(t *testing.T) {
-	publication, err := CreateDemandDriven(parse(t, `package as="assets"
-copy "./asset" "/asset"
-from "helper" as="prepared"
-extend
-copy "/selected" "/selected" from="prepared"
+	publication, err := CreateDemandDriven(parse(t, `package as="assets" {
+    copy "./asset" "/asset"
+}
+extend {
+    from "helper" as="prepared" {}
+    copy "/selected" "/selected" from="prepared"
+}
 `), Options{Mode: Publish}, func(source FromSource) (StageBind, error) {
 		if source.Source == "helper" {
 			t.Fatal("invocation-only base resolved during publication")
@@ -222,7 +240,7 @@ copy "/selected" "/selected" from="prepared"
 	if resolved != 1 {
 		t.Fatalf("external resolutions = %d, want 1", resolved)
 	}
-	if got, want := stageIDs(invocation), []string{"0", "1", "2"}; !slices.Equal(got, want) {
+	if got, want := stageIDs(invocation), []string{"0", "2", "1"}; !slices.Equal(got, want) {
 		t.Fatalf("invocation stages = %v, want %v", got, want)
 	}
 	if invocation.Stages[0].Kind != "package-input" || !invocation.Stages[1].InheritedOnBuildPlanned {
@@ -261,14 +279,17 @@ copy "/selected" "/selected" from="prepared"
 
 func TestDemandDrivenPublicationKeepsDormantInvocationBranchOffline(t *testing.T) {
 	publication, err := CreateDemandDriven(parse(t, `arg "runtime_base" "registry.invalid/runtime:latest"
-from "registry.invalid/dormant:latest" as="unused"
-arg "required"
-env REQUIRED="${required}"
-package as="assets"
-copy "./asset" "/asset"
-from "${runtime_base}" as="prepared"
-extend
-copy "/selected" "/selected" from="prepared"
+from "registry.invalid/dormant:latest" as="unused" {
+    arg "required"
+    env REQUIRED="${required}"
+}
+package as="assets" {
+    copy "./asset" "/asset"
+}
+extend {
+    from "${runtime_base}" as="prepared" {}
+    copy "/selected" "/selected" from="prepared"
+}
 `), Options{Mode: Publish}, func(source FromSource) (StageBind, error) {
 		t.Fatalf("publication resolved invocation-only image: %+v", source)
 		return StageBind{}, nil
@@ -293,13 +314,18 @@ copy "/selected" "/selected" from="prepared"
 
 func TestDemandDrivenInvocationSkipsUnselectedDormantBindings(t *testing.T) {
 	publication, err := CreateDemandDriven(parse(t, `arg "runtime_base" "registry.invalid/runtime:latest"
-package as="assets"
-copy "./asset" "/asset"
-from "assets" as="unused"
-copy "/asset" "/unused" from="assets"
-from "${runtime_base}" as="prepared"
-extend
-copy "/selected" "/selected" from="prepared"
+package as="assets" {
+    copy "./asset" "/asset"
+}
+extend as="unused" {
+    from "assets" {
+        copy "/asset" "/unused" from="assets"
+    }
+}
+extend {
+    from "${runtime_base}" as="prepared" {}
+    copy "/selected" "/selected" from="prepared"
+}
 `), Options{Mode: Publish}, func(source FromSource) (StageBind, error) {
 		t.Fatalf("publication resolved invocation-only image: %+v", source)
 		return StageBind{}, nil
@@ -309,7 +335,7 @@ copy "/selected" "/selected" from="prepared"
 	}
 	if _, err := InstantiateDemandDriven(publication.Component, Options{
 		Arguments: map[string]string{"runtime_base": "registry.example/base:latest"},
-	}, map[string]StageBind{"1": {}}, func(source FromSource) (StageBind, error) {
+	}, map[string]StageBind{"2": {}}, func(source FromSource) (StageBind, error) {
 		if source.Source != "registry.example/base:latest" {
 			t.Fatalf("unexpected invocation base: %+v", source)
 		}
@@ -321,11 +347,13 @@ copy "/selected" "/selected" from="prepared"
 
 func TestDemandDrivenInvocationRejectsFixedArgumentBeforeResolvingBase(t *testing.T) {
 	publication, err := CreateDemandDriven(parse(t, `arg "base" "registry.example/base:published"
-package as="pkg"
-env BASE="${base}"
-from "${base}" as="helper"
-extend
-copy "/asset" "/asset" from="helper"
+package as="pkg" {
+    env BASE="${base}"
+}
+extend {
+    from "${base}" as="helper" {}
+    copy "/asset" "/asset" from="helper"
+}
 `), Options{Mode: Publish}, func(source FromSource) (StageBind, error) {
 		t.Fatalf("publication resolved invocation-only image: %+v", source)
 		return StageBind{}, nil
@@ -347,20 +375,22 @@ copy "/asset" "/asset" from="helper"
 	}
 }
 
-func TestDemandDrivenInvocationResolvesExternalOnBuildForwardReference(t *testing.T) {
-	publication, err := CreateDemandDriven(parse(t, `from "helper" as="prepared"
-package as="assets"
-copy "./asset" "/asset"
-extend
-copy "/selected" "/selected" from="prepared"
-`), Options{Mode: Publish}, func(FromSource) (StageBind, error) { return StageBind{}, nil })
+func TestDemandDrivenInvocationResolvesExternalOnBuildEarlierReference(t *testing.T) {
+	publication, err := CreateDemandDriven(parse(t, `package as="assets" {
+    copy "./asset" "/asset"
+}
+extend as="runtime" {
+    from "helper" as="prepared" {}
+    copy "/selected" "/selected" from="prepared"
+}
+`), Options{Mode: Publish, Target: "runtime"}, func(FromSource) (StageBind, error) { return StageBind{}, nil })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := publication.Component.DormantRoots, []string{"1"}; !slices.Equal(got, want) {
+	if got, want := publication.Component.DormantRoots, []string{"0"}; !slices.Equal(got, want) {
 		t.Fatalf("dormant roots = %v, want %v", got, want)
 	}
-	if got, want := publication.Outputs, []string{"1"}; !slices.Equal(got, want) {
+	if got, want := publication.Outputs, []string{"0"}; !slices.Equal(got, want) {
 		t.Fatalf("package outputs = %v, want %v", got, want)
 	}
 	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, func(source FromSource) (StageBind, error) {
@@ -380,7 +410,7 @@ copy "/selected" "/selected" from="prepared"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := stageIDs(invocation), []string{"1", "0", "2"}; !slices.Equal(got, want) {
+	if got, want := stageIDs(invocation), []string{"0", "2", "1"}; !slices.Equal(got, want) {
 		t.Fatalf("invocation stages = %v, want %v", got, want)
 	}
 	if got := invocation.Stages[1].Operations[0].Properties["from"]; got != "assets" {
@@ -390,26 +420,30 @@ copy "/selected" "/selected" from="prepared"
 		t.Fatalf("inherited RUN bind source = %q", got)
 	}
 	if invocation.Stages[0].Kind != "package-input" {
-		t.Fatalf("forward package was not restored from its snapshot: %+v", invocation.Stages[0])
+		t.Fatalf("earlier package was not restored from its snapshot: %+v", invocation.Stages[0])
 	}
 }
 
-func TestDemandDrivenInvocationPreservesExternalOnBuildForwardNumericReference(t *testing.T) {
-	publication, err := CreateDemandDriven(parse(t, `from "helper" as="prepared"
-extend as="unused"
-from "scratch"
-run "prepare numeric asset"
-extend
-copy "/selected" "/selected" from="prepared"
-`), Options{Mode: Publish}, func(FromSource) (StageBind, error) { return StageBind{}, nil })
+func TestDemandDrivenInvocationPreservesExternalOnBuildEarlierNumericReference(t *testing.T) {
+	publication, err := CreateDemandDriven(parse(t, `extend as="unused" {}
+extend {
+    from "scratch" {
+        run "prepare numeric asset"
+    }
+}
+extend as="runtime" {
+    from "helper" as="prepared" {}
+    copy "/selected" "/selected" from="prepared"
+}
+`), Options{Mode: Publish, Target: "runtime"}, func(FromSource) (StageBind, error) { return StageBind{}, nil })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := publication.Component.DormantRoots, []string{"1", "2"}; !slices.Equal(got, want) {
+	if got, want := publication.Component.DormantRoots, []string{"0", "1", "2"}; !slices.Equal(got, want) {
 		t.Fatalf("dormant roots = %v, want %v", got, want)
 	}
-	if got := publication.Component.Definition.Instructions[1].Properties["as"]; got != "" {
-		t.Fatalf("dormant extend alias remained invocation-visible: %q", got)
+	if got := publication.Component.Definition.Instructions[0].Properties["as"]; got != "unused" {
+		t.Fatalf("dormant extend alias changed during publication: %q", got)
 	}
 	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, func(source FromSource) (StageBind, error) {
 		if source.Source != "helper" || source.Kind != FromSourceImage {
@@ -422,7 +456,7 @@ copy "/selected" "/selected" from="prepared"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := stageIDs(invocation), []string{"2", "0", "3"}; !slices.Equal(got, want) {
+	if got, want := stageIDs(invocation), []string{"2", "4", "3"}; !slices.Equal(got, want) {
 		t.Fatalf("invocation stages = %v, want %v", got, want)
 	}
 	if got := invocation.Stages[1].Operations[0].Properties["from"]; got != "2" {
@@ -434,9 +468,10 @@ copy "/selected" "/selected" from="prepared"
 }
 
 func TestDemandDrivenInvocationResolvesExternalOnBuildImageSource(t *testing.T) {
-	publication, err := CreateDemandDriven(parse(t, `from "helper" as="prepared"
-extend
-copy "/selected" "/selected" from="prepared"
+	publication, err := CreateDemandDriven(parse(t, `extend {
+    from "helper" as="prepared" {}
+    copy "/selected" "/selected" from="prepared"
+}
 `), Options{Mode: Publish}, func(FromSource) (StageBind, error) { return StageBind{}, nil })
 	if err != nil {
 		t.Fatal(err)
@@ -461,9 +496,9 @@ copy "/selected" "/selected" from="prepared"
 		t.Fatal(err)
 	}
 	if got, want := resolved, []FromSource{
-		{StageID: "0", Source: "helper", Platform: "linux/amd64", Kind: FromSourceImage},
-		{StageID: "0", Source: "registry.example/assets:latest", Platform: "linux/amd64", Kind: FromSourceCopyImage},
-		{StageID: "0", Source: "registry.example/rootfs:latest", Platform: "linux/amd64", Kind: FromSourceCopyImage},
+		{StageID: "1", Source: "helper", Platform: "linux/amd64", Kind: FromSourceImage},
+		{StageID: "1", Source: "registry.example/assets:latest", Platform: "linux/amd64", Kind: FromSourceCopyImage},
+		{StageID: "1", Source: "registry.example/rootfs:latest", Platform: "linux/amd64", Kind: FromSourceCopyImage},
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("resolved sources = %+v, want %+v", got, want)
 	}
@@ -476,7 +511,11 @@ copy "/selected" "/selected" from="prepared"
 }
 
 func TestDemandDrivenInvocationDoesNotBindCallerDerivedStage(t *testing.T) {
-	publication := makePlan(t, "extend as=\"base\"\nfrom \"base\"\n", Options{Mode: Publish})
+	publication := makePlan(t, `extend as="base" {}
+extend {
+    from "base" {}
+}
+`, Options{Mode: Publish})
 	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, func(source FromSource) (StageBind, error) {
 		t.Fatalf("caller-derived stage requested external metadata: %+v", source)
 		return StageBind{}, nil

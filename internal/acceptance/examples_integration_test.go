@@ -19,6 +19,7 @@ import (
 	"coopr/internal/buildah"
 	"coopr/internal/oci"
 	"coopr/internal/testutil"
+	"coopr/internal/transfer"
 
 	"github.com/google/go-containerregistry/pkg/registry"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -106,14 +107,17 @@ func TestPublishedExamplesSurvivePublisherRemovalAndRun(t *testing.T) {
 
 	consumerDir := t.TempDir()
 	consumerFile := filepath.Join(consumerDir, "consumer.coopr")
-	consumerSource := fmt.Sprintf(`from %q
-copy "unformatted.go" "/work/unformatted.go"
-component %q channel="preview"
-component %q
-run "/usr/local/bin/gofmt -w /work/unformatted.go"
-workdir "/work"
-label coopr_example="published-components"
-cmd { exec "/bin/sh" "-c" "cat /etc/company/defaults.json; cat /work/unformatted.go" }
+	consumerSource := fmt.Sprintf(`from %q {
+    copy "unformatted.go" "/work/unformatted.go"
+    component %q {
+        arg "channel" "preview"
+    }
+    component %q
+    run "/usr/local/bin/gofmt -w /work/unformatted.go"
+    workdir "/work"
+    label coopr_example="published-components"
+    cmd { exec "/bin/sh" "-c" "cat /etc/company/defaults.json; cat /work/unformatted.go" }
+}
 `, exampleBase, company, gofmt)
 	if err := os.WriteFile(consumerFile, []byte(consumerSource), 0600); err != nil {
 		t.Fatal(err)
@@ -122,8 +126,11 @@ cmd { exec "/bin/sh" "-c" "cat /etc/company/defaults.json; cat /work/unformatted
 		t.Fatal(err)
 	}
 	archive := filepath.Join(consumerDir, "consumer.oci.tar")
-	if _, err := build.Run(ctx, build.Options{BuildStore: store, File: consumerFile, Tag: "oci-archive:" + archive, Platform: "linux/amd64", TLSVerify: new(false)}); err != nil {
+	if _, err := build.Run(ctx, build.Options{BuildStore: store, File: consumerFile, Tag: "coopr-example-consumer:acceptance", Platform: "linux/amd64", TLSVerify: new(false)}); err != nil {
 		t.Fatalf("build consumer after removing publisher trees: %v", err)
+	}
+	if _, err := transfer.Copy(ctx, oci.Image, "coopr-example-consumer:acceptance", transfer.Destination{Transport: "oci-archive", Name: archive}, transfer.Options{BuildStore: store, Platform: v1.Platform{OS: "linux", Architecture: "amd64"}, PlatformExplicit: true}); err != nil {
+		t.Fatalf("export consumer after removing publisher trees: %v", err)
 	}
 	manifest, image := testutil.ReadImage(t, ctx, archive)
 	if image.OS != "linux" || image.Architecture != "amd64" || image.Config.WorkingDir != "/work" || image.Config.Labels["coopr_example"] != "published-components" || len(image.Config.Cmd) != 3 || image.Config.Cmd[0] != "/bin/sh" {

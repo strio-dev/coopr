@@ -43,9 +43,10 @@ func TestBuildPlanCachesGeneralLocalCopy(t *testing.T) {
 
 	store := cacheTestStore(root)
 	plan := testPlan(t, `
-from "scratch"
-copy "first" "second" "/multi/"
-copy "tree/./nested" "/tree/" chown="12:34" chmod="0640" parents="true" { exclude "*.tmp" }
+from "scratch" {
+    copy "first" "second" "/multi/"
+    copy "tree/./nested" "/tree/" chown="12:34" chmod="0640" parents="true" { exclude "*.tmp" }
+}
 `)
 	build := func(name, want string) (int, []digest.Digest) {
 		t.Helper()
@@ -125,7 +126,10 @@ func TestBuildPlanCachesLocalArchiveAdd(t *testing.T) {
 	}
 	writeArchive("one\n")
 	store := cacheTestStore(root)
-	plan := testPlan(t, "from \"scratch\"\nadd \"payload.tar\" \"/unpacked/\"\n")
+	plan := testPlan(t, `from "scratch" {
+    add "payload.tar" "/unpacked/"
+}
+`)
 	build := func(name, want string) (int, digest.Digest) {
 		t.Helper()
 		layout := filepath.Join(root, name)
@@ -167,7 +171,10 @@ func TestBuildDefinitionCachesExternalImageCopy(t *testing.T) {
 	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	definition := parseWorkerDefinition(t, "from \"scratch\"\ncopy \"/bin/busybox\" \"/tool\" from=\""+base.reference+"\"\n")
+	definition := parseWorkerDefinition(t, `from "scratch" {
+    copy "/bin/busybox" "/tool" from="`+base.reference+`"
+}
+`)
 	build := func(name string) (int, digest.Digest) {
 		t.Helper()
 		layout := filepath.Join(root, name)

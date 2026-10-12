@@ -32,6 +32,7 @@ jobs:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
       - name: Cache Nix builds
         uses: Mic92/hestia@dfed9ced335d28978ba74e513939a10db1f71025 # v3.1.0
+        continue-on-error: true
         with:
           version: v3.1.0
           upstream-cache-filter: true
@@ -39,7 +40,12 @@ jobs:
         run: |
           # The explicit Python file would otherwise match the default tests ignore.
           nix develop --no-update-lock-file path:.#security --command semgrep scan \
-            --no-error --strict --jobs 2 --sarif-output .cache/semgrep.sarif . nix/tests/installer.py
+            --no-error --strict --jobs 2 --sarif-output .cache/semgrep.raw.sarif . nix/tests/installer.py
+          # GitHub does not consume SARIF suppressions; honor Semgrep's inline annotations.
+          nix develop --no-update-lock-file path:.#security --command jq \
+            '.runs[].results |= map(select(
+              any(.suppressions[]?; .kind == "inSource" and (.status // "accepted") == "accepted") | not
+            ))' .cache/semgrep.raw.sarif > .cache/semgrep.sarif
       - name: Publish findings
         if: ${{ !cancelled() && hashFiles('.cache/semgrep.sarif') != '' }}
         uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3

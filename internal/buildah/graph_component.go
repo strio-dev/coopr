@@ -160,11 +160,15 @@ func (executor *graphExecutor) prepareIsolatedStageComponents(ctx context.Contex
 				return errors.New("component invocation requires one reference")
 			}
 			reference := operation.Arguments[0]
-			resolved, err := executor.resolveComponentInvocation(ctx, reference, operation.Properties, target, prefix)
+			parameters, err := operation.ComponentArguments()
 			if err != nil {
 				return err
 			}
-			key, err := componentInvocationSelectionKey(reference, operation.Properties, target)
+			resolved, err := executor.resolveComponentInvocation(ctx, reference, parameters, target, prefix)
+			if err != nil {
+				return err
+			}
+			key, err := componentInvocationSelectionKey(reference, parameters, target)
 			if err != nil {
 				return err
 			}
@@ -228,7 +232,11 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 		return nil, errors.New("component invocation requires one reference")
 	}
 
-	resolved, err := executor.resolveComponentInvocation(ctx, operation.Arguments[0], operation.Properties, platform, progress.prefix)
+	parameters, err := operation.ComponentArguments()
+	if err != nil {
+		return nil, err
+	}
+	resolved, err := executor.resolveComponentInvocation(ctx, operation.Arguments[0], parameters, platform, progress.prefix)
 	if err != nil {
 		return nil, err
 	}
@@ -252,9 +260,6 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 	executor.activeComponents[resolved.Identity] = true
 	defer delete(executor.activeComponents, resolved.Identity)
 
-	if err := checkCallerCompatibility(caller, logical, resolved.Plan); err != nil {
-		return nil, fmt.Errorf("component %s compatibility: %w", resolved.Identity, err)
-	}
 	localNames := make(map[string]bool, len(resolved.Plan.Stages))
 	for _, stage := range resolved.Plan.Stages {
 		localNames[stage.ID] = true
@@ -405,7 +410,7 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 				_ = os.Remove(snapshotPath)
 			}
 			if configErr == nil && eligible {
-				key, keyErr := executor.componentCache.key(executor, identity, resolved, operation.Properties, platform)
+				key, keyErr := executor.componentCache.key(executor, identity, resolved, parameters, platform)
 				if keyErr == nil {
 					if key.Inputs == nil {
 						key.Inputs = map[string]digest.Digest{}
@@ -447,12 +452,27 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 
 	if !cacheHit {
 		packages := make(map[string]stageState, len(resolved.PackageInputs))
-		for stageID := range resolved.PackageInputs {
-			imported, err := executor.packageImport.Import(ctx, resolved, stageID, platform)
+		bindPackages := func(ctx context.Context, plan *planner.Plan) error {
+			inputs, err := componentPackageInputs(plan, resolved.Artifact.Component.Packages)
 			if err != nil {
-				return nil, fmt.Errorf("import component package stage %s: %w", stageID, err)
+				return err
 			}
-			packages[stageID] = stageState{storageImageID: imported.ImageID, manifestDigest: imported.ManifestDigest, config: imported.Config}
+			selected := *resolved
+			selected.PackageInputs = inputs
+			for stageID := range inputs {
+				if _, bound := packages[stageID]; bound {
+					continue
+				}
+				imported, err := executor.packageImport.Import(ctx, &selected, stageID, platform)
+				if err != nil {
+					return fmt.Errorf("import component package stage %s: %w", stageID, err)
+				}
+				packages[stageID] = stageState{storageImageID: imported.ImageID, manifestDigest: imported.ManifestDigest, config: imported.Config}
+			}
+			return nil
+		}
+		if err := bindPackages(ctx, resolved.Plan); err != nil {
+			return nil, err
 		}
 		stageTotal := 0
 		if resolved.Artifact != nil && resolved.Artifact.Component != nil {
@@ -470,9 +490,10 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 			progressPrefix:     progress.prefix + "[component " + progressText(operation.Arguments[0]) + "] ",
 			caller:             stageState{storageImageID: callerImageID, manifestDigest: callerManifest, config: logical.Clone(), root: rootBaseline},
 			packages:           packages,
+			bindPackages:       bindPackages,
 			cacheScope: CacheMountScope{
 				Kind: "component", Source: resolved.Identity, Platform: platform,
-				Parameters: maps.Clone(operation.Properties),
+				Parameters: maps.Clone(parameters),
 			},
 			replannedBaseDelta: resolved.replannedBaseDelta,
 		}
@@ -612,19 +633,6 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 	}
 	keep = true
 	return adopted, nil
-}
-
-func checkCallerCompatibility(caller *upstream.Builder, logical *imageconfig.Config, plan *planner.Plan) (retErr error) {
-	raw, err := logical.MarshalJSON()
-	if err != nil {
-		return fmt.Errorf("marshal caller config: %w", err)
-	}
-	rootfs, err := caller.Mount(caller.MountLabel)
-	if err != nil {
-		return fmt.Errorf("mount caller rootfs: %w", err)
-	}
-	defer func() { retErr = errors.Join(retErr, caller.Unmount()) }()
-	return CheckCompatibility(rootfs, raw, plan.Platform, append(append([]planner.Stage(nil), plan.Stages...), plan.CompatibilityRoots...))
 }
 
 func componentBuilderHasFilesystemChanges(store storage.Store, builder *upstream.Builder) (bool, error) {

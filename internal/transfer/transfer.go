@@ -26,17 +26,40 @@ import (
 	"coopr/internal/storeactivity"
 
 	"github.com/containerd/platforms"
-	"github.com/distribution/reference"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	imagecopy "go.podman.io/image/v5/copy"
+	dockertransport "go.podman.io/image/v5/docker"
+	dockerdaemon "go.podman.io/image/v5/docker/daemon"
+	imagereference "go.podman.io/image/v5/docker/reference"
+	ociarchive "go.podman.io/image/v5/oci/archive"
 	"go.podman.io/image/v5/signature"
+	imagestorage "go.podman.io/image/v5/storage"
+	"go.podman.io/image/v5/transports/alltransports"
+	"go.podman.io/image/v5/types"
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
 
 type Destination struct {
-	Transport string
-	Name      string
+	Transport        string
+	Name             string
+	ArchiveReference string
+}
+
+func (destination Destination) String() string {
+	switch destination.Transport {
+	case "local":
+		return destination.Name
+	case "registry":
+		return "docker://" + destination.Name
+	case "docker":
+		return "docker-daemon:" + destination.Name
+	case "oci-archive", "oci", "docker-archive":
+		if destination.ArchiveReference != "" {
+			return destination.Transport + ":" + destination.Name + ":" + destination.ArchiveReference
+		}
+	}
+	return destination.Transport + ":" + destination.Name
 }
 
 type PushOptions = buildah.PushOptions
@@ -83,74 +106,110 @@ func nativeStoreOptions(opts Options) (buildah.StoreOptions, error) {
 	return buildah.NormalizeStoreOptions(store)
 }
 
-// ParseDestination treats an unprefixed build tag as a Coopr-local name.
-// Explicit transport prefixes have the same meaning for build tags and copy.
+// ParseTag accepts ordinary names, without interpreting transport prefixes.
+func ParseTag(value string, kind oci.Kind) (Destination, error) {
+	if value == "" {
+		return Destination{}, errors.New("empty tag")
+	}
+	var name string
+	var err error
+	if kind == oci.Component {
+		name, err = componentstore.NormalizeTag(value)
+	} else {
+		name, err = localstore.NormalizeImageTag(value)
+	}
+	if err != nil {
+		return Destination{}, err
+	}
+	return Destination{Transport: "local", Name: name}, nil
+}
+
+// ParseDestination accepts ordinary local names or supported containers/image transports.
 func ParseDestination(value string, kind oci.Kind) (Destination, error) {
 	if value == "" {
 		return Destination{}, errors.New("empty copy destination")
 	}
-	transport, name, explicit := strings.Cut(value, ":")
-	if !explicit || !knownTransport(transport) {
-		transport, name = "local", value
+	transport, name, explicit := destinationTransport(value)
+	if !explicit {
+		return ParseTag(value, kind)
 	}
 	if name == "" {
 		return Destination{}, fmt.Errorf("%s destination requires a name", transport)
 	}
+	archiveReference := ""
 	switch transport {
-	case "local":
-		if kind == oci.Component {
-			if err := componentstore.ValidateTag(name); err != nil {
-				return Destination{}, err
-			}
-		} else {
-			var err error
-			name, err = localstore.NormalizeImageTag(name)
-			if err != nil {
-				return Destination{}, err
-			}
-		}
 	case "registry":
-		if _, err := oci.ParseReference(name); err != nil {
+		if _, err := dockertransport.Transport.ParseReference("//" + name); err != nil {
 			return Destination{}, fmt.Errorf("registry destination: %w", err)
 		}
 	case "oci-archive":
-		// The path is checked against build inputs by the build command.
+		parsed, err := ociarchive.ParseReference(name)
+		if err != nil {
+			return Destination{}, fmt.Errorf("oci-archive destination: %w", err)
+		}
+		name, archiveReference, _ = strings.Cut(parsed.StringWithinTransport(), ":")
+	case "containers-storage":
+		if kind == oci.Component {
+			return Destination{}, errors.New("containers-storage cannot store Coopr component artifacts")
+		}
+		if !strings.HasPrefix(name, "[") {
+			if _, err := imagereference.ParseNormalizedNamed(name); err != nil {
+				return Destination{}, err
+			}
+		}
+	case "dir", "oci", "docker-archive":
+		if kind == oci.Component {
+			return Destination{}, fmt.Errorf("%s cannot store Coopr component artifacts", transport)
+		}
+		parsed, err := alltransports.ParseImageName(value)
+		if err != nil {
+			return Destination{}, err
+		}
+		name = parsed.StringWithinTransport()
+		if transport == "oci" || transport == "docker-archive" {
+			name, archiveReference, _ = strings.Cut(name, ":")
+		}
 	case "docker":
 		if kind == oci.Component {
-			return Destination{}, fmt.Errorf("%s cannot store Coopr component artifacts; use local, registry, or oci-archive", transport)
+			return Destination{}, errors.New("docker-daemon cannot store Coopr component artifacts; use a component name, registry, or OCI archive")
 		}
-		parsed, err := reference.ParseNormalizedNamed(name)
-		if err != nil {
-			return Destination{}, fmt.Errorf("invalid %s image tag %q: %w", transport, name, err)
-		}
-		if _, ok := parsed.(reference.Digested); ok {
-			return Destination{}, fmt.Errorf("%s image tag %q must not include a digest", transport, name)
+		if _, err := dockerdaemon.Transport.ParseReference(name); err != nil {
+			return Destination{}, fmt.Errorf("invalid docker-daemon image tag %q: %w", name, err)
 		}
 	default:
-		return Destination{}, fmt.Errorf("unsupported destination transport %q", transport)
-	}
-	return Destination{Transport: transport, Name: name}, nil
-}
-
-// ParsePushDestination maps --push with a tag to a registry destination and
-// rejects explicit non-registry transports.
-func ParsePushDestination(value string, kind oci.Kind) (Destination, error) {
-	transport, name, hasPrefix := strings.Cut(value, ":")
-	if hasPrefix && knownTransport(transport) {
-		if transport != "registry" {
-			return Destination{}, fmt.Errorf("--push cannot use %s:; use --tag %s:NAME without --push", transport, transport)
+		if kind == oci.Component {
+			return Destination{}, fmt.Errorf("%s cannot store Coopr component artifacts", transport)
 		}
-		value = name
+		parsed, err := alltransports.ParseImageName(value)
+		if err != nil {
+			return Destination{}, err
+		}
+		name = parsed.StringWithinTransport()
 	}
-	return ParseDestination("registry:"+value, kind)
+	return Destination{Transport: transport, Name: name, ArchiveReference: archiveReference}, nil
 }
 
-func knownTransport(value string) bool {
-	switch value {
-	case "local", "registry", "oci-archive", "docker":
-		return true
+// ParsePushDestination defaults ordinary names to a registry destination.
+func ParsePushDestination(value string, kind oci.Kind) (Destination, error) {
+	if _, _, explicit := destinationTransport(value); explicit {
+		return ParseDestination(value, kind)
 	}
-	return false
+	return ParseDestination("docker://"+value, kind)
+}
+
+func destinationTransport(value string) (transport, name string, explicit bool) {
+	for _, candidate := range []struct{ prefix, transport string }{
+		{"docker://", "registry"}, {"docker-daemon:", "docker"}, {"oci-archive:", "oci-archive"},
+	} {
+		if name, found := strings.CutPrefix(value, candidate.prefix); found {
+			return candidate.transport, name, true
+		}
+	}
+	if native := alltransports.TransportFromImageName(value); native != nil && native.Name() != "docker" {
+		transport, name, _ := strings.Cut(value, ":")
+		return transport, name, true
+	}
+	return "", value, false
 }
 
 func LocalReference(tag string, root v1.Descriptor) string {
@@ -164,6 +223,9 @@ func LocalReference(tag string, root v1.Descriptor) string {
 // running any build step. A bare digest remains immutable if a mutable name
 // is retargeted later.
 func Copy(ctx context.Context, kind oci.Kind, source string, destination Destination, opts Options) (result string, retErr error) {
+	if destination.ArchiveReference != "" {
+		opts.ArchiveReference = destination.ArchiveReference
+	}
 	if err := ValidateSigningDestination(kind, destination, opts.Signing); err != nil {
 		return "", err
 	}
@@ -194,9 +256,6 @@ func Copy(ctx context.Context, kind oci.Kind, source string, destination Destina
 	defer func() { retErr = errors.Join(retErr, activity.Close()) }()
 	ctx = storeactivity.ContextWithLease(ctx, activity)
 	if kind == oci.Image {
-		if engine, name, explicit := strings.Cut(source, ":"); explicit && engine == "docker" {
-			return copyEngineImage(ctx, engine, name, destination, opts)
-		}
 		return copyStoredImage(ctx, source, destination, opts)
 	}
 	selector, err := localSelector(source, kind)
@@ -226,6 +285,42 @@ func copyStoredImage(ctx context.Context, source string, destination Destination
 	if err != nil {
 		return "", err
 	}
+	if within, explicit := strings.CutPrefix(selector, "containers-storage:"); explicit {
+		options, err := nativeStoreOptions(opts)
+		if err != nil {
+			return "", err
+		}
+		err = buildah.WithStore(options, func(backend storage.Store) error {
+			var ref types.ImageReference
+			var err error
+			if strings.HasPrefix(within, "[") {
+				ref, err = alltransports.ParseImageName("containers-storage:" + within)
+			} else {
+				ref, err = imagestorage.Transport.ParseStoreReference(backend, within)
+			}
+			if err != nil {
+				return err
+			}
+			resolved, image, err := imagestorage.ResolveReference(ref)
+			if err != nil {
+				return err
+			}
+			bound := resolved.Transport().(imagestorage.StoreTransport).GetStoreIfSet()
+			if bound == nil || bound.GraphRoot() != backend.GraphRoot() || bound.RunRoot() != backend.RunRoot() || bound.GraphDriverName() != backend.GraphDriverName() {
+				return errors.New("containers-storage source must use the configured image store")
+			}
+			selector = image.ID
+			if named, ok := ref.DockerReference().(imagereference.Digested); ok {
+				selector = named.Digest().String()
+			}
+
+			return nil
+		})
+		if err != nil {
+			return "", err
+		}
+	}
+
 	if !opts.PlatformExplicit {
 		root, indexData, selections, err := storedSelections(ctx, opts, selector)
 		if err != nil {
@@ -285,13 +380,29 @@ func copyStoredImage(ctx context.Context, source string, destination Destination
 		}
 		return destination.Name, nil
 	}
-	if destination.Transport == "oci-archive" || destination.Transport == "oci-dir" {
+	if destination.isPath() {
 		if err := rejectStoreArchivePath(storeDir, destination.Name); err != nil {
 			return "", err
+		}
+		for _, boundary := range []string{storeOptions.GraphRoot, storeOptions.RunRoot, storeOptions.ImageStore} {
+			if boundary != "" {
+				if err := rejectStoreArchivePath(boundary, destination.Name); err != nil {
+					return "", err
+				}
+			}
 		}
 	}
 	if destination.Transport == "registry" {
 		return publishStoredImage(ctx, selection.ImageID, selection.Manifest, destination.Name, opts)
+	}
+	if destination.Transport == "dir" || destination.Transport == "oci" || destination.Transport == "docker-archive" || destination.Transport == "containers-storage" || destination.Transport == "docker" {
+		transferOptions, cleanup, err := storedTransferOptions(selection.ImageID, selection.Manifest.Digest, opts)
+		if err != nil {
+			return "", err
+		}
+		defer cleanup()
+		transferOptions.Destination = destination.String()
+		return buildah.TransferStoredImageSupervised(ctx, transferOptions)
 	}
 	stageDir, err := os.MkdirTemp("", "coopr-image-copy-*")
 	if err != nil {
@@ -346,10 +457,29 @@ func copyStoredIndex(ctx context.Context, storeDir string, root v1.Descriptor, i
 		}
 		return destination.Name, nil
 	}
-	if destination.Transport == "oci-archive" || destination.Transport == "oci-dir" {
+
+	if destination.isPath() {
 		if err := rejectStoreArchivePath(storeDir, destination.Name); err != nil {
 			return "", err
 		}
+		for _, boundary := range []string{storeOptions.GraphRoot, storeOptions.RunRoot, storeOptions.ImageStore} {
+			if boundary != "" {
+				if err := rejectStoreArchivePath(boundary, destination.Name); err != nil {
+					return "", err
+				}
+			}
+		}
+	}
+
+	if destination.Transport == "dir" || destination.Transport == "oci" || destination.Transport == "docker-archive" || destination.Transport == "containers-storage" {
+		transferOptions, cleanup, err := storedTransferOptions("", root.Digest, opts)
+		if err != nil {
+			return "", err
+		}
+		defer cleanup()
+		transferOptions.Index = &buildah.StoredIndexSnapshot{Root: root, Data: indexData, Selections: selections}
+		transferOptions.Destination = destination.String()
+		return buildah.TransferStoredImageSupervised(ctx, transferOptions)
 	}
 
 	stageDir, err := os.MkdirTemp("", "coopr-index-copy-*")
@@ -422,7 +552,7 @@ func copyStoredIndex(ctx context.Context, storeDir string, root v1.Descriptor, i
 		variants = append(variants, oci.ImageVariant{Layout: exportedLayout, Manifest: manifestInIndex, Platform: platform})
 	}
 	if changed {
-		root, indexData, err = rewrittenImageIndex(root, indexData, index.Manifests)
+		root, indexData, err = oci.RewriteImageIndex(root, indexData, index.Manifests)
 		if err != nil {
 			return "", err
 		}
@@ -462,30 +592,6 @@ func copyStoredImageOutput(ctx context.Context, layout string, root v1.Descripto
 		return "", err
 	}
 	return copyRoot(ctx, oci.Image, layout, root, destination, opts, oci.PreparedImagePolicy(source))
-}
-
-// Rewrite only member identities; retain index metadata and ordered duplicate
-// entries even when distinct input compression variants normalize identically.
-func rewrittenImageIndex(root v1.Descriptor, original []byte, members []v1.Descriptor) (v1.Descriptor, []byte, error) {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(original, &fields); err != nil {
-		return root, nil, err
-	}
-	data, err := json.Marshal(members)
-	if err != nil {
-		return root, nil, err
-	}
-	fields["manifests"] = data
-	data, err = json.Marshal(fields)
-	if err != nil {
-		return root, nil, err
-	}
-	root.Digest = digest.FromBytes(data)
-	root.Size = int64(len(data))
-	if len(root.Data) != 0 {
-		root.Data = data
-	}
-	return root, data, nil
 }
 
 // Origin descriptors identify the input, not necessarily resident runnable
@@ -534,6 +640,9 @@ func CopyRoot(ctx context.Context, kind oci.Kind, storeDir string, root v1.Descr
 }
 
 func copyRoot(ctx context.Context, kind oci.Kind, storeDir string, root v1.Descriptor, destination Destination, opts Options, preparedPolicy *signature.Policy) (_ string, retErr error) {
+	if destination.ArchiveReference != "" {
+		opts.ArchiveReference = destination.ArchiveReference
+	}
 	if err := ValidateSigningDestination(kind, destination, opts.Signing); err != nil {
 		return "", err
 	}
@@ -559,9 +668,11 @@ func copyRoot(ctx context.Context, kind oci.Kind, storeDir string, root v1.Descr
 			return "", err
 		}
 		return LocalReference(destination.Name, root), nil
-	case "oci-archive", "oci-dir":
-		if err := rejectStoreArchivePath(storeDir, destination.Name); err != nil {
-			return "", err
+	case "oci-archive", "oci-dir", "dir", "oci", "docker-archive", "containers-storage":
+		if destination.isPath() {
+			if err := rejectStoreArchivePath(storeDir, destination.Name); err != nil {
+				return "", err
+			}
 		}
 		if kind == oci.Image {
 			options, err := nativeStoreOptions(opts)
@@ -569,6 +680,9 @@ func copyRoot(ctx context.Context, kind oci.Kind, storeDir string, root v1.Descr
 				return "", err
 			}
 			for _, boundary := range []string{options.GraphRoot, options.RunRoot, options.ImageStore} {
+				if !destination.isPath() {
+					continue
+				}
 				if boundary == "" {
 					continue
 				}
@@ -585,6 +699,9 @@ func copyRoot(ctx context.Context, kind oci.Kind, storeDir string, root v1.Descr
 			root.Annotations[v1.AnnotationRefName] = opts.ArchiveReference
 		}
 		if kind == oci.Image {
+			if destination.Transport != "oci-archive" && destination.Transport != "oci-dir" {
+				return copyImageDestination(ctx, storeDir, root, destination, opts, preparedPolicy)
+			}
 			return copyImageArchive(ctx, storeDir, root, destination, opts, preparedPolicy)
 		}
 		if err := localstore.WriteArchive(ctx, store, root, destination.Name); err != nil {
@@ -607,11 +724,26 @@ func copyRoot(ctx context.Context, kind oci.Kind, storeDir string, root v1.Descr
 		var result string
 		err := localstore.WithReadLock(ctx, storeDir, func() error {
 			var copyErr error
-			result, copyErr = enginecopy.Copy(ctx, storeDir, root, destination.Transport, destination.Name)
+			if root.MediaType == v1.MediaTypeImageIndex || root.MediaType == "application/vnd.docker.distribution.manifest.list.v2+json" {
+				if !opts.Push.ChangesManifest() && !opts.Push.RemoveSignatures {
+					result, copyErr = enginecopy.CopyIndex(ctx, storeDir, root, destination.Name)
+					result += "@" + root.Digest.String()
+					return copyErr
+				}
+			}
+			nativeDestination := destination
+			nativeDestination.Transport = "docker-daemon"
+			result, copyErr = copyImageDestination(ctx, storeDir, root, nativeDestination, opts, preparedPolicy)
 			return copyErr
 		})
-		return result, err
+		if err != nil {
+			return "", err
+		}
+		return result, nil
 	default:
+		if kind == oci.Image {
+			return copyImageDestination(ctx, storeDir, root, destination, opts, preparedPolicy)
+		}
 		return "", fmt.Errorf("unsupported destination transport %q", destination.Transport)
 	}
 }
@@ -679,18 +811,23 @@ func localSelector(value string, kind oci.Kind) (string, error) {
 		}
 		return value, nil
 	}
-	selector := strings.TrimPrefix(value, "local:")
+	selector := value
 	if selector == "" {
 		return "", errors.New("local tag is empty")
 	}
 	if kind == oci.Component {
-		if err := componentstore.ValidateTag(selector); err != nil {
-			return "", err
-		}
-	} else {
-		if strings.TrimSpace(selector) != selector || strings.ContainsAny(selector, " \t\r\n") {
-			return "", fmt.Errorf("invalid image reference %q", selector)
-		}
+		return componentstore.LocalSelector(selector)
+	}
+	if strings.TrimSpace(selector) != selector || strings.ContainsAny(selector, " \t\r\n") {
+		return "", fmt.Errorf("invalid image reference %q", selector)
 	}
 	return selector, nil
+}
+
+func (destination Destination) isPath() bool {
+	switch destination.Transport {
+	case "dir", "oci", "docker-archive", "oci-archive", "oci-dir":
+		return true
+	}
+	return false
 }

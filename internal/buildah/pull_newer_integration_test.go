@@ -57,7 +57,12 @@ func TestPullNewerCopyFailureBindsCachedConfigBeforeBuildAndPublication(t *testi
 			t.Fatal(err)
 		}
 		layout := filepath.Join(root, "parent-"+revision)
-		_, err := BuildDefinitionSupervised(ctx, parseWorkerDefinition(t, fmt.Sprintf("from %q\ncopy %q \"/base-value\"\nenv revision=%q\nonbuild { run %q network=\"none\" }\n", base.reference, revision, revision, "printf "+revision+" > /onbuild-proof")), planner.Options{Mode: planner.Build}, SupervisedPlanOptions{
+		_, err := BuildDefinitionSupervised(ctx, parseWorkerDefinition(t, fmt.Sprintf(`from %q {
+    copy %q "/base-value"
+    env revision=%q
+    onbuild { run %q network="none" }
+}
+`, base.reference, revision, revision, "printf "+revision+" > /onbuild-proof")), planner.Options{Mode: planner.Build}, SupervisedPlanOptions{
 			Store: producerStore, ContextDir: root, Isolation: "rootless", SignaturePolicyPath: policy,
 			Output: Output{Path: layout, Format: outputFormatDocker},
 		})
@@ -109,7 +114,10 @@ func TestPullNewerCopyFailureBindsCachedConfigBeforeBuildAndPublication(t *testi
 	}
 	options := SupervisedPlanOptions{Store: consumerStore, ContextDir: root, Isolation: "rootless", SignaturePolicyPath: policy, TLSVerify: new(false), PullPolicy: string(oci.PullNewer), RetrySet: true}
 	options.Output = Output{Path: filepath.Join(root, "child"), Format: outputFormatDocker}
-	if _, err := BuildDefinitionSupervised(ctx, parseWorkerDefinition(t, fmt.Sprintf("from %q\nlabel selected=\"$revision\"\n", reference)), planner.Options{Mode: planner.Build}, options); err != nil {
+	if _, err := BuildDefinitionSupervised(ctx, parseWorkerDefinition(t, fmt.Sprintf(`from %q {
+    label selected="$revision"
+}
+`, reference)), planner.Options{Mode: planner.Build}, options); err != nil {
 		t.Fatal(err)
 	}
 	childManifest, childConfig := readPlanImage(t, options.Output.Path)
@@ -121,7 +129,14 @@ func TestPullNewerCopyFailureBindsCachedConfigBeforeBuildAndPublication(t *testi
 		t.Fatalf("planned ONBUILD bound newer config: %q", got)
 	}
 	options.Output = Output{Path: filepath.Join(root, "component")}
-	component := parseWorkerDefinition(t, fmt.Sprintf("from %q as=\"producer\"\npackage as=\"bundle\"\ncopy \"/onbuild-proof\" \"/proof\" from=\"producer\"\nextend\ncopy \"/proof\" \"/proof\" from=\"bundle\"\n", reference))
+	component := parseWorkerDefinition(t, fmt.Sprintf(`from %q as="producer" {}
+package as="bundle" {
+    copy "/onbuild-proof" "/proof" from="producer"
+}
+extend {
+    copy "/proof" "/proof" from="bundle"
+}
+`, reference))
 	published, err := PublishDefinitionSupervised(ctx, component, planner.Options{Mode: planner.Publish}, options)
 	if err != nil {
 		t.Fatal(err)

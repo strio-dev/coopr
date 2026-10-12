@@ -23,11 +23,17 @@ func TestBuildArchiveCommandLive(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live Buildah tests in short mode")
 	}
-	file := definitionFile(t, "from \"scratch\"\nlabel from_cli=\"yes\"\n")
+	file := definitionFile(t, `from "scratch" {
+    label from_cli="yes"
+}
+`)
 	archive := filepath.Join(t.TempDir(), "image.oci.tar")
 	var output, stderr bytes.Buffer
-	if code := run([]string{"build", file, "--tag", "oci-archive:" + archive, "--platform", "linux/amd64"}, &output, &stderr); code != 0 {
+	if code := run([]string{"build", file, "--tag", "archive-image", "--platform", "linux/amd64"}, &output, &stderr); code != 0 {
 		t.Fatalf("CLI image archive failed: %s", stderr.String())
+	}
+	if code := run([]string{"save", "--quiet", "--format", "oci-archive", "--output", archive, "archive-image"}, &bytes.Buffer{}, &stderr); code != 0 {
+		t.Fatalf("CLI image save failed: %s", &stderr)
 	}
 	config, err := oci.ArchiveImageConfigDigest(context.Background(), archive)
 	if err != nil {
@@ -45,7 +51,10 @@ func TestBuildCommandResultAndIIDFiles(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live Buildah tests in short mode")
 	}
-	file := definitionFile(t, "from \"scratch\"\nlabel result=\"native\"\n")
+	file := definitionFile(t, `from "scratch" {
+    label result="native"
+}
+`)
 	for _, option := range []string{"", "--iidfile", "--iidfile-raw", "--raw-iidfile"} {
 		t.Run(option, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
@@ -83,7 +92,10 @@ func TestBuildCommandTarStdoutKeepsResultOnStderr(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live Buildah tests in short mode")
 	}
-	file := definitionFile(t, "from \"scratch\"\ncopy \"payload\" \"/payload\"\n")
+	file := definitionFile(t, `from "scratch" {
+    copy "payload" "/payload"
+}
+`)
 	if err := os.WriteFile(filepath.Join(filepath.Dir(file), "payload"), []byte("archive payload"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +137,11 @@ func TestBuildCommandRunsDefaultNetworkInConcurrentStageWorker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	file := definitionFile(t, "from \"scratch\"\ncopy \"busybox\" \"/busybox\"\nrun { exec \"/busybox\" \"touch\" \"/proof\" }\n")
+	file := definitionFile(t, `from "scratch" {
+    copy "busybox" "/busybox"
+    run { exec "/busybox" "touch" "/proof" }
+}
+`)
 	data, err := os.ReadFile(busybox)
 	if err != nil {
 		t.Fatal(err)
@@ -135,8 +151,11 @@ func TestBuildCommandRunsDefaultNetworkInConcurrentStageWorker(t *testing.T) {
 	}
 	archive := filepath.Join(t.TempDir(), "networked.oci.tar")
 	var output, stderr bytes.Buffer
-	if code := run([]string{"build", file, "--tag", "oci-archive:" + archive, "--platform", "linux/amd64"}, &output, &stderr); code != 0 {
+	if code := run([]string{"build", file, "--tag", "default-network-image", "--platform", "linux/amd64"}, &output, &stderr); code != 0 {
 		t.Fatalf("CLI default-network RUN failed: %s", stderr.String())
+	}
+	if code := run([]string{"save", "--quiet", "--format", "oci-archive", "--output", archive, "default-network-image"}, &bytes.Buffer{}, &stderr); code != 0 {
+		t.Fatalf("CLI default-network save failed: %s", &stderr)
 	}
 	if info, err := os.Stat(archive); err != nil || info.Size() == 0 {
 		t.Fatalf("CLI default-network output is missing: %v", err)
@@ -144,7 +163,8 @@ func TestBuildCommandRunsDefaultNetworkInConcurrentStageWorker(t *testing.T) {
 }
 
 func TestBuildOutputFlags(t *testing.T) {
-	file := definitionFile(t, `from "scratch"`)
+	file := definitionFile(t, `from "scratch" {}
+`)
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -155,7 +175,7 @@ func TestBuildOutputFlags(t *testing.T) {
 		{"invalid output shorthand", []string{"-o", "type=local,dest=-"}, "output requires"},
 		{"removed arg flag", []string{"--arg", "name=value"}, "unknown flag"},
 		{"empty tag", []string{"--tag", ""}, "--tag requires a nonempty image name"},
-		{"empty archive destination", []string{"--tag", "oci-archive:"}, "oci-archive destination requires a name"},
+		{"transport is not a tag", []string{"--tag", "oci-archive:/tmp/image.tar"}, "invalid local image"},
 		{"push without tag", []string{"--push"}, "--push requires --tag"},
 		{"malformed tag", []string{"--tag", "bad tag"}, "invalid local image"},
 		{"digest as tag", []string{"-t", "localhost/app@sha256:" + strings.Repeat("a", 64)}, "digest"},
@@ -205,7 +225,7 @@ func TestBuildHelpExplainsOutputModes(t *testing.T) {
 	if status := run([]string{"build", "--help"}, &out, &errOut); status != 0 {
 		t.Fatalf("help failed: %s", errOut.String())
 	}
-	for _, text := range []string{"--tag", "--build-arg", "--format", "--push", "--pull", "--no-cache", "--network", "--add-host", "--allow", "--output", "--squash", "--squash-all", "--sbom", "--sign-by", "--sign-by-sigstore-private-key", "--manifest", "--all-platforms", "--cache-ttl", "--timestamp", "--unsetenv", "network.host", "security.insecure", "save fresh results to the build cache", "base image pull policy", "native container storage", "docker:", "oci-archive:", "embedded Buildah"} {
+	for _, text := range []string{"--tag", "--build-arg", "--format", "--push", "--pull", "--no-cache", "--network", "--add-host", "--allow", "--output", "--squash", "--squash-all", "--sbom", "--sign-by", "--sign-by-sigstore-private-key", "--manifest", "--all-platforms", "--cache-ttl", "--timestamp", "--unsetenv", "network.host", "security.insecure", "save fresh results to the build cache", "base image pull policy", "native container storage", "embedded Buildah"} {
 		if !strings.Contains(out.String(), text) {
 			t.Errorf("help missing %q", text)
 		}
@@ -225,7 +245,10 @@ func TestBuildPushCommandLive(t *testing.T) {
 	server := httptest.NewServer(registry.New())
 	defer server.Close()
 	target := strings.TrimPrefix(server.URL, "http://") + "/coopr/image:stable"
-	file := definitionFile(t, "from \"scratch\"\nlabel from_cli=\"yes\"\n")
+	file := definitionFile(t, `from "scratch" {
+    label from_cli="yes"
+}
+`)
 	var out, errOut bytes.Buffer
 	args := []string{"build", file, "--push", "--tag", target, "--tls-verify=false", "--platform", "linux/amd64"}
 	if status := run(args, &out, &errOut); status != 0 {
@@ -253,7 +276,10 @@ func TestBuildCommandQuietLogfileContainsOnlyResult(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live Buildah tests in short mode")
 	}
-	file := definitionFile(t, "from \"scratch\"\nlabel result=\"logfile\"\n")
+	file := definitionFile(t, `from "scratch" {
+    label result="logfile"
+}
+`)
 	for _, iidOption := range []string{"", "--iidfile", "--iidfile-raw"} {
 		t.Run(iidOption, func(t *testing.T) {
 			log := filepath.Join(t.TempDir(), "build.log")
@@ -291,7 +317,11 @@ func TestBuildCommandPreservesRUNFailureExitAndSingleDiagnostic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	file := definitionFile(t, "from \"scratch\"\ncopy \"busybox\" \"/busybox\"\nrun { exec \"/busybox\" \"sh\" \"-c\" \"exit 42\" }\n")
+	file := definitionFile(t, `from "scratch" {
+    copy "busybox" "/busybox"
+    run { exec "/busybox" "sh" "-c" "exit 42" }
+}
+`)
 	data, err := os.ReadFile(busybox)
 	if err != nil {
 		t.Fatal(err)
@@ -302,15 +332,18 @@ func TestBuildCommandPreservesRUNFailureExitAndSingleDiagnostic(t *testing.T) {
 	for _, jobs := range []string{"1", "2"} {
 		t.Run("jobs="+jobs, func(t *testing.T) {
 			if jobs == "2" {
-				source := `from "scratch" as="failure"
-copy "busybox" "/busybox"
-run { exec "/busybox" "sh" "-c" "exit 42" }
-from "scratch" as="sibling"
-copy "busybox" "/busybox"
-run { exec "/busybox" "sleep" "2" }
-from "scratch"
-copy "/busybox" "/failure" from="failure"
-copy "/busybox" "/sibling" from="sibling"
+				source := `from "scratch" as="failure" {
+    copy "busybox" "/busybox"
+    run { exec "/busybox" "sh" "-c" "exit 42" }
+}
+from "scratch" as="sibling" {
+    copy "busybox" "/busybox"
+    run { exec "/busybox" "sleep" "2" }
+}
+from "scratch" {
+    copy "/busybox" "/failure" from="failure"
+    copy "/busybox" "/sibling" from="sibling"
+}
 `
 				if err := os.WriteFile(file, []byte(source), 0600); err != nil {
 					t.Fatal(err)
@@ -332,7 +365,11 @@ func TestBuildCommandUnusedArgumentsFollowQuietAndLogRouting(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live Buildah tests in short mode")
 	}
-	file := definitionFile(t, "arg \"used\"\nfrom \"scratch\"\nlabel result=\"arguments\"\n")
+	file := definitionFile(t, `arg "used"
+from "scratch" {
+    label result="arguments"
+}
+`)
 	for _, mode := range []string{"terminal", "log", "quiet", "split"} {
 		t.Run(mode, func(t *testing.T) {
 			log := filepath.Join(t.TempDir(), "build.log")
@@ -376,7 +413,10 @@ func TestComponentBuildCommandQuietLogfileContainsReference(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live Buildah tests in short mode")
 	}
-	file := definitionFile(t, "extend\nenv proof=\"component\"\n")
+	file := definitionFile(t, `extend {
+    env proof="component"
+}
+`)
 	log := filepath.Join(t.TempDir(), "component.log")
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"component", "build", file, "--quiet", "--logfile", log}, &stdout, &stderr); code != 0 {

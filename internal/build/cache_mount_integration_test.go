@@ -26,13 +26,17 @@ func TestRunMountOnlyDefinitionWithoutProjectLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	file := filepath.Join(dir, "app.coopr")
-	source := "from \"scratch\"\ncopy \"busybox\" \"/bin/sh\" chmod=\"0755\"\nrun \"echo marker > /out\" network=\"none\" { mount \"cache\" target=\"/cache\" }\n"
+	source := `from "scratch" {
+    copy "busybox" "/bin/sh" chmod="0755"
+    run "echo marker > /out" network="none" { mount "cache" target="/cache" }
+}
+`
 	if err := os.WriteFile(file, []byte(source), 0600); err != nil {
 		t.Fatal(err)
 	}
 	for i := range 2 {
 		output := filepath.Join(dir, []string{"first.oci.tar", "second.oci.tar"}[i])
-		if _, err := Run(context.Background(), Options{File: file, Context: dir, Tag: "oci-archive:" + output, Platform: "linux/" + runtime.GOARCH}); err != nil {
+		if _, err := buildArchive(t, output, context.Background(), Options{File: file, Context: dir, Platform: "linux/" + runtime.GOARCH}); err != nil {
 			t.Fatal(err)
 		}
 		if names := archiveLayerNames(t, output); !containsName(names, "out") {

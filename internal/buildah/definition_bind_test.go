@@ -12,9 +12,10 @@ import (
 
 func TestPlanDefinitionBindsExternalOnBuildBeforeClosure(t *testing.T) {
 	def, err := definition.Parse(strings.NewReader(`
-from "scratch" as="producer"
-from "registry.invalid/coopr/parent:tag"
-copy "$filename" "/selected"
+from "scratch" as="producer" {}
+from "registry.invalid/coopr/parent:tag" {
+    copy "$filename" "/selected"
+}
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -69,8 +70,8 @@ copy "$filename" "/selected"
 
 func TestPlanDefinitionDoesNotResolveUnselectedTargetBase(t *testing.T) {
 	def, err := definition.Parse(strings.NewReader(`
-from "scratch" as="selected"
-from "registry.invalid/coopr/unselected:tag"
+from "scratch" as="selected" {}
+from "registry.invalid/coopr/unselected:tag" {}
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -91,8 +92,8 @@ from "registry.invalid/coopr/unselected:tag"
 
 func TestPlanDefinitionBindsExternalBaseRevealedByInheritedDependency(t *testing.T) {
 	def, err := definition.Parse(strings.NewReader(`
-from "registry.invalid/coopr/producer:tag" as="producer"
-from "registry.invalid/coopr/child:tag"
+from "registry.invalid/coopr/producer:tag" as="producer" {}
+from "registry.invalid/coopr/child:tag" {}
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -121,9 +122,10 @@ from "registry.invalid/coopr/child:tag"
 
 func TestPlanDefinitionBindsHiddenBaseBeforeValidatingItsBody(t *testing.T) {
 	def, err := definition.Parse(strings.NewReader(`
-from "registry.invalid/coopr/producer:tag" as="producer"
-copy "$payload" "/artifact"
-from "registry.invalid/coopr/child:tag"
+from "registry.invalid/coopr/producer:tag" as="producer" {
+    copy "$payload" "/artifact"
+}
+from "registry.invalid/coopr/child:tag" {}
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -152,9 +154,10 @@ from "registry.invalid/coopr/child:tag"
 
 func TestPlanDefinitionSkipsUnselectedBaseRequiringInheritedArgument(t *testing.T) {
 	def, err := definition.Parse(strings.NewReader(`
-from "registry.invalid/coopr/unselected:tag" as="unused"
-copy "$only_in_base" "/unused"
-from "scratch" as="selected"
+from "registry.invalid/coopr/unselected:tag" as="unused" {
+    copy "$only_in_base" "/unused"
+}
+from "scratch" as="selected" {}
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -174,7 +177,8 @@ from "scratch" as="selected"
 }
 
 func TestPlanDefinitionRejectsUnsupportedPlatformBeforeResolvingBase(t *testing.T) {
-	def, err := definition.Parse(strings.NewReader("from \"registry.invalid/coopr/base:tag\"\n"))
+	def, err := definition.Parse(strings.NewReader(`from "registry.invalid/coopr/base:tag" {}
+`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,12 +195,14 @@ func TestPlanDefinitionRejectsUnsupportedPlatformBeforeResolvingBase(t *testing.
 
 func TestPlanPublicationDoesNotResolveInvocationOnlyImage(t *testing.T) {
 	def, err := definition.Parse(strings.NewReader(`
-from "registry.invalid/coopr/invocation-only:tag" as="helper"
-package as="payload"
-copy "fixture" "/fixture"
-extend
-copy "/fixture" "/fixture" from="payload"
-copy "/other" "/other" from="helper"
+package as="payload" {
+    copy "fixture" "/fixture"
+}
+extend {
+    from "registry.invalid/coopr/invocation-only:tag" as="helper" {}
+    copy "/fixture" "/fixture" from="payload"
+    copy "/other" "/other" from="helper"
+}
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -217,7 +223,10 @@ copy "/other" "/other" from="helper"
 
 func TestPlanDefinitionSelectsExternalCopyImage(t *testing.T) {
 	const reference = "registry.invalid/coopr/tool:tag"
-	def, err := definition.Parse(strings.NewReader("from \"scratch\"\ncopy \"/bin/tool\" \"/tool\" from=\"" + reference + "\"\n"))
+	def, err := definition.Parse(strings.NewReader(`from "scratch" {
+    copy "/bin/tool" "/tool" from="` + reference + `"
+}
+`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +253,10 @@ func TestPlanDefinitionSelectsExternalCopyImage(t *testing.T) {
 
 func TestPlanDefinitionDoesNotInterpretExternalCopyImageConfig(t *testing.T) {
 	const reference = "registry.invalid/coopr/payload:tag"
-	def, err := definition.Parse(strings.NewReader("from \"scratch\"\ncopy \"/payload\" \"/payload\" from=\"" + reference + "\"\n"))
+	def, err := definition.Parse(strings.NewReader(`from "scratch" {
+    copy "/payload" "/payload" from="` + reference + `"
+}
+`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,9 +276,10 @@ func TestPlanDefinitionDoesNotInterpretExternalCopyImageConfig(t *testing.T) {
 
 func TestDynamicReplanReportsNewBaseSelectionAsExplicitDelta(t *testing.T) {
 	const reference = "registry.invalid/coopr/onbuild-input:tag"
-	def, err := definition.Parse(strings.NewReader(`from "scratch" as="base"
-component "local:config"
-from "base"
+	def, err := definition.Parse(strings.NewReader(`from "scratch" as="base" {
+    component "config"
+}
+from "base" {}
 `))
 	if err != nil {
 		t.Fatal(err)

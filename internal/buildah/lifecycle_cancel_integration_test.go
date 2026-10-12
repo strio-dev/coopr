@@ -21,7 +21,10 @@ func TestLifecycleCancellationRetainsStoppedBuilderWhenSelected(t *testing.T) {
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	base := newLiveBusyBoxStorage(t, context.Background(), root, store)
 	policy := writeComponentTestPolicy(t, root)
-	plan := testPlan(t, fmt.Sprintf("from %q\nrun \"trap '' TERM; sleep 60\" network=\"none\"\n", base.reference))
+	plan := testPlan(t, fmt.Sprintf(`from %q {
+    run "trap '' TERM; sleep 60" network="none"
+}
+`, base.reference))
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	output := filepath.Join(root, "layout")

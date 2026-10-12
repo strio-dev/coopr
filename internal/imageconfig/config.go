@@ -102,7 +102,7 @@ func (c *Config) Apply(inst definition.Instruction) error {
 	if c.root == nil {
 		c.root = make(map[string]json.RawMessage)
 	}
-	if err := definition.Validate(&definition.Definition{Instructions: []definition.Instruction{inst}}); err != nil {
+	if err := definition.ValidateOperation(inst); err != nil {
 		return err
 	}
 	if inst.Name == "arg" {

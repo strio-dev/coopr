@@ -58,7 +58,7 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 	cmd := &cobra.Command{
 		Annotations: map[string]string{nativeStorageAnnotation: "true"},
 		Use:         "build [file|context]", Short: "Build an image into native container storage",
-		Long: "Build into native container storage with the embedded Buildah backend. Supply a definition file path or --file with a build context; no filename is selected automatically. Use --tag NAME for a local tag, or --tag docker:NAME, registry:NAME, or oci-archive:PATH to copy the built image to that destination. --push publishes the name supplied by --tag to a registry. Coopr excludes its stores and temporary files from the local context and honors .cooprignore, .containerignore, and .dockerignore.",
+		Long: "Build into native container storage with the embedded Buildah backend. Supply a definition file path or --file with a build context; no filename is selected automatically. Use --tag NAME to name the built image in native container storage. --push publishes the name supplied by --tag to a registry. Coopr excludes its stores and temporary files from the local context and honors .cooprignore, .containerignore, and .dockerignore.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, paths []string) error {
 			argument := ""
@@ -135,11 +135,7 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 				if tag == "" {
 					return fmt.Errorf("--tag requires a nonempty image name")
 				}
-				if push {
-					_, err = transfer.ParsePushDestination(tag, oci.Image)
-				} else {
-					_, err = transfer.ParseDestination(tag, oci.Image)
-				}
+				_, err = transfer.ParseTag(tag, oci.Image)
 				if err != nil {
 					return err
 				}
@@ -235,7 +231,7 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 	f.StringVar(&iidFileRaw, "iidfile-raw", "", "write the image ID without its algorithm prefix")
 	f.StringVar(&iidFileRaw, "raw-iidfile", "", "alias for --iidfile-raw")
 	f.StringVar(&ignoreFile, "ignorefile", "", "context ignore file (default: first of .cooprignore, .containerignore, .dockerignore at the context root)")
-	f.StringArrayVarP(&tags, "tag", "t", nil, "name or copy the image; unprefixed names use native container storage; prefixes: docker:, registry:, oci-archive:")
+	f.StringArrayVarP(&tags, "tag", "t", nil, "assign a name to the image")
 	f.BoolVar(&push, "push", false, "publish the image to the registry named by --tag")
 	addPullFlags(cmd, &pullPolicy, &pull)
 	f.BoolVar(&noCache, "no-cache", false, "rebuild without reading cached results; save fresh results to the build cache")

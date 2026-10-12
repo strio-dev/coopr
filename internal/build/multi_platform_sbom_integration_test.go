@@ -41,7 +41,11 @@ func TestMultiPlatformHostSBOMOutputsUseLastPlatform(t *testing.T) {
 		t.Fatal(err)
 	}
 	scannerDefinition := filepath.Join(root, "scanner.coopr")
-	if err := os.WriteFile(scannerDefinition, []byte("from \"scratch\"\ncopy \"busybox\" \"/bin/busybox\" chmod=\"0755\"\ncopy \"busybox\" \"/bin/sh\" chmod=\"0755\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(scannerDefinition, []byte(`from "scratch" {
+    copy "busybox" "/bin/busybox" chmod="0755"
+    copy "busybox" "/bin/sh" chmod="0755"
+}
+`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Run(ctx, Options{
@@ -52,7 +56,11 @@ func TestMultiPlatformHostSBOMOutputsUseLastPlatform(t *testing.T) {
 	}
 
 	targetDefinition := filepath.Join(root, "target.coopr")
-	if err := os.WriteFile(targetDefinition, []byte("from \"scratch\"\narg \"TARGETARCH\"\ncopy \"marker-$TARGETARCH\" \"/marker\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(targetDefinition, []byte(`from "scratch" {
+    arg "TARGETARCH"
+    copy "marker-$TARGETARCH" "/marker"
+}
+`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for _, arch := range []string{"amd64", "arm64"} {

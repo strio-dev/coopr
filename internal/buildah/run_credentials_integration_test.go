@@ -24,8 +24,9 @@ func TestBuildPlanSecretMountReusesCacheWhenSecretChanges(t *testing.T) {
 	}
 	secretPath := filepath.Join(root, "token")
 	plan := testPlan(t, fmt.Sprintf(`
-from %q
-run "cat /run/secrets/token >/proof" network="none" { mount "secret" id="token" required="true" }
+from %q {
+    run "cat /run/secrets/token >/proof" network="none" { mount "secret" id="token" required="true" }
+}
 `, base.reference))
 	build := func(name, value string) string {
 		t.Helper()
@@ -74,9 +75,10 @@ func TestBuildPlanSSHMountIsEphemeral(t *testing.T) {
 	}
 	defer func() { _ = listener.Close() }()
 	plan := testPlan(t, fmt.Sprintf(`
-from %q
-run "test -S /run/buildkit/ssh_agent.0 && echo mounted >/proof" network="none" { mount "ssh" id="default" required="true" }
-run "test ! -e /run/buildkit/ssh_agent.0 && echo cleaned >/cleanup" network="none"
+from %q {
+    run "test -S /run/buildkit/ssh_agent.0 && echo mounted >/proof" network="none" { mount "ssh" id="default" required="true" }
+    run "test ! -e /run/buildkit/ssh_agent.0 && echo cleaned >/cleanup" network="none"
+}
 `, base.reference))
 	layout := filepath.Join(root, "image")
 	_, err = BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{

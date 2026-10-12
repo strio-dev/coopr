@@ -8,6 +8,7 @@ import (
 	"coopr/internal/buildah"
 	"coopr/internal/buildcontext"
 	"coopr/internal/oci"
+	"coopr/internal/transfer"
 	"github.com/spf13/cobra"
 )
 
@@ -23,7 +24,6 @@ func newComponentCommandWithGlobals(standalone bool) *cobra.Command {
 	}
 	cmd.AddCommand(
 		newComponentBuildCommandWithGlobals(standalone),
-		newCopyCommand(oci.Component),
 		newComponentListCommand("ls"),
 		newComponentInspectCommand(),
 		newComponentRemoveCommand(),
@@ -66,7 +66,7 @@ func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
 	cmd := &cobra.Command{
 		Annotations: map[string]string{nativeStorageAnnotation: "true"},
 		Use:         "build [file|context]", Short: "Build a component into the local OCI store",
-		Long: "Build a selected component output into Coopr's local OCI store. Supply a definition file path or --file with a build context; no filename is selected automatically. Use --tag NAME for a local tag or --tag registry:NAME or oci-archive:PATH to copy it. --push publishes the name supplied by --tag to a registry.",
+		Long: "Build a selected component output into Coopr's local OCI store. Supply a definition file path or --file with a build context; no filename is selected automatically. Use --tag NAME to name the component in the local store. --push publishes the name supplied by --tag to a registry.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, paths []string) error {
 			argument := ""
@@ -120,6 +120,9 @@ func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
 				if tag == "" {
 					return fmt.Errorf("--tag requires a nonempty component name")
 				}
+				if _, err := transfer.ParseTag(tag, oci.Component); err != nil {
+					return err
+				}
 			}
 			requestedPlatform, err := buildPlatform(cmd, platform, osName, arch, variant)
 			if err != nil {
@@ -161,7 +164,7 @@ func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
 	f.StringVar(&from, "from", "", "replace the image in the first FROM instruction")
 	f.StringVar(&metadataFile, "metadata-file", "", "write component index and per-platform digests as JSON")
 	f.StringVar(&ignoreFile, "ignorefile", "", "context ignore file (default: first of .cooprignore, .containerignore, .dockerignore at the context root)")
-	f.StringArrayVarP(&tags, "tag", "t", nil, "name or copy the component; unprefixed names use the local store; prefixes: registry:, oci-archive:")
+	f.StringArrayVarP(&tags, "tag", "t", nil, "assign a name to the component")
 	f.BoolVar(&push, "push", false, "publish the component to a registry (requires --tag)")
 	addPullFlags(cmd, &pullPolicy, &pull)
 	f.BoolVar(&noCache, "no-cache", false, "rebuild without reading cached results; save fresh results to the build cache")

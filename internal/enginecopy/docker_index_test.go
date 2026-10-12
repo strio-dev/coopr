@@ -63,12 +63,12 @@ func TestCopyDockerIndexStreamsNamedOCIArchiveAndVerifiesManifests(t *testing.T)
 	})
 	t.Setenv("DOCKER_HOST", server)
 
-	got, err := Copy(context.Background(), layout, root, "docker", "example:dev")
+	got, err := CopyIndex(context.Background(), layout, root, "example:dev")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "docker:example:dev" {
-		t.Fatalf("Copy() = %q, want docker:example:dev", got)
+	if got != "docker-daemon:example:dev" {
+		t.Fatalf("CopyIndex() = %q, want docker-daemon:example:dev", got)
 	}
 	archiveRoot := dockerArchiveRoot(t, loadBody)
 	if archiveRoot.Digest != root.Digest || archiveRoot.Size != root.Size || archiveRoot.MediaType != root.MediaType {
@@ -107,9 +107,9 @@ func TestCopyDockerIndexReturnsLoadStreamError(t *testing.T) {
 	})
 	t.Setenv("DOCKER_HOST", server)
 
-	_, err := Copy(context.Background(), layout, root, "docker", "example:dev")
+	_, err := CopyIndex(context.Background(), layout, root, "example:dev")
 	if err == nil || !strings.Contains(err.Error(), "docker image load: import failed") {
-		t.Fatalf("Copy() error = %v", err)
+		t.Fatalf("CopyIndex() error = %v", err)
 	}
 	if inspectCalled {
 		t.Fatal("failed load was inspected")
@@ -160,7 +160,7 @@ func TestCopyDockerIndexRejectsChangedContentDescriptors(t *testing.T) {
 				}
 			})
 			t.Setenv("DOCKER_HOST", server)
-			_, err := Copy(context.Background(), layout, root, "docker", "example:dev")
+			_, err := CopyIndex(context.Background(), layout, root, "example:dev")
 			if err == nil || !strings.Contains(err.Error(), "docker loaded image") {
 				t.Fatalf("Copy accepted changed %s: %v", field, err)
 			}
@@ -187,9 +187,9 @@ func TestCopyDockerIndexRejectsClassicImageStoreBeforeLoad(t *testing.T) {
 	})
 	t.Setenv("DOCKER_HOST", server)
 
-	_, err := Copy(context.Background(), layout, root, "docker", "example:dev")
+	_, err := CopyIndex(context.Background(), layout, root, "example:dev")
 	if err == nil || !strings.Contains(err.Error(), "classic image store") || !strings.Contains(err.Error(), "containerd image store") {
-		t.Fatalf("Copy() error = %v", err)
+		t.Fatalf("CopyIndex() error = %v", err)
 	}
 	if loadCalled {
 		t.Fatal("classic image store received an image load")
@@ -218,9 +218,9 @@ func TestCopyDockerIndexPropagatesArchiveStreamFailure(t *testing.T) {
 	})
 	t.Setenv("DOCKER_HOST", server)
 
-	_, err := Copy(context.Background(), layout, root, "docker", "example:dev")
+	_, err := CopyIndex(context.Background(), layout, root, "example:dev")
 	if err == nil || !strings.Contains(err.Error(), "stream OCI archive to Docker") {
-		t.Fatalf("Copy() error = %v", err)
+		t.Fatalf("CopyIndex() error = %v", err)
 	}
 }
 
@@ -246,7 +246,7 @@ func TestCopyDockerIndexCancelsPendingLoad(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, err := Copy(ctx, layout, root, "docker", "example:dev")
+		_, err := CopyIndex(ctx, layout, root, "example:dev")
 		done <- err
 	}()
 	select {
@@ -258,7 +258,7 @@ func TestCopyDockerIndexCancelsPendingLoad(t *testing.T) {
 	select {
 	case err := <-done:
 		if err == nil || !strings.Contains(err.Error(), "context canceled") {
-			t.Fatalf("Copy() error = %v", err)
+			t.Fatalf("CopyIndex() error = %v", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Copy did not stop after cancellation")

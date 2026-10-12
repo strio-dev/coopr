@@ -110,6 +110,9 @@ func formatOnBuildInstruction(inst Instruction) (string, error) {
 }
 
 func formatOnBuildRun(inst Instruction) (string, error) {
+	if len(inst.Commands) != 0 {
+		return "", fmt.Errorf("ONBUILD RUN accepts one command because image ONBUILD metadata cannot represent a command sequence; use one script/exec command or separate ONBUILD instructions")
+	}
 	if err := validateOnBuildProperties(inst, "network", "security"); err != nil {
 		return "", err
 	}
@@ -190,6 +193,11 @@ func formatOnBuildRun(inst Instruction) (string, error) {
 	}
 	if strings.ContainsRune(command, '\r') {
 		return "", fmt.Errorf("ONBUILD RUN multiline shell command must use LF lines")
+	}
+	if strings.HasPrefix(command, "#!") {
+		// A leading shebang makes a Docker heredoc directly executable. Keep
+		// this shell-form command using the configured shell after inheritance.
+		command = "\n" + command
 	}
 	delimiter := unusedHeredocDelimiter(command, "COOPR_EOF")
 	return prefix + " <<'" + delimiter + "'\n" + strings.TrimSuffix(command, "\n") + "\n" + delimiter, nil

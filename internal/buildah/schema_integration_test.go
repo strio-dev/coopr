@@ -15,14 +15,15 @@ func TestLocalComponentTypedOptionsBuildAndCache(t *testing.T) {
 	f := newLocalComponentFixture(t)
 	base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
 	f.write(t, "payload", "schema\n")
-	f.write(t, "components/shared.coopr", `extend
-arg "kind" "cache"
-arg "permissions" "0644"
-arg "linked" #true
-run "printf cached >/cache/value; cat /cache/value >/proof" {
-    mount "$kind" id="schema-options" target="/cache"
+	f.write(t, "components/shared.coopr", `extend {
+    arg "kind" "cache"
+    arg "permissions" "0644"
+    arg "linked" #true
+    run "printf cached >/cache/value; cat /cache/value >/proof" {
+        mount "$kind" id="schema-options" target="/cache"
+    }
+    copy "payload" "/payload" chmod="${permissions}" link="${linked}"
 }
-copy "payload" "/payload" chmod="${permissions}" link="${linked}"
 `)
 	for _, test := range []struct {
 		name, permission string
@@ -36,7 +37,12 @@ copy "payload" "/payload" chmod="${permissions}" link="${linked}"
 		t.Run(test.name, func(t *testing.T) {
 			layout := filepath.Join(f.root, test.name)
 			var logs strings.Builder
-			_, err := BuildPlanSupervised(f.ctx, testPlan(t, fmt.Sprintf("from %q\ncomponent \"./components/shared.coopr\" permissions=%q\n", base.reference, test.permission)), SupervisedPlanOptions{
+			_, err := BuildPlanSupervised(f.ctx, testPlan(t, fmt.Sprintf(`from %q {
+    component "./components/shared.coopr" {
+        arg "permissions" %q
+    }
+}
+`, base.reference, test.permission)), SupervisedPlanOptions{
 				Store: f.options.Store, ContextDir: f.contextDir, Isolation: "rootless", Runtime: "crun",
 				Output: Output{Path: layout}, ComponentStoreDir: filepath.Join(f.root, "components"),
 				CacheLocalDir: f.options.CacheLocalDir, SignaturePolicyPath: f.options.SystemContext.SignaturePolicyPath,
@@ -70,16 +76,16 @@ func TestOnBuildMountTypedOptionsExecuteInChildScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	def := parseWorkerDefinition(t, fmt.Sprintf(`from %q as="parent"
-onbuild { arg "required" #true }
-onbuild { arg "permissions" "0400" }
-onbuild {
-    run "test \"$(/bin/busybox stat -c %%a /run/token)\" = 400; cat /run/token /run/global-input >/proof" {
-        mount "secret" id="token" target="/run/token" required="${required}" mode="${permissions}"
+	def := parseWorkerDefinition(t, fmt.Sprintf(`from %q as="parent" {
+    onbuild { arg "required" #true }
+    onbuild { arg "permissions" "0400" }
+    onbuild {
+        run "test \"$(/bin/busybox stat -c %%a /run/token)\" = 400; cat /run/token /run/global-input >/proof" {
+            mount "secret" id="token" target="/run/token" required="${required}" mode="${permissions}"
+        }
     }
 }
-
-from "parent"
+from "parent" {}
 `, base.reference))
 	layout := filepath.Join(f.root, "inherited")
 	_, err = BuildDefinitionSupervised(f.ctx, def, planner.Options{Mode: planner.Build, Platform: "linux/" + runtime.GOARCH}, SupervisedPlanOptions{
@@ -98,10 +104,14 @@ from "parent"
 func TestLocalComponentCacheTracksBuildWideMountOptions(t *testing.T) {
 	f := newLocalComponentFixture(t)
 	base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
-	f.write(t, "components/mounted.coopr", `extend
-run "if test -d /first; then printf first >/proof; else test -d /second && printf second >/proof; fi"
+	f.write(t, "components/mounted.coopr", `extend {
+    run "if test -d /first; then printf first >/proof; else test -d /second && printf second >/proof; fi"
+}
 `)
-	plan := testPlan(t, fmt.Sprintf("from %q\ncomponent \"./components/mounted.coopr\"\n", base.reference))
+	plan := testPlan(t, fmt.Sprintf(`from %q {
+    component "./components/mounted.coopr"
+}
+`, base.reference))
 	for _, test := range []struct {
 		name, target, proof string
 		cacheHit            bool

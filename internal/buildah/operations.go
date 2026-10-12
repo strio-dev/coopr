@@ -53,12 +53,13 @@ type operationBuilder interface {
 	SetOnBuild(string)
 }
 
-// Run executes Command directly. Shell-form callers should explicitly pass
+// Run executes Command, or an ordered Commands sequence, directly. Shell-form callers should explicitly pass
 // their desired shell, for example []string{"/bin/sh", "-c", script}.
 type Run struct {
 	ContextIgnoreFile string
 	contextPrepared   bool
 	Command           []string
+	Commands          [][]string
 	InlineFiles       []definition.InlineFile
 	Network           string
 	Security          string
@@ -78,8 +79,11 @@ type Run struct {
 }
 
 func (operation Run) apply(builder operationBuilder, contextDir string) (retErr error) {
-	if len(operation.Command) == 0 {
+	if len(operation.Command) == 0 && len(operation.Commands) == 0 {
 		return errors.New("RUN command is empty")
+	}
+	if len(operation.Commands) != 0 && (len(operation.Command) != 0 || len(operation.Commands) < 2 || len(operation.InlineFiles) != 0) {
+		return errors.New("RUN sequence requires at least two commands and cannot include another command or inline files")
 	}
 	network, namespaces, err := runNetworkOptions(operation.Network)
 	if err != nil {
@@ -141,6 +145,16 @@ func (operation Run) apply(builder operationBuilder, contextDir string) (retErr 
 		return fmt.Errorf("parse RUN SSH sources: %w", err)
 	}
 	var directMounts []specs.Mount
+	command := slices.Clone(operation.Command)
+	if len(operation.Commands) != 0 {
+		sequenceCommand, mount, cleanup, err := prepareRunSequence(builder, operation.Commands)
+		if err != nil {
+			return err
+		}
+		defer func() { retErr = errors.Join(retErr, cleanup()) }()
+		command = sequenceCommand
+		directMounts = append(directMounts, mount)
+	}
 	if len(operation.InlineFiles) != 0 {
 		directory, cleanup, err := materializeRunInlineFiles(operation.InlineFiles)
 		if err != nil {
@@ -267,7 +281,7 @@ func (operation Run) apply(builder operationBuilder, contextDir string) (retErr 
 		return err
 	}
 	defer func() { retErr = errors.Join(retErr, cacheLocks.close()) }()
-	return builder.run(append([]string(nil), operation.Command...), runOptions)
+	return builder.run(command, runOptions)
 }
 
 func parseOperationSecrets(specs []string) (map[string]define.Secret, error) {

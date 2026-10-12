@@ -56,11 +56,15 @@ main() {
         END { if (!found) exit 1 }
     ' "$temp_dir/SHA256SUMS" > "$temp_dir/checksum" || fail "Missing checksum for $asset."
     (cd "$temp_dir" && sha256sum -c checksum)
-    tar -xzf "$temp_dir/$asset" -C "$temp_dir" coopr LICENSE third-party
+    tar -xzf "$temp_dir/$asset" -C "$temp_dir"
     chmod -R u+w "$temp_dir"
     $sudo_cmd mkdir -p "$prefix/bin" "$prefix/share/licenses/coopr"
     $sudo_cmd cp -R "$temp_dir/third-party" "$prefix/share/licenses/coopr/"
     $sudo_cmd install -m 644 "$temp_dir/LICENSE" "$prefix/share/licenses/coopr/LICENSE"
+    if [ -f "$temp_dir/libexec/coopr/coopr-run-sequence" ]; then
+        $sudo_cmd mkdir -p "$prefix/libexec/coopr"
+        $sudo_cmd install -m 755 "$temp_dir/libexec/coopr/coopr-run-sequence" "$prefix/libexec/coopr/coopr-run-sequence"
+    fi
     $sudo_cmd install -m 755 "$temp_dir/coopr" "$prefix/bin/coopr"
 
     printf 'Installed Coopr to %s/bin/coopr\n' "$prefix"

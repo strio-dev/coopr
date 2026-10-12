@@ -18,7 +18,10 @@ func TestPredefinedProxyArgumentsMayBeSuppliedWithoutARG(t *testing.T) {
 		"ALL_PROXY":   "socks5://uppercase",
 		"all_proxy":   "socks5://lowercase",
 	}
-	plan := makePlan(t, "from \"scratch\"\nrun \"env\"\n", Options{Arguments: arguments})
+	plan := makePlan(t, `from "scratch" {
+    run "env"
+}
+`, Options{Arguments: arguments})
 	operation := plan.Stages[0].Operations[0]
 	if len(operation.ArgumentsInScope) != 0 || len(operation.DeclaredProxyArguments) != 0 {
 		t.Fatalf("undeclared proxy arguments entered planned RUN identity: %+v", operation)
@@ -32,7 +35,11 @@ func TestPredefinedProxyArgumentsMayBeSuppliedWithoutARG(t *testing.T) {
 }
 
 func TestExplicitProxyARGUsesNormalArgumentScope(t *testing.T) {
-	plan := makePlan(t, "from \"scratch\"\narg \"HTTP_PROXY\"\nrun \"env\"\n", Options{
+	plan := makePlan(t, `from "scratch" {
+    arg "HTTP_PROXY"
+    run "env"
+}
+`, Options{
 		Arguments: map[string]string{"HTTP_PROXY": "http://explicit"},
 	})
 	operation := plan.Stages[0].Operations[0]
@@ -45,7 +52,11 @@ func TestExplicitProxyARGUsesNormalArgumentScope(t *testing.T) {
 }
 
 func TestENVShadowsUndeclaredPredefinedProxyArgument(t *testing.T) {
-	plan := makePlan(t, "from \"scratch\"\nenv HTTP_PROXY=\"http://image-env\"\nrun \"env\"\n", Options{
+	plan := makePlan(t, `from "scratch" {
+    env HTTP_PROXY="http://image-env"
+    run "env"
+}
+`, Options{
 		Arguments: map[string]string{"HTTP_PROXY": "http://cli"},
 	})
 	operation := plan.Stages[0].Operations[1]
@@ -58,8 +69,14 @@ func TestENVShadowsUndeclaredPredefinedProxyArgument(t *testing.T) {
 }
 
 func TestUnknownUndeclaredBuildArgumentIsIgnored(t *testing.T) {
-	definition := parse(t, "from \"scratch\"\nrun \"true\"\n")
-	base := makePlan(t, "from \"scratch\"\nrun \"true\"\n", Options{})
+	definition := parse(t, `from "scratch" {
+    run "true"
+}
+`)
+	base := makePlan(t, `from "scratch" {
+    run "true"
+}
+`, Options{})
 	plan, err := Create(definition, Options{
 		Arguments: map[string]string{"TYPO_PROXY": "http://invalid"},
 	})

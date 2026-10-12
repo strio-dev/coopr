@@ -22,7 +22,10 @@ func TestBuildAndCopyUseExplicitNativeStoreOptions(t *testing.T) {
 	defer cancel()
 	root := t.TempDir()
 	definition := filepath.Join(root, "image.coopr")
-	if err := os.WriteFile(definition, []byte("from \"scratch\"\nenv STORED=\"yes\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(definition, []byte(`from "scratch" {
+    env STORED="yes"
+}
+`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	store := buildah.StoreOptions{

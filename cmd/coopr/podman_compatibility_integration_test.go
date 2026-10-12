@@ -10,9 +10,9 @@ import (
 	"testing"
 )
 
-func TestConfiguredPodmanStoreInvokesCompatibilityListsColdAndWarm(t *testing.T) {
+func TestConfiguredPodmanStoreInvokesComponentAcrossDistributionsColdAndWarm(t *testing.T) {
 	if testing.Short() {
-		t.Skip("skipping configured Podman-store compatibility coverage in short mode")
+		t.Skip("skipping configured Podman-store component coverage in short mode")
 	}
 	root := t.TempDir()
 	configHome := filepath.Join(root, "config")
@@ -39,16 +39,13 @@ func TestConfiguredPodmanStoreInvokesCompatibilityListsColdAndWarm(t *testing.T)
 		t.Fatal(err)
 	}
 	writePodmanCompatibilityFile(t, filepath.Join(componentDir, "component-payload"), "installed through compatible component\n", 0o600)
-	componentDefinition := fmt.Sprintf(`package as="payload"
-copy "component-payload" "/component-payload"
-extend {
-  distro "rhel" "fedora"
-  distro-version "41" "42"
-  package-manager "yum" "testpkg"
-  architecture %q %q
+	componentDefinition := `package as="payload" {
+    copy "component-payload" "/component-payload"
 }
-copy "/component-payload" "/installed" from="payload"
-`, otherPodmanCompatibilityArchitecture(), runtime.GOARCH)
+extend {
+    copy "/component-payload" "/installed" from="payload"
+}
+`
 	componentFile := filepath.Join(componentDir, "component.coopr")
 	writePodmanCompatibilityFile(t, componentFile, componentDefinition, 0o600)
 	componentRef := strings.TrimSpace(runPodmanCompatibilityCLI(t, "component", "build", componentFile, "--platform", "linux/"+runtime.GOARCH, "--quiet"))
@@ -57,7 +54,10 @@ copy "/component-payload" "/installed" from="payload"
 	}
 
 	application := filepath.Join(root, "application.coopr")
-	writePodmanCompatibilityFile(t, application, "from \"compatibility-base\"\ncomponent \""+componentRef+"\"\n", 0o600)
+	writePodmanCompatibilityFile(t, application, `from "compatibility-base" {
+    component "`+componentRef+`"
+}
+`, 0o600)
 	cacheDir := filepath.Join(root, "component-cache")
 	for _, name := range []string{"cold", "warm"} {
 		output := filepath.Join(root, name+"-output")
@@ -68,26 +68,29 @@ copy "/component-payload" "/installed" from="payload"
 		}
 	}
 	cacheIndex := filepath.Join(cacheDir, "index.json")
-	cacheBeforeFailure, err := os.ReadFile(cacheIndex)
-	if err != nil || len(cacheBeforeFailure) == 0 {
-		t.Fatalf("portable component cache index = %q, %v", cacheBeforeFailure, err)
+	cacheIndexData, err := os.ReadFile(cacheIndex)
+	if err != nil || len(cacheIndexData) == 0 {
+		t.Fatalf("portable component cache index = %q, %v", cacheIndexData, err)
 	}
 
-	badBase := writePodmanCompatibilityBase(t, root, "bad-base", "ID=debian\nVERSION_ID=12\n")
-	runPodmanCompatibilityCLI(t, "build", badBase, "--tag", "incompatible-base", "--platform", "linux/"+runtime.GOARCH, "--quiet")
-	incompatible := filepath.Join(root, "incompatible.coopr")
-	writePodmanCompatibilityFile(t, incompatible, "from \"incompatible-base\"\ncomponent \""+componentRef+"\"\n", 0o600)
-	var stdout, stderr bytes.Buffer
-	status := run([]string{"build", incompatible, "--pull=never", "--cache-from", "type=local,src=" + cacheDir, "--cache-to", "type=local,dest=" + cacheDir, "--output", filepath.Join(root, "incompatible-output"), "--platform", "linux/" + runtime.GOARCH, "--quiet"}, &stdout, &stderr)
-	if status == 0 || !strings.Contains(stderr.String(), "requires one of distros") {
-		t.Fatalf("incompatible caller status=%d stdout=%q stderr=%q", status, stdout.String(), stderr.String())
-	}
-	cacheAfterFailure, err := os.ReadFile(cacheIndex)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(cacheBeforeFailure, cacheAfterFailure) {
-		t.Fatal("incompatible caller mutated the populated component cache")
+	otherBase := writePodmanCompatibilityBase(t, root, "other-base", "ID=debian\nVERSION_ID=12\n")
+	runPodmanCompatibilityCLI(t, "build", otherBase, "--tag", "other-base", "--platform", "linux/"+runtime.GOARCH, "--quiet")
+	otherApplication := filepath.Join(root, "other.coopr")
+	writePodmanCompatibilityFile(t, otherApplication, `from "other-base" {
+    component "`+componentRef+`"
+}
+`, 0o600)
+	for _, name := range []string{"other-cold", "other-warm"} {
+		output := filepath.Join(root, name+"-output")
+		runPodmanCompatibilityCLI(t, "build", otherApplication, "--pull=never", "--cache-from", "type=local,src="+cacheDir, "--cache-to", "type=local,dest="+cacheDir, "--output", output, "--platform", "linux/"+runtime.GOARCH, "--quiet")
+		data, err := os.ReadFile(filepath.Join(output, "installed"))
+		if err != nil || string(data) != "installed through compatible component\n" {
+			t.Fatalf("%s component output = %q, %v", name, data, err)
+		}
+		release, err := os.ReadFile(filepath.Join(output, "etc", "os-release"))
+		if err != nil || string(release) != "ID=debian\nVERSION_ID=12\n" {
+			t.Fatalf("%s caller release = %q, %v", name, release, err)
+		}
 	}
 }
 
@@ -100,7 +103,11 @@ func writePodmanCompatibilityBase(t *testing.T, root, name, release string) stri
 	writePodmanCompatibilityFile(t, filepath.Join(directory, "os-release"), release, 0o600)
 	writePodmanCompatibilityFile(t, filepath.Join(directory, "testpkg"), "test package manager\n", 0o700)
 	definition := filepath.Join(directory, "image.coopr")
-	writePodmanCompatibilityFile(t, definition, "from \"scratch\"\ncopy \"os-release\" \"/etc/os-release\"\ncopy \"testpkg\" \"/usr/bin/testpkg\" chmod=\"0755\"\n", 0o600)
+	writePodmanCompatibilityFile(t, definition, `from "scratch" {
+    copy "os-release" "/etc/os-release"
+    copy "testpkg" "/usr/bin/testpkg" chmod="0755"
+}
+`, 0o600)
 	return definition
 }
 

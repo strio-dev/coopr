@@ -92,7 +92,8 @@ func TestBuildPlanConsumesLocalNamedContextAsFromCopyAndRunMount(t *testing.T) {
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	policy := writeComponentTestPolicy(t, root)
 
-	fromPlan := namedContextGraphPlan(t, `from "assets"`, contextSpec)
+	fromPlan := namedContextGraphPlan(t, `from "assets" {}
+`, contextSpec)
 	fromLayout := filepath.Join(root, "from-layout")
 	if _, err := BuildPlan(ctx, fromPlan, PlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Output: Output{Path: fromLayout},
@@ -110,10 +111,11 @@ func TestBuildPlanConsumesLocalNamedContextAsFromCopyAndRunMount(t *testing.T) {
 
 	base := newLiveBusyBoxStorage(t, ctx, root, store)
 	copyRunPlan := namedContextGraphPlan(t, `
-from "`+base.reference+`"
-copy "/payload" "/copied" from="assets"
-run "cat /input/payload >/mounted" network="none" {
-  mount "bind" from="assets" source="/" target="/input"
+from "`+base.reference+`" {
+    copy "/payload" "/copied" from="assets"
+    run "cat /input/payload >/mounted" network="none" {
+      mount "bind" from="assets" source="/" target="/input"
+    }
 }
 `, contextSpec)
 	copyRunLayout := filepath.Join(root, "copy-run-layout")

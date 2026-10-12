@@ -106,6 +106,7 @@ type SupervisedPlanOptions struct {
 }
 
 type planWorkerRequest struct {
+	ExecutableOrigin    string                 `json:"executable_origin,omitempty"`
 	ProgressReference   string                 `json:"progress_reference,omitempty"`
 	ProgressPrefix      string                 `json:"progress_prefix,omitempty"`
 	Lifecycle           LifecycleControls      `json:"lifecycle,omitempty"`
@@ -434,8 +435,10 @@ func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition
 	}
 	workerOutput := options.Output
 	workerOutput.Path = filepath.Join(jobDir, "layout")
+	executableOrigin := currentRunSequenceOrigin()
 	request := planWorkerRequest{
-		Mode: mode, ImageID: options.ImageID, ManifestDigest: options.ManifestDigest, ManifestDescriptor: options.ManifestDescriptor, JobID: jobID, Plan: plan, Definition: def, PlannerOptions: planning,
+		ExecutableOrigin: executableOrigin,
+		Mode:             mode, ImageID: options.ImageID, ManifestDigest: options.ManifestDigest, ManifestDescriptor: options.ManifestDescriptor, JobID: jobID, Plan: plan, Definition: def, PlannerOptions: planning,
 		Store: options.Store, ContextDir: options.ContextDir, SourcePolicyFile: options.SourcePolicyFile, SourcePolicy: sourcePolicy, IgnoreFile: options.IgnoreFile,
 		ContextArtifacts: append(append([]string(nil), options.ContextArtifacts...), jobDir, options.Store.ImageStore, options.ComponentStoreDir, options.CacheLocalDir, workerTemp, options.AuthFile, options.CertDir, options.RusageLogFile),
 		Isolation:        options.Isolation, Runtime: options.Runtime,
@@ -760,7 +763,8 @@ func executePlanWorker(requestPath string) error {
 		}
 	}
 	planOptions := PlanOptions{
-		Store: request.Store, ContextDir: request.ContextDir, SourcePolicyFile: request.SourcePolicyFile, SourcePolicy: request.SourcePolicy, IgnoreFile: request.IgnoreFile, ContextArtifacts: request.ContextArtifacts, Isolation: request.Isolation,
+		executableOrigin: request.ExecutableOrigin,
+		Store:            request.Store, ContextDir: request.ContextDir, SourcePolicyFile: request.SourcePolicyFile, SourcePolicy: request.SourcePolicy, IgnoreFile: request.IgnoreFile, ContextArtifacts: request.ContextArtifacts, Isolation: request.Isolation,
 		Runtime: request.Runtime, Output: request.Output, Resolver: resolver, ResolvedBases: resolvedBases, ReplannedBaseDelta: replannedBaseDelta,
 		CacheLocalDir:      request.CacheLocalDir,
 		CacheRepository:    request.CacheRepository,

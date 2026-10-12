@@ -19,9 +19,10 @@ func TestImageControlsApplyAcrossColdAndWarmOutputs(t *testing.T) {
 	store := cacheTestStore(root)
 	base := newLiveBusyBoxStorage(t, ctx, root, store)
 	policy := writeComponentTestPolicy(t, root)
-	plan := testPlan(t, `from "`+base.reference+`"
-run "/bin/busybox printf \"$FLAG\" >/flag" network="none"
-label current="yes" remove="yes"
+	plan := testPlan(t, "from \""+base.reference+`" {
+    run "/bin/busybox printf \"$FLAG\" >/flag" network="none"
+    label current="yes" remove="yes"
+}
 `)
 	forced := int64(123)
 	for attempt := range 2 {

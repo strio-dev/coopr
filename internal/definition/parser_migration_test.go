@@ -21,7 +21,7 @@ func TestParserMigrationNativeOctalPermissions(t *testing.T) {
 		{"zero permission", `copy "app" "/app" chmod=0o0;`, "chmod", "0"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			def, err := Parse(strings.NewReader(tc.source))
+			def, err := parseFragment(strings.NewReader(tc.source))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -52,7 +52,7 @@ func TestParserMigrationNumericArgumentsAndContinuations(t *testing.T) {
 		{"quoted permission default", `arg "count" "0755"`, "0755"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			def, err := Parse(strings.NewReader(tc.source))
+			def, err := parseFragment(strings.NewReader(tc.source))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -69,7 +69,7 @@ func TestParserMigrationRejectsMalformedContinuations(t *testing.T) {
 		"arg \"count\" 3\\;\n",
 	} {
 		t.Run(source, func(t *testing.T) {
-			if _, err := Parse(strings.NewReader(source)); err == nil {
+			if _, err := parseFragment(strings.NewReader(source)); err == nil {
 				t.Fatal("Parse accepted a malformed line continuation")
 			}
 		})
@@ -84,7 +84,7 @@ func TestParserMigrationPreservesQuotedHealthcheckNONE(t *testing.T) {
 		{"raw multiline quoted", "healthcheck #\"\"\"\n    NONE\n    \"\"\"#\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			def, err := Parse(strings.NewReader(tc.source))
+			def, err := parseFragment(strings.NewReader(tc.source))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -121,7 +121,7 @@ func TestParserMigrationPreservesShebangStringForms(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			def, err := Parse(strings.NewReader(tc.source))
+			def, err := parseFragment(strings.NewReader(tc.source))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -139,15 +139,15 @@ func TestParserMigrationPreservesShebangStringForms(t *testing.T) {
 }
 
 func TestParserMigrationV2BooleansAndParameterizedOptions(t *testing.T) {
-	def, err := Parse(strings.NewReader(`
-component "example.com/test:latest" enabled=#true disabled=#false count=0o755
+	def, err := parseFragment(strings.NewReader(`
+component "example.com/test:latest" { arg "enabled" #true; arg "disabled" #false; arg "count" 0o755 }
 run "true" { mount "secret" target="/run/secret" required=#true mode="${mode:-0400}" }
 copy "app" "/app" chmod="${mode:-0755}" link="${link:-false}"
 `))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := def.Instructions[0].Properties; !reflect.DeepEqual(got, map[string]string{"enabled": "true", "disabled": "false", "count": "493"}) {
+	if got, err := def.Instructions[0].ComponentArguments(); err != nil || !reflect.DeepEqual(got, map[string]string{"enabled": "true", "disabled": "false", "count": "493"}) {
 		t.Fatalf("component parameters = %#v", got)
 	}
 	if got := def.Instructions[1].Children[0].Properties; got["required"] != "true" || got["mode"] != "${mode:-0400}" {
@@ -157,12 +157,12 @@ copy "app" "/app" chmod="${mode:-0755}" link="${link:-false}"
 		t.Fatalf("COPY properties = %#v", got)
 	}
 	for _, source := range []string{
-		`component "example.com/test:latest" enabled=true`,
-		`component "example.com/test:latest" enabled=false`,
+		`component "example.com/test:latest" { arg "enabled" true }`,
+		`component "example.com/test:latest" { arg "enabled" false }`,
 		`run "true" { mount "secret" target="/run/secret" required=true }`,
 	} {
-		if _, err := Parse(strings.NewReader(source)); err == nil {
-			t.Errorf("Parse(%q) accepted a KDL v1 boolean", source)
+		if _, err := parseFragment(strings.NewReader(source)); err == nil {
+			t.Errorf("parseFragment(%q) accepted a KDL v1 boolean", source)
 		}
 	}
 }

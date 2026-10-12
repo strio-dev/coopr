@@ -297,9 +297,10 @@ func TestBuildPlanContextBindUsesFilteredSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := testPlan(t, fmt.Sprintf(`
-from %q
-run "test -f /src/included && test ! -e /src/ignored && test ! -e /src/run && test ! -e /src/graph && test ! -e /src/graph-alias && test ! -e /src/layout && cat /src/included >/result" network="none" {
-  mount "bind" source="." target="/src" readonly="true"
+from %q {
+    run "test -f /src/included && test ! -e /src/ignored && test ! -e /src/run && test ! -e /src/graph && test ! -e /src/graph-alias && test ! -e /src/layout && cat /src/included >/result" network="none" {
+      mount "bind" source="." target="/src" readonly="true"
+    }
 }
 `, base.reference))
 	_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
@@ -343,11 +344,13 @@ func TestBuildPlanWritableContextPersistsAcrossStagesAndCopy(t *testing.T) {
 	}
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	base := newLiveBusyBoxStorage(t, ctx, root, store)
-	plan := testPlan(t, fmt.Sprintf(`from %q as="producer"
-run "printf generated >/src/generated" network="none" { mount "bind" target="/src" rw="true" }
-from "producer"
-run "cat /src/generated >/proof" network="none" { mount "bind" target="/src" }
-copy "generated" "/copied"
+	plan := testPlan(t, fmt.Sprintf(`from %q as="producer" {
+    run "printf generated >/src/generated" network="none" { mount "bind" target="/src" rw="true" }
+}
+from "producer" {
+    run "cat /src/generated >/proof" network="none" { mount "bind" target="/src" }
+    copy "generated" "/copied"
+}
 `, base.reference))
 	for iteration := 0; iteration < 2; iteration++ {
 		layout := filepath.Join(root, fmt.Sprintf("layout-%d", iteration))

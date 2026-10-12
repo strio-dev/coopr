@@ -19,13 +19,44 @@ func TestSourceDateEpochSpecialArgument(t *testing.T) {
 		exposeRun bool
 		context   *int64
 	}{
-		{name: "numeric override wins over context", source: "arg \"SOURCE_DATE_EPOCH\" \"context\"\nfrom \"scratch\"\nrun \"true\"", arguments: map[string]string{"SOURCE_DATE_EPOCH": "00123"}, context: epochPointer(946684800), want: epochPointer(123)},
-		{name: "global default", source: "arg \"SOURCE_DATE_EPOCH\" \"456\"\nfrom \"scratch\"\nrun \"true\"", want: epochPointer(456)},
-		{name: "override and redeclare", source: "arg \"SOURCE_DATE_EPOCH\" \"456\"\nfrom \"scratch\"\narg \"SOURCE_DATE_EPOCH\"\nrun \"printf %s $SOURCE_DATE_EPOCH\"", arguments: map[string]string{"SOURCE_DATE_EPOCH": "00789"}, want: epochPointer(789), wantRun: "789", exposeRun: true},
-		{name: "empty reset", source: "arg \"SOURCE_DATE_EPOCH\" \"456\"\nfrom \"scratch\"\narg \"SOURCE_DATE_EPOCH\"\nrun \"true\"", arguments: map[string]string{"SOURCE_DATE_EPOCH": ""}, exposeRun: true},
-		{name: "local context resolves unset", source: "arg \"SOURCE_DATE_EPOCH\" \"456\"\nfrom \"scratch\"\narg \"SOURCE_DATE_EPOCH\"\nrun \"true\"", arguments: map[string]string{"SOURCE_DATE_EPOCH": "context"}, exposeRun: true},
-		{name: "remote context override", source: "from \"scratch\"\nrun \"true\"", arguments: map[string]string{"SOURCE_DATE_EPOCH": "context"}, context: epochPointer(946684800), want: epochPointer(946684800)},
-		{name: "remote context default", source: "arg \"SOURCE_DATE_EPOCH\" \"context\"\nfrom \"scratch\"\narg \"SOURCE_DATE_EPOCH\"\nrun \"true\"", context: epochPointer(946684801), want: epochPointer(946684801), wantRun: "946684801", exposeRun: true},
+		{name: "numeric override wins over context", source: `arg "SOURCE_DATE_EPOCH" "context"
+from "scratch" {
+    run "true"
+}
+`, arguments: map[string]string{"SOURCE_DATE_EPOCH": "00123"}, context: epochPointer(946684800), want: epochPointer(123)},
+		{name: "global default", source: `arg "SOURCE_DATE_EPOCH" "456"
+from "scratch" {
+    run "true"
+}
+`, want: epochPointer(456)},
+		{name: "override and redeclare", source: `arg "SOURCE_DATE_EPOCH" "456"
+from "scratch" {
+    arg "SOURCE_DATE_EPOCH"
+    run "printf %s $SOURCE_DATE_EPOCH"
+}
+`, arguments: map[string]string{"SOURCE_DATE_EPOCH": "00789"}, want: epochPointer(789), wantRun: "789", exposeRun: true},
+		{name: "empty reset", source: `arg "SOURCE_DATE_EPOCH" "456"
+from "scratch" {
+    arg "SOURCE_DATE_EPOCH"
+    run "true"
+}
+`, arguments: map[string]string{"SOURCE_DATE_EPOCH": ""}, exposeRun: true},
+		{name: "local context resolves unset", source: `arg "SOURCE_DATE_EPOCH" "456"
+from "scratch" {
+    arg "SOURCE_DATE_EPOCH"
+    run "true"
+}
+`, arguments: map[string]string{"SOURCE_DATE_EPOCH": "context"}, exposeRun: true},
+		{name: "remote context override", source: `from "scratch" {
+    run "true"
+}
+`, arguments: map[string]string{"SOURCE_DATE_EPOCH": "context"}, context: epochPointer(946684800), want: epochPointer(946684800)},
+		{name: "remote context default", source: `arg "SOURCE_DATE_EPOCH" "context"
+from "scratch" {
+    arg "SOURCE_DATE_EPOCH"
+    run "true"
+}
+`, context: epochPointer(946684801), want: epochPointer(946684801), wantRun: "946684801", exposeRun: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -55,7 +86,8 @@ func TestSourceDateEpochSpecialArgument(t *testing.T) {
 }
 
 func TestSourceDateEpochRejectsInvalidValue(t *testing.T) {
-	def, err := definition.Parse(strings.NewReader(`from "scratch"`))
+	def, err := definition.Parse(strings.NewReader(`from "scratch" {}
+`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,11 +101,13 @@ func TestSourceDateEpochRejectsInvalidValue(t *testing.T) {
 func TestSourceDateEpochResolvesNamedContextBeforeStage(t *testing.T) {
 	def, err := definition.Parse(strings.NewReader(`
 arg "SOURCE_DATE_EPOCH" "source"
-from "scratch" as="source"
-add "https://example.invalid/source.tar" "/source"
-from "scratch"
-arg "SOURCE_DATE_EPOCH"
-run "printf %s $SOURCE_DATE_EPOCH"
+from "scratch" as="source" {
+    add "https://example.invalid/source.tar" "/source"
+}
+from "scratch" {
+    arg "SOURCE_DATE_EPOCH"
+    run "printf %s $SOURCE_DATE_EPOCH"
+}
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -106,11 +140,12 @@ func TestSourceDateEpochSourceOnlyStage(t *testing.T) {
 	def, err := definition.Parse(strings.NewReader(`
 arg "SOURCE_DATE_EPOCH" "metadata"
 arg "repository" "https://example.invalid/source"
-from "scratch" as="metadata"
-arg "suffix" ".git#main"
-arg "SOURCE_DATE_EPOCH" "must-not-recurse"
-add "${repository}${suffix}" "/ignored" checksum="sha256:abc"
-from "scratch"
+from "scratch" as="metadata" {
+    arg "suffix" ".git#main"
+    arg "SOURCE_DATE_EPOCH" "must-not-recurse"
+    add "${repository}${suffix}" "/ignored" checksum="sha256:abc"
+}
+from "scratch" {}
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -138,26 +173,36 @@ func TestSourceDateEpochSourceOnlyStageValidation(t *testing.T) {
 		name, source, want string
 	}{
 		{"base", `arg "SOURCE_DATE_EPOCH" "metadata"
-from "alpine" as="metadata"
-add "https://example.invalid/source.tar" "/source"
-from "scratch"`, "must use FROM scratch"},
+from "alpine" as="metadata" {
+    add "https://example.invalid/source.tar" "/source"
+}
+from "scratch" {}
+`, "must use FROM scratch"},
 		{"missing add", `arg "SOURCE_DATE_EPOCH" "metadata"
-from "scratch" as="metadata"
-arg "value" "one"
-from "scratch"`, "exactly one remote ADD"},
+from "scratch" as="metadata" {
+    arg "value" "one"
+}
+from "scratch" {}
+`, "exactly one remote ADD"},
 		{"multiple sources", `arg "SOURCE_DATE_EPOCH" "metadata"
-from "scratch" as="metadata"
-add "https://example.invalid/one" "https://example.invalid/two" "/source"
-from "scratch"`, "exactly one remote ADD source"},
+from "scratch" as="metadata" {
+    add "https://example.invalid/one" "https://example.invalid/two" "/source"
+}
+from "scratch" {}
+`, "exactly one remote ADD source"},
 		{"local add", `arg "SOURCE_DATE_EPOCH" "metadata"
-from "scratch" as="metadata"
-add "source.tar" "/source"
-from "scratch"`, "single HTTP(S) or Git ADD"},
+from "scratch" as="metadata" {
+    add "source.tar" "/source"
+}
+from "scratch" {}
+`, "single HTTP(S) or Git ADD"},
 		{"unsupported instruction", `arg "SOURCE_DATE_EPOCH" "metadata"
-from "scratch" as="metadata"
-run "true"
-add "https://example.invalid/source.tar" "/source"
-from "scratch"`, "unsupported run instruction"},
+from "scratch" as="metadata" {
+    run "true"
+    add "https://example.invalid/source.tar" "/source"
+}
+from "scratch" {}
+`, "unsupported run instruction"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

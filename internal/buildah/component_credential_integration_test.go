@@ -29,8 +29,9 @@ func TestComponentInvocationSecretUsesConventionalInstructionCache(t *testing.T)
 		t.Fatal(err)
 	}
 	component := parseWorkerDefinition(t, `
-extend
-run "cat /run/secrets/token >/proof" network="none" { mount "secret" id="token" required="true" }
+extend {
+    run "cat /run/secrets/token >/proof" network="none" { mount "secret" id="token" required="true" }
+}
 `)
 	componentLayout := filepath.Join(root, "component")
 	publication, err := PublishDefinitionSupervised(ctx, component, planner.Options{
@@ -51,7 +52,10 @@ run "cat /run/secrets/token >/proof" network="none" { mount "secret" id="token" 
 		t.Fatal(err)
 	}
 	secretPath := filepath.Join(root, "token")
-	caller := parseWorkerDefinition(t, fmt.Sprintf("from %q\ncomponent \"local:credential\"\n", base.reference))
+	caller := parseWorkerDefinition(t, fmt.Sprintf(`from %q {
+    component "credential"
+}
+`, base.reference))
 	build := func(name, value string, noCache bool) string {
 		t.Helper()
 		if err := os.WriteFile(secretPath, []byte(value), 0o600); err != nil {

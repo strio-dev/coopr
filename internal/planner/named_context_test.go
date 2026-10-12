@@ -11,8 +11,9 @@ import (
 func TestNamedContextReplacesMatchingStageAndSkipsBody(t *testing.T) {
 	context := buildcontext.Spec{Name: "base", Kind: buildcontext.DockerImage, Reference: "registry.example/replacement:latest"}
 	var calls []FromSource
-	plan, err := CreateDemandDriven(parse(t, `from "registry.example/original:latest" as="base"
-run "exit 99"
+	plan, err := CreateDemandDriven(parse(t, `from "registry.example/original:latest" as="base" {
+    run "exit 99"
+}
 `), Options{Mode: Build, Target: "base", BuildContexts: []buildcontext.Spec{context}}, func(source FromSource) (StageBind, error) {
 		calls = append(calls, source)
 		return StageBind{}, nil
@@ -43,9 +44,10 @@ func TestNamedContextsBindFromCopyAndRunMountBeforeImageFallback(t *testing.T) {
 	assets := buildcontext.Spec{Name: "assets", Kind: buildcontext.Local, Path: "/context/assets"}
 	unused := buildcontext.Spec{Name: "unused", Kind: buildcontext.DockerImage, Reference: "registry.example/unused:latest"}
 	var calls []FromSource
-	plan, err := CreateDemandDriven(parse(t, `from "base" as="final"
-copy "/payload" "/payload" from="assets"
-run "true" { mount "bind" from="assets" source="/" target="/assets" readonly="true" }
+	plan, err := CreateDemandDriven(parse(t, `from "base" as="final" {
+    copy "/payload" "/payload" from="assets"
+    run "true" { mount "bind" from="assets" source="/" target="/assets" readonly="true" }
+}
 `), Options{Mode: Build, Target: "final", BuildContexts: []buildcontext.Spec{unused, assets, base}}, func(source FromSource) (StageBind, error) {
 		calls = append(calls, source)
 		return StageBind{}, nil
@@ -80,11 +82,13 @@ run "true" { mount "bind" from="assets" source="/" target="/assets" readonly="tr
 }
 
 func TestNumericStageReferencesRemainStageReferencesWithNamedContexts(t *testing.T) {
-	plan, err := CreateDemandDriven(parse(t, `from "scratch" as="producer"
-copy "payload" "/payload"
-from "scratch" as="final"
-copy "/payload" "/payload" from="0"
-run "true" { mount "bind" from="0" source="/" target="/producer" readonly="true" }
+	plan, err := CreateDemandDriven(parse(t, `from "scratch" as="producer" {
+    copy "payload" "/payload"
+}
+from "scratch" as="final" {
+    copy "/payload" "/payload" from="0"
+    run "true" { mount "bind" from="0" source="/" target="/producer" readonly="true" }
+}
 `), Options{Mode: Build, Target: "final", BuildContexts: []buildcontext.Spec{{Name: "assets", Kind: buildcontext.Local, Path: "/context/assets"}}}, func(source FromSource) (StageBind, error) {
 		t.Fatalf("numeric stage reference resolved externally: %+v", source)
 		return StageBind{}, nil
@@ -106,7 +110,7 @@ run "true" { mount "bind" from="0" source="/" target="/producer" readonly="true"
 func TestInheritedOnBuildCanBindNamedContext(t *testing.T) {
 	assets := buildcontext.Spec{Name: "assets", Kind: buildcontext.Local, Path: "/context/assets"}
 	var calls []FromSource
-	plan, err := CreateDemandDriven(parse(t, `from "registry.example/base:latest" as="final"
+	plan, err := CreateDemandDriven(parse(t, `from "registry.example/base:latest" as="final" {}
 `), Options{Mode: Build, BuildContexts: []buildcontext.Spec{assets}}, func(source FromSource) (StageBind, error) {
 		calls = append(calls, source)
 		if source.Kind == FromSourceImage {
@@ -131,13 +135,18 @@ func TestInheritedOnBuildCanBindNamedContext(t *testing.T) {
 func TestPublicationUsesNamedContextsOnlyForPackageClosure(t *testing.T) {
 	builder := buildcontext.Spec{Name: "builder", Kind: buildcontext.DockerImage, Reference: "registry.example/replacement:latest"}
 	var calls []FromSource
-	plan, err := CreateDemandDriven(parse(t, `from "registry.example/original:latest" as="builder"
-run "exit 99"
-package as="bundle"
-copy "/payload" "/payload" from="builder"
-extend as="base"
-from "base" as="final"
-copy "/payload" "/payload" from="bundle"
+	plan, err := CreateDemandDriven(parse(t, `from "registry.example/original:latest" as="builder" {
+    run "exit 99"
+}
+package as="bundle" {
+    copy "/payload" "/payload" from="builder"
+}
+extend as="base" {}
+extend as="final" {
+    from "base" {
+        copy "/payload" "/payload" from="bundle"
+    }
+}
 `), Options{Mode: Publish, Target: "final", BuildContexts: []buildcontext.Spec{builder}}, func(source FromSource) (StageBind, error) {
 		calls = append(calls, source)
 		return StageBind{}, nil
@@ -160,9 +169,12 @@ copy "/payload" "/payload" from="bundle"
 }
 
 func TestPublishedFromHonorsExplicitNamedContextOverrideOfCallerAlias(t *testing.T) {
-	source := `extend as="caller"
-from "caller" as="selected"
-env "named" "replacement"
+	source := `extend as="caller" {}
+extend as="selected" {
+    from "caller" {
+        env "named" "replacement"
+    }
+}
 `
 	publication := makePlan(t, source, Options{Mode: Publish})
 	context := buildcontext.Spec{Name: "caller", Kind: buildcontext.DockerImage, Reference: "registry.example/replacement:latest"}
@@ -177,7 +189,7 @@ env "named" "replacement"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls != 1 || len(invocation.Stages) != 1 || invocation.Stages[0].SourceContext != "caller" || len(invocation.CompatibilityRoots) != 1 {
+	if calls != 1 || len(invocation.Stages) != 1 || invocation.Stages[0].SourceContext != "caller" {
 		t.Fatalf("context override changed invocation contract: %+v", invocation)
 	}
 	if invocation.Stages[0].Operations[0].Name != "env" {

@@ -1,6 +1,9 @@
-from "docker.io/redhat/ubi9:latest"
-component "local:coopr-demo-settings" channel="preview"
-component "local:coopr-demo-policy"
-cmd {
-    exec "cat" "/etc/demo/settings.conf" "/etc/demo/policy.txt"
+from "docker.io/redhat/ubi9:latest" {
+    component "coopr-demo-settings" {
+        arg "channel" "preview"
+    }
+    component "coopr-demo-policy"
+    cmd {
+        exec "cat" "/etc/demo/settings.conf" "/etc/demo/policy.txt"
+    }
 }

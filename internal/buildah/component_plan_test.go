@@ -25,7 +25,7 @@ func TestResolveComponentPlanBindsVerifiedPackages(t *testing.T) {
 	resolver, root, packageData := localComponentResolver(t, ctx, platform)
 
 	resolved, err := ResolveComponentPlan(ctx, ComponentPlanRequest{
-		Resolver: resolver, Reference: "local:tool", Parameters: map[string]string{"channel": "preview"}, Platform: platform,
+		Resolver: resolver, Reference: "tool", Parameters: map[string]string{"channel": "preview"}, Platform: platform,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -77,10 +77,10 @@ func TestResolveComponentPlanRejectsInvalidRequestsAndParameters(t *testing.T) {
 		request ComponentPlanRequest
 		message string
 	}{
-		{name: "resolver", request: ComponentPlanRequest{Reference: "local:tool", Platform: platform}, message: "resolver is required"},
+		{name: "resolver", request: ComponentPlanRequest{Reference: "tool", Platform: platform}, message: "resolver is required"},
 		{name: "reference", request: ComponentPlanRequest{Resolver: resolver, Platform: platform}, message: "reference is required"},
-		{name: "platform", request: ComponentPlanRequest{Resolver: resolver, Reference: "local:tool", Platform: v1.Platform{OS: "windows", Architecture: "amd64"}}, message: "Linux"},
-		{name: "platform features", request: ComponentPlanRequest{Resolver: resolver, Reference: "local:tool", Platform: v1.Platform{OS: "linux", Architecture: "amd64", OSFeatures: []string{"feature"}}}, message: "feature platform fields"},
+		{name: "platform", request: ComponentPlanRequest{Resolver: resolver, Reference: "tool", Platform: v1.Platform{OS: "windows", Architecture: "amd64"}}, message: "Linux"},
+		{name: "platform features", request: ComponentPlanRequest{Resolver: resolver, Reference: "tool", Platform: v1.Platform{OS: "linux", Architecture: "amd64", OSFeatures: []string{"feature"}}}, message: "feature platform fields"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -92,7 +92,7 @@ func TestResolveComponentPlanRejectsInvalidRequestsAndParameters(t *testing.T) {
 	}
 	for _, parameters := range []map[string]string{nil, {"typo": "value"}} {
 		resolved, err := ResolveComponentPlan(ctx, ComponentPlanRequest{
-			Resolver: resolver, Reference: "local:tool", Platform: platform, Parameters: parameters,
+			Resolver: resolver, Reference: "tool", Platform: platform, Parameters: parameters,
 		})
 		if err != nil {
 			t.Fatalf("unset or unused component parameter: %v", err)
@@ -110,7 +110,7 @@ func TestResolveComponentPlanRejectsInvalidRequestsAndParameters(t *testing.T) {
 
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
-	if _, err := ResolveComponentPlan(canceled, ComponentPlanRequest{Resolver: resolver, Reference: "local:tool", Platform: platform}); err == nil || !strings.Contains(err.Error(), "canceled") {
+	if _, err := ResolveComponentPlan(canceled, ComponentPlanRequest{Resolver: resolver, Reference: "tool", Platform: platform}); err == nil || !strings.Contains(err.Error(), "canceled") {
 		t.Fatalf("canceled context error = %v", err)
 	}
 }
@@ -119,14 +119,15 @@ func TestResolveComponentPlanSelectsExternalCopyImage(t *testing.T) {
 	ctx := context.Background()
 	platform := v1.Platform{OS: "linux", Architecture: "amd64"}
 	const reference = "registry.example/toolbox:latest"
-	resolver, _, _ := localComponentResolverWithDefinition(t, ctx, platform, `package as="pkg"
-extend
-copy "/artifact" "/artifact" from="pkg"
-copy "/bin/tool" "/tool" from="registry.example/toolbox:latest"
+	resolver, _, _ := localComponentResolverWithDefinition(t, ctx, platform, `package as="pkg" {}
+extend {
+    copy "/artifact" "/artifact" from="pkg"
+    copy "/bin/tool" "/tool" from="registry.example/toolbox:latest"
+}
 `)
 	calls := 0
 	resolved, err := ResolveComponentPlan(ctx, ComponentPlanRequest{
-		Resolver: resolver, Reference: "local:tool", Platform: platform,
+		Resolver: resolver, Reference: "tool", Platform: platform,
 		ResolveBase: func(_ context.Context, got string, gotPlatform v1.Platform) (ResolvedImageSource, error) {
 			calls++
 			if got != reference || gotPlatform.OS != platform.OS || gotPlatform.Architecture != platform.Architecture {
@@ -149,11 +150,12 @@ copy "/bin/tool" "/tool" from="registry.example/toolbox:latest"
 
 func localComponentResolver(t *testing.T, ctx context.Context, platform v1.Platform) (*oci.Resolver, v1.Descriptor, []byte) {
 	t.Helper()
-	return localComponentResolverWithDefinition(t, ctx, platform, `package as="pkg"
-extend as="base"
-arg "channel"
-env CHANNEL="${channel}"
-copy "/artifact" "/artifact" from="pkg"
+	return localComponentResolverWithDefinition(t, ctx, platform, `package as="pkg" {}
+extend as="base" {
+    arg "channel"
+    env CHANNEL="${channel}"
+    copy "/artifact" "/artifact" from="pkg"
+}
 `)
 }
 

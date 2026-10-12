@@ -157,7 +157,10 @@ func TestSelectedBaseAliasSupportsConfigOnlyImage(t *testing.T) {
 	defer cancel()
 	root := t.TempDir()
 	storeOptions := cacheTestStore(root)
-	base, err := BuildPlan(ctx, testPlan(t, "from \"scratch\"\nenv CONFIG_ONLY=\"1\"\n"), PlanOptions{
+	base, err := BuildPlan(ctx, testPlan(t, `from "scratch" {
+    env CONFIG_ONLY="1"
+}
+`), PlanOptions{
 		Store: storeOptions, ContextDir: root, Isolation: "rootless", Runtime: "crun",
 		Output: Output{Path: filepath.Join(root, "oci")},
 	})
@@ -252,7 +255,10 @@ func TestGraphBuildConsumesPlanningSelectedManifestAfterCollision(t *testing.T) 
 
 	const reference = "fixture.local/selected:latest"
 	platform := fixture.platform.OS + "/" + fixture.platform.Architecture
-	plan := testPlan(t, "from \""+reference+"\"\nenv BUILT=\"1\"\n")
+	plan := testPlan(t, "from \""+reference+`" {
+    env BUILT="1"
+}
+`)
 	var firstLayer digest.Digest
 	for _, attempt := range []string{"cold", "warm"} {
 		result, err := BuildPlan(ctx, plan, PlanOptions{

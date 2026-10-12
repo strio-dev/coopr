@@ -19,7 +19,7 @@ func parseFromSourcesDefinition(t *testing.T, source string) *definition.Definit
 func TestResolveFromSourcesExpandsGlobalArguments(t *testing.T) {
 	def := parseFromSourcesDefinition(t, `arg "registry" "docker.io"
 arg "base" "${registry}/library/alpine"
-from "$base" platform="$TARGETPLATFORM"
+from "$base" platform="$TARGETPLATFORM" {}
 `)
 
 	defaults, err := ResolveFromSources(def, Options{Platform: "linux/arm64/v8"})
@@ -43,7 +43,9 @@ from "$base" platform="$TARGETPLATFORM"
 }
 
 func TestResolveFromSourcesAllowsUnsetArgumentWhenImageRemainsValid(t *testing.T) {
-	def := parseFromSourcesDefinition(t, "arg \"variant\"\nfrom \"busybox:stable${variant}\"\n")
+	def := parseFromSourcesDefinition(t, `arg "variant"
+from "busybox:stable${variant}" {}
+`)
 	sources, err := ResolveFromSources(def, Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -54,11 +56,12 @@ func TestResolveFromSourcesAllowsUnsetArgumentWhenImageRemainsValid(t *testing.T
 }
 
 func TestResolveFromSourcesPreservesRawIDsAndClassifiesSources(t *testing.T) {
-	def := parseFromSourcesDefinition(t, `from "alpine" as="base" platform="linux/arm64"
-run "prepare"
-package as="payload"
-from "BASE" as="child"
-from "scratch"
+	def := parseFromSourcesDefinition(t, `from "alpine" as="base" platform="linux/arm64" {
+    run "prepare"
+}
+package as="payload" {}
+from "BASE" as="child" {}
+from "scratch" {}
 `)
 
 	sources, err := ResolveFromSources(def, Options{})
@@ -81,8 +84,9 @@ from "scratch"
 }
 
 func TestResolveFromSourcesDefersStageBodyExpansion(t *testing.T) {
-	def := parseFromSourcesDefinition(t, `from "alpine"
-env value="$inherited_arg"
+	def := parseFromSourcesDefinition(t, `from "alpine" {
+    env value="$inherited_arg"
+}
 `)
 
 	plan, err := Create(def, Options{Mode: Build})
@@ -108,9 +112,13 @@ func TestResolveFromSourcesRejectsInvalidArguments(t *testing.T) {
 		opts Options
 		want string
 	}{
-		{name: "undeclared structural", def: "from \"$base\"\n", want: `invalid from source ""`},
-		{name: "unset structural", def: "arg \"base\"\nfrom \"$base\"\n", want: `invalid from source ""`},
-		{name: "invalid platform", def: "from \"alpine\"\n", opts: Options{Platform: "windows/amd64"}, want: "Coopr requires Linux"},
+		{name: "undeclared structural", def: `from "$base" {}
+`, want: `invalid from source ""`},
+		{name: "unset structural", def: `arg "base"
+from "$base" {}
+`, want: `invalid from source ""`},
+		{name: "invalid platform", def: `from "alpine" {}
+`, opts: Options{Platform: "windows/amd64"}, want: "Coopr requires Linux"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -123,8 +131,8 @@ func TestResolveFromSourcesRejectsInvalidArguments(t *testing.T) {
 }
 
 func TestResolveFromSourcesRejectsLocalPlatformChange(t *testing.T) {
-	def := parseFromSourcesDefinition(t, `from "alpine" as="base" platform="linux/arm64"
-from "base" platform="linux/amd64"
+	def := parseFromSourcesDefinition(t, `from "alpine" as="base" platform="linux/arm64" {}
+from "base" platform="linux/amd64" {}
 `)
 	if _, err := ResolveFromSources(def, Options{}); err == nil || !strings.Contains(err.Error(), "cannot change the platform") {
 		t.Fatalf("error = %v", err)

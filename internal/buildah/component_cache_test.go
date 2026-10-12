@@ -392,7 +392,10 @@ func TestComponentCacheSeedFailureReachesBuildCaller(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	root := t.TempDir()
-	componentResolver := localConfigComponentResolver(t, ctx, root, "extend\nenv CACHE_PROOF=\"yes\"\n", false)
+	componentResolver := localConfigComponentResolver(t, ctx, root, `extend {
+    env CACHE_PROOF="yes"
+}
+`, false)
 	destination := filepath.Join(root, "seed-destination")
 	var inject atomic.Bool
 	var injected atomic.Bool
@@ -415,7 +418,10 @@ func TestComponentCacheSeedFailureReachesBuildCaller(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan := testPlan(t, "from \"scratch\"\ncomponent \"local:config\"\n")
+	plan := testPlan(t, `from "scratch" {
+    component "config"
+}
+`)
 	policy := writeComponentTestPolicy(t, root)
 	options := componentTestOptions(root, filepath.Join(root, "cold"), resolver, policy)
 	options.CacheRepository = host + "/coopr/cache"
@@ -472,7 +478,10 @@ func TestComponentImageCacheInvalidMetadataMissesBeforeSeed(t *testing.T) {
 	f := newLocalComponentFixture(t)
 	base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
 	f.write(t, "one", "one")
-	result, _ := f.build(t, "image", fmt.Sprintf("from %q\ncopy \"one\" \"/one\"\n", base.reference))
+	result, _ := f.build(t, "image", fmt.Sprintf(`from %q {
+    copy "one" "/one"
+}
+`, base.reference))
 	lease, err := acquireStore(f.options.Store)
 	if err != nil {
 		t.Fatal(err)

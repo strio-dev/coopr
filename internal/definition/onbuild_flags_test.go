@@ -4,20 +4,19 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/definition"
 	"coopr/internal/onbuildparse"
 )
 
 func TestOnBuildFlagsRequireLiteralsWhenDockerfileCannotExpandThem(t *testing.T) {
 	for _, property := range []string{"interval", "timeout", "start-period", "start-interval", "retries"} {
 		t.Run(property, func(t *testing.T) {
-			_, err := definition.Parse(strings.NewReader(`onbuild { healthcheck "true" ` + property + `="${value}" }`))
+			_, err := parseFragment(strings.NewReader(`onbuild { healthcheck "true" ` + property + `="${value}" }`))
 			if err == nil || !strings.Contains(err.Error(), property) || !strings.Contains(err.Error(), "literal") {
 				t.Fatalf("error = %v, want named literal-required ONBUILD flag", err)
 			}
 		})
 	}
-	_, err := definition.Parse(strings.NewReader(`onbuild { run "true" { device "vendor.example/gpu=one" required="${required}" } }`))
+	_, err := parseFragment(strings.NewReader(`onbuild { run "true" { device "vendor.example/gpu=one" required="${required}" } }`))
 	if err == nil || !strings.Contains(err.Error(), "required") || !strings.Contains(err.Error(), "literal") {
 		t.Fatalf("error = %v, want literal-required device flag", err)
 	}
@@ -34,7 +33,7 @@ func TestOnBuildMetadataRejectsFlagsThatFailDockerfileParsing(t *testing.T) {
 		`healthcheck "true" interval="1ns"`,
 		`healthcheck "true" retries="bad"`,
 	} {
-		if _, err := definition.Parse(strings.NewReader(`onbuild { ` + child + ` }`)); err == nil {
+		if _, err := parseFragment(strings.NewReader(`onbuild { ` + child + ` }`)); err == nil {
 			t.Errorf("accepted unusable ONBUILD metadata for %s", child)
 		}
 	}
@@ -45,7 +44,7 @@ func TestOnBuildMetadataPreservesSupportedChildScopeFlags(t *testing.T) {
 		`copy "src" "/dst" chmod="${permissions}"`,
 		`run "true" { mount "cache" target="${cache}" }`,
 	} {
-		parsed, err := definition.Parse(strings.NewReader(`onbuild { ` + child + ` }`))
+		parsed, err := parseFragment(strings.NewReader(`onbuild { ` + child + ` }`))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -69,7 +68,7 @@ func TestOnBuildMetadataPreservesSupportedChildScopeFlags(t *testing.T) {
 }
 
 func TestOnBuildMetadataDefersTypedMountFlags(t *testing.T) {
-	parsed, err := definition.Parse(strings.NewReader(`onbuild { run "true" { mount "secret" id="token" target="${target:-/run/token}" required="${required:-true}" mode="${mode:-0400}" uid="${uid:-1000}" } }`))
+	parsed, err := parseFragment(strings.NewReader(`onbuild { run "true" { mount "secret" id="token" target="${target:-/run/token}" required="${required:-true}" mode="${mode:-0400}" uid="${uid:-1000}" } }`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +86,7 @@ func TestOnBuildMetadataDefersTypedMountFlags(t *testing.T) {
 }
 
 func TestOnBuildMetadataDefersMountTypeAndSharing(t *testing.T) {
-	parsed, err := definition.Parse(strings.NewReader(`onbuild { run "true" { mount "${kind:-cache}" target="/cache" sharing="${sharing:-locked}" } }`))
+	parsed, err := parseFragment(strings.NewReader(`onbuild { run "true" { mount "${kind:-cache}" target="/cache" sharing="${sharing:-locked}" } }`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +107,7 @@ func TestOnBuildMetadataRejectsNativeOnlyMountOptions(t *testing.T) {
 		`mount "bind" target="/source" Z=#true`,
 		`mount "secret" target="/token" source="/host/token" id="token"`,
 	} {
-		_, err := definition.Parse(strings.NewReader(`onbuild { run "true" { ` + child + ` } }`))
+		_, err := parseFragment(strings.NewReader(`onbuild { run "true" { ` + child + ` } }`))
 		if err == nil || !strings.Contains(err.Error(), "Dockerfile metadata") {
 			t.Errorf("%s: error = %v, want Dockerfile metadata boundary", child, err)
 		}

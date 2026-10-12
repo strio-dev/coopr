@@ -35,7 +35,7 @@ func TestMaintenanceCommandShape(t *testing.T) {
 	root := newRootCommand()
 	for _, path := range [][]string{
 		{"images"}, {"image", "ls"}, {"image", "inspect"}, {"image", "rm"}, {"image", "prune"},
-		{"component", "build"}, {"component", "copy"}, {"component", "ls"}, {"components"}, {"component", "inspect"}, {"component", "rm"},
+		{"component", "build"}, {"component", "tag"}, {"component", "ls"}, {"components"}, {"component", "inspect"}, {"component", "rm"},
 		{"system", "df"}, {"system", "prune"},
 	} {
 		command, _, err := root.Find(path)
@@ -154,7 +154,7 @@ func TestComponentListingAlignsNamesAndDigests(t *testing.T) {
 	}
 }
 
-func TestComponentInspectAcceptsLocalReferences(t *testing.T) {
+func TestComponentInspectAcceptsNamesAndDigests(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	directory, err := componentstore.DefaultDir()
 	if err != nil {
@@ -165,10 +165,14 @@ func TestComponentInspectAcceptsLocalReferences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := localstore.Put(context.Background(), directory, source, descriptor, "inspect"); err != nil {
+	if err := componentstore.Put(context.Background(), directory, source, descriptor, "inspect"); err != nil {
 		t.Fatal(err)
 	}
-	for _, reference := range []string{"inspect", "local:inspect", descriptor.Digest.String(), "local:" + descriptor.Digest.String()} {
+	var stdout, stderr bytes.Buffer
+	if status := run([]string{"component", "inspect", "local:inspect"}, &stdout, &stderr); status == 0 {
+		t.Fatal("former local prefix unexpectedly aliased inspect:latest")
+	}
+	for _, reference := range []string{"inspect", "inspect:latest", descriptor.Digest.String()} {
 		t.Run(reference, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			if status := run([]string{"component", "inspect", reference}, &stdout, &stderr); status != 0 {
@@ -666,7 +670,7 @@ func TestMaintenanceCommandsPropagateOutputErrors(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if err := localstore.Put(context.Background(), componentDir, source, descriptor, "output-error"); err != nil {
+					if err := componentstore.Put(context.Background(), componentDir, source, descriptor, "output-error"); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -1350,7 +1354,7 @@ func TestImageInspectForeignSingleWithIndexOrigin(t *testing.T) {
 	}
 }
 
-func TestComponentRemoveAcceptsLocalPrefix(t *testing.T) {
+func TestComponentRemoveUsesOrdinaryNames(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	directory, err := componentstore.DefaultDir()
 	if err != nil {
@@ -1361,19 +1365,26 @@ func TestComponentRemoveAcceptsLocalPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := localstore.Put(context.Background(), directory, source, descriptor, "remove", "retain"); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"remove", "retain", "local:retain"} {
+		if err := componentstore.Put(context.Background(), directory, source, descriptor, name); err != nil {
+			t.Fatal(err)
+		}
 	}
 	var stdout, stderr bytes.Buffer
-	if status := run([]string{"component", "rm", "local:remove"}, &stdout, &stderr); status != 0 || stdout.String() != "remove\n" {
+	if status := run([]string{"component", "rm", "remove"}, &stdout, &stderr); status != 0 || stdout.String() != "remove:latest\n" {
 		t.Fatalf("rm local reference: %d %q %q", status, &stdout, &stderr)
 	}
-	if _, found, err := localstore.Inspect(context.Background(), directory, "retain"); err != nil || !found {
+	stdout.Reset()
+	stderr.Reset()
+	if status := run([]string{"component", "rm", "local:retain"}, &stdout, &stderr); status != 0 || stdout.String() != "local:retain\n" {
+		t.Fatalf("rm ordinary local:retain tag: %d %q %q", status, &stdout, &stderr)
+	}
+	if _, found, err := localstore.Inspect(context.Background(), directory, "retain:latest"); err != nil || !found {
 		t.Fatalf("remaining name lost: %v", err)
 	}
 	stdout.Reset()
 	stderr.Reset()
-	if status := run([]string{"component", "rm", "local:" + descriptor.Digest.String()}, &stdout, &stderr); status == 0 {
+	if status := run([]string{"component", "rm", descriptor.Digest.String()}, &stdout, &stderr); status == 0 {
 		t.Fatalf("component rm accepted immutable digest: %q", &stdout)
 	}
 }

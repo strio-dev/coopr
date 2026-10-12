@@ -10,17 +10,19 @@ import (
 )
 
 func TestLayerPlanningSharesArgumentScopeAndDependencyBindings(t *testing.T) {
-	p := makePlan(t, `from "scratch" as="producer"
-copy "source" "/source"
-from "scratch" as="output"
-layer {
- arg "destination" "/before"
- copy "/source" "${destination}" from="producer"
- layer { env "destination" "/after"; run "true" { mount "bind" from="producer" source="/" target="/mnt" } }
- copy "/source" "${destination}" from="producer"
- component "./shared.coopr" dest="${destination}"
+	p := makePlan(t, `from "scratch" as="producer" {
+    copy "source" "/source"
 }
-copy "/source" "${destination}" from="producer"
+from "scratch" as="output" {
+    layer {
+     arg "destination" "/before"
+     copy "/source" "${destination}" from="producer"
+     layer { env "destination" "/after"; run "true" { mount "bind" from="producer" source="/" target="/mnt" } }
+     copy "/source" "${destination}" from="producer"
+     component "./shared.coopr" { arg "dest" "${destination}" }
+    }
+    copy "/source" "${destination}" from="producer"
+}
 `, Options{Mode: Build, TransientRunMounts: []definition.Instruction{{Name: "mount", Arguments: []string{"tmpfs"}, Properties: map[string]string{"target": "/tmp"}}}})
 	stage := p.Stages[len(p.Stages)-1]
 	if !slices.Equal(stage.Dependencies, []string{"0"}) {
@@ -35,7 +37,7 @@ copy "/source" "${destination}" from="producer"
 		if op.Name == "run" {
 			run = op
 		}
-		if op.Name == "component" && op.Properties["dest"] != "/after" {
+		if op.Name == "component" && op.Children[0].Arguments[1] != "/after" {
 			t.Fatalf("grouped component argument: %+v", op)
 		}
 	}
@@ -48,13 +50,16 @@ copy "/source" "${destination}" from="producer"
 }
 
 func TestLayerPublishedNumericReferencesAndNestedBoundaries(t *testing.T) {
-	publication := makePlan(t, `from "scratch" as="unused"
-extend as="caller"
-from "caller" as="output"
-layer {
- arg "destination" "/artifact"
- layer { copy "/source" "${destination}" from="1" }
- run "true" { mount "bind" from="1" target="/input" }
+	publication := makePlan(t, `from "scratch" as="unused" {}
+extend as="caller" {}
+extend as="output" {
+    from "caller" {
+        layer {
+         arg "destination" "/artifact"
+         layer { copy "/source" "${destination}" from="1" }
+         run "true" { mount "bind" from="1" target="/input" }
+        }
+    }
 }
 `, Options{Mode: Publish})
 	if _, err := ValidatePublished(publication.Component); err != nil {
@@ -83,12 +88,15 @@ layer {
 	}
 }
 
-func TestReplacementOutputRetainsMandatoryCompatibilityWithoutDormantBodyExecution(t *testing.T) {
-	source := `arg "distribution" "ubuntu"
-extend distro="${distribution}" as="caller"
-copy "${missing}" "/unused"
-from "scratch" as="replacement"
-env "output" "replacement"
+func TestReplacementOutputRetainsMandatoryExtendWithoutDormantBodyExecution(t *testing.T) {
+	source := `extend as="caller" {
+    copy "${missing}" "/unused"
+}
+extend as="replacement" {
+    from "scratch" {
+        env "output" "replacement"
+    }
+}
 `
 	publication, err := Create(parse(t, source), Options{Mode: Publish})
 	if err != nil {
@@ -109,17 +117,8 @@ env "output" "replacement"
 	if err != nil {
 		t.Fatal(err)
 	}
-	var found bool
-	for _, stage := range invocation.CompatibilityRoots {
-		if stage.Kind == "extend" {
-			found = true
-			if !slices.Equal(stage.Requirements["distro"], []string{"ubuntu"}) || len(stage.Operations) != 0 {
-				t.Fatalf("dormant compatibility contract/body: %+v", stage)
-			}
-		}
-	}
-	if !found {
-		t.Fatal("replacement output lost mandatory EXTEND compatibility")
+	if len(decoded.Definition.Instructions) != 1 || decoded.Definition.Instructions[0].Name != "extend" || len(invocation.Stages) != 1 || invocation.Stages[0].Kind != "from" {
+		t.Fatalf("mandatory EXTEND or selected execution changed: publication=%+v invocation=%+v", decoded, invocation)
 	}
 	if len(invocation.Outputs) != 1 || invocation.Outputs[0] != "1" {
 		t.Fatalf("selected output changed: %+v", invocation.Outputs)
@@ -127,19 +126,21 @@ env "output" "replacement"
 }
 
 func TestLayerPublicationRetainsNestedSyntaxAndOperationOrdinals(t *testing.T) {
-	publication := makePlan(t, `package as="assets"
-layer { copy "input" "/source" }
-extend
-layer {
- layer { copy "/source" "/source" from="assets" }
- run "true" { mount "bind" from="assets" target="/input" }
+	publication := makePlan(t, `package as="assets" {
+    layer { copy "input" "/source" }
+}
+extend {
+    layer {
+     layer { copy "/source" "/source" from="assets" }
+     run "true" { mount "bind" from="assets" target="/input" }
+    }
 }
 `, Options{Mode: Publish})
 	if len(publication.Stages) != 1 || publication.Stages[0].Kind != "package" {
 		t.Fatalf("group altered package producers: %+v", publication.Stages)
 	}
-	body := publication.Component.Definition.Instructions
-	if len(body) != 3 || body[2].Name != "layer" || len(body[2].Children) != 2 || body[2].Children[0].Name != "layer" {
+	body := publication.Component.Definition.Instructions[1].Children
+	if len(body) != 1 || body[0].Name != "layer" || len(body[0].Children) != 2 || body[0].Children[0].Name != "layer" {
 		t.Fatalf("nested publication syntax flattened: %+v", body)
 	}
 	for _, ref := range publication.Component.StageReferences {
@@ -162,12 +163,16 @@ layer {
 }
 
 func TestReplacementScratchOutputPrunesDormantBodyAndItsPackageInputs(t *testing.T) {
-	publication, err := CreateDemandDriven(parse(t, `from "unreachable.invalid/image" as="producer"
-package as="assets"
-copy "/source" "/source" from="producer"
-extend distro="ubuntu" as="caller"
-copy "/source" "/source" from="assets"
-from "scratch" as="replacement"
+	publication, err := CreateDemandDriven(parse(t, `from "unreachable.invalid/image" as="producer" {}
+package as="assets" {
+    copy "/source" "/source" from="producer"
+}
+extend as="caller" {
+    copy "/source" "/source" from="assets"
+}
+extend as="replacement" {
+    from "scratch" {}
+}
 `), Options{Mode: Publish}, func(source FromSource) (StageBind, error) {
 		t.Fatalf("dormant package source resolved: %+v", source)
 		return StageBind{}, nil
@@ -179,23 +184,28 @@ from "scratch" as="replacement"
 		t.Fatalf("unused package producers selected: %+v", publication)
 	}
 	component := publication.Component
-	if !slices.Equal(component.DormantRoots, []string{"0"}) || component.Output != "1" || len(component.Definition.Instructions) != 2 {
-		t.Fatalf("replacement contract retained unused body: %+v", component)
+	if !slices.Equal(component.DormantRoots, []string{"0"}) || component.Output != "1" || len(component.Definition.Instructions) != 1 {
+		t.Fatalf("replacement boundary retained unused body: %+v", component)
 	}
 	if _, err := ValidatePublished(component); err != nil {
 		t.Fatal(err)
 	}
 	invocation := invokePublished(t, publication, Options{Mode: Invoke})
-	if len(invocation.Stages) != 1 || len(invocation.CompatibilityRoots) != 1 || invocation.CompatibilityRoots[0].Requirements["distro"][0] != "ubuntu" {
-		t.Fatalf("replacement compatibility/execution roots mixed: %+v", invocation)
+	if len(invocation.Stages) != 1 || invocation.Stages[0].Kind != "from" {
+		t.Fatalf("replacement scheduled dormant caller root: %+v", invocation)
 	}
 }
 
-func TestReplacementGeneratedSourceKeepsAfterAndCompatibility(t *testing.T) {
-	publication := makePlan(t, `extend distro="ubuntu" as="caller"
-from "scratch" as="producer"
-run "produce"
-from "oci:out" after="producer" as="replacement"
+func TestReplacementGeneratedSourceKeepsAfterAndOwningExtend(t *testing.T) {
+	publication := makePlan(t, `extend as="caller" {}
+extend as="producer" {
+    from "scratch" {
+        run "produce"
+    }
+}
+extend as="replacement" {
+    from "oci:out" after="producer" {}
+}
 `, Options{Mode: Publish})
 	if _, err := ValidatePublished(publication.Component); err != nil {
 		t.Fatal(err)
@@ -207,26 +217,29 @@ from "oci:out" after="producer" as="replacement"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(stageIDs(invocation), []string{"1", "2"}) || !slices.Equal(invocation.Stages[1].Dependencies, []string{"1"}) || len(invocation.CompatibilityRoots) != 1 {
-		t.Fatalf("generated replacement graph/contract: %+v", invocation)
+	if !slices.Equal(stageIDs(invocation), []string{"2", "4"}) || !slices.Equal(invocation.Stages[1].Dependencies, []string{"2"}) {
+		t.Fatalf("generated replacement graph: %+v", invocation)
 	}
 	if !invocation.Stages[1].DeferredImageSource {
 		t.Fatal("generated source must be rebound after producer")
 	}
-	replanned, err := invocation.ReplanDynamicStage("2", StageBind{BaseEnvironment: map[string]string{"native": "selected"}})
+	replanned, err := invocation.ReplanDynamicStage("4", StageBind{BaseEnvironment: map[string]string{"native": "selected"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(replanned.CompatibilityRoots) != 1 {
-		t.Fatal("dynamic source replan dropped caller compatibility")
+	if !slices.Equal(stageIDs(replanned), []string{"2", "4"}) {
+		t.Fatalf("dynamic source replan changed execution stages: %+v", replanned.Stages)
 	}
 }
 
-func TestSelectedExtendDoesNotConjoinUnrelatedDormantTargetCompatibility(t *testing.T) {
-	publication := makePlan(t, `extend distro="alpine" as="unused"
-from "helper" as="prepared"
-extend distro="ubuntu" as="selected"
-copy "/asset" "/asset" from="prepared"
+func TestSelectedExtendDoesNotScheduleUnrelatedDormantTarget(t *testing.T) {
+	publication := makePlan(t, `extend as="unused" {}
+extend as="prepared" {
+    from "helper" {}
+}
+extend as="selected" {
+    copy "/asset" "/asset" from="prepared"
+}
 `, Options{Mode: Publish, Target: "selected"})
 	if len(publication.Component.DormantRoots) == 0 {
 		t.Fatal("fixture must retain dormant target for external ONBUILD indices")
@@ -235,21 +248,27 @@ copy "/asset" "/asset" from="prepared"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(invocation.CompatibilityRoots) != 0 {
-		t.Fatalf("unrelated dormant target requirements conjoined: %+v", invocation.CompatibilityRoots)
-	}
 	selected := invocation.Stages[len(invocation.Stages)-1]
-	if !slices.Equal(selected.Requirements["distro"], []string{"ubuntu"}) {
-		t.Fatalf("selected target contract lost: %+v", selected)
+	if selected.Kind != "extend" || selected.Name != "selected" {
+		t.Fatalf("selected target lost: %+v", selected)
+	}
+	for _, stage := range invocation.Stages {
+		if stage.Name == "unused" {
+			t.Fatalf("dormant target scheduled: %+v", stage)
+		}
 	}
 }
 
 func TestComponentFromReplansActualConfigurationAfterEarlierComponentCall(t *testing.T) {
-	publication := makePlan(t, `extend as="first"
-env child="./setting.coopr"
-component "./setting.coopr"
-from "first"
-component "$child"
+	publication := makePlan(t, `extend as="first" {
+    env child="./setting.coopr"
+    component "./setting.coopr"
+}
+extend {
+    from "first" {
+        component "$child"
+    }
+}
 `, Options{Mode: Publish})
 	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, func(FromSource) (StageBind, error) {
 		t.Fatal("caller-based stages must not resolve external images")
@@ -273,14 +292,19 @@ component "$child"
 }
 
 func TestDynamicComponentFromDefersGroupedSourceBindingChecksUntilReplan(t *testing.T) {
-	publication := makePlan(t, `package as="assets"
-copy "input" "/asset"
-extend as="first"
-component "./setting.coopr"
-from "first"
-layer {
- copy "/asset" "/asset" from="assets"
- run "true" { mount "bind" from="assets" target="/input" }
+	publication := makePlan(t, `package as="assets" {
+    copy "input" "/asset"
+}
+extend as="first" {
+    component "./setting.coopr"
+}
+extend {
+    from "first" {
+        layer {
+         copy "/asset" "/asset" from="assets"
+         run "true" { mount "bind" from="assets" target="/input" }
+        }
+    }
 }
 `, Options{Mode: Publish})
 	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, func(FromSource) (StageBind, error) {
@@ -312,14 +336,19 @@ layer {
 }
 
 func TestDynamicComponentFromStillRejectsChangedPublishedSourceRole(t *testing.T) {
-	publication := makePlan(t, `package as="assets"
-copy "input" "/asset"
-extend as="first"
-env source="registry.example/input:latest"
-component "./setting.coopr"
-from "first"
-copy "/asset" "/kept" from="assets"
-layer { copy "/asset" "/asset" from="${source}" }
+	publication := makePlan(t, `package as="assets" {
+    copy "input" "/asset"
+}
+extend as="first" {
+    env source="registry.example/input:latest"
+    component "./setting.coopr"
+}
+extend {
+    from "first" {
+        copy "/asset" "/kept" from="assets"
+        layer { copy "/asset" "/asset" from="${source}" }
+    }
+}
 `, Options{Mode: Publish})
 	calls := 0
 	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, func(FromSource) (StageBind, error) {
@@ -338,21 +367,21 @@ layer { copy "/asset" "/asset" from="${source}" }
 	}
 }
 
-func TestIndependentComponentOutputUsesOnlyNearestPrecedingExtendContract(t *testing.T) {
+func TestIndependentComponentOutputDoesNotSchedulePrecedingExtends(t *testing.T) {
 	for _, base := range []string{"scratch", "registry.example/output:latest"} {
 		t.Run(base, func(t *testing.T) {
-			publication := makePlan(t, `extend distro="alpine" as="earlier"
-extend distro="ubuntu" as="caller"
-from "`+base+`" as="selected"
-env "output" "selected"
-extend distro="fedora" as="later"
+			publication := makePlan(t, `extend as="earlier" {}
+extend as="caller" {}
+extend as="selected" {
+    from "`+base+`" {
+        env "output" "selected"
+    }
+}
+extend as="later" {}
 `, Options{Mode: Publish, Target: "selected"})
 			invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, func(FromSource) (StageBind, error) { return StageBind{}, nil })
 			if err != nil {
 				t.Fatal(err)
-			}
-			if len(invocation.CompatibilityRoots) != 1 || !slices.Equal(invocation.CompatibilityRoots[0].Requirements["distro"], []string{"ubuntu"}) {
-				t.Fatalf("independent target conjoined unrelated contracts: %+v", invocation.CompatibilityRoots)
 			}
 			if len(invocation.Stages) != 1 || invocation.Stages[0].Kind != "from" {
 				t.Fatalf("independent target scheduled unused bodies: %+v", invocation.Stages)
@@ -362,13 +391,13 @@ extend distro="fedora" as="later"
 }
 
 func TestComponentCannotSelectProducerBeforeMandatoryExtend(t *testing.T) {
-	if _, err := Create(parse(t, `from "scratch" as="producer"
-extend as="caller"
+	if _, err := Create(parse(t, `from "scratch" as="producer" {}
+extend as="caller" {}
 `), Options{Mode: Publish, Target: "producer"}); err == nil {
 		t.Fatal("pre-EXTEND producer selected as component output")
 	}
-	malformed := &PublishedComponent{Definition: parse(t, `from "scratch" as="producer"
-extend as="caller"
+	malformed := &PublishedComponent{Definition: parse(t, `from "scratch" as="producer" {}
+extend as="caller" {}
 `), Output: "0", Platform: "linux/amd64", FromBindings: map[string]FromBinding{"0": {Kind: "scratch"}}, ReservedStageNames: []string{"caller", "producer"}, DormantRoots: []string{"1"}}
 	if _, err := ValidatePublished(malformed); err == nil {
 		t.Fatal("published pre-EXTEND producer accepted as component output")

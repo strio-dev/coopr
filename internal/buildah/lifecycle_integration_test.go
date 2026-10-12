@@ -30,7 +30,12 @@ func TestLifecycleNoLayersBuildsSingleNewLayerWithoutInstructionCache(t *testing
 	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	plan := testPlan(t, fmt.Sprintf("from %q\nrun \"printf first >/one\" network=\"none\"\nrun \"od -An -N16 -tx1 /dev/urandom >/proof\" network=\"none\"\nlabel mode=\"single\"\n", base.reference))
+	plan := testPlan(t, fmt.Sprintf(`from %q {
+    run "printf first >/one" network="none"
+    run "od -An -N16 -tx1 /dev/urandom >/proof" network="none"
+    label mode="single"
+}
+`, base.reference))
 	var previous string
 	for attempt := range 2 {
 		layout := filepath.Join(root, fmt.Sprintf("output-%d", attempt))
@@ -72,7 +77,17 @@ func TestLifecycleNoLayersPreservesCallerAcrossComponentAsOneLayer(t *testing.T)
 	}
 	resolver, _, _ := localComponentResolver(t, ctx, v1.Platform{OS: "linux", Architecture: runtime.GOARCH})
 	policy := writeComponentTestPolicy(t, root)
-	plan := testPlan(t, "from \"scratch\"\ncopy \"before\" \"/before\"\ncomponent \"local:tool\" channel=\"first\"\ncopy \"after\" \"/after\"\ncomponent \"local:tool\" channel=\"second\"\n")
+	plan := testPlan(t, `from "scratch" {
+    copy "before" "/before"
+    component "tool" {
+        arg "channel" "first"
+    }
+    copy "after" "/after"
+    component "tool" {
+        arg "channel" "second"
+    }
+}
+`)
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	for attempt := range 2 {
 		layout := filepath.Join(root, fmt.Sprintf("layout-%d", attempt))
@@ -125,7 +140,17 @@ func TestLifecycleNoLayersAddsOneLayerAcrossComponentBoundaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	policy := writeComponentTestPolicy(t, root)
-	plan := testPlan(t, fmt.Sprintf("from %q\ncopy \"before\" \"/before\"\ncomponent \"local:tool\" channel=\"first\"\ncopy \"after\" \"/after\"\ncomponent \"local:tool\" channel=\"second\"\n", base.reference))
+	plan := testPlan(t, fmt.Sprintf(`from %q {
+    copy "before" "/before"
+    component "tool" {
+        arg "channel" "first"
+    }
+    copy "after" "/after"
+    component "tool" {
+        arg "channel" "second"
+    }
+}
+`, base.reference))
 	layout := filepath.Join(root, "layout")
 	result, err := BuildPlan(ctx, plan, PlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Output: Output{Path: layout}, Resolver: resolver,
@@ -181,7 +206,11 @@ func TestLifecycleRetainsSelectedIntermediateContainers(t *testing.T) {
 			if tc.fail {
 				command = "exit 9"
 			}
-			plan := testPlan(t, fmt.Sprintf("from %q\nrun \"printf one >/one\" network=\"none\"\nrun %q network=\"none\"\n", base.reference, command))
+			plan := testPlan(t, fmt.Sprintf(`from %q {
+    run "printf one >/one" network="none"
+    run %q network="none"
+}
+`, base.reference, command))
 			_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun", SignaturePolicyPath: policy, Output: Output{Path: filepath.Join(root, "output")}, Lifecycle: tc.controls, Stdout: io.Discard, Stderr: io.Discard})
 			if (err != nil) != tc.fail {
 				t.Fatalf("build error=%v fail=%v", err, tc.fail)

@@ -43,7 +43,11 @@ func TestRequestFromPlanInjectsOnlyUndeclaredPredefinedProxyArgs(t *testing.T) {
 }
 
 func TestRequestFromPlanDoesNotOverrideProxyENV(t *testing.T) {
-	plan := testPlan(t, "from \"scratch\"\nenv HTTP_PROXY=\"http://image-env\"\nrun \"env\"\n")
+	plan := testPlan(t, `from "scratch" {
+    env HTTP_PROXY="http://image-env"
+    run "env"
+}
+`)
 	request, err := RequestFromPlan(plan, PlanOptions{ProxyArgs: map[string]string{"HTTP_PROXY": "http://cli"}})
 	if err != nil {
 		t.Fatal(err)
@@ -93,12 +97,12 @@ func TestExplicitProxyARGValueChangesInstructionCacheKey(t *testing.T) {
 
 func proxyTestPlan(t *testing.T, arguments map[string]string, declare bool) *planner.Plan {
 	t.Helper()
-	instructions := []definition.Instruction{{Name: "from", Arguments: []string{"scratch"}}}
+	instructions := []definition.Instruction{}
 	if declare {
 		instructions = append(instructions, definition.Instruction{Name: "arg", Arguments: []string{"HTTP_PROXY"}})
 	}
 	instructions = append(instructions, definition.Instruction{Name: "run", Form: "shell", Arguments: []string{"env"}})
-	plan, err := planner.Create(&definition.Definition{Instructions: instructions}, planner.Options{
+	plan, err := planner.Create(&definition.Definition{Instructions: []definition.Instruction{{Name: "from", Arguments: []string{"scratch"}, Children: instructions}}}, planner.Options{
 		Mode: planner.Build, Platform: runtime.GOOS + "/" + runtime.GOARCH, Arguments: arguments,
 	})
 	if err != nil {

@@ -71,6 +71,8 @@ in
         if finalAttrs.vendorHash == null then "${finalAttrs.src}/vendor" else finalAttrs.goModules;
     in
     ''
+      mkdir -p "$out/libexec/coopr"
+      CGO_ENABLED=0 go build -trimpath -o "$out/libexec/coopr/coopr-run-sequence" ./cmd/coopr-run-sequence
       install -Dm644 LICENSE "$out/share/licenses/coopr/LICENSE"
       mkdir -p "$out/share/licenses/coopr/third-party/go"
       for file in LICENSE PATENTS; do

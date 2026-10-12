@@ -16,7 +16,10 @@ import (
 
 func TestReadLocalComponentCopyPaths(t *testing.T) {
 	root := t.TempDir()
-	const source = "extend\nenv shared=\"yes\"\n"
+	const source = `extend {
+    env shared="yes"
+}
+`
 	if err := os.WriteFile(filepath.Join(root, "shared.coopr"), []byte(source), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -35,14 +38,17 @@ func TestReadLocalComponentCopyPaths(t *testing.T) {
 
 func TestReadLocalComponentDoesNotGuessSuffix(t *testing.T) {
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "shared.coopr"), []byte("extend\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "shared.coopr"), []byte("extend {}\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	opts := PlanOptions{ContextDir: root}
 	if _, _, err := readLocalComponent(context.Background(), opts, "./shared"); err == nil {
 		t.Fatal("resolved shared.coopr from an extensionless reference")
 	}
-	const source = "extend\nenv exact=\"yes\"\n"
+	const source = `extend {
+    env exact="yes"
+}
+`
 	if err := os.WriteFile(filepath.Join(root, "shared"), []byte(source), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +60,7 @@ func TestReadLocalComponentDoesNotGuessSuffix(t *testing.T) {
 
 func TestReadLocalComponentConfinesSymlinkAndIgnores(t *testing.T) {
 	root, outside := t.TempDir(), t.TempDir()
-	if err := os.WriteFile(filepath.Join(outside, "secret.coopr"), []byte("extend"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(outside, "secret.coopr"), []byte("extend {}\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(filepath.Join(outside, "secret.coopr"), filepath.Join(root, "escape.coopr")); err != nil {
@@ -64,7 +70,7 @@ func TestReadLocalComponentConfinesSymlinkAndIgnores(t *testing.T) {
 		t.Fatal("read outside context through symlink")
 	}
 	for _, name := range []string{"one.coopr", "two.coopr"} {
-		if err := os.WriteFile(filepath.Join(root, name), []byte("extend"), 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("extend {}\n"), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -102,6 +108,65 @@ func TestLocalComponentSelectionIncludesParameters(t *testing.T) {
 		if (first != second) != strings.HasPrefix(reference, "./") {
 			t.Fatalf("selection keys for %s: %q %q", reference, first, second)
 		}
+	}
+}
+
+func TestLocalComponentReferenceTarget(t *testing.T) {
+	for _, tc := range []struct {
+		reference, path, target string
+	}{
+		{"./shared.coopr", "./shared.coopr", ""},
+		{"./shared.coopr#configured", "./shared.coopr", "configured"},
+		{"../shared.coopr#Mixed-Case", "../shared.coopr", "Mixed-Case"},
+		{"/shared.coopr#output.v2", "/shared.coopr", "output.v2"},
+		{"./shared%23name.coopr#output", "./shared%23name.coopr", "output"},
+	} {
+		path, target, err := splitLocalComponentReference(tc.reference)
+		if err != nil || path != tc.path || target != tc.target {
+			t.Fatalf("split %q = (%q, %q), %v", tc.reference, path, target, err)
+		}
+	}
+	for _, reference := range []string{"./shared.coopr#", "./shared.coopr##configured", "./shared.coopr#one#two"} {
+		if _, _, err := splitLocalComponentReference(reference); err == nil || !strings.Contains(err.Error(), "target") {
+			t.Fatalf("invalid selector %q error=%v", reference, err)
+		}
+	}
+}
+
+func TestLocalComponentTargetSelectionPinsAreSeparate(t *testing.T) {
+	platform := v1.Platform{OS: "linux", Architecture: "amd64"}
+	keys := make(map[string]bool)
+	for _, reference := range []string{"./shared.coopr", "./shared.coopr#one", "./shared.coopr#two"} {
+		key, err := componentInvocationSelectionKey(reference, map[string]string{"target": "ordinary argument"}, platform)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if keys[key] {
+			t.Fatalf("target selections share pin key: %s", key)
+		}
+		keys[key] = true
+	}
+}
+
+func TestLocalComponentCycleIdentityUsesSelectedTarget(t *testing.T) {
+	executor := &graphExecutor{}
+	path := filepath.Join(t.TempDir(), "shared.coopr")
+	one := localComponentSourceIdentity(path, "First")
+	releaseOne, err := executor.enterLocalComponent(one)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseOne()
+	releaseTwo, err := executor.enterLocalComponent(localComponentSourceIdentity(path, "second"))
+	if err != nil {
+		t.Fatalf("finite cross-target invocation rejected: %v", err)
+	}
+	defer releaseTwo()
+	if _, err := executor.enterLocalComponent(localComponentSourceIdentity(path, "FIRST")); err == nil {
+		t.Fatal("case alias escaped cycle detection")
+	}
+	if localComponentSourceIdentity(path+"#first", "second") == localComponentSourceIdentity(path, "first#second") {
+		t.Fatal("path/target boundaries are ambiguous")
 	}
 }
 
@@ -247,7 +312,10 @@ func TestNestedPublicationUsesBuildLevelBasePin(t *testing.T) {
 func TestReadLocalComponentGlobKeepsLiteralMetacharacterFilename(t *testing.T) {
 	root := t.TempDir()
 	literal := "file[1].coopr"
-	const source = "extend\nenv literal=\"yes\"\n"
+	const source = `extend {
+    env literal="yes"
+}
+`
 	if err := os.WriteFile(filepath.Join(root, literal), []byte(source), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +328,10 @@ func TestReadLocalComponentGlobKeepsLiteralMetacharacterFilename(t *testing.T) {
 	}
 	// The selected filename must not be reinterpreted as a second glob and
 	// accidentally read file1.coopr instead of file[1].coopr.
-	if err := os.WriteFile(filepath.Join(root, "file1.coopr"), []byte("extend\nenv wrong=\"yes\"\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "file1.coopr"), []byte(`extend {
+    env wrong="yes"
+}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	data, canonical, err = readLocalComponent(context.Background(), PlanOptions{ContextDir: root}, "./file[[]1].coopr")
@@ -277,15 +348,20 @@ func TestReadLocalComponentGlobKeepsLiteralMetacharacterFilename(t *testing.T) {
 
 func TestLocalComponentPackageCopyExcludesCallerOutput(t *testing.T) {
 	f := newLocalComponentFixture(t)
-	f.write(t, "shared.coopr", `package as="assets"
-copy "generated-output" "/proof"
-extend
-copy "/proof" "/proof" from="assets"
+	f.write(t, "shared.coopr", `package as="assets" {
+    copy "generated-output" "/proof"
+}
+extend {
+    copy "/proof" "/proof" from="assets"
+}
 `)
 	f.write(t, "generated-output/secret", "previous build output must stay excluded")
 	options := f.options
 	options.Output = Output{Path: filepath.Join(f.contextDir, "generated-output")}
-	_, err := BuildPlan(f.ctx, testPlan(t, "from \"scratch\"\ncomponent \"./shared.coopr\"\n"), options)
+	_, err := BuildPlan(f.ctx, testPlan(t, `from "scratch" {
+    component "./shared.coopr"
+}
+`), options)
 	if err == nil {
 		t.Fatal("package COPY consumed caller output directory")
 	}
@@ -300,21 +376,42 @@ func TestLocalComponentInvocationCycleWithChangingPackageArguments(t *testing.T)
 			f := newLocalComponentFixture(t)
 			f.write(t, "payload", "proof")
 			f.write(t, "cycle.coopr", `arg "depth" "x"
-package as="assets"
-arg "depth"
-copy "payload" "/payload"
-env depth="${depth}"
-extend
-arg "depth"
-copy "/payload" "/payload" from="assets"
-component "./cycle.coopr" depth="${depth}x"
+package as="assets" {
+    arg "depth"
+    copy "payload" "/payload"
+    env depth="${depth}"
+}
+extend {
+    arg "depth"
+    copy "/payload" "/payload" from="assets"
+    component "./cycle.coopr" {
+        arg "depth" "${depth}x"
+    }
+}
 `)
 			options := f.options
 			options.Jobs = jobs
 			options.Output = Output{Path: filepath.Join(f.root, "result")}
-			source := "from \"scratch\"\ncomponent \"./cycle.coopr\" depth=\"x\"\n"
+			source := `from "scratch" {
+    component "./cycle.coopr" {
+        arg "depth" "x"
+    }
+}
+`
 			if jobs == 2 {
-				source = "from \"scratch\" as=\"recursive\"\ncomponent \"./cycle.coopr\" depth=\"x\"\nfrom \"scratch\" as=\"independent\"\ncopy \"payload\" \"/independent\"\nfrom \"scratch\"\ncopy \"/payload\" \"/payload\" from=\"recursive\"\ncopy \"/independent\" \"/independent\" from=\"independent\"\n"
+				source = `from "scratch" as="recursive" {
+    component "./cycle.coopr" {
+        arg "depth" "x"
+    }
+}
+from "scratch" as="independent" {
+    copy "payload" "/independent"
+}
+from "scratch" {
+    copy "/payload" "/payload" from="recursive"
+    copy "/independent" "/independent" from="independent"
+}
+`
 			}
 			ctx, cancel := context.WithTimeout(f.ctx, 5*time.Second)
 			defer cancel()

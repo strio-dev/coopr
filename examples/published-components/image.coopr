@@ -1,15 +1,18 @@
-from "docker.io/redhat/ubi9:latest"
-arg "channel" "preview"
-workdir "/opt/company"
+from "docker.io/redhat/ubi9:latest" {
+    arg "channel" "preview"
+    workdir "/opt/company"
 
-component "local:coopr-company-config" channel="${channel}"
-component "local:coopr-gofmt"
+    component "coopr-company-config" {
+        arg "channel" "${channel}"
+    }
+    component "coopr-gofmt"
 
-copy "main.go.in" "/opt/company/main.go"
-run {
-    exec "/usr/local/bin/gofmt" "-w" "/opt/company/main.go"
-}
+    copy "main.go.in" "/opt/company/main.go"
+    run {
+        exec "/usr/local/bin/gofmt" "-w" "/opt/company/main.go"
+    }
 
-cmd {
-    exec "/bin/sh" "-c" "cat /opt/company/main.go /etc/company/defaults.json"
+    cmd {
+        exec "/bin/sh" "-c" "cat /opt/company/main.go /etc/company/defaults.json"
+    }
 }

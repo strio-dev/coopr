@@ -40,11 +40,13 @@ func TestComponentInvocationPlansExternalOnBuildAgainstPublishedPackageOffline(t
 	// the reference exists in either a registry or the native image store.
 	component := parseWorkerDefinition(t, `
 arg "runtime_base" "registry.invalid/coopr/missing:latest"
-package as="assets"
-copy "fixture" "/artifact"
-from "${runtime_base}" as="prepared"
-extend
-copy "/inherited" "/selected" from="prepared"
+package as="assets" {
+    copy "fixture" "/artifact"
+}
+extend {
+    from "${runtime_base}" as="prepared" {}
+    copy "/inherited" "/selected" from="prepared"
+}
 `)
 	componentLayout := filepath.Join(root, "component")
 	publication, err := PublishDefinitionSupervised(ctx, component, planner.Options{
@@ -78,9 +80,10 @@ copy "/inherited" "/selected" from="prepared"
 	// inherited COPY reaches the named package stage only after base selection.
 	baseLayout := filepath.Join(root, "base")
 	base, err := BuildPlan(ctx, testPlan(t, `
-from "scratch"
-onbuild { arg "source" "assets" }
-onbuild { copy "/artifact" "/inherited" from="$source" }
+from "scratch" {
+    onbuild { arg "source" "assets" }
+    onbuild { copy "/artifact" "/inherited" from="$source" }
+}
 `), PlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Output: Output{Path: baseLayout, Format: outputFormatDocker},
 		SystemContext: &types.SystemContext{SignaturePolicyPath: policy, BigFilesTemporaryDir: root},
@@ -115,8 +118,11 @@ onbuild { copy "/artifact" "/inherited" from="$source" }
 	}
 	invokedLayout := filepath.Join(root, "invoked")
 	_, err = BuildDefinitionSupervised(ctx, parseWorkerDefinition(t, `
-from "scratch"
-component "local:external-onbuild" runtime_base="registry.example/coopr/invocation-base:latest"
+from "scratch" {
+    component "external-onbuild" {
+        arg "runtime_base" "registry.example/coopr/invocation-base:latest"
+    }
+}
 `), planner.Options{Mode: planner.Build, Platform: "linux/" + runtime.GOARCH}, SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Output: Output{Path: invokedLayout},
 		ComponentStoreDir: componentDir, Pull: false,

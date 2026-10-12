@@ -28,8 +28,9 @@ func TestBuildPlanReusesFinalRunWithoutChangingImage(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := testPlan(t, fmt.Sprintf(`
-from %q
-run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" network="none"
+from %q {
+    run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" network="none"
+}
 `, base.reference))
 	var firstProof string
 	var firstImage v1.Image
@@ -73,9 +74,10 @@ run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" network="none"
 	}
 
 	plan = testPlan(t, fmt.Sprintf(`
-from %q
-run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof; printf tail >>/proof" network="none"
-label cached="yes"
+from %q {
+    run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof; printf tail >>/proof" network="none"
+    label cached="yes"
+}
 `, base.reference))
 	firstProof = ""
 	firstImage = v1.Image{}
@@ -121,7 +123,10 @@ func TestWarmHostNetworkRunCacheStillRequiresEntitlement(t *testing.T) {
 	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	plan := testPlan(t, fmt.Sprintf("from %q\nrun \"printf cached-host-run >/proof\" network=\"host\"\n", base.reference))
+	plan := testPlan(t, fmt.Sprintf(`from %q {
+    run "printf cached-host-run >/proof" network="host"
+}
+`, base.reference))
 	common := SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
 		Pull: false, SignaturePolicyPath: policy,
@@ -159,7 +164,11 @@ func TestWarmInsecureRunCacheStillRequiresEntitlement(t *testing.T) {
 	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	plan := testPlan(t, fmt.Sprintf("from %q\nrun \"test -r /proc/self/status && printf cached-insecure-run >/proof\" network=\"none\" security=\"insecure\"\nlabel after=\"insecure-run\"\n", base.reference))
+	plan := testPlan(t, fmt.Sprintf(`from %q {
+    run "test -r /proc/self/status && printf cached-insecure-run >/proof" network="none" security="insecure"
+    label after="insecure-run"
+}
+`, base.reference))
 	common := SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
 		Pull: false, SignaturePolicyPath: policy,
@@ -215,9 +224,10 @@ devices:
 	}
 	t.Setenv("CONTAINERS_CONF", containersConf)
 	plan := testPlan(t, fmt.Sprintf(`
-from %q
-run "test \"$COOPR_CDI_PROOF\" = available && printf cached-device-run >/proof" network="none" {
-  device "test.example/env=proof,required"
+from %q {
+    run "test \"$COOPR_CDI_PROOF\" = available && printf cached-device-run >/proof" network="none" {
+      device "test.example/env=proof,required"
+    }
 }
 `, base.reference))
 	common := SupervisedPlanOptions{
@@ -252,9 +262,10 @@ func TestBuildPlanReusesClosedRunInstruction(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := testPlan(t, fmt.Sprintf(`
-from %q
-run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/cached" network="none"
-run "cp /cached /proof" network="none"
+from %q {
+    run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/cached" network="none"
+    run "cp /cached /proof" network="none"
+}
 `, base.reference))
 	var first string
 	durations := make([]time.Duration, 0, 2)

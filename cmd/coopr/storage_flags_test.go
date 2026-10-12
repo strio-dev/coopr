@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/oci"
 	"github.com/spf13/cobra"
 )
 
@@ -109,10 +108,16 @@ func TestBuildConsumesLocalImageWithGlobalStorageOverrides(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "config"))
 	base := filepath.Join(dir, "base.coopr")
 	child := filepath.Join(dir, "child.coopr")
-	if err := os.WriteFile(base, []byte("from \"scratch\"\ncopy \"payload\" \"/payload\"\n"), 0600); err != nil {
+	if err := os.WriteFile(base, []byte(`from "scratch" {
+    copy "payload" "/payload"
+}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(child, []byte("from \"local-base\"\nlabel inherited=\"yes\"\n"), 0600); err != nil {
+	if err := os.WriteFile(child, []byte(`from "local-base" {
+    label inherited="yes"
+}
+`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "payload"), []byte("shared store"), 0600); err != nil {
@@ -195,14 +200,14 @@ func TestInheritedBuildFlagsPreserveDefaultsAndOrderedOverrides(t *testing.T) {
 }
 
 func TestStandaloneCommandsKeepSharedFlagDefaults(t *testing.T) {
-	for _, cmd := range []*cobra.Command{newBuildCommand(), newComponentBuildCommand(), newCopyCommand(oci.Image), newCopyCommand(oci.Component)} {
+	for _, cmd := range []*cobra.Command{newBuildCommand(), newComponentBuildCommand(), newImagePushCommand(), newComponentPushCommand()} {
 		policy := cmd.Flags().Lookup("signature-policy")
-		isComponentCopy := cmd.Name() == "copy" && strings.Contains(cmd.Long, "stored component")
-		if !isComponentCopy && (policy == nil || !policy.Hidden || commandSignaturePolicy(cmd) != "") {
+		isComponentPush := cmd.Use == "push <source> <destination>"
+		if !isComponentPush && (policy == nil || !policy.Hidden || commandSignaturePolicy(cmd) != "") {
 			t.Fatalf("%s lost signature policy default", cmd.Name())
 		}
-		if isComponentCopy && policy != nil {
-			t.Fatal("component copy exposes image signature policy")
+		if isComponentPush && policy != nil {
+			t.Fatal("component push exposes image signature policy")
 		}
 		if cmd.Name() == "build" {
 			flags := buildControlFlags{command: cmd}

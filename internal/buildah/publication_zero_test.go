@@ -9,7 +9,10 @@ import (
 )
 
 func TestValidatePublicationGraphAcceptsConfigOnlyComponent(t *testing.T) {
-	plan := testPublicationPlan(t, "extend\nenv CONFIG_ONLY=\"yes\"\n")
+	plan := testPublicationPlan(t, `extend {
+    env CONFIG_ONLY="yes"
+}
+`)
 	stages, outputs, err := validatePublicationGraph(plan, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -34,7 +37,10 @@ func TestPublishPlanSupervisedWritesConfigOnlyComponentLayout(t *testing.T) {
 	defer cancel()
 	root := t.TempDir()
 	output := filepath.Join(root, "layout")
-	plan := testPublicationPlan(t, "extend\nenv CONFIG_ONLY=\"yes\"\n")
+	plan := testPublicationPlan(t, `extend {
+    env CONFIG_ONLY="yes"
+}
+`)
 	result, err := PublishPlanSupervised(ctx, plan, SupervisedPlanOptions{
 		Store: StoreOptions{
 			RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs",

@@ -1,6 +1,6 @@
 # Coopr
 
-Coopr builds Linux container images from ordered KDL definitions. Reuse common steps and files through local component definitions or packaged OCI components.
+Coopr builds OCI container images from ordered KDL definitions. Share build steps and files through reusable components, using local definitions or packaged OCI artifacts.
 
 ## Install
 
@@ -9,39 +9,58 @@ curl -fsSL https://coopr.strio.dev/install.sh | sh
 coopr --version
 ```
 
-For other installation options, see the [installation guide](docs/getting-started/index.md).
+See [getting started](docs/getting-started/index.md) for Linux prerequisites and other installation options.
 
-## Build an image
+## Hello, world
 
-Put an `index.html` beside this `image.coopr`:
+Save this as `components/greeting.coopr`:
 
 ```kdl
-from "docker.io/redhat/ubi9:latest"
-run "dnf install -y nginx && dnf clean all"
-copy "index.html" "/usr/share/nginx/html/index.html"
-expose "80/tcp"
-cmd {
-    exec "nginx" "-g" "daemon off;"
+from "docker.io/redhat/ubi9:latest" as="builder" {
+    run "echo 'Hello, world!' > /hello.txt"
+}
+package as="greeting" {
+    copy "/hello.txt" "/hello.txt" from="builder"
+}
+extend {
+    copy "/hello.txt" "/hello.txt" from="greeting"
+}
+```
+
+The component generates a greeting, packages the file, and copies it into the calling image. Save the caller as `image.coopr`:
+
+```kdl
+from "docker.io/redhat/ubi9:latest" {
+    component "./components/greeting.coopr"
+    cmd {
+        exec "cat" "/hello.txt"
+    }
 }
 ```
 
 Build and run it with Podman:
 
 ```sh
-coopr build image.coopr --tag hello:latest
-podman run --rm -p 127.0.0.1:8080:80 localhost/hello:latest
+coopr build --file image.coopr --tag hello:latest .
+podman run --rm localhost/hello:latest
 ```
 
-Coopr and Podman share native image storage when run as the same user with the same storage settings. Follow the [first-image tutorial](docs/tutorials/first-image.md) for the complete example.
+The container prints:
+
+```text
+Hello, world!
+```
+
+Run Coopr and Podman as the same user with the same storage settings. The [first-image tutorial](docs/tutorials/first-image.md) explains each step and shows how changes affect the cache.
 
 ## Reuse build steps
 
-Use `component "./components/shared.coopr"` to share a definition within a build context without a separate component build or upload. See [local component workflows](docs/guides/components.md#share-a-component-within-a-repository).
+Apply a shared definition with `component "./components/shared.coopr"`. [Share a local component](docs/tutorials/local-components.md) between two images without a separate packaging command or registry.
 
-For packaged components, follow the [two-component tutorial](docs/tutorials/reusable-components.md). See [storage](docs/guides/storage.md) for image stores and transfers.
+For components you can distribute, follow the [reusable-components tutorial](docs/tutorials/reusable-components.md) to package two components and apply them to an image. Explore [the examples](examples/README.md) for cache mounts and published components, or read about [image storage and transfers](docs/guides/storage.md).
 
 ## Development
 
 Development uses the pinned Nix environment. See [contributing](CONTRIBUTING.md) for source builds, tests, and documentation checks.
 
-Coopr is licensed under [MIT License](LICENSE).
+Coopr is licensed under the [MIT License](LICENSE).

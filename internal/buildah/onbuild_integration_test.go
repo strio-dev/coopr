@@ -28,9 +28,10 @@ func TestOCIOutputRetainsHealthcheckAndOnBuild(t *testing.T) {
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	layout := filepath.Join(root, "image")
 	_, err := BuildPlan(context.Background(), testPlan(t, `
-from "scratch"
-healthcheck { exec "/bin/check" }
-onbuild { env FROM_PARENT="yes" }
+from "scratch" {
+    healthcheck { exec "/bin/check" }
+    onbuild { env FROM_PARENT="yes" }
+}
 `), PlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Output: Output{Path: layout},
 	})
@@ -94,9 +95,10 @@ func TestDockerBaseHealthcheckAndOnBuildSurviveNativeStorage(t *testing.T) {
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	parentLayout := filepath.Join(root, "parent")
 	parentDefinition, err := definition.Parse(strings.NewReader(`
-from "scratch"
-copy "busybox" "/bin/sh" chmod="0755"
-healthcheck interval="30s" retries=2 { exec "/bin/check" }
+from "scratch" {
+    copy "busybox" "/bin/sh" chmod="0755"
+    healthcheck interval="30s" retries=2 { exec "/bin/check" }
+}
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -118,7 +120,7 @@ read value < /inline/INLINE_COPY
 [ "$value" = "copied inline" ]
 SCRIPT`,
 	} {
-		parentDefinition.Instructions = append(parentDefinition.Instructions, definition.Instruction{
+		parentDefinition.Instructions[0].Children = append(parentDefinition.Instructions[0].Children, definition.Instruction{
 			Name: "onbuild", Arguments: []string{trigger},
 		})
 	}
@@ -153,7 +155,10 @@ SCRIPT`,
 		t.Fatal(err)
 	}
 	childLayout := filepath.Join(root, "child")
-	_, err = BuildPlan(ctx, testPlan(t, "from \""+reference+"\"\nlabel CHILD=\"yes\"\n"), PlanOptions{
+	_, err = BuildPlan(ctx, testPlan(t, "from \""+reference+`" {
+    label CHILD="yes"
+}
+`), PlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Resolver: resolver,
 		Output: Output{Path: childLayout, Format: outputFormatDocker}, SystemContext: system,
 	})
@@ -232,12 +237,14 @@ func TestBuildPlanConsumesInheritedOnBuildBeforeChildInstructions(t *testing.T) 
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	layout := filepath.Join(root, "layout")
 	_, err := BuildPlanSupervised(ctx, testPlan(t, `
-from "scratch" as="parent"
-env SOURCE="fixture"
-onbuild { env ORDER="inherited" }
-onbuild { copy "$SOURCE" "/inherited" }
-from "parent"
-env ORDER="child"
+from "scratch" as="parent" {
+    env SOURCE="fixture"
+    onbuild { env ORDER="inherited" }
+    onbuild { copy "$SOURCE" "/inherited" }
+}
+from "parent" {
+    env ORDER="child"
+}
 `), SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless",
 		Output: Output{Path: layout},
@@ -288,10 +295,11 @@ func TestInheritedInsecureRunRequiresEntitlementAndExecutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := testPlan(t, `
-from "scratch" as="parent"
-copy "busybox" "/bin/sh"
-onbuild { run "printf inherited >/proof" security="insecure" network="none" }
-from "parent"
+from "scratch" as="parent" {
+    copy "busybox" "/bin/sh"
+    onbuild { run "printf inherited >/proof" security="insecure" network="none" }
+}
+from "parent" {}
 `)
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	options := SupervisedPlanOptions{

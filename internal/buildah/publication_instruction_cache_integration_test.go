@@ -39,15 +39,17 @@ func TestPublishPlanPublishesInstructionCandidatesOnlyAfterSuccess(t *testing.T)
 		t.Fatal(err)
 	}
 	plan := testPublicationPlan(t, `
-package as="payload"
-copy "busybox" "/busybox"
-run network="none" { exec "/busybox" "sh" "-c" "/busybox od -An -N16 -tx1 /dev/urandom | /busybox tr -d ' \\n' >/proof" }
-run network="none" {
-  exec "/busybox" "sh" "-c" "test -s /proof; /busybox touch /cache/marker"
-  mount "cache" target="/cache" id="publication-portable-boundary"
+package as="payload" {
+    copy "busybox" "/busybox"
+    run network="none" { exec "/busybox" "sh" "-c" "/busybox od -An -N16 -tx1 /dev/urandom | /busybox tr -d ' \\n' >/proof" }
+    run network="none" {
+      exec "/busybox" "sh" "-c" "test -s /proof; /busybox touch /cache/marker"
+      mount "cache" target="/cache" id="publication-portable-boundary"
+    }
 }
-extend
-copy "/proof" "/proof" from="payload"
+extend {
+    copy "/proof" "/proof" from="payload"
+}
 `)
 
 	build := func(name, cacheDir string, noCache, failSnapshot bool) (string, StoreOptions, error) {

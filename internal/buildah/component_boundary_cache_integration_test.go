@@ -24,8 +24,11 @@ func TestComponentBoundaryInstructionCacheWithoutTimestamp(t *testing.T) {
 			root := t.TempDir()
 			store := cacheTestStore(root)
 			base := newLiveBusyBoxStorage(t, ctx, root, store)
-			component := "extend\nenv COMPONENT_BOUNDARY=\"yes\"\n"
-			reference := "local:config"
+			component := `extend {
+    env COMPONENT_BOUNDARY="yes"
+}
+`
+			reference := "config"
 			if kind == "reusable" {
 				_ = localConfigComponentResolver(t, ctx, root, component, false)
 			} else {
@@ -48,12 +51,13 @@ func TestComponentBoundaryInstructionCacheWithoutTimestamp(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				plan := testPlan(t, fmt.Sprintf(`from %q
-copy "payload" "/input"
-label "org.example.boundary" %q
-env CALLER_ENV=%q
-component %q
-run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof; cat /input >>/proof; printf '%%s' \"$CALLER_ENV\" >>/proof" network="none"
+				plan := testPlan(t, fmt.Sprintf(`from %q {
+    copy "payload" "/input"
+    label "org.example.boundary" %q
+    env CALLER_ENV=%q
+    component %q
+    run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof; cat /input >>/proof; printf '%%s' \"$CALLER_ENV\" >>/proof" network="none"
+}
 `, base.reference, label, env, reference))
 				if plan.SourceDateEpoch != nil {
 					t.Fatal("regression requires an unpinned source date epoch")

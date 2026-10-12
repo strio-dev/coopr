@@ -128,7 +128,7 @@ type Result struct {
 }
 
 // Run builds each requested platform, stores the result locally as a manifest
-// or index, then applies the requested destination through coopr copy's path.
+// or index, then applies the requested destinations through the shared transfer path.
 func Run(ctx context.Context, opts Options) (_ Result, retErr error) {
 	if opts.Squash && opts.SquashAll {
 		return Result{}, errors.New("--squash and --squash-all are mutually exclusive")

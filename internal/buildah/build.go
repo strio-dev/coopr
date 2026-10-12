@@ -657,6 +657,7 @@ func rootCapabilities() []string {
 
 type nativeBuilder struct {
 	*upstream.Builder
+	executableOrigin string
 	isolation        define.Isolation
 	runtime          string
 	runtimeArgs      []string
