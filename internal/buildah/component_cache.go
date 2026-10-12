@@ -23,7 +23,7 @@ import (
 	"go.podman.io/image/v5/types"
 )
 
-const portableCacheLoweringVersion = "coopr-buildah-component-image-v3"
+const portableCacheLoweringVersion = "coopr-buildah-component-image-v5"
 
 type componentCache struct {
 	images      *portableInstructionCache
@@ -268,7 +268,7 @@ func componentCacheEligible(resolved *ResolvedComponentPlan, controls RunControl
 		if stage.Name != "" {
 			inputs[strings.ToLower(stage.Name)] = true
 		}
-		if stage.DeferredImageSource || stage.SourceContext != "" || stage.DynamicBaseStage != "" {
+		if stage.AwaitingComponent != nil || stage.DeferredImageSource || stage.SourceContext != "" || stage.DynamicBaseStage != "" {
 			return false
 		}
 		if stage.Kind == "package-input" {

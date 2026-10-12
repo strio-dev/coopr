@@ -50,6 +50,8 @@ Commands below follow `coopr`. Images use the [native container store](../guides
 
 These controls apply to both build commands unless noted. Refer to the [execution reference](execution.md) for scope and cache rules.
 
+Both build commands accept repeated or comma-separated values for `--platform`, `--add-host`, `--dns`, `--dns-search`, `--dns-option`, `--ulimit`, and `--decryption-key`. Image builds also accept either form for `--unsetenv`, `--unsetlabel`, and `--unsetannotation`. Options whose values contain commas, such as `--mount`, `--secret`, and `--cache-from`, take one specification per occurrence. Image `pull --decryption-key` and `push --encryption-key` take one key per occurrence.
+
 Supply the exact definition filename, or select a definition and context separately:
 
 ```sh
@@ -170,7 +172,7 @@ Image `save --format` accepts:
 
 Image `load --input` accepts a local archive, image directory, or HTTP(S) archive URL; omission reads stdin. Loading retains configuration and layers, including distinct members that share a platform in an OCI index. Component archives retain the complete component index and its packages. Loading a named component archive restores its name; `component load --tag NAME` overrides it. Pulling a component without `--tag` prints its locally usable digest.
 
-Image loading imports runnable platforms. Descriptors with missing or `unknown` platforms, such as BuildKit attestations, are omitted from the stored index; its digest changes when descriptors are removed. Runnable-only indexes retain their original metadata in native storage. Export updates member descriptors if their layer representation changes.
+Image loading imports runnable platforms. When an image descriptor omits its optional platform, Coopr reads it from the verified image configuration and retains the original descriptor. Non-image artifacts and `unknown` platforms, such as BuildKit attestations, are omitted from the stored index; its digest changes when descriptors are removed. Runnable-only indexes retain their original metadata in native storage. Export updates member descriptors if their layer representation changes.
 
 ## Manifest lists
 

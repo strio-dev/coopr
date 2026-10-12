@@ -11,10 +11,12 @@ Image definitions contain FROM stages. Component definitions require EXTEND and 
 | Stage source | Initial state |
 | --- | --- |
 | `from "IMAGE" { ... }` | Selected immutable OCI image and its configuration. |
-| `from "scratch" { ... }` | Empty filesystem and configuration. |
+| `from "scratch" { ... }` | Empty filesystem, default PATH, and working directory `/`. |
 | `from "STAGE" { ... }` | Named stage's completed filesystem, configuration, platform, and declared arguments. |
-| `package as="NAME" { ... }` | Empty filesystem and configuration; produces a stored package snapshot. |
+| `package as="NAME" { ... }` | Empty filesystem with scratch stage defaults; produces a stored package snapshot. |
 | `extend { ... }` | Consumer's current filesystem and configuration. Multiple roots start independently from that same state. |
+
+Before running instructions, FROM supplies the standard Linux PATH when its base has no `PATH` entry. An explicit empty or custom PATH is preserved. EXTEND inherits the caller without adding defaults.
 
 ### Output selection
 
@@ -30,7 +32,7 @@ Inside EXTEND, direct instructions modify the caller; nested FROM blocks own sep
 
 ### Dependencies
 
-COPY/ADD and RUN mounts with `from=` create input dependencies without changing base lineage. Sources can be named stages, packages, named contexts, or external images. External images resolve by platform to immutable descriptors. Stage sources must precede their consuming FROM, COPY/ADD, or RUN mount. Nested FROM helpers become visible to later instructions inside EXTEND. Graphs must be acyclic and stage aliases unambiguous; graph-affecting arguments must resolve before execution.
+COPY/ADD and RUN mounts with `from=` create input dependencies without changing base lineage. Sources can be named stages, packages, named contexts, or external images. External images resolve by platform to immutable descriptors. Stage sources must precede their consuming FROM, COPY/ADD, or RUN mount. Nested FROM helpers become visible to later instructions inside EXTEND. Graphs must be acyclic and stage aliases unambiguous. Graph-affecting values must resolve before their consuming instruction executes; after a component returns, planning continues with its actual output environment.
 
 Published components fix whether each FROM, COPY/ADD, and RUN mount source is a stage, `scratch`, or an external image. Invocation arguments cannot change that role or a stage dependency. Explicit [named build contexts](#named-contexts) can substitute a source without rewriting the published definition. Arguments may change an external reference while it remains external. Component references themselves may use caller ARG/ENV values resolved at invocation.
 
@@ -76,7 +78,7 @@ A component call adopts the selected output's complete image chain, filesystem a
 | --- | --- |
 | Caller ARGs | Remain in scope; component-private ARGs do not escape. |
 | Returned ENV | Wins collisions with caller arguments. |
-| Later caller ARG declaration | Still uses the original caller CLI override when supplied. |
+| Later caller ARG declaration | Retains the original caller CLI binding when supplied; returned ENV still wins when the names collide. |
 | Later ENTRYPOINT | Clears inherited CMD unless a subsequent CMD supplies one, as after FROM. |
 
 ## Instructions and image configuration
@@ -223,7 +225,7 @@ Digest references select exact objects and can reuse local copies offline. Repro
 
 Component calls check the component store by ordinary name before resolving a missing name from a registry. Bare component digests select local artifacts. Store errors fail the build instead of falling through to a registry. Components are not engine-loadable images; image `--pull` policy does not refresh a component already found locally. Use `coopr component pull` explicitly to refresh one.
 
-FROM accepts plain image names, `docker://`, `containers-storage:`, `oci:`, `oci-archive:`, `docker-archive:`, `dir:`, `docker-daemon:`, and the native `atomic:` OpenShift transport. Filesystem transports read paths inside the selected build context, including through symlinks; they cannot read arbitrary host paths. Native transport selection preserves the selected image's configuration and layers.
+FROM accepts plain image names, `docker://`, `containers-storage:`, `oci:`, `oci-archive:`, `docker-archive:`, `dir:`, `docker-daemon:`, and the native `atomic:` OpenShift transport. Filesystem transports read paths inside the selected build context, including through symlinks; they cannot read arbitrary host paths. Native transport selection preserves the selected image's configuration and layers. `docker-daemon:` imports Docker's exported compatibility image: the requested platform validates that image, rather than selecting an index child. Use a registry source for index platform selection, or Docker's platform-scoped save followed by `docker-archive:`; see [Docker imports](../guides/storage.md#transfer-to-docker-engine).
 
 `--source-policy-file` loads Buildah's BuildKit-format image policy once for the build. ALLOW permits a matching source, DENY rejects it, and CONVERT substitutes its reference. Evaluation follows named image-context substitution and precedes image resolution. This policy is distinct from the native signature policy. Invalid policy files fail before execution.
 
@@ -266,7 +268,7 @@ COPY/ADD measure their selected inputs. Checksum-pinned HTTP ADD can hit without
 
 Whole-component reuse requires COPY/ADD and bind inputs to come from retained stages or packages. Deferred or dynamic image bases, named-context stages, nested component calls, device-backed or insecure RUNs, and RUN networks other than default/none bypass whole-component reuse. Individual instructions can still reuse eligible snapshots.
 
-Package-result caching supports networked RUN, bind/cache/tmpfs/secret/SSH mounts, and checksum-pinned remote ADD. Unpinned remote ADD, nested components, RUN networks other than default/none, and insecure/device RUN bypass whole-package reuse; eligible instructions can still hit.
+Package-result caching supports networked RUN, bind/cache/tmpfs/secret/SSH mounts, and checksum-pinned remote ADD. Volume compatibility, layer policy, and stage-label settings participate in package-result identity. Unpinned remote ADD, nested components, RUN networks other than default/none, and insecure/device RUN bypass whole-package reuse; eligible instructions can still hit.
 
 Network responses, credentials/SSH-agent state, cache-mount contents, clock, randomness, and undeclared host inputs do not invalidate conventional cache results. A cache hit is not a reproducibility guarantee. Required reusable files belong in packages. Cache repositories are trusted inputs and may contain intermediate files absent from final images; protect them accordingly.
 

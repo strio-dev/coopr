@@ -13,6 +13,7 @@ import (
 	"coopr/internal/buildcontext"
 	"coopr/internal/oci"
 	"coopr/internal/planner"
+	buildkitsystem "github.com/moby/buildkit/util/system"
 	"go.podman.io/image/v5/types"
 )
 
@@ -134,7 +135,7 @@ extend {
 	f.write(t, "shared.coopr", strings.ReplaceAll(definition, `revision="one"`, `revision="two"`))
 	_, changedDefinition := f.build(t, "changed-definition", source)
 	_, image := readPlanImage(t, changedDefinition)
-	if strings.Join(image.Config.Env, "\n") != "revision=two" {
+	if strings.Join(image.Config.Env, "\n") != "PATH="+buildkitsystem.DefaultPathEnvUnix+"\nrevision=two" {
 		t.Fatalf("changed definition env = %v", image.Config.Env)
 	}
 }
@@ -194,7 +195,7 @@ func TestLocalComponentNestedReferencesUseContextRoot(t *testing.T) {
 }
 `)
 	_, image := readPlanImage(t, layout)
-	if strings.Join(image.Config.Env, "\n") != "nested=yes" {
+	if strings.Join(image.Config.Env, "\n") != "PATH="+buildkitsystem.DefaultPathEnvUnix+"\nnested=yes" {
 		t.Fatalf("nested config = %v", image.Config.Env)
 	}
 }
@@ -297,7 +298,7 @@ func TestLocalComponentPathsFollowCopyNormalization(t *testing.T) {
 }
 `, reference, reference))
 			_, image := readPlanImage(t, layout)
-			if strings.Join(image.Config.Env, "\n") != "selected=context-root" {
+			if strings.Join(image.Config.Env, "\n") != "PATH="+buildkitsystem.DefaultPathEnvUnix+"\nselected=context-root" {
 				t.Fatalf("%s config = %v", reference, image.Config.Env)
 			}
 		})
@@ -371,7 +372,7 @@ func TestLocalComponentInternalSymlinkResolvesLikeCopy(t *testing.T) {
 }
 `)
 	_, image := readPlanImage(t, layout)
-	if strings.Join(image.Config.Env, "\n") != "symlink=resolved" {
+	if strings.Join(image.Config.Env, "\n") != "PATH="+buildkitsystem.DefaultPathEnvUnix+"\nsymlink=resolved" {
 		t.Fatalf("internal symlink component config = %v", image.Config.Env)
 	}
 }

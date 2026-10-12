@@ -255,7 +255,7 @@ func TestBuildArgFilesReportReadAndArgumentErrors(t *testing.T) {
 
 func TestResolveBuildInputsKeepsRepeatedExplicitFiles(t *testing.T) {
 	root := t.TempDir()
-	files := []string{filepath.Join(root, "first.coopr"), filepath.Join(root, "second.coopr")}
+	files := []string{filepath.Join(root, "first,part.coopr"), filepath.Join(root, "second.coopr")}
 	for _, file := range files {
 		if err := os.WriteFile(file, []byte(`from "scratch" {}
 `), 0600); err != nil {

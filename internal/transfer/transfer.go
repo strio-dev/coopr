@@ -494,11 +494,6 @@ func copyStoredIndex(ctx context.Context, storeDir string, root v1.Descriptor, i
 	variants := make([]oci.ImageVariant, 0, len(index.Manifests))
 	changed := false
 	for i, manifestInIndex := range index.Manifests {
-		if manifestInIndex.Platform == nil {
-			return "", fmt.Errorf("stored image index manifest %d has no platform", i)
-		}
-		platform := platforms.Normalize(*manifestInIndex.Platform)
-		key := platforms.Format(platform)
 		var selection oci.StoredSelection
 		found := false
 		for _, candidate := range selections {
@@ -509,8 +504,13 @@ func copyStoredIndex(ctx context.Context, storeDir string, root v1.Descriptor, i
 			}
 		}
 		if !found {
-			return "", fmt.Errorf("stored image index lacks platform %s", key)
+			return "", fmt.Errorf("stored image index lacks member %s", manifestInIndex.Digest)
 		}
+		platform, err := selection.Platform()
+		if err != nil {
+			return "", err
+		}
+		key := platforms.Format(platform)
 		var manifest v1.Descriptor
 		var manifestData []byte
 		var exportedLayout string

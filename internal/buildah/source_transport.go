@@ -15,6 +15,7 @@ import (
 	"go.podman.io/buildah/pkg/sourcepolicy"
 	"go.podman.io/common/libimage"
 	libconfig "go.podman.io/common/pkg/config"
+	dockerreference "go.podman.io/image/v5/docker/reference"
 	"go.podman.io/image/v5/image"
 	"go.podman.io/image/v5/pkg/shortnames"
 	imagestorage "go.podman.io/image/v5/storage"
@@ -271,8 +272,13 @@ func sourceBaseName(store storage.Store, source ResolvedImageSource) (string, er
 	}
 	var ref types.ImageReference
 	var err error
-	if strings.HasPrefix(reference, "containers-storage:") {
-		ref, err = imagestorage.Transport.ParseStoreReference(store, strings.TrimPrefix(reference, "containers-storage:"))
+	native := strings.HasPrefix(reference, "containers-storage:") || strings.HasPrefix(reference, "sha256:") || dockerreference.IsFullIdentifier(reference)
+	if native {
+		storageReference := strings.TrimPrefix(reference, "containers-storage:")
+		if !strings.HasPrefix(reference, "containers-storage:") {
+			storageReference = source.ImageID
+		}
+		ref, err = imagestorage.Transport.ParseStoreReference(store, storageReference)
 	} else if alltransports.TransportFromImageName(reference) != nil {
 		ref, err = alltransports.ParseImageName(reference)
 	} else {
@@ -282,7 +288,7 @@ func sourceBaseName(store storage.Store, source ResolvedImageSource) (string, er
 		return "", err
 	}
 	named := ref.DockerReference()
-	if named == nil && !strings.HasPrefix(reference, "containers-storage:") {
+	if named == nil && !native {
 		return "", nil
 	}
 	name := ""

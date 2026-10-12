@@ -169,9 +169,9 @@ func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
 	addPullFlags(cmd, &pullPolicy, &pull)
 	f.BoolVar(&noCache, "no-cache", false, "rebuild without reading cached results; save fresh results to the build cache")
 	f.StringVar(&network, "network", "default", "RUN network mode: default, private, none, host, ns:PATH, pasta[:OPTIONS], or named network")
-	f.StringArrayVar(&addHosts, "add-host", nil, "add HOST:IP to build containers (repeatable)")
+	f.StringSliceVar(&addHosts, "add-host", nil, "add HOST:IP to build containers (repeatable)")
 	f.BoolVar(&rewriteTimestamp, "rewrite-timestamp", false, "clamp layer timestamps newer than SOURCE_DATE_EPOCH")
-	f.StringArrayVar(&platforms, "platform", nil, "target platform as os/arch (repeatable or comma-separated; default: host platform)")
+	f.StringSliceVar(&platforms, "platform", nil, "target platform as os/arch (repeatable or comma-separated; default: host platform)")
 	f.StringVar(&osName, "os", "", "target operating system")
 	f.StringVar(&arch, "arch", "", "target architecture")
 	f.StringVar(&variant, "variant", "", "target architecture variant")
@@ -197,7 +197,7 @@ func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
 		addGlobalRunFlags(cmd.Flags())
 	}
 	addSignaturePolicyFlag(cmd.Flags())
-	f.StringArrayVar(&registry.decryptionKeys, "decryption-key", nil, "key used to decrypt image inputs (repeatable)")
+	f.StringSliceVar(&registry.decryptionKeys, "decryption-key", nil, "key used to decrypt image inputs (repeatable)")
 	controls.addTo(cmd)
 	registry.addTo(cmd)
 	return cmd

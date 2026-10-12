@@ -116,7 +116,7 @@ func TestBuildCommandsAcceptNetworkAndAddHost(t *testing.T) {
 				t.Fatalf("%s parse network options: %v", cmd.CommandPath(), err)
 			}
 			gotMode, _ := cmd.Flags().GetString("network")
-			gotHosts, _ := cmd.Flags().GetStringArray("add-host")
+			gotHosts, _ := cmd.Flags().GetStringSlice("add-host")
 			if gotMode != mode || strings.Join(gotHosts, ",") != "one.test:127.0.0.1,two.test:127.0.0.2" {
 				t.Fatalf("%s network options = %q, %v", cmd.CommandPath(), gotMode, gotHosts)
 			}

@@ -70,11 +70,11 @@ func TestGraphExecutorMemoizesComponentSelectionAndRejectsDigestDrift(t *testing
 			return &ResolvedComponentPlan{Identity: identity}, nil
 		},
 	}
-	first, err := executor.resolveComponentInvocation(context.Background(), "registry.example/tool:latest", map[string]string{"a": "1", "b": "2"}, platform, "")
+	first, err := executor.resolveComponentInvocation(context.Background(), "registry.example/tool:latest", map[string]string{"a": "1", "b": "2"}, platform, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := executor.resolveComponentInvocation(context.Background(), "registry.example/tool:latest", map[string]string{"b": "2", "a": "1"}, platform, "")
+	second, err := executor.resolveComponentInvocation(context.Background(), "registry.example/tool:latest", map[string]string{"b": "2", "a": "1"}, platform, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestGraphExecutorMemoizesComponentSelectionAndRejectsDigestDrift(t *testing
 		t.Fatalf("identical component resolution calls=%d first=%p second=%p", calls, first, second)
 	}
 
-	_, err = executor.resolveComponentInvocation(context.Background(), "registry.example/tool:latest", map[string]string{"a": "different"}, platform, "")
+	_, err = executor.resolveComponentInvocation(context.Background(), "registry.example/tool:latest", map[string]string{"a": "different"}, platform, "", nil)
 	if err == nil || !strings.Contains(err.Error(), "changed digest during build") {
 		t.Fatalf("digest drift error = %v", err)
 	}

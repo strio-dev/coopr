@@ -35,25 +35,32 @@ func stageBindFromImageConfig(logical *imageconfig.Config) (planner.StageBind, e
 		bind.Inherited = append(bind.Inherited, parsed...)
 	}
 
-	environment, err := onBuildEnvironment(logical)
+	bind.BaseEnvironment, err = imageEnvironment(logical)
 	if err != nil {
 		return planner.StageBind{}, fmt.Errorf("ONBUILD base environment: %w", err)
 	}
+	return bind, nil
+}
+
+// imageEnvironment extracts ENV without parsing or consuming ONBUILD. EXTEND
+// invocation uses this boundary because caller triggers belong to a later FROM.
+func imageEnvironment(logical *imageconfig.Config) (map[string]string, error) {
+	environment, err := onBuildEnvironment(logical)
+	if err != nil {
+		return nil, err
+	}
+	var values map[string]string
 	for _, entry := range environment {
 		name, value, found := strings.Cut(entry, "=")
 		if !found || name == "" {
-			return planner.StageBind{}, fmt.Errorf("ONBUILD base environment entry %q must be NAME=value", entry)
+			return nil, fmt.Errorf("environment entry %q must be NAME=value", entry)
 		}
-		if bind.BaseEnvironment == nil {
-			bind.BaseEnvironment = make(map[string]string)
+		if values == nil {
+			values = make(map[string]string)
 		}
-		bind.BaseEnvironment[name] = value
+		values[name] = value
 	}
-	// Keep the zero value stable for images without environment entries.
-	if len(bind.BaseEnvironment) == 0 {
-		bind.BaseEnvironment = nil
-	}
-	return bind, nil
+	return values, nil
 }
 
 // consumeOnBuild plans inherited triggers at the start of a FROM stage. A

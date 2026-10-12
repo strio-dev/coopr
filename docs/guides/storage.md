@@ -59,6 +59,15 @@ coopr pull docker-daemon:app:dev
 coopr tag app:dev app:imported
 ```
 
+`coopr pull docker-daemon:NAME` imports the single compatibility image exported by Docker. `--platform` validates that image's configuration; it does not select a child of a multi-platform Docker image. A mismatch fails instead of returning an image for the wrong platform. Registry pulls select the requested index platform.
+
+To import a specific Docker platform, [Docker's platform-scoped save](https://docs.docker.com/reference/cli/docker/image/save/#platform) requires API 1.48 or later:
+
+```sh
+docker image save --platform=linux/arm64 --output app-arm64.tar app:dev
+coopr pull --platform=linux/arm64 docker-archive:app-arm64.tar
+```
+
 Transport prefixes select transfer sources or destinations, not local tags. Other destinations include registries, image directories, archives, and `containers-storage:`; see [transfer destinations](../reference/cli.md#names-and-transfer-destinations).
 
 ## Save and load images

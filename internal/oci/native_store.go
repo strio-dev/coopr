@@ -60,7 +60,11 @@ func ResolveStoredImage(ctx context.Context, backend storage.Store, name string,
 		}
 		matches := make([]v1.Descriptor, 0, 1)
 		for _, candidate := range index.Manifests {
-			if candidate.Platform != nil && storedPlatformMatches(*candidate.Platform, platform) {
+			candidatePlatform, runnable, err := storedIndexMemberPlatform(ctx, backend, candidate)
+			if err != nil {
+				return nil, err
+			}
+			if runnable && storedPlatformMatches(candidatePlatform, platform) {
 				matches = append(matches, candidate)
 			}
 		}
@@ -200,8 +204,12 @@ func StoredImagePlatforms(ctx context.Context, backend storage.Store, name strin
 		}
 		result := make([]v1.Platform, 0, len(index.Manifests))
 		for _, descriptor := range index.Manifests {
-			if descriptor.Platform != nil && descriptor.Platform.OS == "linux" && descriptor.Platform.Architecture != "" && descriptor.Platform.Architecture != "unknown" && descriptor.ArtifactType == "" {
-				result = append(result, *descriptor.Platform)
+			platform, runnable, err := storedIndexMemberPlatform(ctx, backend, descriptor)
+			if err != nil {
+				return nil, err
+			}
+			if runnable && platform.OS == "linux" {
+				result = append(result, platform)
 			}
 		}
 		return result, nil
@@ -217,6 +225,9 @@ func StoredImagePlatforms(ctx context.Context, backend storage.Store, name strin
 	configData, readErr := io.ReadAll(reader)
 	if err := errors.Join(readErr, reader.Close()); err != nil {
 		return nil, err
+	}
+	if int64(len(configData)) != manifest.Config.Size || digest.FromBytes(configData) != manifest.Config.Digest {
+		return nil, errors.New("stored image config differs from manifest")
 	}
 	var config v1.Image
 	if err := json.Unmarshal(configData, &config); err != nil {
@@ -264,6 +275,13 @@ func StoredImageName(backend storage.Store, name string) (string, error) {
 }
 
 func findStoredImageAndName(backend storage.Store, name string) (*storage.Image, string, error) {
+	if dockerreference.IsFullIdentifier(name) {
+		image, err := backend.Image(name)
+		if err != nil {
+			return nil, "", err
+		}
+		return image, image.ID, nil
+	}
 	if d, err := digest.Parse(name); err == nil {
 		images, err := backend.ImagesByDigest(d)
 		if err != nil {
@@ -373,10 +391,14 @@ func StoredImageSelections(ctx context.Context, backend storage.Store, name stri
 		}
 		result := map[string]StoredSelection{}
 		for _, child := range index.Manifests {
-			if child.Platform == nil || child.Platform.OS == "unknown" || child.Platform.Architecture == "unknown" || child.ArtifactType != "" {
+			platform, runnable, err := storedIndexMemberPlatform(ctx, backend, child)
+			if err != nil {
+				return v1.Descriptor{}, nil, nil, err
+			}
+			if !runnable {
 				continue
 			}
-			resolved, err := ResolveStoredImage(ctx, backend, child.Digest.String(), *child.Platform)
+			resolved, err := ResolveStoredImage(ctx, backend, child.Digest.String(), platform)
 			if errors.Is(err, storage.ErrImageUnknown) || os.IsNotExist(err) {
 				continue
 			}
@@ -386,9 +408,9 @@ func StoredImageSelections(ctx context.Context, backend storage.Store, name stri
 			if resolved.Selected.Digest != child.Digest && (resolved.SourceManifest == nil || resolved.SourceManifest.Digest != child.Digest) {
 				return v1.Descriptor{}, nil, nil, fmt.Errorf("stored child %s differs from index", child.Digest)
 			}
-			key := platforms.Format(platforms.Normalize(*child.Platform))
+			key := platforms.Format(platforms.Normalize(platform))
 			if existing, exists := result[key]; exists {
-				chosen, err := list.ChooseInstance(&types.SystemContext{OSChoice: child.Platform.OS, ArchitectureChoice: child.Platform.Architecture, VariantChoice: child.Platform.Variant})
+				chosen, err := list.ChooseInstance(&types.SystemContext{OSChoice: platform.OS, ArchitectureChoice: platform.Architecture, VariantChoice: platform.Variant})
 				if err != nil {
 					return v1.Descriptor{}, nil, nil, err
 				}
@@ -555,4 +577,35 @@ func storedRootManifest(ctx context.Context, backend storage.Store, imageID, nam
 		return nil, "", errors.New("stored origin manifest differs from recorded digest")
 	}
 	return data, mediaType, nil
+}
+
+// storedIndexMemberPlatform retains descriptor metadata and derives omitted
+// platforms from the resident child's verified image configuration.
+func storedIndexMemberPlatform(ctx context.Context, backend storage.Store, child v1.Descriptor) (v1.Platform, bool, error) {
+	if child.ArtifactType != "" {
+		return v1.Platform{}, false, nil
+	}
+	var platform v1.Platform
+	if child.Platform != nil {
+		platform = *child.Platform
+	} else {
+		available, err := StoredImagePlatforms(ctx, backend, child.Digest.String())
+		if errors.Is(err, storage.ErrImageUnknown) || os.IsNotExist(err) {
+			return v1.Platform{}, false, nil
+		}
+		if err != nil {
+			return v1.Platform{}, false, err
+		}
+		if len(available) != 1 {
+			return v1.Platform{}, false, fmt.Errorf("stored child %s has no unique image platform", child.Digest)
+		}
+		platform = available[0]
+	}
+	if platform.OS == "unknown" || platform.Architecture == "unknown" {
+		return v1.Platform{}, false, nil
+	}
+	if platform.OS == "" || platform.Architecture == "" {
+		return v1.Platform{}, false, fmt.Errorf("stored child %s has no image OS or architecture", child.Digest)
+	}
+	return platforms.Normalize(platform), true, nil
 }

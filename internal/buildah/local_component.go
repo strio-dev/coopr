@@ -143,7 +143,7 @@ func (executor *graphExecutor) materializeLocalComponent(ctx context.Context, re
 		return "", "", err
 	}
 	plan, selected, err := planDefinitionWithExternalBaseState(ctx, def, planner.Options{
-		Mode: planner.Publish, Target: selectedTarget, Platform: platform, Arguments: maps.Clone(parameters),
+		Mode: planner.Publish, Target: selectedTarget, Platform: platform, Arguments: maps.Clone(parameters), AwaitComponentReturns: true,
 		BuildContexts: executor.options.BuildContexts, DeferImageSource: deferredPolicySource(executor.sourcePolicy),
 		TransientRunMounts:      TransientMountInstructions(executor.options.TransientRunMounts),
 		SourceDateEpochResolver: sourceDateEpochResolver(ctx, buildCredentialSource{secretSpecs: executor.options.Secrets, sshSpecs: executor.options.SSH}),
