@@ -194,6 +194,7 @@ func signedTransferSystemContext(authFile, certDir, registriesDir string, opts O
 	system := &types.SystemContext{
 		AuthFilePath:         authFile,
 		DockerCertPath:       certDir,
+		DockerDaemonHost:     os.Getenv("DOCKER_HOST"),
 		RegistriesDirPath:    registriesDir,
 		BigFilesTemporaryDir: os.TempDir(),
 		SignaturePolicyPath:  opts.SignaturePolicyPath,

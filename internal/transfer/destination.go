@@ -61,9 +61,6 @@ func copyImageDestination(ctx context.Context, layout string, root v1.Descriptor
 		return "", err
 	}
 	system.BigFilesTemporaryDir = os.TempDir()
-	if destination.Transport == "docker-daemon" {
-		system.DockerDaemonHost = os.Getenv("DOCKER_HOST")
-	}
 	if policy == nil {
 		policy, err = signature.DefaultPolicy(system)
 		if err != nil {

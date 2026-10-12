@@ -677,6 +677,26 @@ func TestNormalizePullPolicy(t *testing.T) {
 	}
 }
 
+func TestResolverPreservesDockerDaemonHost(t *testing.T) {
+	for _, host := range []string{"", "unix:///run/user/1000/docker.sock", "tcp://127.0.0.1:2375"} {
+		t.Run(host, func(t *testing.T) {
+			t.Setenv("DOCKER_HOST", host)
+			resolver, err := NewResolver(Options{ComponentStoreDir: t.TempDir()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			system := resolver.SystemContext()
+			if system.DockerDaemonHost != host {
+				t.Fatalf("source daemon host = %q, want %q", system.DockerDaemonHost, host)
+			}
+			system.DockerDaemonHost = "different"
+			if got := resolver.SystemContext().DockerDaemonHost; got != host {
+				t.Fatalf("modifying source context changed resolver daemon host to %q", got)
+			}
+		})
+	}
+}
+
 func TestRegistryOptionsReturnsIndependentWorkerCopy(t *testing.T) {
 	var progress bytes.Buffer
 	resolver, err := NewResolver(Options{

@@ -579,6 +579,7 @@ func storedTransferSystemContext(options StoredTransferOptions, registriesDir st
 	system := &types.SystemContext{
 		AuthFilePath: authFile, DockerCertPath: certDir, RegistriesDirPath: registriesDir,
 		BigFilesTemporaryDir: os.TempDir(), SignaturePolicyPath: options.SignaturePolicyPath,
+		DockerDaemonHost: os.Getenv("DOCKER_HOST"),
 	}
 	oci.ApplyTLSVerify(system, options.TLSVerify)
 	if options.Credentials != "" {

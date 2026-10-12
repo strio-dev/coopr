@@ -102,6 +102,9 @@ func TestCopyRootDockerReturnsDestinationManifestDigest(t *testing.T) {
 					w.WriteHeader(http.StatusNotFound)
 				}
 			}))
+			if err := server.Listener.Close(); err != nil {
+				t.Fatal(err)
+			}
 			socketDir, err := os.MkdirTemp("/tmp", "coopr-digest-")
 			if err != nil {
 				t.Fatal(err)

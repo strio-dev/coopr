@@ -142,7 +142,7 @@ func NewResolver(opts Options) (*Resolver, error) {
 	if err != nil {
 		return nil, err
 	}
-	system := &types.SystemContext{AuthFilePath: opts.AuthFile, DockerCertPath: opts.CertDir, SignaturePolicyPath: opts.SignaturePolicyPath}
+	system := &types.SystemContext{AuthFilePath: opts.AuthFile, DockerCertPath: opts.CertDir, SignaturePolicyPath: opts.SignaturePolicyPath, DockerDaemonHost: os.Getenv("DOCKER_HOST")}
 	ApplyTLSVerify(system, opts.TLSVerify)
 	if opts.Credentials != "" {
 		username, password, _ := strings.Cut(opts.Credentials, ":")
