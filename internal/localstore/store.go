@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -21,6 +22,7 @@ import (
 	"go.podman.io/common/libimage"
 	imagereference "go.podman.io/image/v5/docker/reference"
 	"go.podman.io/storage/pkg/archive"
+	"go.podman.io/storage/pkg/idtools"
 	"oras.land/oras-go/v2"
 	"oras.land/oras-go/v2/content"
 	orasoci "oras.land/oras-go/v2/content/oci"
@@ -541,7 +543,36 @@ func WriteArchiveTo(ctx context.Context, source content.ReadOnlyStorage, root v1
 	if err := CopyGraphLayout(ctx, layout, source, root); err != nil {
 		return err
 	}
-	stream, err := archive.TarWithOptions(layout, &archive.TarOptions{})
+	// These files describe a generated layout, not the image filesystem. ORAS
+	// creates read-only blobs and umask-dependent directories; normalize only
+	// this private copy so the archive is portable without touching the store.
+	if err := filepath.WalkDir(layout, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		// TarWithOptions omits the source directory itself. Keep the staging
+		// root private while normalizing only the entries that are exported.
+		if path == layout {
+			return nil
+		}
+		mode := os.FileMode(0o644)
+		if entry.IsDir() {
+			mode = 0o755
+		} else if !entry.Type().IsRegular() {
+			return fmt.Errorf("unexpected OCI layout entry %q", path)
+		}
+		return os.Chmod(path, mode)
+	}); err != nil {
+		return fmt.Errorf("normalize OCI archive modes: %w", err)
+	}
+	timestamp := time.Unix(0, 0).UTC()
+	stream, err := archive.TarWithOptions(layout, &archive.TarOptions{
+		Timestamp: &timestamp,
+		ChownOpts: &idtools.IDPair{},
+	})
 	if err != nil {
 		return err
 	}

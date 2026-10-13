@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -635,7 +636,9 @@ func parseRunNamespace(name, value string) (define.NamespaceOption, bool, error)
 // optionally suffixed with b or ib), without reading host container defaults.
 func parseNonNegativeBytes(name, value string) (int64, error) {
 	size, err := units.RAMInBytes(value)
-	if err != nil || size < 0 {
+	// go-units converts float64 to int64 without checking overflow. ARM64
+	// saturates at MaxInt64; that value is not an in-range float64 integer.
+	if err != nil || size < 0 || size == math.MaxInt64 {
 		return 0, fmt.Errorf("invalid %s %q: expected a nonnegative byte size", name, value)
 	}
 	return size, nil

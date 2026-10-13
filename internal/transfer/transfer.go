@@ -661,6 +661,13 @@ func copyRoot(ctx context.Context, kind oci.Kind, storeDir string, root v1.Descr
 			}
 			return copyImageArchive(ctx, storeDir, root, destination, opts, preparedPolicy)
 		}
+		componentStore, err := storeDirectory(oci.Component, opts)
+		if err != nil {
+			return "", err
+		}
+		if err := validateComponentArchiveOutput(destination.Name, storeDir, componentStore); err != nil {
+			return "", err
+		}
 		if err := localstore.WriteArchive(ctx, store, root, destination.Name); err != nil {
 			return "", err
 		}

@@ -209,6 +209,126 @@ func TestWriteArchiveToAnchorsSingleImageRoot(t *testing.T) {
 	assertArchiveRoot(t, archive.Bytes(), root)
 }
 
+func TestWriteArchiveToUsesPortableStableLayoutMetadata(t *testing.T) {
+	ctx := context.Background()
+	source, root, blobs := testImageGraph(t, ctx)
+	// The source blobs are read-only. Export must normalize its own layout,
+	// without changing the source store's modes or modification times.
+	sourceDir := t.TempDir()
+	if err := Put(ctx, sourceDir, source, root); err != nil {
+		t.Fatal(err)
+	}
+	source, err := Open(ctx, sourceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := make(map[string]os.FileInfo)
+	for dgst := range blobs {
+		path := filepath.Join(sourceDir, "blobs", dgst.Algorithm().String(), dgst.Encoded())
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[path] = info
+	}
+	var previous []byte
+	for attempt := range 2 {
+		var output bytes.Buffer
+		if err := WriteArchiveTo(ctx, source, root, &output); err != nil {
+			t.Fatal(err)
+		}
+		assertArchiveRoot(t, output.Bytes(), root)
+		reader := tar.NewReader(bytes.NewReader(output.Bytes()))
+		for {
+			header, err := reader.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if header.Uid != 0 || header.Gid != 0 || header.Uname != "" || header.Gname != "" {
+				t.Errorf("%s leaks host ownership: %+v", header.Name, header)
+			}
+			if !header.ModTime.Equal(time.Unix(0, 0)) || (!header.AccessTime.IsZero() && !header.AccessTime.Equal(time.Unix(0, 0))) || (!header.ChangeTime.IsZero() && !header.ChangeTime.Equal(time.Unix(0, 0))) {
+				t.Errorf("%s leaks host timestamps: %+v", header.Name, header)
+			}
+			wantMode := int64(0o644)
+			if header.Typeflag == tar.TypeDir {
+				wantMode = 0o755
+			}
+			if header.Mode != wantMode {
+				t.Errorf("%s mode = %#o, want %#o", header.Name, header.Mode, wantMode)
+			}
+			if strings.HasPrefix(header.Name, "blobs/") && header.Typeflag == tar.TypeReg {
+				data, err := io.ReadAll(reader)
+				if err != nil {
+					t.Fatal(err)
+				}
+				dgst := digest.Digest(strings.TrimPrefix(strings.ReplaceAll(header.Name, "/", ":"), "blobs:"))
+				if want, ok := blobs[dgst]; !ok || !bytes.Equal(data, want) {
+					t.Errorf("archive blob %s changed or is unexpected", header.Name)
+				}
+			}
+		}
+		if attempt > 0 && !bytes.Equal(previous, output.Bytes()) {
+			t.Fatal("repeated export changed archive headers or content")
+		}
+		previous = bytes.Clone(output.Bytes())
+	}
+	for path, want := range before {
+		got, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Mode() != want.Mode() || !got.ModTime().Equal(want.ModTime()) {
+			t.Errorf("export changed source metadata for %s", path)
+		}
+	}
+}
+
+func TestWriteArchiveToKeepsStagingRootPrivate(t *testing.T) {
+	ctx := context.Background()
+	source, root, _ := testImageGraph(t, ctx)
+	tempDir := t.TempDir()
+	t.Setenv("TMPDIR", tempDir)
+	checked := false
+	writer := archiveWriterFunc(func(data []byte) (int, error) {
+		if !checked {
+			checked = true
+			entries, err := os.ReadDir(tempDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), ".coopr-oci-layout-") {
+				t.Fatalf("staging entries = %v, want only the active export layout", entries)
+			}
+			info, err := entries[0].Info()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !info.IsDir() || info.Mode().Perm() != 0o700 {
+				t.Errorf("active export layout mode = %v, want private directory0700", info.Mode())
+			}
+		}
+		return len(data), nil
+	})
+	if err := WriteArchiveTo(ctx, source, root, writer); err != nil {
+		t.Fatal(err)
+	}
+	if !checked {
+		t.Fatal("archive writer was not called")
+	}
+	entries, err := os.ReadDir(tempDir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("temporary export layout was not removed: entries=%v err=%v", entries, err)
+	}
+}
+
+type archiveWriterFunc func([]byte) (int, error)
+
+func (f archiveWriterFunc) Write(data []byte) (int, error) { return f(data) }
+
 func TestWriteArchiveToAnchorsOnlyMultiPlatformIndex(t *testing.T) {
 	ctx := context.Background()
 	source, err := orasoci.NewWithContext(ctx, t.TempDir())
