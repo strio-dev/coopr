@@ -3,7 +3,6 @@ package transfer
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -205,28 +204,6 @@ func TestNativeTagCopyPreservesRecordAndPodmanImageName(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestArchiveBoundaryHandlesMissingNativeRoots(t *testing.T) {
-	work := t.TempDir()
-	physical := filepath.Join(work, "physical")
-	if err := os.Mkdir(physical, 0700); err != nil {
-		t.Fatal(err)
-	}
-	alias := filepath.Join(work, "alias")
-	if err := os.Symlink(physical, alias); err != nil {
-		t.Fatal(err)
-	}
-	root := filepath.Join(alias, "missing", "native")
-	if err := rejectStoreArchivePath(root, filepath.Join(work, "outside", "image.tar")); err != nil {
-		t.Fatal(err)
-	}
-	if err := rejectStoreArchivePath(root, filepath.Join(physical, "missing", "native", "image.tar")); err == nil {
-		t.Fatal("archive inside missing native root accepted")
-	}
-	if _, err := os.Stat(filepath.Join(physical, "missing")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("boundary validation created directories: %v", err)
 	}
 }
 

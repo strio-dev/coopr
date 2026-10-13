@@ -5,6 +5,7 @@ package buildcontext
 import (
 	"errors"
 	"fmt"
+	"github.com/moby/buildkit/util/gitutil"
 	"net/url"
 	"path/filepath"
 	"regexp"
@@ -98,7 +99,7 @@ func parseOne(value string) (Spec, error) {
 		return Spec{}, fmt.Errorf("unsupported remote build context %q", source)
 	case remoteURLHasCredentials(source):
 		return Spec{}, errors.New("remote build context URL must not contain credentials")
-	case isGitSource(source):
+	case IsGitSource(source):
 		return Spec{Name: name, Kind: Git, Reference: source}, nil
 	case isHTTPSource(source):
 		return Spec{Name: name, Kind: HTTPArchive, Reference: source}, nil
@@ -143,25 +144,18 @@ func parseOCILayout(value string) (string, string, error) {
 	return filepath.Clean(abs), reference, nil
 }
 
-func isGitSource(value string) bool {
-	if isSCPGitSource(value) {
-		return true
-	}
-	parsed, err := url.Parse(value)
-	if err != nil {
-		return false
-	}
-	return parsed.Scheme == "git" || parsed.Scheme == "ssh" ||
-		((parsed.Scheme == "http" || parsed.Scheme == "https") && strings.HasSuffix(parsed.Path, ".git"))
+// IsGitSource applies the shared native transport parser while distinguishing
+// ordinary HTTP archives from HTTP Git repositories.
+func IsGitSource(value string) bool {
+	parsed, err := gitutil.ParseURL(value)
+	return err == nil && (parsed.Scheme == gitutil.GitProtocol || parsed.Scheme == gitutil.SSHProtocol ||
+		((parsed.Scheme == gitutil.HTTPProtocol || parsed.Scheme == gitutil.HTTPSProtocol) && strings.HasSuffix(parsed.Path, ".git")))
 }
 
-func isSCPGitSource(value string) bool {
-	userHost, path, found := strings.Cut(value, ":")
-	if !found || path == "" || strings.ContainsAny(userHost, "/\\\t\r\n ") {
-		return false
-	}
-	user, host, found := strings.Cut(userHost, "@")
-	return found && user != "" && host != ""
+// IsSSHGitSource recognizes explicit and SCP-style SSH transports.
+func IsSSHGitSource(value string) bool {
+	parsed, err := gitutil.ParseURL(value)
+	return err == nil && parsed.Scheme == gitutil.SSHProtocol
 }
 
 func isHTTPSource(value string) bool {

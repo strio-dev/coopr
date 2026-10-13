@@ -15,22 +15,6 @@ type copyAddDigestObservation func(dryRun bool)
 
 var copyAddDigestObserver atomic.Pointer[copyAddDigestObservation]
 
-type simpleCopyCacheCandidate struct {
-	key   digest.Digest
-	input digest.Digest
-	entry instructionCacheEntry
-}
-
-// uniqueSimpleCopyCacheCandidate distinguishes a unique reusable cache entry
-// from a miss and from an ambiguous match.  Ambiguity requires Buildah's
-// authoritative DryRun because destination state decides the actual tar name.
-func uniqueSimpleCopyCacheCandidate(candidates []simpleCopyCacheCandidate) (*simpleCopyCacheCandidate, bool) {
-	if len(candidates) == 1 {
-		return &candidates[0], false
-	}
-	return nil, len(candidates) > 1
-}
-
 // copyAddProbeEligible reports whether Buildah can compute the exact input
 // stream digest without introducing work or state that makes a preflight more
 // expensive or observably different from the real operation. Remote ADD would
@@ -104,6 +88,31 @@ func copyAddWithDigest(ctx context.Context, builder operationBuilder, contextDir
 		(*observer)(dryRun)
 	}
 	digester := digest.SHA256.Digester()
+	hasher := digester.Hash()
+	native, nativeDigest := builder.(nativeBuilder)
+	nativeDigest = nativeDigest && native.Builder != nil
+	if added, ok := operation.(Add); ok {
+		for _, source := range added.Sources {
+			// Remote ADD has an explicit HTTP checksum / verified Git commit
+			// identity. Do not hash generated checkout metadata instead.
+			if isHTTPAddSource(source) || isGitAddSource(source) {
+				nativeDigest = false
+			}
+		}
+	}
+	if native.Builder != nil {
+		previous := native.ContentDigester
+		native.ContentDigester = upstream.CompositeDigester{}
+		defer func() {
+			native.ContentDigester.Restart()
+			native.ContentDigester = previous
+		}()
+		// Native Add records normalized tar content, including modes/xattrs
+		// and excluding timestamps, in its CompositeDigester automatically.
+		if nativeDigest {
+			hasher = nil
+		}
+	}
 
 	switch copied := operation.(type) {
 	case Copy:
@@ -118,7 +127,7 @@ func copyAddWithDigest(ctx context.Context, builder operationBuilder, contextDir
 			if err != nil {
 				return "", err
 			}
-			options, sources, err := policy.applyLocalCopy(upstream.AddAndCopyOptions{Chown: copied.Chown, Chmod: copied.Chmod, Link: copied.Link, Parents: copied.Parents, Excludes: slices.Clone(copied.Excludes), Hasher: digester.Hash(), DryRun: dryRun}, copied.Sources)
+			options, sources, err := policy.applyLocalCopy(upstream.AddAndCopyOptions{Chown: copied.Chown, Chmod: copied.Chmod, Link: copied.Link, Parents: copied.Parents, Excludes: slices.Clone(copied.Excludes), Hasher: hasher, DryRun: dryRun}, copied.Sources)
 			if err != nil {
 				return "", err
 			}
@@ -127,7 +136,7 @@ func copyAddWithDigest(ctx context.Context, builder operationBuilder, contextDir
 			}
 		}
 		for _, source := range copied.InlineFiles {
-			if err := addInlineData(builder, copied.Destination, source, upstream.AddAndCopyOptions{Chown: copied.Chown, Chmod: copied.Chmod, Link: copied.Link, Excludes: slices.Clone(copied.Excludes), Hasher: digester.Hash(), DryRun: dryRun}); err != nil {
+			if err := addInlineData(builder, copied.Destination, source, upstream.AddAndCopyOptions{Chown: copied.Chown, Chmod: copied.Chmod, Link: copied.Link, Excludes: slices.Clone(copied.Excludes), Hasher: hasher, DryRun: dryRun}); err != nil {
 				return "", err
 			}
 		}
@@ -143,13 +152,13 @@ func copyAddWithDigest(ctx context.Context, builder operationBuilder, contextDir
 			if err := applyAddSources(ctx, builder, policy, copied, upstream.AddAndCopyOptions{
 				Chown: copied.Chown, Chmod: copied.Chmod, Checksum: copied.Checksum,
 				Link: copied.Link, Parents: copied.Parents, Excludes: slices.Clone(copied.Excludes),
-				Hasher: digester.Hash(), DryRun: dryRun,
+				Hasher: hasher, DryRun: dryRun,
 			}); err != nil {
 				return "", err
 			}
 		}
 		for _, source := range copied.InlineFiles {
-			if err := addInlineData(builder, copied.Destination, source, upstream.AddAndCopyOptions{Chown: copied.Chown, Chmod: copied.Chmod, Link: copied.Link, Excludes: slices.Clone(copied.Excludes), Hasher: digester.Hash(), DryRun: dryRun}); err != nil {
+			if err := addInlineData(builder, copied.Destination, source, upstream.AddAndCopyOptions{Chown: copied.Chown, Chmod: copied.Chmod, Link: copied.Link, Excludes: slices.Clone(copied.Excludes), Hasher: hasher, DryRun: dryRun}); err != nil {
 				return "", err
 			}
 		}
@@ -160,7 +169,7 @@ func copyAddWithDigest(ctx context.Context, builder operationBuilder, contextDir
 		}
 		options := copied.options
 		options.Excludes = slices.Clone(copied.options.Excludes)
-		options.Hasher = digester.Hash()
+		options.Hasher = hasher
 		options.DryRun = dryRun
 		if len(copied.sources) != 0 {
 			if err := CopyFromImage(copied.store, copied.imageID, native.Builder, copied.destination, copied.extract, options, copied.sources...); err != nil {
@@ -176,5 +185,17 @@ func copyAddWithDigest(ctx context.Context, builder operationBuilder, contextDir
 		return "", fmt.Errorf("operation %T is not COPY or ADD", operation)
 	}
 
+	if nativeDigest {
+		kind, input := native.ContentDigester.Digest()
+		if input == "" {
+			return digest.FromString(kind), nil
+		}
+		// Match the native content summary framing; file and directory inputs
+		// remain distinct even when their tar payload happens to match.
+		if kind != "" {
+			return digest.FromString(kind + ":" + input.Encoded()), nil
+		}
+		return input, nil
+	}
 	return digester.Digest(), nil
 }

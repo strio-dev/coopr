@@ -177,6 +177,9 @@ func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retEr
 		return "", err
 	}
 	applyFromOverride(def, opts.From)
+	if _, err := planner.ProjectPublicationRaw(def, opts.Target); err != nil {
+		return "", fmt.Errorf("plan component definition: %w", err)
+	}
 	opts.IgnoreFile, err = selectIgnoreFile(opts.Context, opts.IgnoreFile)
 	if err != nil {
 		return "", err

@@ -161,7 +161,7 @@ func sourceDateEpochAddSource(inst definition.Instruction, values scope) (Source
 	}
 	source := SourceDateEpochSource{Name: reference, Reference: reference, Checksum: checksum}
 	switch {
-	case isGitSourceDateEpochReference(reference):
+	case buildcontext.IsGitSource(reference):
 		source.Kind = SourceDateEpochGit
 	case isHTTPSourceDateEpochReference(reference):
 		source.Kind = SourceDateEpochHTTP
@@ -173,10 +173,4 @@ func sourceDateEpochAddSource(inst definition.Instruction, values scope) (Source
 
 func isHTTPSourceDateEpochReference(value string) bool {
 	return strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://")
-}
-
-func isGitSourceDateEpochReference(value string) bool {
-	withoutFragment, _, _ := strings.Cut(value, "#")
-	return strings.HasPrefix(withoutFragment, "git://") || strings.HasPrefix(withoutFragment, "ssh://") || strings.HasPrefix(withoutFragment, "git@") ||
-		(isHTTPSourceDateEpochReference(withoutFragment) && strings.HasSuffix(withoutFragment, ".git"))
 }

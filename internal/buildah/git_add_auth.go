@@ -8,6 +8,8 @@ import (
 	"os"
 	"strings"
 
+	"coopr/internal/buildcontext"
+	"github.com/moby/buildkit/util/gitutil"
 	"go.podman.io/buildah/pkg/sshagent"
 )
 
@@ -89,9 +91,11 @@ func gitAddEnvironment(builder any, remote string) ([]string, func() error, bool
 			return nil, cleanup, false, err
 		}
 		cleanup = joinCleanups(knownHostsCleanup, cleanup)
+		environment = removeEnvironment(environment, "GIT_SSH_COMMAND", "GIT_ALLOW_PROTOCOL")
 		return append(environment,
+			"GIT_ALLOW_PROTOCOL=git:http:https:ssh",
 			"SSH_AUTH_SOCK="+socket,
-			"GIT_SSH_COMMAND=ssh -F /dev/null -o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null -o UserKnownHostsFile="+shellQuote(knownHosts),
+			"GIT_SSH_COMMAND=ssh -F /dev/null -o BatchMode=yes -o IdentityFile=none -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null -o UserKnownHostsFile="+shellQuote(knownHosts),
 		), cleanup, false, nil
 	}
 
@@ -156,22 +160,15 @@ func gitAddKnownHosts(builder any, remote string) (string, func() error, error) 
 }
 
 func gitSSHHost(remote string) (string, error) {
-	if strings.HasPrefix(remote, "ssh://") {
-		parsed, err := url.Parse(remote)
-		if err != nil || parsed.Hostname() == "" {
-			return "", fmt.Errorf("parse SSH Git remote %q", redactGitSource(remote))
-		}
-		return parsed.Hostname(), nil
+	parsed, err := gitutil.ParseURL(remote)
+	if err != nil || parsed.Scheme != gitutil.SSHProtocol {
+		return "", fmt.Errorf("parse SSH Git remote %q", redactGitSource(remote))
 	}
-	userHost, _, found := strings.Cut(remote, ":")
-	if !found {
-		return "", fmt.Errorf("parse SCP-style Git remote %q", remote)
+	host, err := url.Parse("ssh://" + parsed.Host)
+	if err != nil || host.Hostname() == "" {
+		return "", fmt.Errorf("parse SSH Git remote %q", redactGitSource(remote))
 	}
-	_, host, found := strings.Cut(userHost, "@")
-	if !found || host == "" {
-		return "", fmt.Errorf("parse SCP-style Git remote %q", remote)
-	}
-	return host, nil
+	return host.Hostname(), nil
 }
 
 func joinCleanups(cleanups ...func() error) func() error {
@@ -226,7 +223,7 @@ func gitAddAuthorization(builder any, remote string) (string, bool, error) {
 }
 
 func isSSHGitRemote(remote string) bool {
-	return strings.HasPrefix(remote, "ssh://") || strings.HasPrefix(remote, "git@")
+	return buildcontext.IsSSHGitSource(remote)
 }
 
 func removeEnvironment(environment []string, names ...string) []string {

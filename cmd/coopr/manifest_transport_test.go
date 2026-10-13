@@ -299,14 +299,46 @@ func TestManifestPushFilesystemTransports(t *testing.T) {
 	})
 	for _, transport := range []string{"dir", "oci", "docker-archive"} {
 		for _, root := range []string{options.GraphRoot, options.RunRoot} {
-			target := transport + ":" + filepath.Join(root, "output")
-			if status := execute("push", "--quiet", "output-list", target); status == 0 || !strings.Contains(errs.String(), "would overwrite the Coopr store") {
-				t.Fatalf("unsafe manifest output %q status=%d: %s", target, status, &errs)
+			target := transport + ":" + filepath.Join(root, "output-"+transport)
+			status := execute("push", "--quiet", "output-list", target)
+			if transport == "docker-archive" {
+				if status == 0 || !strings.Contains(errs.String(), "does not support copying multiple images as a group") {
+					t.Fatalf("native archive limitation %q status=%d: %s", target, status, &errs)
+				}
+				continue
+			}
+			if status != 0 || out.Len() != 0 || errs.Len() != 0 {
+				t.Fatalf("owned-store output %q status=%d stdout=%q stderr=%q", target, status, &out, &errs)
+			}
+			reference, err := alltransports.ParseImageName(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source, err := reference.NewImageSource(ctx, &types.SystemContext{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, _, readErr := source.GetManifest(ctx, nil)
+			closeErr := source.Close()
+			if readErr != nil || closeErr != nil {
+				t.Fatalf("read owned-store output %q: %v, %v", target, readErr, closeErr)
+			}
+			var index v1.Index
+			if err := json.Unmarshal(raw, &index); err != nil {
+				t.Fatal(err)
+			}
+			if len(index.Manifests) != len(expected) {
+				t.Fatalf("owned-store output lost children: %s", raw)
+			}
+			for _, child := range index.Manifests {
+				if _, ok := expected[child.Digest]; !ok {
+					t.Fatalf("owned-store output changed child: %+v", child)
+				}
 			}
 		}
 	}
 	if status := execute("exists", "output-list"); status != 0 {
-		t.Fatalf("failed pushes damaged original list: %s", &errs)
+		t.Fatalf("filesystem exports damaged original list: %s", &errs)
 	}
 	target := "docker-archive:" + filepath.Join(t.TempDir(), "output.tar")
 	if status := execute("push", "--quiet", "output-list", target); status == 0 || !strings.Contains(errs.String(), "does not support copying multiple images as a group") {

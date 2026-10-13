@@ -2,7 +2,6 @@
 package localstore
 
 import (
-	"archive/tar"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,11 +14,13 @@ import (
 	"time"
 
 	"coopr/internal/storeactivity"
-	"github.com/distribution/reference"
 	"github.com/gofrs/flock"
 	"github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"go.podman.io/common/libimage"
+	imagereference "go.podman.io/image/v5/docker/reference"
+	"go.podman.io/storage/pkg/archive"
 	"oras.land/oras-go/v2"
 	"oras.land/oras-go/v2/content"
 	orasoci "oras.land/oras-go/v2/content/oci"
@@ -52,18 +53,14 @@ func NormalizeImageTag(tag string) (string, error) {
 		return "", fmt.Errorf("invalid local image tag %q", tag)
 	}
 	explicitLocalhost := strings.HasPrefix(tag, "localhost/")
-	first := strings.SplitN(tag, "/", 2)[0]
-	if !strings.Contains(tag, "/") || first != "localhost" && !strings.ContainsAny(first, ".:") {
-		tag = "localhost/" + tag
-	}
-	named, err := reference.ParseNormalizedNamed(tag)
+	named, err := libimage.NormalizeName(tag)
 	if err != nil {
 		return "", fmt.Errorf("invalid local image tag %q: %w", tag, err)
 	}
-	if _, ok := named.(reference.Digested); ok {
+	if _, ok := named.(imagereference.Digested); ok {
 		return "", fmt.Errorf("local image tag %q must not include a digest", tag)
 	}
-	normalized := reference.TagNameOnly(named).String()
+	normalized := named.String()
 	if !explicitLocalhost && strings.HasPrefix(normalized, "localhost/") {
 		normalized = strings.TrimPrefix(normalized, "localhost/")
 	}
@@ -544,46 +541,13 @@ func WriteArchiveTo(ctx context.Context, source content.ReadOnlyStorage, root v1
 	if err := CopyGraphLayout(ctx, layout, source, root); err != nil {
 		return err
 	}
-	w := tar.NewWriter(writer)
-	err = filepath.WalkDir(layout, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("OCI layout contains non-regular file %s", path)
-		}
-		name, err := filepath.Rel(layout, path)
-		if err != nil {
-			return err
-		}
-		if err := w.WriteHeader(&tar.Header{Name: filepath.ToSlash(name), Mode: 0644, Size: info.Size()}); err != nil {
-			return err
-		}
-		r, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		_, copyErr := io.Copy(w, &contextReader{ctx: ctx, r: r})
-		closeErr := r.Close()
-		if copyErr != nil {
-			return copyErr
-		}
-		return closeErr
-	})
-	if err == nil {
-		err = w.Close()
-	}
+	stream, err := archive.TarWithOptions(layout, &archive.TarOptions{})
 	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(writer, &contextReader{ctx: ctx, r: stream})
+	closeErr := stream.Close()
+	if err := errors.Join(copyErr, closeErr); err != nil {
 		return err
 	}
 	return ctx.Err()

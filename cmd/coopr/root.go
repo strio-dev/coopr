@@ -39,7 +39,7 @@ func newRootCommandWithStorageNamespace(prepareNamespace func() error) *cobra.Co
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.SetUsageTemplate(usageTemplate)
+	root.SetUsageTemplate(optionsUsageTemplate(root))
 	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
 		return fmt.Errorf("%w\nSee '%s --help'", err, cmd.CommandPath())
 	})

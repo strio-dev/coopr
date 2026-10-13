@@ -278,6 +278,7 @@ func TestGitAddSourceRecognition(t *testing.T) {
 		"git://example.invalid/repository.git",
 		"ssh://git@example.invalid/repository.git",
 		"git@example.invalid:repository.git#main",
+		"builder@example.invalid:repository.git#main",
 	} {
 		if !isGitAddSource(source) {
 			t.Errorf("%q was not recognized as Git", source)
@@ -324,7 +325,7 @@ func TestGitAddEnvironmentUsesExplicitSSHSource(t *testing.T) {
 	}
 	if command := environmentValue(environment, "GIT_SSH_COMMAND"); strings.Contains(command, "StrictHostKeyChecking=no") ||
 		!strings.Contains(command, "StrictHostKeyChecking=yes") || !strings.Contains(command, "GlobalKnownHostsFile=/dev/null") ||
-		!strings.Contains(command, "UserKnownHostsFile=") {
+		!strings.Contains(command, "UserKnownHostsFile=") || !strings.Contains(command, "IdentityFile=none") || !strings.Contains(command, "BatchMode=yes") {
 		t.Fatalf("GIT_SSH_COMMAND = %q", command)
 	}
 	knownHosts := strings.Trim(environmentValue(environment, "GIT_SSH_COMMAND")[strings.LastIndex(environmentValue(environment, "GIT_SSH_COMMAND"), "=")+1:], "'")
@@ -650,19 +651,33 @@ func TestGitAddOptionsRemoveMetadataByDefault(t *testing.T) {
 
 func TestVerifyGitCommitAcceptsPrefixAndRejectsMismatch(t *testing.T) {
 	repository := t.TempDir()
-	if err := os.Mkdir(filepath.Join(repository, ".git"), 0o755); err != nil {
+	executable, err := gitAddExecutable()
+	if err != nil {
 		t.Fatal(err)
 	}
-	const commit = "0123456789abcdef0123456789abcdef01234567"
-	if err := os.WriteFile(filepath.Join(repository, ".git", "HEAD"), []byte(commit+"\n"), 0o644); err != nil {
+	for _, args := range [][]string{{"init", "-q", repository}, {"-C", repository, "-c", "user.name=Coopr Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "--no-gpg-sign", "-qm", "fixture"}, {"-C", repository, "pack-refs", "--all"}} {
+		command := gitCommandContext(context.Background(), executable, args...)
+		command.Env = gitWorkerEnvironment(os.Environ())
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git fixture: %v: %s", err, output)
+		}
+	}
+	commit, err := resolveGitCommit(context.Background(), repository)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := verifyGitCommit(repository, "0123456"); err != nil {
+	if err := verifyGitCommit(context.Background(), repository, commit[:7]); err != nil {
 		t.Fatal(err)
 	}
-	if err := verifyGitCommit(repository, "fedcba"); err == nil || !strings.Contains(err.Error(), "unexpected commit") {
+	if err := verifyGitCommit(context.Background(), repository, "ffffffffff"); err == nil || !strings.Contains(err.Error(), "unexpected commit") {
 		t.Fatalf("mismatch error = %v", err)
 	}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := resolveGitCommit(canceled, repository); err == nil {
+		t.Fatal("canceled HEAD resolution succeeded")
+	}
+
 }
 
 type inspectingAddBuilder struct {
@@ -930,5 +945,54 @@ func TestSplitMultipleSourceDestinationResolvesAgainstWorkDir(t *testing.T) {
 	}
 	if !reflect.DeepEqual(builder.events, []string{"mkdir-dir:/work/owned:12:34"}) {
 		t.Fatalf("explicit chown events = %#v", builder.events)
+	}
+}
+
+func TestGitSSHPolicyAppliesToEveryParsedSSHUser(t *testing.T) {
+	for _, remote := range []string{"builder@example.invalid:repository.git", "ssh://builder@example.invalid/repository.git", "git@example.invalid:repository.git"} {
+		t.Run(remote, func(t *testing.T) {
+			builder := &sshAddBuilder{socket: "/tmp/fake-declared-agent", secrets: map[string][]byte{gitKnownHostsSecret: []byte("example.invalid ssh-ed25519 FAKE\n")}}
+			env, cleanup, _, err := gitAddEnvironment(builder, remote)
+			if cleanup != nil {
+				defer func() {
+					if err := cleanup(); err != nil {
+						t.Error(err)
+					}
+				}()
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			command := environmentValue(env, "GIT_SSH_COMMAND")
+			for _, option := range []string{"IdentityFile=none", "BatchMode=yes", "StrictHostKeyChecking=yes", "GlobalKnownHostsFile=/dev/null", "UserKnownHostsFile="} {
+				if !strings.Contains(command, option) {
+					t.Errorf("missing %q in %q", option, command)
+				}
+			}
+			if environmentValue(env, "SSH_AUTH_SOCK") != builder.socket {
+				t.Fatal("declared agent not selected")
+			}
+			if !strings.Contains(environmentValue(env, "GIT_ALLOW_PROTOCOL"), ":ssh") {
+				t.Fatal("declared SSH transport not admitted")
+			}
+		})
+	}
+}
+
+func TestGitNonSSHEnvironmentDeniesSSHSubmodules(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "/tmp/undeclared-agent")
+	t.Setenv("GIT_SSH_COMMAND", "ambient-ssh")
+	environment, cleanup, _, err := gitAddEnvironment(&credentialAddBuilder{}, "https://example.invalid/repository.git")
+	if cleanup != nil {
+		defer func() { _ = cleanup() }()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if environmentValue(environment, "SSH_AUTH_SOCK") != "" || environmentValue(environment, "GIT_SSH_COMMAND") != "/bin/false" {
+		t.Fatalf("ambient SSH survived: %v", environment)
+	}
+	if protocols := environmentValue(environment, "GIT_ALLOW_PROTOCOL"); strings.Contains(protocols, "ssh") || strings.Contains(protocols, "file") {
+		t.Fatal("non-SSH clone permits SSH submodules")
 	}
 }

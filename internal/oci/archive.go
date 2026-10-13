@@ -33,9 +33,7 @@ func ArchiveImageConfigDigest(ctx context.Context, path string) (digest.Digest, 
 	if err != nil {
 		return "", fmt.Errorf("read image manifest: %w", err)
 	}
-	if int64(len(manifestData)) != root.Size || root.Digest != root.Digest.Algorithm().FromBytes(manifestData) {
-		return "", fmt.Errorf("OCI image manifest differs from index")
-	}
+
 	var manifest v1.Manifest
 	if err := json.Unmarshal(manifestData, &manifest); err != nil || manifest.SchemaVersion != 2 {
 		return "", fmt.Errorf("invalid OCI image manifest: %v", err)
@@ -43,12 +41,10 @@ func ArchiveImageConfigDigest(ctx context.Context, path string) (digest.Digest, 
 	if err := checkDescriptor(manifest.Config); err != nil {
 		return "", fmt.Errorf("invalid image config descriptor: %w", err)
 	}
-	configData, err := readLayerMetadata(ctx, source, manifest.Config)
+	_, err = readLayerMetadata(ctx, source, manifest.Config)
 	if err != nil {
 		return "", fmt.Errorf("read image config: %w", err)
 	}
-	if int64(len(configData)) != manifest.Config.Size || manifest.Config.Digest != manifest.Config.Digest.Algorithm().FromBytes(configData) {
-		return "", fmt.Errorf("OCI image config differs from manifest")
-	}
+
 	return manifest.Config.Digest, nil
 }

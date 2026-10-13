@@ -173,6 +173,9 @@ func (r *nativeArtifactRepository) Exists(ctx context.Context, desc v1.Descripto
 	return exists, artifactError(err)
 }
 func (r *nativeArtifactRepository) Push(ctx context.Context, desc v1.Descriptor, reader io.Reader) error {
+	if err := checkDescriptor(desc); err != nil {
+		return err
+	}
 	// Spool once to verify content and rewind failed uploads without retaining layers in memory.
 	file, err := os.CreateTemp("", "coopr-registry-*")
 	if err != nil {
@@ -180,7 +183,11 @@ func (r *nativeArtifactRepository) Push(ctx context.Context, desc v1.Descriptor,
 	}
 	defer func() { _ = os.Remove(file.Name()) }()
 	defer func() { _ = file.Close() }()
-	if _, err = io.Copy(file, content.NewVerifyReader(reader, desc)); err != nil {
+	verified := content.NewVerifyReader(reader, desc)
+	if _, err = io.Copy(file, verified); err != nil {
+		return err
+	}
+	if err := verified.Verify(); err != nil {
 		return err
 	}
 	return retry.IfNecessary(ctx, func() error {
@@ -235,7 +242,7 @@ func (r *nativeArtifactRepository) Tag(ctx context.Context, desc v1.Descriptor, 
 			return err
 		}
 	}
-	if _, err := io.Copy(io.Discard, content.NewVerifyReader(bytes.NewReader(data), desc)); err != nil {
+	if _, err := content.ReadAll(bytes.NewReader(data), desc); err != nil {
 		return err
 	}
 	ref, err := r.reference(selector)

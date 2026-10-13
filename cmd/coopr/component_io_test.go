@@ -94,11 +94,20 @@ func TestComponentIOCommandsRoundTripWithoutNativeImageStore(t *testing.T) {
 		}
 		output := filepath.Join(dir, "component:v1.tar")
 		var out, errs bytes.Buffer
-		if status := run([]string{"component", "save", "--output", output, "source"}, &out, &errs); status == 0 {
-			t.Fatal("save accepted an output inside the component store")
+		if status := run([]string{"component", "save", "--output", output, "source"}, &out, &errs); status != 0 || out.Len() != 0 || errs.Len() != 0 {
+			t.Fatalf("save within owned store status=%d stdout=%q stderr=%q", status, &out, &errs)
 		}
-		if _, err := os.Stat(output); !os.IsNotExist(err) {
-			t.Fatalf("save wrote inside the component store: %v", err)
+		archived, err := oci.ArchiveRoot(output)
+		if err != nil || archived.Digest != root.Digest {
+			t.Fatalf("owned-store archive = %v, %v; want %s", archived, err, root.Digest)
+		}
+		saved, err := componentstore.Open(ctx, dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		retained, err := saved.Resolve(ctx, "source:latest")
+		if err != nil || retained.Digest != root.Digest {
+			t.Fatalf("save changed component source = %v, %v", retained, err)
 		}
 	})
 	server := httptest.NewServer(registry.New())

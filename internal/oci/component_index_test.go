@@ -10,6 +10,7 @@ import (
 	"coopr/internal/componentstore"
 	"coopr/internal/definition"
 	"coopr/internal/planner"
+
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2/content"
 	orasoci "oras.land/oras-go/v2/content/oci"
@@ -45,7 +46,7 @@ func TestAssembleComponentIndexResolvesBothPlatforms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if root.MediaType != v1.MediaTypeImageIndex || !sameDescriptor(root, Descriptor(v1.MediaTypeImageIndex, data)) {
+	if root.MediaType != v1.MediaTypeImageIndex || !content.Equal(root, Descriptor(v1.MediaTypeImageIndex, data)) {
 		t.Fatalf("component index descriptor = %+v", root)
 	}
 	var index v1.Index

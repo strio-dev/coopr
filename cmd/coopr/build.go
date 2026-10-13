@@ -11,6 +11,7 @@ import (
 	"coopr/internal/transfer"
 	"github.com/spf13/cobra"
 	"go.podman.io/buildah/define"
+	buildahcli "go.podman.io/buildah/pkg/cli"
 	buildahparse "go.podman.io/buildah/pkg/parse"
 )
 
@@ -19,42 +20,23 @@ func newBuildCommand() *cobra.Command {
 }
 
 func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
-	var ignoreFile string
 	var definitionFiles []string
-	var sourcePolicyFile string
-	var from, target, format, network, pullPolicy string
+	var network, pullPolicy string
 	var osName, arch, variant string
-	var tags []string
-	var metadataFile, iidFile, iidFileRaw string
-	var compressionFormat, blobDirectory string
-	var compressionLevel int
-	var forceCompression bool
+	var blobDirectory string
 	platform := runtime.GOOS + "/" + runtime.GOARCH
-	var args []string
-	var push, pull, noCache, rewriteTimestamp bool
+	var push, pull bool
 	var platforms []string
-	var cacheFrom, cacheTo []string
-	var secrets, ssh []string
 	var allow []string
 	var addHosts []string
-	var buildContexts []string
-	var buildArgFiles []string
-	var output []string
-	var squash, squashAll bool
-	var allPlatforms bool
-	var manifest string
-	var runStdin bool
-	var disableCompression bool
-	var confidentialWorkload string
-	var quiet, logSplit bool
-	var logRusage bool
-	var logFile string
-	var rusageLogFile string
+	var squashAll bool
 	var times buildTimeFlags
 	var imageControls imageControlFlags
 	var signing signingFlags
 	var controls buildControlFlags
 	var registry registryFlags
+	var native buildahcli.BudResults
+	nativeFlags := buildahcli.GetBudFlags(&native)
 	cmd := &cobra.Command{
 		Annotations: map[string]string{nativeStorageAnnotation: "true"},
 		Use:         "build [file|context]", Short: "Build an image into native container storage",
@@ -73,13 +55,13 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			resolvedArgs, err := readBuildArgFiles(buildArgFiles, args)
+			resolvedArgs, err := readBuildArgFiles(native.BuildArgFile, native.BuildArg)
 			if err != nil {
 				return err
 			}
 			var cw define.ConfidentialWorkloadOptions
 			if cmd.Flags().Changed("cw") {
-				cw, err = buildahparse.GetConfidentialWorkloadOptions(confidentialWorkload)
+				cw, err = buildahparse.GetConfidentialWorkloadOptions(native.CWOptions)
 				if err != nil {
 					return fmt.Errorf("parse --cw: %w", err)
 				}
@@ -96,8 +78,8 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			filesystems := make([]buildah.FilesystemOutput, 0, len(output))
-			for _, value := range output {
+			filesystems := make([]buildah.FilesystemOutput, 0, len(native.BuildOutputs))
+			for _, value := range native.BuildOutputs {
 				filesystem, err := buildah.ParseFilesystemOutput(value)
 				if err != nil {
 					return err
@@ -116,22 +98,22 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			contexts, err := buildcontext.Parse(buildContexts)
+			contexts, err := buildcontext.Parse(native.BuildContext)
 			if err != nil {
 				return err
 			}
-			cacheSources, err := parseCacheSpecs(cacheFrom, "src")
+			cacheSources, err := parseCacheSpecs(native.CacheFrom, "src")
 			if err != nil {
 				return fmt.Errorf("cache-from: %w", err)
 			}
-			cacheDestinations, err := parseCacheSpecs(cacheTo, "dest")
+			cacheDestinations, err := parseCacheSpecs(native.CacheTo, "dest")
 			if err != nil {
 				return fmt.Errorf("cache-to: %w", err)
 			}
-			if push && len(tags) == 0 {
+			if push && len(native.Tag) == 0 {
 				return fmt.Errorf("--push requires --tag")
 			}
-			for _, tag := range tags {
+			for _, tag := range native.Tag {
 				if tag == "" {
 					return fmt.Errorf("--tag requires a nonempty image name")
 				}
@@ -144,40 +126,40 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if allPlatforms {
+			if native.AllPlatforms {
 				if cmd.Flags().Changed("os") || cmd.Flags().Changed("arch") || cmd.Flags().Changed("variant") {
 					return fmt.Errorf("--all-platforms cannot be used with --os, --arch, or --variant")
 				}
 				requestedPlatform = ""
 			}
 			var executionStdin interface{ Read([]byte) (int, error) }
-			if runStdin {
+			if native.Stdin {
 				executionStdin = cmd.InOrStdin()
 			}
 			result, err := build.Run(cmd.Context(), build.Options{
-				File: files[0], Files: files, Context: resolvedContext, DefinitionsInContext: definitionsInContext, SourcePolicyFile: sourcePolicyFile, TransientRunMounts: transientRunMounts, From: from, IgnoreFile: ignoreFile,
+				File: files[0], Files: files, Context: resolvedContext, DefinitionsInContext: definitionsInContext, SourcePolicyFile: native.SourcePolicyFile, TransientRunMounts: transientRunMounts, From: native.From, IgnoreFile: native.IgnoreFile,
 				Lifecycle:          controls.lifecycle(),
-				DisableCompression: disableCompression, BlobDirectory: blobDirectory, CompressionFormat: compressionFormat, CompressionLevel: compressionLevelValue(cmd, compressionLevel), ForceCompression: forceCompressionValue(cmd, forceCompression), ConfidentialWorkload: cw,
-				Quiet: quiet, LogFile: logFile, LogSplit: logSplit, LogRusage: logRusage && !quiet, RusageLogFile: rusageLogFile,
+				DisableCompression: native.DisableCompression, BlobDirectory: blobDirectory, CompressionFormat: native.CompressionFormat, CompressionLevel: compressionLevelValue(cmd, native.CompressionLevel), ForceCompression: forceCompressionValue(cmd, native.ForceCompressionFormat), ConfidentialWorkload: cw,
+				Quiet: native.Quiet, LogFile: native.Logfile, LogSplit: native.LogSplitByPlatform, LogRusage: native.LogRusage && !native.Quiet, RusageLogFile: native.RusageLogFile,
 				BuildStore: store,
-				Outputs:    filesystems, Squash: squash, SquashAll: squashAll, SBOM: scans, Signing: signing.options(),
+				Outputs:    filesystems, Squash: native.Squash, SquashAll: squashAll, SBOM: scans, Signing: signing.options(),
 				ImageControls: imageOptions, Timestamp: forceTimestamp, SourceDateEpoch: epoch, CacheTTL: ttl,
-				AllPlatforms: allPlatforms, Manifest: manifest,
-				Tags: tags, MetadataFile: metadataFile, IIDFile: iidFile, IIDFileRaw: iidFileRaw,
+				AllPlatforms: native.AllPlatforms, Manifest: native.Manifest,
+				Tags: native.Tag, MetadataFile: native.MetadataFile, IIDFile: native.Iidfile, IIDFileRaw: native.IidfileRaw,
 				Push:             push,
 				Pull:             pull,
 				PullPolicy:       pullPolicy,
-				NoCache:          noCache,
+				NoCache:          native.NoCache,
 				Network:          network,
 				AddHosts:         addHosts,
 				RunControls:      runControls,
-				Jobs:             controls.jobs,
-				RewriteTimestamp: rewriteTimestamp,
-				Platform:         requestedPlatform, Platforms: platforms, Target: target, Format: format, Args: resolvedArgs,
+				Jobs:             controls.Jobs,
+				RewriteTimestamp: native.RewriteTimestamp,
+				Platform:         requestedPlatform, Platforms: platforms, Target: native.Target, Format: native.Format, Args: resolvedArgs,
 				AuthFile: registry.authFile, CertDir: registry.certDir, TLSVerify: registry.tlsPolicy(cmd),
 				Credentials: registry.credentials, Retry: registry.retry, RetrySet: cmd.Flags().Changed("retry"), RetryDelay: registry.retryDelay, DecryptionKeys: registry.decryptionKeys, SignaturePolicyPath: commandSignaturePolicy(cmd),
 				CacheFrom: cacheSources, CacheTo: cacheDestinations,
-				Secrets: secrets, SSH: ssh,
+				Secrets: native.Secrets, SSH: native.SSH,
 				Allow:         allow,
 				BuildContexts: contexts,
 				Stdin:         cmd.InOrStdin(), RunStdin: executionStdin, Stdout: cmd.OutOrStdout(), Stderr: cmd.ErrOrStderr(),
@@ -185,7 +167,7 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if iidFile != "" || iidFileRaw != "" || logFile != "" {
+			if native.Iidfile != "" || native.IidfileRaw != "" || native.Logfile != "" {
 				return nil
 			}
 			resultWriter := cmd.OutOrStdout()
@@ -200,59 +182,40 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
+	addNativeFlags(cmd, &nativeFlags, buildahcli.GetBudFlagsCompletions(), "source-policy-file", "metadata-file", "iidfile-raw")
+	f.Lookup("source-policy-file").Usage = "BuildKit-format policy file for base image sources"
+	f.Lookup("metadata-file").Usage = "write result, index, platform, and image configuration digests as JSON"
+	f.Lookup("iidfile-raw").Usage = "write the image ID without its algorithm prefix"
+	addNativeFlags(cmd, &nativeFlags, buildahcli.GetBudFlagsCompletions(), "from", "disable-compression", "compression-format", "compression-level", "force-compression", "cw", "quiet", "logfile", "logsplit", "log-rusage", "rusage-logfile", "output", "squash", "all-platforms", "manifest", "iidfile", "ignorefile", "tag", "no-cache", "rewrite-timestamp", "target", "format", "build-arg", "build-arg-file", "stdin", "build-context", "cache-from", "cache-to", "secret", "ssh")
+	f.Lookup("from").Usage = "replace the image in the first FROM instruction"
+	f.Lookup("output").Usage = "export flattened filesystem (repeatable): PATH, type=local,dest=PATH, or type=tar,dest=FILE (- for stdout)"
+	f.Lookup("squash").Usage = "combine new image layers, preserving base layers"
+	f.Lookup("ignorefile").Usage = "context ignore file (default: first of .cooprignore, .containerignore, .dockerignore at the context root)"
+	f.Lookup("no-cache").Usage = "rebuild without reading cached results; save fresh results to the build cache"
+	f.Lookup("target").Usage = "named output stage"
+	f.Lookup("build-arg").Usage = "build argument (repeatable NAME[=VALUE]; NAME inherits from the environment when set)"
+	f.Lookup("build-arg-file").Usage = "read build arguments from a file (repeatable; --build-arg wins)"
+	f.Lookup("build-context").Usage = "additional build context: NAME=PATH|URL|docker-image://REFERENCE|oci-layout://PATH:TAG (repeatable)"
+	f.Lookup("cache-from").Usage = "read cached results from a repository or type=local,src=PATH (repeatable)"
+	f.Lookup("cache-to").Usage = "write cached results to a repository or type=local,dest=PATH (repeatable)"
 	f.StringArrayVarP(&definitionFiles, "file", "f", nil, "definition file path (repeatable, combined in order; required with a build context)")
-	f.StringVar(&sourcePolicyFile, "source-policy-file", "", "BuildKit-format policy file for base image sources")
-	f.StringVar(&from, "from", "", "replace the image in the first FROM instruction")
-	f.BoolVarP(&disableCompression, "disable-compression", "D", true, "do not compress newly-created image layers")
 	f.StringVar(&blobDirectory, "blob-cache", "", "directory for native layer blob caching")
 	_ = f.MarkHidden("blob-cache")
-	f.StringVar(&compressionFormat, "compression-format", "", "compression algorithm for image layers: gzip, zstd, or zstd:chunked")
-	f.IntVar(&compressionLevel, "compression-level", 0, "compression level for image layers")
-	f.BoolVar(&forceCompression, "force-compression", false, "recompress image layers using the selected compression algorithm")
-	f.StringVar(&confidentialWorkload, "cw", "", "confidential workload options")
-	f.BoolVarP(&quiet, "quiet", "q", false, "suppress build progress")
-	f.StringVar(&logFile, "logfile", "", "write build output to a file")
-	f.BoolVar(&logSplit, "logsplit", false, "split logfile output by target platform")
-	f.BoolVar(&logRusage, "log-rusage", false, "log resource usage between build instructions")
-	f.StringVar(&rusageLogFile, "rusage-logfile", "", "write resource usage logs to a file")
-	_ = f.MarkHidden("log-rusage")
-	_ = f.MarkHidden("rusage-logfile")
-	f.StringArrayVarP(&output, "output", "o", nil, "export flattened filesystem (repeatable): PATH, type=local,dest=PATH, or type=tar,dest=FILE (- for stdout)")
-	f.BoolVar(&squash, "squash", false, "combine new image layers, preserving base layers")
 	f.BoolVar(&squashAll, "squash-all", false, "combine all image layers, including the base")
 	cmd.MarkFlagsMutuallyExclusive("squash", "squash-all")
-	f.BoolVar(&allPlatforms, "all-platforms", false, "build all runnable Linux platforms common to the base images")
-	f.StringVar(&manifest, "manifest", "", "append built platforms to a local named image index")
 	imageControls.addTo(cmd)
 	addSBOMFlags(cmd)
 	signing.addTo(cmd)
-	f.StringVar(&metadataFile, "metadata-file", "", "write result, index, platform, and image configuration digests as JSON")
-	f.StringVar(&iidFile, "iidfile", "", "write the image or manifest-list ID")
-	f.StringVar(&iidFileRaw, "iidfile-raw", "", "write the image ID without its algorithm prefix")
-	f.StringVar(&iidFileRaw, "raw-iidfile", "", "alias for --iidfile-raw")
-	f.StringVar(&ignoreFile, "ignorefile", "", "context ignore file (default: first of .cooprignore, .containerignore, .dockerignore at the context root)")
-	f.StringArrayVarP(&tags, "tag", "t", nil, "assign a name to the image")
+	f.StringVar(&native.IidfileRaw, "raw-iidfile", "", "alias for --iidfile-raw")
 	f.BoolVar(&push, "push", false, "publish the image to the registry named by --tag")
 	addPullFlags(cmd, &pullPolicy, &pull)
-	f.BoolVar(&noCache, "no-cache", false, "rebuild without reading cached results; save fresh results to the build cache")
 	f.StringVar(&network, "network", "default", "RUN network mode: default, private, none, host, ns:PATH, pasta[:OPTIONS], or named network")
 	f.StringSliceVar(&addHosts, "add-host", nil, "add HOST:IP to build containers (repeatable)")
-	f.BoolVar(&rewriteTimestamp, "rewrite-timestamp", false, "clamp layer timestamps newer than SOURCE_DATE_EPOCH")
 	f.StringSliceVar(&platforms, "platform", nil, "target platform as os/arch (repeatable or comma-separated; default: host platform)")
 	f.StringVar(&osName, "os", "", "target operating system")
 	f.StringVar(&arch, "arch", "", "target architecture")
 	f.StringVar(&variant, "variant", "", "target architecture variant")
 	cmd.MarkFlagsMutuallyExclusive("all-platforms", "platform")
-	f.StringVar(&target, "target", "", "named output stage")
-	f.StringVar(&format, "format", defaultBuildFormat(), "image format: oci (default) or docker")
-	f.StringArrayVar(&args, "build-arg", nil, "build argument (repeatable NAME[=VALUE]; NAME inherits from the environment when set)")
-	f.StringArrayVar(&buildArgFiles, "build-arg-file", nil, "read build arguments from a file (repeatable; --build-arg wins)")
-	f.BoolVar(&runStdin, "stdin", false, "pass stdin to RUN instructions")
-	f.StringArrayVar(&buildContexts, "build-context", nil, "additional build context: NAME=PATH|URL|docker-image://REFERENCE|oci-layout://PATH:TAG (repeatable)")
-	f.StringArrayVar(&cacheFrom, "cache-from", nil, "read cached results from a repository or type=local,src=PATH (repeatable)")
-	f.StringArrayVar(&cacheTo, "cache-to", nil, "write cached results to a repository or type=local,dest=PATH (repeatable)")
-	f.StringArrayVar(&secrets, "secret", nil, "secret source for RUN mounts: id=ID[,src=PATH|env=NAME] (repeatable)")
-	f.StringArrayVar(&ssh, "ssh", nil, "SSH agent or key source for RUN mounts: ID[=PATH] (repeatable)")
 	f.StringArrayVar(&allow, "allow", nil, "allow an elevated build entitlement (repeatable: network.host, security.insecure, device, or device=SELECTOR)")
 	times.addTo(cmd)
 	if standalone {

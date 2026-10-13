@@ -636,11 +636,16 @@ func TestImageIOLoadForeignOnlyIndex(t *testing.T) {
 
 func TestImageIOExistsLocalStatus(t *testing.T) {
 	options := maintenanceStoreOptions(t.TempDir())
-	err := buildah.WithStore(options, func(backend storage.Store) error {
-		_, err := backend.CreateImage("", []string{"localhost/exists-local:latest"}, "", "", nil)
-		return err
-	})
+	layout, root, _ := maintenanceImageLayout(t, v1.Platform{OS: "linux", Architecture: runtime.GOARCH}, "exists")
+	store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(options))
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.WriteLayout(context.Background(), layout, root, "exists-local"); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {

@@ -9,7 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
+
+	"oras.land/oras-go/v2/content"
 
 	"github.com/containerd/platforms"
 	"github.com/opencontainers/go-digest"
@@ -216,11 +217,7 @@ func normalizeImagePlatform(platform v1.Platform) v1.Platform {
 }
 
 func platformKey(platform v1.Platform) string {
-	key := platforms.FormatAll(platform)
-	if len(platform.OSFeatures) != 0 {
-		key += "[" + strings.Join(platform.OSFeatures, ",") + "]"
-	}
-	return key
+	return platforms.FormatAll(platform)
 }
 
 func platformPointer(platform v1.Platform) *v1.Platform {
@@ -298,7 +295,7 @@ func validateImageVariant(ctx context.Context, variant ImageVariant) (*orasoci.S
 	if err != nil {
 		return nil, fmt.Errorf("read OCI layout root: %w", err)
 	}
-	if !sameDescriptor(layoutDescriptor, variant.Manifest) {
+	if !content.Equal(layoutDescriptor, variant.Manifest) {
 		return nil, errors.New("OCI layout root differs from image manifest descriptor")
 	}
 	source, err := orasoci.NewWithContext(ctx, variant.Layout)
@@ -306,7 +303,7 @@ func validateImageVariant(ctx context.Context, variant ImageVariant) (*orasoci.S
 		return nil, fmt.Errorf("open OCI layout: %w", err)
 	}
 	resolved, err := source.Resolve(ctx, variant.Manifest.Digest.String())
-	if err != nil || !sameDescriptor(resolved, variant.Manifest) {
+	if err != nil || !content.Equal(resolved, variant.Manifest) {
 		return nil, fmt.Errorf("resolve image manifest: %v", err)
 	}
 	if err := verifyArchiveGraph(ctx, source, variant.Manifest); err != nil {

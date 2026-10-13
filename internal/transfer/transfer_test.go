@@ -241,7 +241,7 @@ func TestCopyRootRegistryUsesCredentialsAndDirectCertLeaf(t *testing.T) {
 	}
 }
 
-func TestArchiveDestinationCannotOverwriteStore(t *testing.T) {
+func TestArchiveDestinationInsideStoreUsesNativePolicy(t *testing.T) {
 	ctx := context.Background()
 	storeDir := filepath.Join(t.TempDir(), "images")
 	source, root := imageFixture(t, ctx)
@@ -257,17 +257,17 @@ func TestArchiveDestinationCannotOverwriteStore(t *testing.T) {
 	if err := os.Symlink(storeDir, alias); err != nil {
 		t.Fatal(err)
 	}
-	destination, err := ParseDestination("oci-archive:"+filepath.Join(alias, "index.json")+":app", oci.Image)
+	destination, err := ParseDestination("oci-archive:"+filepath.Join(alias, "export.tar")+":app", oci.Image)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = CopyRoot(ctx, oci.Image, storeDir, root, destination, Options{})
-	if err == nil || !strings.Contains(err.Error(), "would overwrite the Coopr store") {
-		t.Fatalf("store archive overwrite = %v", err)
+	if err != nil {
+		t.Fatalf("archive export within store = %v", err)
 	}
 	after, err := os.ReadFile(index)
 	if err != nil || !bytes.Equal(before, after) {
-		t.Fatalf("store index changed after rejected archive: %v", err)
+		t.Fatalf("store index changed during archive export: %v", err)
 	}
 }
 

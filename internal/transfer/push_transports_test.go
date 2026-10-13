@@ -124,7 +124,10 @@ func TestNativePushTransportOutputs(t *testing.T) {
 	}
 }
 
-func TestNativePushFilesystemStoreProtection(t *testing.T) {
+func TestNativePushFilesystemUsesNativeDestinationPolicy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires native storage workers")
+	}
 	ctx := context.Background()
 	store := nativeTestStore(t.TempDir())
 	selected := nativeEmptyImageFixture(t, store, v1.Platform{OS: "linux", Architecture: runtime.GOARCH}, "protected")
@@ -133,7 +136,7 @@ func TestNativePushFilesystemStoreProtection(t *testing.T) {
 	}
 	for _, transport := range []string{"dir", "oci", "docker-archive"} {
 		for _, root := range []string{store.GraphRoot, store.RunRoot} {
-			value := transport + ":" + filepath.Join(root, "image")
+			value := transport + ":" + filepath.Join(root, "export-"+transport)
 			if transport != "dir" {
 				value += ":example.com/app:dev"
 			}
@@ -141,8 +144,8 @@ func TestNativePushFilesystemStoreProtection(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := Copy(ctx, oci.Image, "protected:latest", dst, Options{BuildStore: store}); err == nil {
-				t.Fatalf("store output accepted: %s", value)
+			if _, err := Copy(ctx, oci.Image, "protected:latest", dst, Options{BuildStore: store}); err != nil {
+				t.Fatalf("native output destination %s: %v", value, err)
 			}
 		}
 	}

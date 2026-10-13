@@ -10,11 +10,11 @@ import (
 	"slices"
 	"time"
 
-	"golang.org/x/sys/unix"
+	"github.com/gofrs/flock"
 )
 
 type runCacheLocks struct {
-	files []*os.File
+	files []*flock.Flock
 }
 
 func (locks *runCacheLocks) close() error {
@@ -24,7 +24,7 @@ func (locks *runCacheLocks) close() error {
 	var result error
 	for index := len(locks.files) - 1; index >= 0; index-- {
 		file := locks.files[index]
-		result = errors.Join(result, unix.Flock(int(file.Fd()), unix.LOCK_UN), file.Close())
+		result = errors.Join(result, file.Close())
 	}
 	locks.files = nil
 	return result
@@ -48,36 +48,12 @@ func lockRunCacheMounts(ctx context.Context, graphRoot string, mounts []RunMount
 	locks := &runCacheLocks{}
 	for _, id := range ids {
 		name := fmt.Sprintf("%x.lock", sha256.Sum256([]byte(id)))
-		file, err := os.OpenFile(filepath.Join(lockDir, name), os.O_CREATE|os.O_RDWR, 0o600)
-		if err != nil {
-			return nil, errors.Join(fmt.Errorf("open cache mount lock: %w", err), locks.close())
+		file := flock.New(filepath.Join(lockDir, name), flock.SetFlag(os.O_CREATE|os.O_RDWR), flock.SetPermissions(0o600))
+		if _, err := file.TryLockContext(ctx, 25*time.Millisecond); err != nil {
+			return nil, errors.Join(fmt.Errorf("lock cache mount: %w", err), file.Close(), locks.close())
 		}
-		for {
-			if err := ctx.Err(); err != nil {
-				_ = file.Close()
-				return nil, errors.Join(err, locks.close())
-			}
-			err = unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB)
-			if err == nil {
-				if err := ctx.Err(); err != nil {
-					_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
-					_ = file.Close()
-					return nil, errors.Join(err, locks.close())
-				}
-				break
-			}
-			if !errors.Is(err, unix.EWOULDBLOCK) {
-				_ = file.Close()
-				return nil, errors.Join(fmt.Errorf("lock cache mount: %w", err), locks.close())
-			}
-			timer := time.NewTimer(25 * time.Millisecond)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				_ = file.Close()
-				return nil, errors.Join(ctx.Err(), locks.close())
-			case <-timer.C:
-			}
+		if err := ctx.Err(); err != nil {
+			return nil, errors.Join(err, file.Close(), locks.close())
 		}
 		locks.files = append(locks.files, file)
 	}

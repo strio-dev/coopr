@@ -8,6 +8,7 @@ import (
 
 	"coopr/internal/definition"
 	"coopr/internal/onbuildparse"
+	"github.com/containerd/platforms"
 )
 
 // ValidatePublished checks the graph that can be checked without caller
@@ -537,23 +538,9 @@ func containsStageName(names []string, target string) bool {
 }
 
 func samePlatform(a, b string) bool {
-	if a == b {
-		return true
-	}
-	aParts, bParts := strings.Split(a, "/"), strings.Split(b, "/")
-	if len(aParts) < 2 || len(aParts) > 3 || len(bParts) < 2 || len(bParts) > 3 {
-		return false
-	}
-	if aParts[0] != bParts[0] || aParts[1] != bParts[1] || aParts[1] != "arm64" {
-		return false
-	}
-	variant := func(parts []string) string {
-		if len(parts) == 2 || parts[2] == "v8" {
-			return ""
-		}
-		return parts[2]
-	}
-	return variant(aParts) == variant(bParts)
+	left, leftErr := platforms.Parse(a)
+	right, rightErr := platforms.Parse(b)
+	return leftErr == nil && rightErr == nil && platforms.FormatAll(platforms.Normalize(left)) == platforms.FormatAll(platforms.Normalize(right))
 }
 
 func canonicalSourceIndex(value string) bool {

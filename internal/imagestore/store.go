@@ -16,6 +16,7 @@ import (
 	"github.com/distribution/reference"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"go.podman.io/common/libimage"
 	"go.podman.io/common/libimage/manifests"
 	imagecopy "go.podman.io/image/v5/copy"
 	imagereference "go.podman.io/image/v5/docker/reference"
@@ -25,8 +26,6 @@ import (
 	imagestorage "go.podman.io/image/v5/storage"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/storage"
-	"go.podman.io/storage/pkg/homedir"
-	"go.podman.io/storage/pkg/unshare"
 	storagetypes "go.podman.io/storage/types"
 	"oras.land/oras-go/v2"
 	"oras.land/oras-go/v2/content"
@@ -104,7 +103,7 @@ func (s *Store) TagSelected(ctx context.Context, imageID string, selected v1.Des
 	if err != nil {
 		return "", err
 	}
-	if actual := oci.Descriptor(mediaType, data); actual.Digest != selected.Digest || actual.Size != selected.Size || actual.MediaType != selected.MediaType {
+	if actual := oci.Descriptor(mediaType, data); !content.Equal(actual, selected) {
 		return "", errors.New("stored manifest differs from selected descriptor")
 	}
 	if err := ctx.Err(); err != nil {
@@ -299,47 +298,16 @@ func (s *Store) Index(ctx context.Context, name string) (v1.Descriptor, []byte, 
 }
 
 // DefaultStoreOptions loads the effective Podman containers/storage
-// configuration at call time and applies the same rootless path correction as
-// explicit Podman transfers.
+// configuration at call time, preserving native rootless and configured paths.
 func DefaultStoreOptions() (storagetypes.StoreOptions, error) {
 	// DefaultStoreOptions caches its first result. The CLI may have entered a
 	// user namespace after package initialization, so load the current rootless
-	// paths at the moment the explicit Podman destination is opened.
+	// paths at the moment the native store is opened.
 	options, err := storagetypes.LoadStoreOptions(storagetypes.LoadOptions{})
 	if err != nil {
 		return storagetypes.StoreOptions{}, fmt.Errorf("load containers-storage options: %w", err)
 	}
-	if err := normalizeRootlessStoragePaths(&options); err != nil {
-		return storagetypes.StoreOptions{}, err
-	}
 	return options, nil
-}
-
-func normalizeRootlessStoragePaths(options *storagetypes.StoreOptions) error {
-	if !unshare.IsRootless() || unshare.GetRootlessUID() == 0 {
-		return nil
-	}
-	// Some system storage.conf files explicitly set the rootful defaults.
-	// containers/storage applies those values after its rootless defaults, so
-	// correct only the two rootful paths and preserve actual custom paths.
-	if options.GraphRoot == "/var/lib/containers/storage" {
-		data, err := homedir.GetDataHome()
-		if err != nil {
-			return fmt.Errorf("find rootless image storage directory: %w", err)
-		}
-		options.GraphRoot = filepath.Join(data, "containers", "storage")
-	}
-	if options.RunRoot == "/run/containers/storage" {
-		runtime, err := homedir.GetRuntimeDir()
-		if err != nil {
-			return fmt.Errorf("find rootless image runtime directory: %w", err)
-		}
-		options.RunRoot = filepath.Join(runtime, "containers")
-	}
-	options.GraphDriverOptions = slices.DeleteFunc(options.GraphDriverOptions, func(option string) bool {
-		return option == "imagestore=/usr/lib/containers/storage"
-	})
-	return nil
 }
 
 // Close releases storage resources without unmounting other users' layers.
@@ -371,18 +339,14 @@ func NormalizeTag(tag string) (string, error) {
 	if strings.TrimSpace(tag) != tag || strings.ContainsAny(tag, " \t\r\n") || strings.HasPrefix(tag, "-") || strings.Contains(tag, "://") {
 		return "", fmt.Errorf("invalid local image tag %q", tag)
 	}
-	first := strings.SplitN(tag, "/", 2)[0]
-	if !strings.Contains(tag, "/") || first != "localhost" && !strings.ContainsAny(first, ".:") {
-		tag = "localhost/" + tag
-	}
-	ref, err := reference.ParseNormalizedNamed(tag)
+	ref, err := libimage.NormalizeName(tag)
 	if err != nil {
 		return "", fmt.Errorf("invalid local image tag %q: %w", tag, err)
 	}
-	if _, ok := ref.(reference.Digested); ok {
+	if _, ok := ref.(imagereference.Digested); ok {
 		return "", fmt.Errorf("local image tag %q must not include a digest", tag)
 	}
-	return reference.TagNameOnly(ref).String(), nil
+	return ref.String(), nil
 }
 
 // Write copies an OCI image into the owned store and returns its normalized
@@ -815,7 +779,7 @@ func LayoutReference(layoutPath string, root v1.Descriptor) (types.ImageReferenc
 		return nil, fmt.Errorf("parse OCI layout index: %w", err)
 	}
 	for i, candidate := range index.Manifests {
-		if candidate.Digest == root.Digest && candidate.MediaType == root.MediaType && candidate.Size == root.Size {
+		if content.Equal(candidate, root) {
 			ref, err := ocilayout.NewIndexReference(abs, i)
 			if err != nil {
 				return nil, fmt.Errorf("open OCI layout root: %w", err)
@@ -872,12 +836,9 @@ func imageConfigDigest(ctx context.Context, source content.ReadOnlyStorage, root
 	if err := json.Unmarshal(manifestData, &manifest); err != nil || manifest.SchemaVersion != 2 {
 		return "", fmt.Errorf("invalid OCI image manifest: %v", err)
 	}
-	configData, err := content.FetchAll(ctx, source, manifest.Config)
+	_, err = content.FetchAll(ctx, source, manifest.Config)
 	if err != nil {
 		return "", fmt.Errorf("read image config: %w", err)
-	}
-	if int64(len(configData)) != manifest.Config.Size || manifest.Config.Digest != manifest.Config.Digest.Algorithm().FromBytes(configData) {
-		return "", errors.New("OCI image config differs from manifest")
 	}
 	return manifest.Config.Digest, nil
 }

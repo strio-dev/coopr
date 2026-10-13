@@ -25,7 +25,7 @@ func TestImageControlFlagsEnvironmentLookup(t *testing.T) {
 		{"explicit value", []string{"COOPR_LOOKUP_*=literal"}, []string{"COOPR_LOOKUP_*=literal"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			controls, err := (imageControlFlags{env: test.env}).controls()
+			controls, err := (imageControlFlags{Envs: test.env}).controls()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -35,7 +35,7 @@ func TestImageControlFlagsEnvironmentLookup(t *testing.T) {
 			}
 		})
 	}
-	controls, err := (imageControlFlags{env: []string{"*"}}).controls()
+	controls, err := (imageControlFlags{Envs: []string{"*"}}).controls()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,9 +47,9 @@ func TestImageControlFlagsEnvironmentLookup(t *testing.T) {
 func TestImageControlFlags(t *testing.T) {
 	t.Setenv("COOPR_TEST_ENV", "host")
 	flags := imageControlFlags{
-		env: []string{"COOPR_TEST_ENV", "DIRECT=value"}, labels: []string{"empty", "set=value"},
-		annotations: []string{"org.example.flag=value"}, unsetEnv: []string{"OLD"}, unsetLabels: []string{"old"},
-		inheritLabels: false, inheritAnnotations: false, omitHistory: true,
+		Envs: []string{"COOPR_TEST_ENV", "DIRECT=value"}, Label: []string{"empty", "set=value"},
+		Annotation: []string{"org.example.flag=value"}, UnsetEnvs: []string{"OLD"}, UnsetLabels: []string{"old"},
+		InheritLabels: false, InheritAnnotations: false, OmitHistory: true,
 	}
 	controls, err := flags.controls()
 	if err != nil {

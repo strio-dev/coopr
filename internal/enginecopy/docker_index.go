@@ -9,8 +9,11 @@ import (
 	"maps"
 	"path/filepath"
 
+	"github.com/moby/moby/client/pkg/jsonmessage"
+
 	"coopr/internal/imagestore"
 	"coopr/internal/localstore"
+
 	dockerclient "github.com/moby/moby/client"
 	digest "github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -78,7 +81,7 @@ func copyDockerIndex(ctx context.Context, layout string, root v1.Descriptor, nam
 	if err != nil {
 		return fmt.Errorf("inspect loaded Docker image %q: %w", fullyQualified, err)
 	}
-	if inspect.Descriptor == nil || !sameContentDescriptor(*inspect.Descriptor, root) {
+	if inspect.Descriptor == nil || !content.Equal(*inspect.Descriptor, root) {
 		return fmt.Errorf("docker loaded image %q with descriptor %v, want %+v", fullyQualified, inspect.Descriptor, root)
 	}
 	available := make(map[digest.Digest]v1.Descriptor, len(inspect.Manifests))
@@ -88,15 +91,11 @@ func copyDockerIndex(ctx context.Context, layout string, root v1.Descriptor, nam
 		}
 	}
 	for _, want := range expected {
-		if got, ok := available[want.Digest]; !ok || !sameContentDescriptor(got, want) {
+		if got, ok := available[want.Digest]; !ok || !content.Equal(got, want) {
 			return fmt.Errorf("docker loaded image %q without expected available platform manifest %+v", fullyQualified, want)
 		}
 	}
 	return nil
-}
-
-func sameContentDescriptor(got, want v1.Descriptor) bool {
-	return got.Digest == want.Digest && got.MediaType == want.MediaType && got.Size == want.Size
 }
 
 func dockerUsesContainerdImageStore(status [][2]string) bool {
@@ -187,25 +186,8 @@ func loadDockerOCIArchive(ctx context.Context, client *dockerclient.Client, sour
 }
 
 func decodeDockerLoadResponse(reader io.Reader) error {
-	decoder := json.NewDecoder(reader)
-	for {
-		var message struct {
-			Error       string `json:"error"`
-			ErrorDetail *struct {
-				Message string `json:"message"`
-			} `json:"errorDetail"`
-		}
-		if err := decoder.Decode(&message); err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil
-			}
-			return fmt.Errorf("decode Docker image load response: %w", err)
-		}
-		if message.ErrorDetail != nil && message.ErrorDetail.Message != "" {
-			return fmt.Errorf("docker image load: %s", message.ErrorDetail.Message)
-		}
-		if message.Error != "" {
-			return fmt.Errorf("docker image load: %s", message.Error)
-		}
+	if err := jsonmessage.DisplayJSONMessagesStream(reader, io.Discard, 0, false, nil); err != nil {
+		return fmt.Errorf("docker image load: %w", err)
 	}
+	return nil
 }

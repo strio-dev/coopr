@@ -154,7 +154,7 @@ func (s *nativeImageStorage) resolveRoot(ctx context.Context) (v1.Descriptor, er
 	if mediaType == "" {
 		mediaType = manifest.GuessMIMEType(data)
 	}
-	return v1.Descriptor{MediaType: mediaType, Digest: digest.FromBytes(data), Size: int64(len(data))}, nil
+	return content.NewDescriptorFromBytes(mediaType, data), nil
 }
 
 func (s *nativeImageStorage) Fetch(ctx context.Context, target v1.Descriptor) (io.ReadCloser, error) {

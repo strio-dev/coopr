@@ -1,11 +1,11 @@
 package transfer
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	imagecli "go.podman.io/image/v5/pkg/cli"
 	"os"
 	"path/filepath"
 	"strings"
@@ -292,13 +292,11 @@ func (options SigningOptions) passphrases() ([]byte, string, error) {
 }
 
 func readPassphraseFile(path string) ([]byte, error) {
-	value, err := os.ReadFile(path)
+	value, err := imagecli.ReadPassphraseFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read signing passphrase file: %w", err)
 	}
-	value, _, _ = bytes.Cut(value, []byte("\n"))
-	value = bytes.TrimSuffix(value, []byte("\r"))
-	return value, nil
+	return []byte(strings.TrimSuffix(value, "\r")), nil
 }
 
 func sigstoreAttachmentsConfig() (string, error) {

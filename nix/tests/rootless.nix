@@ -183,6 +183,10 @@ let
           diskSize = 16384;
           cores = 4;
           podman.enable = true;
+          containers.storage.settings.storage = {
+            graphroot = lib.mkForce "";
+            runroot = lib.mkForce "";
+          };
           containers.containersConf.settings.engine.helper_binaries_dir = [
             "${pkgs.netavark}/bin"
             "${pkgs.aardvark-dns}/bin"

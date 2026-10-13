@@ -15,6 +15,7 @@ import (
 	"coopr/internal/oci"
 	"coopr/internal/planner"
 
+	"github.com/containerd/platforms"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -238,15 +239,14 @@ func componentPackageInputs(plan *planner.Plan, packages []oci.Package) (map[str
 }
 
 func componentPlatformFromString(value string) (v1.Platform, error) {
-	parts := strings.Split(value, "/")
-	if len(parts) < 2 || len(parts) > 3 || parts[0] != "linux" || parts[1] == "" {
+	if strings.Count(value, "/") < 1 || strings.Count(value, "/") > 2 || strings.HasSuffix(value, "/") {
 		return v1.Platform{}, fmt.Errorf("invalid Linux platform %q", value)
 	}
-	platform := v1.Platform{OS: parts[0], Architecture: parts[1]}
-	if len(parts) == 3 {
-		platform.Variant = parts[2]
+	platform, err := platforms.Parse(value)
+	if err != nil || platform.OS != "linux" || platform.Architecture == "" || platform.OSVersion != "" || len(platform.OSFeatures) != 0 {
+		return v1.Platform{}, fmt.Errorf("invalid Linux platform %q", value)
 	}
-	return platform, nil
+	return platforms.Normalize(platform), nil
 }
 
 func componentPlatformString(platform v1.Platform) (string, error) {
@@ -261,11 +261,7 @@ func componentPlatformString(platform v1.Platform) (string, error) {
 			return "", errors.New("component platform fields must not contain whitespace, slash, or NUL")
 		}
 	}
-	result := platform.OS + "/" + platform.Architecture
-	if platform.Variant != "" {
-		result += "/" + platform.Variant
-	}
-	return result, nil
+	return platforms.Format(platforms.Normalize(platform)), nil
 }
 
 func cloneComponentPackage(pkg oci.Package) oci.Package {

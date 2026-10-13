@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"coopr/internal/oci"
+
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -23,6 +24,8 @@ import (
 	imagestorage "go.podman.io/image/v5/storage"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/storage"
+	"go.podman.io/storage/pkg/homedir"
+	"go.podman.io/storage/pkg/unshare"
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
 
@@ -968,5 +971,77 @@ func TestNamesIncludesMutableNamesAndPreservesDirectDigestLookup(t *testing.T) {
 	resolved, err := store.Resolve(ctx, canonical, v1.Platform{OS: "linux", Architecture: "amd64"})
 	if err != nil || resolved.Selected.Digest != manifest.Digest || resolved.StorageImageID != imageID.Encoded() {
 		t.Fatalf("direct digest resolve = %+v, %v", resolved, err)
+	}
+}
+
+func TestDefaultStoreOptionsHonorsNativeConfiguration(t *testing.T) {
+	config := filepath.Join(t.TempDir(), "storage.conf")
+	// Parse only: no store is opened, and these paths need not exist.
+	data := `[storage]
+driver = "vfs"
+graphroot = "/var/lib/containers/storage"
+runroot = "/run/containers/storage"
+[storage.options]
+additionalimagestores = ["/usr/lib/containers/storage"]
+`
+	if err := os.WriteFile(config, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CONTAINERS_STORAGE_CONF", config)
+	t.Setenv("STORAGE_OPTS", "")
+	opts, err := DefaultStoreOptions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.GraphRoot != "/var/lib/containers/storage" || opts.RunRoot != "/run/containers/storage" {
+		t.Fatalf("configured native paths overridden: %+v", opts)
+	}
+	// STORAGE_OPTS overrides the configured list, exactly as native parsing does.
+	t.Setenv("STORAGE_OPTS", "imagestore=/usr/lib/containers/storage")
+	opts, err = DefaultStoreOptions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(opts.GraphDriverOptions, "imagestore=/usr/lib/containers/storage") {
+		t.Fatalf("configured image store removed: %v", opts.GraphDriverOptions)
+	}
+}
+
+func TestDefaultStoreOptionsUsesNativeDefaults(t *testing.T) {
+	config := filepath.Join(t.TempDir(), "storage.conf")
+	t.Setenv("CONTAINERS_STORAGE_CONF", config)
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("STORAGE_OPTS", "")
+	wantGraph, wantRun := "/var/lib/containers/storage", "/run/containers/storage"
+	if unshare.IsRootless() && unshare.GetRootlessUID() != 0 {
+		data, err := homedir.GetDataHome()
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Native GetRuntimeDir caches its first resolution. Use that public value,
+		// rather than changing XDG_RUNTIME_DIR after another test initialized it.
+		runtime, err := homedir.GetRuntimeDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantGraph = filepath.Join(data, "containers", "storage")
+		wantRun = filepath.Join(runtime, "containers")
+	}
+	for _, tc := range []struct{ name, paths string }{
+		{"omitted", ""},
+		{"empty", "graphroot = \"\"\nrunroot = \"\"\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(config, []byte("[storage]\ndriver = \"vfs\"\n"+tc.paths), 0600); err != nil {
+				t.Fatal(err)
+			}
+			options, err := DefaultStoreOptions()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if options.GraphRoot != wantGraph || options.RunRoot != wantRun {
+				t.Fatalf("native defaults = graph %q run %q, want %q/%q", options.GraphRoot, options.RunRoot, wantGraph, wantRun)
+			}
+		})
 	}
 }

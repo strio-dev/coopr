@@ -14,105 +14,62 @@ import (
 	"coopr/internal/transfer"
 
 	"github.com/spf13/cobra"
+	buildahcli "go.podman.io/buildah/pkg/cli"
 	buildahparse "go.podman.io/buildah/pkg/parse"
 )
 
 type buildControlFlags struct {
-	layers, remove, forceRemove, skipUnused, compatVolumes bool
-	saveStages, stageLabels                                bool
-	mounts                                                 []string
-	cdiConfigDir                                           string
-	httpProxy                                              bool
-	dns                                                    []string
-	dnsSearch                                              []string
-	dnsOption                                              []string
-	memory                                                 string
-	memorySwap                                             string
-	cpuPeriod                                              uint64
-	cpuQuota                                               int64
-	cpuShares                                              uint64
-	shmSize                                                string
-	ulimits                                                []string
-	volumes                                                []string
-	capAdd                                                 []string
-	capDrop                                                []string
-	security                                               []string
-	devices                                                []string
-	groupAdd                                               []string
-	userNS                                                 string
-	uidMap                                                 []string
-	gidMap                                                 []string
-	mapUser                                                string
-	mapGroup                                               string
-	cgroupNS                                               string
-	cgroupParent                                           string
-	cpusetCPUs                                             string
-	cpusetMems                                             string
-	pidNS                                                  string
-	ipcNS                                                  string
-	utsNS                                                  string
-	hooksDirs                                              []string
-	runtimeFlags                                           []string
-	isolation                                              string
-	runtime                                                string
-	noHosts, noHostname                                    bool
-	command                                                *cobra.Command
-	jobs                                                   int
+	buildahcli.FromAndBudResults
+	buildahcli.UserNSResults
+	buildahcli.NameSpaceResults
+	buildahcli.LayerResults
+	buildahcli.BudResults
+	mounts   []string
+	runtime  string
+	command  *cobra.Command
+	setupErr error
 }
 
 func (flags *buildControlFlags) addTo(command *cobra.Command) {
 	flags.command = command
+	common, err := buildahcli.GetFromAndBudFlags(&flags.FromAndBudResults, &flags.UserNSResults, &flags.NameSpaceResults)
+	flags.setupErr = err
+	if err == nil {
+		addNativeFlags(command, &common, buildahcli.GetFromAndBudFlagsCompletions(),
+			"http-proxy", "dns", "dns-search", "dns-option", "memory", "memory-swap", "cpu-period", "cpu-quota", "cpu-shares", "shm-size", "ulimit", "cdi-config-dir", "volume", "cap-add", "cap-drop", "security-opt", "device", "group-add", "userns", "userns-uid-map", "userns-gid-map", "userns-uid-map-user", "userns-gid-map-group", "cgroupns", "cgroup-parent", "cpuset-cpus", "cpuset-mems", "pid", "ipc", "uts", "isolation")
+	}
+	bud := buildahcli.GetBudFlags(&flags.BudResults)
+	bud.Lookup("jobs").Shorthand = "j"
+	addNativeFlags(command, &bud, buildahcli.GetBudFlagsCompletions(), "hooks-dir", "runtime-flag", "rm", "skip-unused-stages", "compat-volumes", "no-hosts", "no-hostname", "jobs")
+	command.Flags().Lookup("compat-volumes").Usage = "discard RUN changes under declared image volumes"
+	layers := buildahcli.GetLayerFlags(&flags.LayerResults)
+	addNativeFlags(command, &layers, nil, "layers", "force-rm", "save-stages", "stage-labels")
 	set := command.Flags()
-	set.BoolVar(&flags.httpProxy, "http-proxy", true, "pass host HTTP proxy environment variables to RUN instructions")
-	set.StringSliceVar(&flags.dns, "dns", nil, "set a DNS server for RUN instructions (repeatable; use none to disable DNS configuration)")
-	set.StringSliceVar(&flags.dnsSearch, "dns-search", nil, "set a DNS search domain for RUN instructions (repeatable)")
-	set.StringSliceVar(&flags.dnsOption, "dns-option", nil, "set a DNS resolver option for RUN instructions (repeatable)")
-	set.StringVarP(&flags.memory, "memory", "m", "", "set the memory limit for RUN instructions")
-	set.StringVar(&flags.memorySwap, "memory-swap", "", "set memory plus swap for RUN instructions (-1 for unlimited swap)")
-	set.Uint64Var(&flags.cpuPeriod, "cpu-period", 0, "set the CPU CFS period for RUN instructions")
-	set.Int64Var(&flags.cpuQuota, "cpu-quota", 0, "set the CPU CFS quota for RUN instructions (-1 for unlimited)")
-	set.Uint64VarP(&flags.cpuShares, "cpu-shares", "c", 0, "set relative CPU shares for RUN instructions")
-	set.StringVar(&flags.shmSize, "shm-size", "", "set /dev/shm size for RUN instructions")
-	set.StringSliceVar(&flags.ulimits, "ulimit", nil, "set a ulimit for RUN instructions as NAME=SOFT:HARD (repeatable)")
 	set.StringArrayVar(&flags.mounts, "mount", nil, "mount into every RUN using Containerfile mount options (repeatable)")
-	set.StringVar(&flags.cdiConfigDir, "cdi-config-dir", "", "directory of CDI configuration files")
-	_ = set.MarkHidden("cdi-config-dir")
-	set.StringArrayVarP(&flags.volumes, "volume", "v", nil, "bind mount HOST:CONTAINER[:OPTIONS] into every RUN (repeatable)")
-	set.StringSliceVar(&flags.capAdd, "cap-add", nil, "add Linux capabilities to RUN instructions (repeatable)")
-	set.StringSliceVar(&flags.capDrop, "cap-drop", nil, "drop Linux capabilities from RUN instructions (repeatable)")
-	set.StringArrayVar(&flags.security, "security-opt", nil, "set RUN security options (repeatable)")
-	set.StringArrayVar(&flags.devices, "device", nil, "add a host device to RUN instructions (repeatable)")
-	set.StringSliceVar(&flags.groupAdd, "group-add", nil, "add supplementary groups to RUN instructions (repeatable)")
-	set.StringVar(&flags.userNS, "userns", "", "RUN user namespace: host, private, auto, or namespace path")
-	set.StringSliceVar(&flags.uidMap, "userns-uid-map", nil, "map container UID ranges as CONTAINER:HOST:SIZE")
-	set.StringSliceVar(&flags.gidMap, "userns-gid-map", nil, "map container GID ranges as CONTAINER:HOST:SIZE")
-	set.StringVar(&flags.mapUser, "userns-uid-map-user", "", "use subordinate UID mappings for USER")
-	set.StringVar(&flags.mapGroup, "userns-gid-map-group", "", "use subordinate GID mappings for GROUP")
-	set.StringVar(&flags.cgroupNS, "cgroupns", "", "RUN cgroup namespace: host, private, or namespace path")
-	set.StringVar(&flags.cgroupParent, "cgroup-parent", "", "parent cgroup for RUN instructions")
-	set.StringVar(&flags.cpusetCPUs, "cpuset-cpus", "", "CPUs in which RUN instructions may execute")
-	set.StringVar(&flags.cpusetMems, "cpuset-mems", "", "memory nodes available to RUN instructions")
-	set.StringVar(&flags.pidNS, "pid", "", "RUN PID namespace: host, private, or namespace path")
-	set.StringVar(&flags.ipcNS, "ipc", "", "RUN IPC namespace: host, private, or namespace path")
-	set.StringVar(&flags.utsNS, "uts", "", "RUN UTS namespace: host, private, or namespace path")
-	set.StringArrayVar(&flags.hooksDirs, "hooks-dir", nil, "OCI hooks directory for RUN instructions (repeatable)")
-	set.StringSliceVar(&flags.runtimeFlags, "runtime-flag", nil, "pass a global flag to the OCI runtime for RUN instructions (repeatable)")
-	set.StringVar(&flags.isolation, "isolation", "", "RUN isolation: oci, rootless, or chroot")
 	set.StringVar(&flags.runtime, "runtime", "", "OCI runtime executable for RUN instructions")
-	layers := os.Getenv("BUILDAH_LAYERS")
-	set.BoolVar(&flags.layers, "layers", !strings.EqualFold(layers, "false") && layers != "0", "cache instructions and preserve their filesystem layers")
-	set.BoolVar(&flags.remove, "rm", true, "remove intermediate containers after a successful build")
-	set.BoolVar(&flags.forceRemove, "force-rm", true, "also remove intermediate containers after build failure")
-	set.BoolVar(&flags.skipUnused, "skip-unused-stages", true, "build only stages required by the selected target")
-	set.BoolVar(&flags.saveStages, "save-stages", false, "retain completed intermediate stage images")
-	set.BoolVar(&flags.stageLabels, "stage-labels", false, "label saved stage images with their stage names")
-	set.BoolVar(&flags.compatVolumes, "compat-volumes", false, "discard RUN changes under declared image volumes")
-	set.BoolVar(&flags.noHosts, "no-hosts", false, "preserve the image /etc/hosts during RUN")
-	set.BoolVar(&flags.noHostname, "no-hostname", false, "preserve the image /etc/hostname during RUN")
-	set.IntVarP(&flags.jobs, "jobs", "j", 1, "maximum concurrent build jobs (0 is unlimited)")
+	// Coopr caches ordered instructions by default and removes failed containers.
+	layerEnv := os.Getenv("BUILDAH_LAYERS")
+	setNativeDefault(set.Lookup("layers"), fmt.Sprint(!strings.EqualFold(layerEnv, "false") && layerEnv != "0"))
+	setNativeDefault(set.Lookup("force-rm"), "true")
+	// Execution resolves these defaults after loading the requested configuration.
+	for _, name := range []string{"isolation", "shm-size"} {
+		setNativeDefault(set.Lookup(name), "")
+	}
+	// Keep absence distinct from an explicitly supplied empty list. Runtime
+	// configuration (including --module) is loaded when controls are resolved.
+	flags.DNSServers, flags.DNSSearch, flags.DNSOptions = nil, nil, nil
+	flags.Ulimit, flags.Volumes, flags.Devices, flags.OCIHooksDir = nil, nil, nil, nil
+	for _, name := range []string{"dns", "dns-search", "dns-option", "ulimit", "volume", "device", "hooks-dir"} {
+		if flag := set.Lookup(name); flag != nil {
+			flag.DefValue = "[]"
+		}
+	}
 }
 
 func (flags buildControlFlags) controls() (buildah.RunControls, error) {
+	if flags.setupErr != nil {
+		return buildah.RunControls{}, flags.setupErr
+	}
 	var cgroupManager, networkConfigDir string
 	var configModules, cdiSpecDirs []string
 	if flags.command != nil {
@@ -122,22 +79,22 @@ func (flags buildControlFlags) controls() (buildah.RunControls, error) {
 		cdiSpecDirs, _ = set.GetStringArray("cdi-spec-dir")
 		networkConfigDir, _ = set.GetString("network-config-dir")
 	}
-	if flags.cdiConfigDir != "" {
-		cdiSpecDirs = []string{flags.cdiConfigDir}
+	if flags.CDIConfigDir != "" {
+		cdiSpecDirs = []string{flags.CDIConfigDir}
 	}
 	return buildah.ParseRunControls(buildah.RunControlInput{
-		HTTPProxy: flags.httpProxy, DNSServers: flags.dns, DNSSearch: flags.dnsSearch, DNSOptions: flags.dnsOption,
-		Memory: flags.memory, MemorySwap: flags.memorySwap, CPUPeriod: flags.cpuPeriod, CPUQuota: flags.cpuQuota,
-		CPUShares: flags.cpuShares, ShmSize: flags.shmSize, Ulimits: flags.ulimits,
-		Volumes: flags.volumes, CapAdd: flags.capAdd, CapDrop: flags.capDrop, SecurityOptions: flags.security,
-		Devices: flags.devices, GroupAdd: flags.groupAdd, UserNS: flags.userNS,
-		UIDMap: flags.uidMap, GIDMap: flags.gidMap, UIDMapUser: flags.mapUser, GIDMapGroup: flags.mapGroup,
-		CgroupNS: flags.cgroupNS, CgroupParent: flags.cgroupParent, CPUSetCPUs: flags.cpusetCPUs,
-		CPUSetMems: flags.cpusetMems, PIDNS: flags.pidNS, IPCNS: flags.ipcNS, UTSNS: flags.utsNS,
-		HooksDirs:    flags.hooksDirs,
-		RuntimeFlags: flags.runtimeFlags,
-		Isolation:    flags.isolation, Runtime: flags.runtime,
-		NoHosts: flags.noHosts, NoHostname: flags.noHostname, CgroupManager: cgroupManager,
+		HTTPProxy: flags.HTTPProxy, DNSServers: flags.DNSServers, DNSSearch: flags.DNSSearch, DNSOptions: flags.DNSOptions,
+		Memory: flags.Memory, MemorySwap: flags.MemorySwap, CPUPeriod: flags.CPUPeriod, CPUQuota: flags.CPUQuota,
+		CPUShares: flags.CPUShares, ShmSize: flags.ShmSize, Ulimits: flags.Ulimit,
+		Volumes: flags.Volumes, CapAdd: flags.CapAdd, CapDrop: flags.CapDrop, SecurityOptions: flags.SecurityOpt,
+		Devices: flags.Devices, GroupAdd: flags.GroupAdd, UserNS: flags.UserNS,
+		UIDMap: flags.UserNSUIDMap, GIDMap: flags.UserNSGIDMap, UIDMapUser: flags.UserNSUIDMapUser, GIDMapGroup: flags.UserNSGIDMapGroup,
+		CgroupNS: flags.Cgroup, CgroupParent: flags.CgroupParent, CPUSetCPUs: flags.CPUSetCPUs,
+		CPUSetMems: flags.CPUSetMems, PIDNS: flags.PID, IPCNS: flags.IPC, UTSNS: flags.UTS,
+		HooksDirs:    flags.OCIHooksDir,
+		RuntimeFlags: flags.RuntimeFlags,
+		Isolation:    flags.Isolation, Runtime: flags.runtime,
+		NoHosts: flags.NoHosts, NoHostname: flags.NoHostname, CgroupManager: cgroupManager,
 		ConfigModules: configModules, CDISpecDirs: cdiSpecDirs, NetworkConfigDir: networkConfigDir,
 	})
 }
@@ -229,7 +186,7 @@ func parseCacheSpecs(values []string, localPathKey string) ([]buildah.CacheSpec,
 }
 
 func (flags buildControlFlags) lifecycle() buildah.LifecycleControls {
-	return buildah.LifecycleControls{NoLayers: !flags.layers, KeepIntermediate: !flags.remove && !flags.forceRemove, KeepFailed: !flags.forceRemove, BuildUnusedStages: !flags.skipUnused, CompatVolumes: flags.compatVolumes, SaveStages: flags.saveStages, StageLabels: flags.stageLabels}
+	return buildah.LifecycleControls{NoLayers: !flags.Layers, KeepIntermediate: !flags.Rm && !flags.ForceRm, KeepFailed: !flags.ForceRm, BuildUnusedStages: !flags.SkipUnusedStages, CompatVolumes: flags.CompatVolumes, SaveStages: flags.SaveStages, StageLabels: flags.StageLabels}
 }
 
 func commandSignaturePolicy(cmd *cobra.Command) string {

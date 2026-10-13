@@ -10,29 +10,6 @@ import (
 	upstream "go.podman.io/buildah"
 )
 
-func TestUniqueSimpleCopyCacheCandidate(t *testing.T) {
-	first := simpleCopyCacheCandidate{key: digest.FromString("first"), input: digest.FromString("input-first")}
-	second := simpleCopyCacheCandidate{key: digest.FromString("second"), input: digest.FromString("input-second")}
-	tests := []struct {
-		name       string
-		candidates []simpleCopyCacheCandidate
-		want       *simpleCopyCacheCandidate
-		ambiguous  bool
-	}{
-		{name: "miss"},
-		{name: "unique", candidates: []simpleCopyCacheCandidate{first}, want: &first},
-		{name: "ambiguous", candidates: []simpleCopyCacheCandidate{first, second}, ambiguous: true},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			got, ambiguous := uniqueSimpleCopyCacheCandidate(test.candidates)
-			if !reflect.DeepEqual(got, test.want) || ambiguous != test.ambiguous {
-				t.Fatalf("uniqueSimpleCopyCacheCandidate() = %#v, %v; want %#v, %v", got, ambiguous, test.want, test.ambiguous)
-			}
-		})
-	}
-}
-
 func TestCopyAddProbeEligibility(t *testing.T) {
 	inline := []definition.InlineFile{{Path: "inline", Data: "contents"}}
 	tests := []struct {

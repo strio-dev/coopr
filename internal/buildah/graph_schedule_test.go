@@ -2,7 +2,11 @@ package buildah
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -149,5 +153,51 @@ func TestStageAliasesExcludeNamesDeclaredLater(t *testing.T) {
 	aliases := stageAliases(stages)
 	if aliases[1]["base"] != "0" || aliases[1]["future"] != "" || aliases[2]["future"] != "" {
 		t.Fatalf("stage-local aliases = %+v", aliases)
+	}
+}
+
+func TestRunCacheLockCancellationWhileContended(t *testing.T) {
+	root := t.TempDir()
+	mounts := []RunMount{{Type: "cache", Properties: map[string]string{"id": "held", "sharing": "locked"}}}
+	first, err := lockRunCacheMounts(context.Background(), root, mounts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := first.close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	second, err := lockRunCacheMounts(ctx, root, mounts)
+	if second != nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("contended cancellation = %v, %v", second, err)
+	}
+}
+
+func TestRunCacheLockPartialFailureReleasesEarlierLocks(t *testing.T) {
+	root := t.TempDir()
+	lockDir := filepath.Join(root, "coopr-cache-locks")
+	if err := os.MkdirAll(filepath.Join(lockDir, fmt.Sprintf("%x.lock", sha256.Sum256([]byte("b")))), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	mount := func(id string) RunMount {
+		return RunMount{Type: "cache", Properties: map[string]string{"id": id, "sharing": "locked"}}
+	}
+	if locks, err := lockRunCacheMounts(context.Background(), root, []RunMount{mount("a"), mount("b")}); err == nil || locks != nil {
+		t.Fatalf("invalid lock path accepted: %v, %v", locks, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	locks, err := lockRunCacheMounts(ctx, root, []RunMount{mount("a")})
+	if err != nil {
+		t.Fatalf("earlier lock leaked: %v", err)
+	}
+	if err := locks.close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := locks.close(); err != nil {
+		t.Fatal(err)
 	}
 }

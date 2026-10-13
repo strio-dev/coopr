@@ -1,6 +1,7 @@
 package planner
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -221,4 +222,37 @@ from "scratch" {}
 func epochPointer(value int64) *int64 { return &value }
 func equalEpoch(left, right *int64) bool {
 	return left == nil && right == nil || left != nil && right != nil && *left == *right
+}
+
+func TestSourceDateEpochGitSourceUsesSharedTransportClassification(t *testing.T) {
+	for _, reference := range []string{
+		"builder@example.invalid:source.git#main:tree",
+		"https://example.invalid/source.git?ref=main#main:tree",
+	} {
+		t.Run(reference, func(t *testing.T) {
+			def, err := definition.Parse(strings.NewReader(fmt.Sprintf(`
+arg "SOURCE_DATE_EPOCH" "metadata"
+from "scratch" as="metadata" {
+ add %q "/ignored"
+}
+from "scratch" {}
+`, reference)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got SourceDateEpochSource
+			calls := 0
+			epoch := int64(42)
+			plan, err := Create(def, Options{Mode: Build, SourceDateEpochResolver: func(source SourceDateEpochSource) (*int64, error) { calls++; got = source; return &epoch, nil }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 || got.Kind != SourceDateEpochGit || got.Reference != reference || got.Name != reference {
+				t.Fatalf("Git epoch source = %#v, calls=%d; want original %q", got, calls, reference)
+			}
+			if plan.SourceDateEpoch == nil || *plan.SourceDateEpoch != epoch {
+				t.Fatalf("epoch = %v", plan.SourceDateEpoch)
+			}
+		})
+	}
 }

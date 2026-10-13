@@ -6,6 +6,7 @@ import (
 
 	"coopr/internal/oci"
 	"github.com/spf13/cobra"
+	buildahcli "go.podman.io/buildah/pkg/cli"
 )
 
 func TestBuildControlFlagsUseConventionalDefaultsAndParsing(t *testing.T) {
@@ -51,8 +52,7 @@ func TestBuildLifecycleDefaultsMatchPodman(t *testing.T) {
 
 func TestBuildControlParserCanonicalizesRepeatedValues(t *testing.T) {
 	flags := buildControlFlags{
-		httpProxy: true, dns: []string{"2001:0db8::1", "2001:db8::1"}, dnsSearch: []string{"Example.TEST"},
-		memory: "64m", memorySwap: "128m", ulimits: []string{"nofile=1024:2048"},
+		FromAndBudResults: buildahcli.FromAndBudResults{HTTPProxy: true, DNSServers: []string{"2001:0db8::1", "2001:db8::1"}, DNSSearch: []string{"Example.TEST"}, Memory: "64m", MemorySwap: "128m", Ulimit: []string{"nofile=1024:2048"}},
 	}
 	controls, err := flags.controls()
 	if err != nil {
