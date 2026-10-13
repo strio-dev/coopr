@@ -5,6 +5,7 @@ go 1.26.8
 require (
 	github.com/calico32/kdl-go v0.16.0
 	github.com/containerd/platforms v1.0.0-rc.5
+	github.com/cyphar/filepath-securejoin v0.7.0
 	github.com/distribution/reference v0.6.0
 	github.com/docker/distribution v2.8.3+incompatible
 	github.com/docker/go-connections v0.8.1
@@ -12,8 +13,10 @@ require (
 	github.com/gofrs/flock v0.13.0
 	github.com/google/go-containerregistry v0.22.1
 	github.com/moby/buildkit v0.33.0
+	github.com/moby/docker-image-spec v1.3.1
 	github.com/moby/moby/client v0.5.1
 	github.com/moby/sys/capability v0.4.0
+	github.com/moby/sys/userns v0.2.0
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/opencontainers/runtime-spec v1.3.0
@@ -24,6 +27,7 @@ require (
 	go.podman.io/common v0.69.2
 	go.podman.io/image/v5 v5.41.2
 	go.podman.io/storage v1.64.1
+	golang.org/x/sync v0.23.0
 	golang.org/x/sys v0.48.0
 	oras.land/oras-go/v2 v2.6.2
 	tags.cncf.io/container-device-interface v1.1.0
@@ -54,7 +58,6 @@ require (
 	github.com/containers/ocicrypt v1.3.2 // indirect
 	github.com/coreos/go-systemd/v22 v22.7.0 // indirect
 	github.com/cyberphone/json-canonicalization v0.0.0-20241213102144-19d51d7fe467 // indirect
-	github.com/cyphar/filepath-securejoin v0.7.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/disiqueira/gotree/v3 v3.0.2 // indirect
 	github.com/docker/docker-credential-helpers v0.9.8 // indirect
@@ -81,7 +84,6 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.48 // indirect
 	github.com/miekg/pkcs11 v1.1.2 // indirect
 	github.com/mistifyio/go-zfs/v4 v4.0.0 // indirect
-	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/moby/go-archive v0.3.3 // indirect
 	github.com/moby/moby/api v1.55.0 // indirect
 	github.com/moby/patternmatcher v0.6.1 // indirect
@@ -89,7 +91,6 @@ require (
 	github.com/moby/sys/mountinfo v0.7.2 // indirect
 	github.com/moby/sys/sequential v0.7.0 // indirect
 	github.com/moby/sys/user v0.4.1 // indirect
-	github.com/moby/sys/userns v0.2.0 // indirect
 	github.com/moby/term v0.5.2 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee // indirect
@@ -131,7 +132,6 @@ require (
 	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/mod v0.41.0 // indirect
 	golang.org/x/net v0.60.0 // indirect
-	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/term v0.46.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260803160001-6ac0973c030d // indirect

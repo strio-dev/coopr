@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,7 +25,7 @@ func readLayerMetadata(ctx context.Context, source content.ReadOnlyStorage, desc
 		return nil, err
 	}
 	defer func() { _ = r.Close() }()
-	return io.ReadAll(io.LimitReader(&contextReader{ctx: ctx, reader: r}, maxMetadataBytes+1))
+	return content.ReadAll(&contextReader{ctx: ctx, reader: r}, desc)
 }
 
 func decodeLayerObject(data []byte) (map[string]json.RawMessage, error) {

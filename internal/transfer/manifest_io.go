@@ -28,15 +28,6 @@ func PushManifestList(ctx context.Context, name string, destination Destination,
 	if err != nil {
 		return "", err
 	}
-	if destination.isPath() {
-		for _, boundary := range []string{store.GraphRoot, store.RunRoot, store.ImageStore} {
-			if boundary != "" {
-				if err := rejectStoreArchivePath(boundary, destination.Name); err != nil {
-					return "", err
-				}
-			}
-		}
-	}
 
 	lease, err := storeactivity.AcquireShared(ctx, buildah.ActivityRoots(store, "")...)
 	if err != nil {

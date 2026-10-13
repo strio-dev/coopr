@@ -5,18 +5,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/containerd/platforms"
 	"io"
 	"os"
 	"slices"
 	"strings"
 
+	"github.com/containerd/platforms"
+	"oras.land/oras-go/v2/content"
+
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"go.podman.io/common/libimage"
 	dockerreference "go.podman.io/image/v5/docker/reference"
 	"go.podman.io/image/v5/manifest"
-	"go.podman.io/image/v5/pkg/shortnames"
 	imagestorage "go.podman.io/image/v5/storage"
+	"go.podman.io/image/v5/transports/alltransports"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/storage"
 )
@@ -110,7 +113,7 @@ func ResolveStoredImage(ctx context.Context, backend storage.Store, name string,
 		if err != nil {
 			return nil, err
 		}
-		if actual := Descriptor(rootType, manifestData); actual.Digest != selected.Digest || actual.Size != selected.Size || actual.MediaType != selected.MediaType {
+		if actual := Descriptor(rootType, manifestData); !content.Equal(actual, selected) {
 			return nil, fmt.Errorf("stored image %q selected manifest differs from its index", name)
 		}
 	}
@@ -259,7 +262,7 @@ func StoredImageIndex(ctx context.Context, backend storage.Store, name string) (
 	if mediaType != v1.MediaTypeImageIndex && mediaType != dockerIndexType {
 		return v1.Descriptor{}, nil, false, nil
 	}
-	descriptor := v1.Descriptor{MediaType: mediaType, Digest: digest.FromBytes(data), Size: int64(len(data))}
+	descriptor := content.NewDescriptorFromBytes(mediaType, data)
 	return descriptor, data, true, nil
 }
 
@@ -298,44 +301,43 @@ func findStoredImageAndName(backend storage.Store, name string) (*storage.Image,
 		return images[0], name, nil
 	}
 
-	resolved, err := shortnames.ResolveLocally(&types.SystemContext{}, name)
-	if err != nil {
-		return nil, "", fmt.Errorf("resolve local image name %q: %w", name, err)
-	}
-	candidates := make([]string, 0, len(resolved)+2)
-	for _, candidate := range resolved {
-		candidates = append(candidates, candidate.String())
-	}
-	// Match libimage's compatibility fallback after aliases, localhost, and
-	// configured unqualified-search registries.
-	if dockerNamed, err := dockerreference.ParseDockerRef(name); err == nil {
-		candidates = append(candidates, dockerNamed.String())
-	}
-	// IDs are checked only after name expansion, as in libimage lookup.
-	candidates = append(candidates, name)
-	seen := map[string]bool{}
-	for _, candidate := range candidates {
-		if seen[candidate] {
-			continue
+	// Do not let native transport parsing open a different store. A name
+	// such as docker-daemon:dev is also a valid local repository/tag; normalize
+	// that ordinary image name before LookupImage sees the transport prefix.
+	if transport := alltransports.TransportFromImageName(name); transport != nil {
+		normalized, err := libimage.NormalizeName(name)
+		if err != nil {
+			return nil, "", fmt.Errorf("unsupported transport %q for looking up local images", transport.Name())
 		}
-		seen[candidate] = true
-		image, err := backend.Image(candidate)
-		if err != nil && strings.Contains(candidate, "@") {
-			if ref, refErr := imagestorage.Transport.ParseStoreReference(backend, candidate); refErr == nil {
-				_, image, err = imagestorage.ResolveReference(ref)
-				if errors.Is(err, imagestorage.ErrNoSuchImage) {
-					err = storage.ErrImageUnknown
-				}
+		name = normalized.String()
+		if alltransports.TransportFromImageName(name) != nil {
+			// Fully qualified hosts can retain a transport spelling. Resolve
+			// the normalized reference against this backend, including digests,
+			// without entering transport parsing or opening a default store.
+			ref, err := imagestorage.Transport.NewStoreReference(backend, normalized, "")
+			if err != nil {
+				return nil, "", err
 			}
-		}
-		if err == nil {
-			return image, candidate, nil
-		}
-		if !errors.Is(err, storage.ErrImageUnknown) {
-			return nil, "", fmt.Errorf("inspect stored image %q: %w", name, err)
+			_, image, err := imagestorage.ResolveReference(ref)
+			if errors.Is(err, imagestorage.ErrNoSuchImage) {
+				err = storage.ErrImageUnknown
+			}
+			if err != nil {
+				return nil, "", err
+			}
+			return image, name, nil
 		}
 	}
-	return nil, "", fmt.Errorf("stored image %q: %w", name, storage.ErrImageUnknown)
+
+	runtime, err := libimage.RuntimeFromStore(backend, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	image, matched, err := runtime.LookupImage(name, &libimage.LookupImageOptions{ManifestList: true})
+	if err != nil {
+		return nil, "", err
+	}
+	return image.StorageImage(), matched, nil
 }
 
 // StoredSelection is transient verified metadata for one resident platform.

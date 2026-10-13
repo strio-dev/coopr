@@ -10,6 +10,7 @@ import (
 	"coopr/internal/oci"
 	"coopr/internal/transfer"
 	"github.com/spf13/cobra"
+	buildahcli "go.podman.io/buildah/pkg/cli"
 )
 
 func newComponentCommandWithGlobals(standalone bool) *cobra.Command {
@@ -38,31 +39,19 @@ func newComponentBuildCommand() *cobra.Command {
 }
 
 func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
-	var ignoreFile string
 	var definitionFiles []string
-	var sourcePolicyFile string
-	var from, target, network, pullPolicy string
+	var network, pullPolicy string
 	var osName, arch, variant string
-	var tags []string
-	var metadataFile string
 	platform := runtime.GOOS + "/" + runtime.GOARCH
-	var args []string
-	var push, pull, noCache, rewriteTimestamp bool
+	var push, pull bool
 	var platforms []string
-	var secrets, ssh []string
 	var allow []string
 	var addHosts []string
-	var buildContexts []string
-	var buildArgFiles []string
-	var cacheFrom, cacheTo []string
 	var times buildTimeFlags
 	var controls buildControlFlags
 	var registry registryFlags
-	var runStdin bool
-	var quiet, logSplit bool
-	var logRusage bool
-	var logFile string
-	var rusageLogFile string
+	var native buildahcli.BudResults
+	nativeFlags := buildahcli.GetBudFlags(&native)
 	cmd := &cobra.Command{
 		Annotations: map[string]string{nativeStorageAnnotation: "true"},
 		Use:         "build [file|context]", Short: "Build a component into the local OCI store",
@@ -81,7 +70,7 @@ func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			resolvedArgs, err := readBuildArgFiles(buildArgFiles, args)
+			resolvedArgs, err := readBuildArgFiles(native.BuildArgFile, native.BuildArg)
 			if err != nil {
 				return err
 			}
@@ -101,22 +90,22 @@ func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			contexts, err := buildcontext.Parse(buildContexts)
+			contexts, err := buildcontext.Parse(native.BuildContext)
 			if err != nil {
 				return err
 			}
-			cacheSources, err := parseCacheSpecs(cacheFrom, "src")
+			cacheSources, err := parseCacheSpecs(native.CacheFrom, "src")
 			if err != nil {
 				return fmt.Errorf("cache-from: %w", err)
 			}
-			cacheDestinations, err := parseCacheSpecs(cacheTo, "dest")
+			cacheDestinations, err := parseCacheSpecs(native.CacheTo, "dest")
 			if err != nil {
 				return fmt.Errorf("cache-to: %w", err)
 			}
-			if push && len(tags) == 0 {
+			if push && len(native.Tag) == 0 {
 				return fmt.Errorf("--push requires --tag")
 			}
-			for _, tag := range tags {
+			for _, tag := range native.Tag {
 				if tag == "" {
 					return fmt.Errorf("--tag requires a nonempty component name")
 				}
@@ -129,18 +118,18 @@ func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
 				return err
 			}
 			var executionStdin interface{ Read([]byte) (int, error) }
-			if runStdin {
+			if native.Stdin {
 				executionStdin = cmd.InOrStdin()
 			}
 			ref, err := build.BuildComponent(cmd.Context(), build.ComponentOptions{
-				File: files[0], Files: files, Context: resolvedContext, DefinitionsInContext: definitionsInContext, SourcePolicyFile: sourcePolicyFile, TransientRunMounts: transientRunMounts, From: from, IgnoreFile: ignoreFile, Tags: tags, MetadataFile: metadataFile, Push: push, Pull: pull, PullPolicy: pullPolicy, NoCache: noCache, Network: network, AddHosts: addHosts,
-				Lifecycle: controls.lifecycle(), Quiet: quiet, LogFile: logFile, LogSplit: logSplit, LogRusage: logRusage && !quiet, RusageLogFile: rusageLogFile,
+				File: files[0], Files: files, Context: resolvedContext, DefinitionsInContext: definitionsInContext, SourcePolicyFile: native.SourcePolicyFile, TransientRunMounts: transientRunMounts, From: native.From, IgnoreFile: native.IgnoreFile, Tags: native.Tag, MetadataFile: native.MetadataFile, Push: push, Pull: pull, PullPolicy: pullPolicy, NoCache: native.NoCache, Network: network, AddHosts: addHosts,
+				Lifecycle: controls.lifecycle(), Quiet: native.Quiet, LogFile: native.Logfile, LogSplit: native.LogSplitByPlatform, LogRusage: native.LogRusage && !native.Quiet, RusageLogFile: native.RusageLogFile,
 				BuildStore:  store,
-				RunControls: runControls, Jobs: controls.jobs,
-				RewriteTimestamp: rewriteTimestamp,
+				RunControls: runControls, Jobs: controls.Jobs,
+				RewriteTimestamp: native.RewriteTimestamp,
 				Timestamp:        timestamp, SourceDateEpoch: epoch, CacheTTL: ttl,
-				Platform: requestedPlatform, Platforms: platforms, Target: target, Args: resolvedArgs,
-				Secrets: secrets, SSH: ssh,
+				Platform: requestedPlatform, Platforms: platforms, Target: native.Target, Args: resolvedArgs,
+				Secrets: native.Secrets, SSH: native.SSH,
 				Allow:         allow,
 				BuildContexts: contexts,
 				CacheFrom:     cacheSources, CacheTo: cacheDestinations,
@@ -151,7 +140,7 @@ func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if logFile != "" {
+			if native.Logfile != "" {
 				return nil
 			}
 			_, err = fmt.Fprintln(cmd.OutOrStdout(), ref)
@@ -159,39 +148,29 @@ func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
+	addNativeFlags(cmd, &nativeFlags, buildahcli.GetBudFlagsCompletions(), "source-policy-file", "metadata-file")
+	f.Lookup("source-policy-file").Usage = "BuildKit-format policy file for base image sources"
+	f.Lookup("metadata-file").Usage = "write component index and per-platform digests as JSON"
+	addNativeFlags(cmd, &nativeFlags, buildahcli.GetBudFlagsCompletions(), "from", "ignorefile", "tag", "no-cache", "rewrite-timestamp", "target", "build-arg", "build-arg-file", "stdin", "quiet", "logfile", "logsplit", "log-rusage", "rusage-logfile", "build-context", "secret", "ssh", "cache-from", "cache-to")
+	f.Lookup("from").Usage = "replace the image in the first FROM instruction"
+	f.Lookup("ignorefile").Usage = "context ignore file (default: first of .cooprignore, .containerignore, .dockerignore at the context root)"
+	f.Lookup("no-cache").Usage = "rebuild without reading cached results; save fresh results to the build cache"
+	f.Lookup("target").Usage = "named component output to build"
+	f.Lookup("build-arg").Usage = "build argument (repeatable NAME[=VALUE]; NAME inherits from the environment when set)"
+	f.Lookup("build-arg-file").Usage = "read build arguments from a file (repeatable; --build-arg wins)"
+	f.Lookup("build-context").Usage = "additional build context: NAME=PATH|URL|docker-image://REFERENCE|oci-layout://PATH:TAG (repeatable)"
+	f.Lookup("cache-from").Usage = "read cached results from a repository or type=local,src=PATH (repeatable)"
+	f.Lookup("cache-to").Usage = "write cached results to a repository or type=local,dest=PATH (repeatable)"
 	f.StringArrayVarP(&definitionFiles, "file", "f", nil, "definition file path (repeatable, combined in order; required with a build context)")
-	f.StringVar(&sourcePolicyFile, "source-policy-file", "", "BuildKit-format policy file for base image sources")
-	f.StringVar(&from, "from", "", "replace the image in the first FROM instruction")
-	f.StringVar(&metadataFile, "metadata-file", "", "write component index and per-platform digests as JSON")
-	f.StringVar(&ignoreFile, "ignorefile", "", "context ignore file (default: first of .cooprignore, .containerignore, .dockerignore at the context root)")
-	f.StringArrayVarP(&tags, "tag", "t", nil, "assign a name to the component")
 	f.BoolVar(&push, "push", false, "publish the component to a registry (requires --tag)")
 	addPullFlags(cmd, &pullPolicy, &pull)
-	f.BoolVar(&noCache, "no-cache", false, "rebuild without reading cached results; save fresh results to the build cache")
 	f.StringVar(&network, "network", "default", "RUN network mode: default, private, none, host, ns:PATH, pasta[:OPTIONS], or named network")
 	f.StringSliceVar(&addHosts, "add-host", nil, "add HOST:IP to build containers (repeatable)")
-	f.BoolVar(&rewriteTimestamp, "rewrite-timestamp", false, "clamp layer timestamps newer than SOURCE_DATE_EPOCH")
 	f.StringSliceVar(&platforms, "platform", nil, "target platform as os/arch (repeatable or comma-separated; default: host platform)")
 	f.StringVar(&osName, "os", "", "target operating system")
 	f.StringVar(&arch, "arch", "", "target architecture")
 	f.StringVar(&variant, "variant", "", "target architecture variant")
-	f.StringVar(&target, "target", "", "named component output to build")
-	f.StringArrayVar(&args, "build-arg", nil, "build argument (repeatable NAME[=VALUE]; NAME inherits from the environment when set)")
-	f.StringArrayVar(&buildArgFiles, "build-arg-file", nil, "read build arguments from a file (repeatable; --build-arg wins)")
-	f.BoolVar(&runStdin, "stdin", false, "pass stdin to RUN instructions")
-	f.BoolVarP(&quiet, "quiet", "q", false, "suppress build progress")
-	f.StringVar(&logFile, "logfile", "", "write build output to a file")
-	f.BoolVar(&logSplit, "logsplit", false, "split logfile output by target platform")
-	f.BoolVar(&logRusage, "log-rusage", false, "log resource usage between build instructions")
-	f.StringVar(&rusageLogFile, "rusage-logfile", "", "write resource usage logs to a file")
-	_ = f.MarkHidden("log-rusage")
-	_ = f.MarkHidden("rusage-logfile")
-	f.StringArrayVar(&buildContexts, "build-context", nil, "additional build context: NAME=PATH|URL|docker-image://REFERENCE|oci-layout://PATH:TAG (repeatable)")
-	f.StringArrayVar(&secrets, "secret", nil, "secret source for RUN mounts: id=ID[,src=PATH|env=NAME] (repeatable)")
-	f.StringArrayVar(&ssh, "ssh", nil, "SSH agent or key source for RUN mounts: ID[=PATH] (repeatable)")
 	f.StringArrayVar(&allow, "allow", nil, "allow an elevated build entitlement (repeatable: network.host, security.insecure, device, or device=SELECTOR)")
-	f.StringArrayVar(&cacheFrom, "cache-from", nil, "read cached results from a repository or type=local,src=PATH (repeatable)")
-	f.StringArrayVar(&cacheTo, "cache-to", nil, "write cached results to a repository or type=local,dest=PATH (repeatable)")
 	times.addTo(cmd)
 	if standalone {
 		addGlobalRunFlags(cmd.Flags())

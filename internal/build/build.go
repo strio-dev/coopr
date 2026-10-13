@@ -26,10 +26,12 @@ import (
 	"coopr/internal/storeactivity"
 	"coopr/internal/transfer"
 	"github.com/containerd/platforms"
+	"github.com/cyphar/filepath-securejoin"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/buildah/define"
 	"go.podman.io/storage"
+	"golang.org/x/sync/errgroup"
 )
 
 type Options struct {
@@ -607,23 +609,19 @@ func runPlatformBuildsWithLimit(ctx context.Context, targets []string, limit int
 		}
 		return []platformBuild{result}, nil
 	}
-	buildCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	group, buildCtx := errgroup.WithContext(ctx)
 	results := make([]platformBuild, len(targets))
-	var wg sync.WaitGroup
 	var mu sync.Mutex
 	next := 0
-	var firstErr error
+	stopped := false
 	workers := min(len(targets), max(1, limit))
 	for range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		group.Go(func() error {
 			for {
 				mu.Lock()
-				if firstErr != nil || next == len(targets) {
+				if stopped || next == len(targets) || buildCtx.Err() != nil {
 					mu.Unlock()
-					return
+					return nil
 				}
 				i := next
 				next++
@@ -631,20 +629,16 @@ func runPlatformBuildsWithLimit(ctx context.Context, targets []string, limit int
 				result, err := build(buildCtx, i, targets[i])
 				if err != nil {
 					mu.Lock()
-					if firstErr == nil {
-						firstErr = err
-						cancel()
-					}
+					stopped = true
 					mu.Unlock()
-					return
+					return err
 				}
 				results[i] = result
 			}
-		}()
+		})
 	}
-	wg.Wait()
-	if firstErr != nil {
-		return nil, firstErr
+	if err := group.Wait(); err != nil {
+		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -751,20 +745,14 @@ func canonicalParentPath(path string) (string, error) {
 		return "", err
 	}
 	parent := filepath.Dir(abs)
-	var suffix []string
-	for {
-		resolved, err := filepath.EvalSymlinks(parent)
-		if err == nil {
-			parts := append([]string{resolved}, suffix...)
-			return filepath.Join(append(parts, filepath.Base(abs))...), nil
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			return "", err
-		}
-		if parent == filepath.Dir(parent) {
-			return "", err
-		}
-		suffix = append([]string{filepath.Base(parent)}, suffix...)
-		parent = filepath.Dir(parent)
+	// SecureJoin treats ENOTDIR as a missing suffix; an existing file in
+	// the parent chain is invalid for an output and must still fail.
+	if _, err := os.Stat(parent); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", err
 	}
+	resolved, err := securejoin.SecureJoin(string(filepath.Separator), parent)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(resolved, filepath.Base(abs)), nil
 }

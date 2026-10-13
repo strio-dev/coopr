@@ -15,6 +15,7 @@ import (
 	"coopr/internal/buildcontext"
 	"coopr/internal/definition"
 	"coopr/internal/onbuildparse"
+	"github.com/containerd/platforms"
 	"github.com/moby/buildkit/util/system"
 )
 
@@ -2191,11 +2192,11 @@ func applyEnvironment(inst definition.Instruction, environment map[string]string
 }
 
 func validatePlatform(platform string) error {
-	parts := strings.Split(platform, "/")
-	if len(parts) < 2 || len(parts) > 3 || slices.Contains(parts, "") {
+	parsed, err := platforms.Parse(platform)
+	if err != nil || strings.Count(platform, "/") < 1 || strings.Count(platform, "/") > 2 || strings.HasSuffix(platform, "/") || parsed.Architecture == "" || parsed.OSVersion != "" || len(parsed.OSFeatures) != 0 {
 		return fmt.Errorf("invalid platform %q", platform)
 	}
-	if parts[0] != "linux" {
+	if parsed.OS != "linux" {
 		return fmt.Errorf("unsupported platform %q: Coopr requires Linux", platform)
 	}
 	return nil

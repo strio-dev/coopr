@@ -1720,10 +1720,8 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 		portableCacheable := false
 		cacheHit := false
 		var inputDigest digest.Digest
-		var inputDigestCandidates []digest.Digest
 		inputApplied := false
 		inputProbed := false
-		var prefetchedCacheEntry *instructionCacheEntry
 		var preparedRun *preparedRunInput
 		finalFilesystemOperation := remainingFilesystem == 1
 		cacheable := !options.Lifecycle.NoLayers && allowInstructionCache && remainingFilesystem > 0 && len(operations) == 1
@@ -1755,9 +1753,7 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 			case WorkDir:
 			case Copy:
 				adapter := executor.nativeBuilder(current, builderOptions)
-				if candidates, eligible := simpleLocalCopyDigestCandidates(options.ContextDir, artifacts, operation); eligible {
-					inputDigestCandidates = candidates
-				} else if copyAddProbeEligible(operation) {
+				if !options.NoCache && copyAddProbeEligible(operation) {
 					inputDigest, err = probeCopyAddDigestContext(ctx, adapter, options.ContextDir, artifacts, operation)
 					inputProbed = err == nil
 				} else {
@@ -1773,7 +1769,7 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 					err = digestErr
 				} else if declared {
 					inputDigest = pinned
-				} else if copyAddProbeEligible(operation) {
+				} else if !options.NoCache && copyAddProbeEligible(operation) {
 					inputDigest, err = probeCopyAddDigestContext(ctx, adapter, options.ContextDir, artifacts, operation)
 					inputProbed = err == nil
 				} else {
@@ -1785,7 +1781,7 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 				}
 			case copyFromImageOperation:
 				adapter := executor.nativeBuilder(current, builderOptions)
-				if copyAddProbeEligible(operation) {
+				if !options.NoCache && copyAddProbeEligible(operation) {
 					inputDigest, err = probeCopyAddDigestContext(ctx, adapter, options.ContextDir, artifacts, operation)
 					inputProbed = err == nil
 				} else {
@@ -1830,64 +1826,7 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 				RunControls:   options.RunControls,
 				CompatVolumes: options.Lifecycle.CompatVolumes,
 			}
-			if len(inputDigestCandidates) != 0 && !options.NoCache {
-				hits := make([]simpleCopyCacheCandidate, 0, len(inputDigestCandidates))
-				seenKeys := make(map[digest.Digest]bool, len(inputDigestCandidates))
-				for _, candidate := range inputDigestCandidates {
-					cacheInput.InputDigest = candidate
-					candidateKey, candidateCacheable, candidateErr := instructionCacheKey(cacheInput)
-					if candidateErr != nil {
-						return "", Result{}, nil, fmt.Errorf("operation %d cache key: %w", index+1, candidateErr)
-					}
-					if !candidateCacheable || seenKeys[candidateKey] {
-						continue
-					}
-					seenKeys[candidateKey] = true
-					entry, lookupErr := findInstructionCacheEntry(store, candidateKey, options.CacheTTL)
-					if lookupErr != nil {
-						return "", Result{}, nil, fmt.Errorf("operation %d cache lookup: %w", index+1, lookupErr)
-					}
-					if captureRoot && entry.RootMetadata == nil {
-						entry.ImageID = ""
-					}
-					if entry.ImageID != "" {
-						hits = append(hits, simpleCopyCacheCandidate{key: candidateKey, input: candidate, entry: entry})
-					}
-				}
-				unique, ambiguous := uniqueSimpleCopyCacheCandidate(hits)
-				if unique != nil {
-					cacheKey = unique.key
-					inputDigest = unique.input
-					cacheInput.InputDigest = inputDigest
-					prefetchedCacheEntry = &unique.entry
-				} else if !ambiguous {
-					adapter := executor.nativeBuilder(current, builderOptions)
-					inputDigest, err = applyCopyAddWithDigestContext(ctx, adapter, options.ContextDir, artifacts, operations[0])
-					if err != nil {
-						return "", Result{}, nil, fmt.Errorf("operation %d: %w", index+1, err)
-					}
-					inputApplied = true
-					cacheInput.InputDigest = inputDigest
-					cacheKey, cacheable, err = instructionCacheKey(cacheInput)
-				} else {
-					adapter := executor.nativeBuilder(current, builderOptions)
-					inputDigest, err = probeCopyAddDigestContext(ctx, adapter, options.ContextDir, artifacts, operations[0])
-					inputProbed = err == nil
-					cacheInput.InputDigest = inputDigest
-					cacheKey, cacheable, err = instructionCacheKey(cacheInput)
-				}
-			} else if len(inputDigestCandidates) != 0 {
-				adapter := executor.nativeBuilder(current, builderOptions)
-				inputDigest, err = applyCopyAddWithDigestContext(ctx, adapter, options.ContextDir, artifacts, operations[0])
-				if err != nil {
-					return "", Result{}, nil, fmt.Errorf("operation %d: %w", index+1, err)
-				}
-				inputApplied = true
-				cacheInput.InputDigest = inputDigest
-				cacheKey, cacheable, err = instructionCacheKey(cacheInput)
-			} else {
-				cacheKey, cacheable, err = instructionCacheKey(cacheInput)
-			}
+			cacheKey, cacheable, err = instructionCacheKey(cacheInput)
 			if err != nil {
 				return "", Result{}, nil, fmt.Errorf("operation %d cache key: %w", index+1, err)
 			}
@@ -1908,14 +1847,9 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 			}
 		}
 		if cacheable && !options.NoCache {
-			cacheEntry := instructionCacheEntry{}
-			if prefetchedCacheEntry != nil {
-				cacheEntry = *prefetchedCacheEntry
-			} else {
-				cacheEntry, err = findInstructionCacheEntry(store, cacheKey, options.CacheTTL)
-				if err != nil {
-					return "", Result{}, nil, fmt.Errorf("operation %d cache lookup: %w", index+1, err)
-				}
+			cacheEntry, lookupErr := findInstructionCacheEntry(store, cacheKey, options.CacheTTL)
+			if lookupErr != nil {
+				return "", Result{}, nil, fmt.Errorf("operation %d cache lookup: %w", index+1, lookupErr)
 			}
 			localCacheHit := cacheEntry.ImageID != ""
 			if cacheEntry.ImageID == "" && portableCacheable {

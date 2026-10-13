@@ -53,7 +53,7 @@ func CopySelectedImage(ctx context.Context, dir string, source content.ReadOnlyS
 	if root.Digest == selected.Digest {
 		return nil
 	}
-	data, err := verifiedBlob(ctx, source, root)
+	data, err := content.FetchAll(ctx, source, root)
 	if err != nil {
 		return fmt.Errorf("read OCI image index: %w", err)
 	}
@@ -76,15 +76,4 @@ func isManifestMediaType(mediaType string) bool {
 
 func isIndexMediaType(mediaType string) bool {
 	return mediaType == v1.MediaTypeImageIndex || mediaType == dockerIndexMediaType
-}
-
-func verifiedBlob(ctx context.Context, store content.ReadOnlyStorage, desc v1.Descriptor) ([]byte, error) {
-	data, err := content.FetchAll(ctx, store, desc)
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) != desc.Size || digest.FromBytes(data) != desc.Digest {
-		return nil, fmt.Errorf("blob %s does not match its descriptor", desc.Digest)
-	}
-	return data, nil
 }

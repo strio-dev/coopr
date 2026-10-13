@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"coopr/internal/oci"
+
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2/content"
@@ -255,7 +256,7 @@ func (s *OCIStore) LookupPackage(ctx context.Context, key PackageKey) (*PackageR
 	if err := record.validate(key); err != nil {
 		return nil, "", err
 	}
-	if !sameDescriptor(manifest.Layers[0], record.Descriptor) {
+	if !content.Equal(manifest.Layers[0], record.Descriptor) {
 		return nil, "", errors.New("package cache snapshot differs from manifest")
 	}
 	if err := ctx.Err(); err != nil {

@@ -527,3 +527,14 @@ extend {
 		t.Fatalf("caller-derived stage was marked statically planned: %+v", invocation.Stages)
 	}
 }
+
+func TestPublishedPlatformComparisonUsesNormalizedExactIdentity(t *testing.T) {
+	for _, test := range []struct {
+		left, right string
+		equal       bool
+	}{{"linux/arm64", "linux/arm64/v8", true}, {"linux/x86_64", "linux/amd64", true}, {"linux/arm/v6", "linux/arm/v7", false}, {"linux/amd64", "linux/arm64", false}, {"linux/amd64", "windows/amd64", false}} {
+		if got := samePlatform(test.left, test.right); got != test.equal {
+			t.Errorf("samePlatform(%q,%q) = %v", test.left, test.right, got)
+		}
+	}
+}

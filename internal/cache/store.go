@@ -358,7 +358,7 @@ func (s *OCIStore) Lookup(ctx context.Context, key Key) (*Record, string, error)
 	if err := record.validate(key); err != nil {
 		return nil, "", err
 	}
-	if len(manifest.Layers) == 0 && record.Snapshot != nil || len(manifest.Layers) == 1 && (record.Snapshot == nil || !sameDescriptor(manifest.Layers[0], record.Snapshot.Descriptor)) {
+	if len(manifest.Layers) == 0 && record.Snapshot != nil || len(manifest.Layers) == 1 && (record.Snapshot == nil || !content.Equal(manifest.Layers[0], record.Snapshot.Descriptor)) {
 		return nil, "", errors.New("cache snapshot differs from manifest")
 	}
 	if err := ctx.Err(); err != nil {
@@ -422,18 +422,7 @@ func fetchVerified(ctx context.Context, target oras.Target, desc v1.Descriptor, 
 		return nil, err
 	}
 	defer func() { _ = stream.Close() }()
-	verified := content.NewVerifyReader(stream, desc)
-	data, err := io.ReadAll(io.LimitReader(&contextReader{ctx: ctx, reader: verified}, limit+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > limit {
-		return nil, errors.New("cache metadata exceeds size limit")
-	}
-	if err := verified.Verify(); err != nil {
-		return nil, err
-	}
-	return data, nil
+	return content.ReadAll(&contextReader{ctx: ctx, reader: stream}, desc)
 }
 
 func verifyFile(ctx context.Context, path string, desc v1.Descriptor) error {
@@ -455,10 +444,6 @@ func verifyFile(ctx context.Context, path string, desc v1.Descriptor) error {
 		return err
 	}
 	return verified.Verify()
-}
-
-func sameDescriptor(a, b v1.Descriptor) bool {
-	return a.MediaType == b.MediaType && a.Digest == b.Digest && a.Size == b.Size
 }
 
 type contextReader struct {

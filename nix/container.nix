@@ -90,8 +90,6 @@ let
     cat > "$out/etc/containers/storage.conf" <<'STORAGE'
     [storage]
     driver = "overlay"
-    runroot = "/run/containers/storage"
-    graphroot = "/var/lib/containers/storage"
 
     [storage.options.overlay]
     mount_program = "${fuse-overlayfs}/bin/fuse-overlayfs"

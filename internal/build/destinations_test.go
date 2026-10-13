@@ -323,3 +323,55 @@ func TestMetadataPairsDuplicatePlatformMembersWithOwnConfigs(t *testing.T) {
 		}
 	}
 }
+
+func TestResultWriterUsesAtomicReplacementAndPrivateMode(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "result")
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeResultFile(path, []byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != "new" {
+		t.Fatalf("result = %q, %v", data, err)
+	}
+	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %v, %v", info, err)
+	}
+	dir := filepath.Join(root, "directory")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeResultFile(dir, []byte("bad")); err == nil {
+		t.Fatal("replaced directory")
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("temporary output leaked: %v, %v", entries, err)
+	}
+}
+
+func TestCanonicalParentPathResolvesMissingAndDanglingParents(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct{ link, destination string }{{"existing", target}, {"dangling", filepath.Join(root, "future")}} {
+		if err := os.Symlink(test.destination, filepath.Join(root, test.link)); err != nil {
+			t.Fatal(err)
+		}
+		got, err := canonicalParentPath(filepath.Join(root, test.link, "nested", "output"))
+		if want := filepath.Join(test.destination, "nested", "output"); err != nil || got != want {
+			t.Fatalf("%s = %q, %v; want %q", test.link, got, err, want)
+		}
+	}
+	file := filepath.Join(root, "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := canonicalParentPath(filepath.Join(file, "nested", "output")); err == nil {
+		t.Fatal("non-directory parent accepted")
+	}
+}

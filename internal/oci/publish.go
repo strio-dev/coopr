@@ -161,7 +161,7 @@ func (r *Resolver) PublishLayout(ctx context.Context, target, layout string, roo
 		return "", err
 	}
 	resolved, err := source.Resolve(ctx, root.Digest.String())
-	if err != nil || !sameDescriptor(resolved, root) {
+	if err != nil || !content.Equal(resolved, root) {
 		return "", fmt.Errorf("OCI layout root is missing or differs: %v", err)
 	}
 	if err := verifyArchiveGraph(ctx, source, root); err != nil {
@@ -183,10 +183,6 @@ func (r *Resolver) PublishLayout(ctx context.Context, target, layout string, roo
 		}
 	}
 	return ref.Registry + "/" + ref.Repository + "@" + root.Digest.String(), nil
-}
-
-func sameDescriptor(a, b v1.Descriptor) bool {
-	return a.MediaType == b.MediaType && a.Digest == b.Digest && a.Size == b.Size
 }
 
 // PublishImageArchive transfers the sole root image from a standard OCI archive

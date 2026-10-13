@@ -2,7 +2,6 @@ package planner
 
 import (
 	"slices"
-	"strings"
 
 	"coopr/internal/definition"
 
@@ -161,10 +160,6 @@ func automaticPlatformScope(opts Options) scope {
 }
 
 func splitPlatform(platform string) (os, architecture, variant string) {
-	parts := strings.Split(platform, "/")
-	os, architecture = parts[0], parts[1]
-	if len(parts) == 3 {
-		variant = parts[2]
-	}
-	return os, architecture, variant
+	parsed, _ := platforms.Parse(platform) // Planner entry points validate this value.
+	return parsed.OS, parsed.Architecture, parsed.Variant
 }

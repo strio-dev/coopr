@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"oras.land/oras-go/v2/content"
+
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
@@ -37,7 +39,7 @@ func validateComponentVariant(ctx context.Context, variant IndexVariant) (*oraso
 	if err != nil {
 		return nil, fmt.Errorf("read OCI layout root: %w", err)
 	}
-	if !sameDescriptor(layoutDescriptor, variant.Manifest) {
+	if !content.Equal(layoutDescriptor, variant.Manifest) {
 		return nil, fmt.Errorf("OCI layout root differs from component manifest")
 	}
 	source, err := orasoci.NewWithContext(ctx, variant.Layout)

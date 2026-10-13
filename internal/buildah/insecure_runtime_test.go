@@ -153,3 +153,25 @@ func TestRuntimeCommandIndexAllowsGlobalRuntimeFlags(t *testing.T) {
 		t.Fatalf("command index = %d, want 1", got)
 	}
 }
+
+func TestAtomicRuntimeConfigPreservesExistingFileOnPublishFailure(t *testing.T) {
+	root := t.TempDir()
+	destination := filepath.Join(root, "config.json")
+	if err := os.Mkdir(destination, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(destination, "original")
+	if err := os.WriteFile(marker, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWriteRuntimeConfig(destination, []byte("replacement")); err == nil {
+		t.Fatal("directory replacement succeeded")
+	}
+	if data, err := os.ReadFile(marker); err != nil || string(data) != "keep" {
+		t.Fatalf("original changed: %q, %v", data, err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("temporary files remain: %v, %v", entries, err)
+	}
+}

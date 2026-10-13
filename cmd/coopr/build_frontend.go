@@ -158,13 +158,6 @@ func buildPlatform(cmd *cobra.Command, platform, osName, arch, variant string) (
 	return platforms.Format(platforms.Normalize(v1.Platform{OS: osName, Architecture: arch, Variant: variant})), nil
 }
 
-func defaultBuildFormat() string {
-	if format := os.Getenv("BUILDAH_FORMAT"); format != "" {
-		return format
-	}
-	return "oci"
-}
-
 func compressionLevelValue(cmd *cobra.Command, value int) *int {
 	if cmd.Flags().Changed("compression-level") {
 		return &value

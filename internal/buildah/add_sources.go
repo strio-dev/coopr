@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"coopr/internal/buildcontext"
 	opencontainersdigest "github.com/opencontainers/go-digest"
 	upstream "go.podman.io/buildah"
 	"go.podman.io/buildah/copier"
@@ -86,14 +87,7 @@ func isHTTPAddSource(source string) bool {
 }
 
 func isGitAddSource(source string) bool {
-	withoutFragment := source
-	if index := strings.IndexByte(withoutFragment, '#'); index >= 0 {
-		withoutFragment = withoutFragment[:index]
-	}
-	return strings.HasPrefix(withoutFragment, "git://") ||
-		strings.HasPrefix(withoutFragment, "ssh://") ||
-		strings.HasPrefix(withoutFragment, "git@") ||
-		(isHTTPAddSource(withoutFragment) && strings.HasSuffix(withoutFragment, ".git"))
+	return buildcontext.IsGitSource(source)
 }
 
 func applyGitAddSource(ctx context.Context, builder operationBuilder, operation Add, options upstream.AddAndCopyOptions, source string) (retErr error) {
@@ -113,7 +107,7 @@ func applyGitAddSource(ctx context.Context, builder operationBuilder, operation 
 		return err
 	}
 	if options.Hasher != nil {
-		commit, err := resolveGitCommit(repository)
+		commit, err := resolveGitCommit(ctx, repository)
 		if err != nil {
 			return err
 		}
@@ -183,7 +177,7 @@ func cloneGitSource(ctx context.Context, builder any, source, repository string,
 		}
 	}
 	if options.checksum != "" {
-		if err := verifyGitCommit(repository, options.checksum); err != nil {
+		if err := verifyGitCommit(ctx, repository, options.checksum); err != nil {
 			return "", fmt.Errorf("verify Git source %q: %w", redactGitSource(source), err)
 		}
 	}
@@ -299,7 +293,7 @@ func gitAddOptions(options upstream.AddAndCopyOptions, contextDir string, keepGi
 	return options
 }
 
-func verifyGitCommit(repository, expected string) error {
+func verifyGitCommit(ctx context.Context, repository, expected string) error {
 	if len(expected) > sha256.Size*2 {
 		return fmt.Errorf("checksum %q is longer than a Git commit SHA", expected)
 	}
@@ -308,7 +302,7 @@ func verifyGitCommit(repository, expected string) error {
 	}) >= 0 {
 		return fmt.Errorf("checksum %q must be a hexadecimal commit prefix", expected)
 	}
-	commit, err := resolveGitCommit(repository)
+	commit, err := resolveGitCommit(ctx, repository)
 	if err != nil {
 		return err
 	}
@@ -318,25 +312,18 @@ func verifyGitCommit(repository, expected string) error {
 	return nil
 }
 
-func resolveGitCommit(repository string) (string, error) {
-	head, err := os.ReadFile(filepath.Join(repository, ".git", "HEAD"))
+func resolveGitCommit(ctx context.Context, repository string) (string, error) {
+	executable, err := gitAddExecutable()
 	if err != nil {
-		return "", fmt.Errorf("read cloned Git HEAD: %w", err)
+		return "", err
 	}
-	commit := strings.TrimSpace(string(head))
-	if reference, ok := strings.CutPrefix(commit, "ref: "); ok {
-		resolved, err := os.ReadFile(filepath.Join(repository, ".git", filepath.FromSlash(reference)))
-		if err != nil {
-			return "", fmt.Errorf("resolve cloned Git HEAD %q: %w", reference, err)
-		}
-		commit = strings.TrimSpace(string(resolved))
+	process := gitCommandContext(ctx, executable, "-C", repository, "rev-parse", "--verify", "HEAD")
+	process.Env = gitWorkerEnvironment(os.Environ())
+	output, err := process.Output()
+	if err != nil {
+		return "", fmt.Errorf("resolve cloned Git HEAD: %w", err)
 	}
-	if len(commit) != 40 && len(commit) != sha256.Size*2 || strings.IndexFunc(commit, func(character rune) bool {
-		return (character < '0' || character > '9') && (character < 'a' || character > 'f') && (character < 'A' || character > 'F')
-	}) >= 0 {
-		return "", fmt.Errorf("invalid cloned Git commit %q", commit)
-	}
-	return strings.ToLower(commit), nil
+	return strings.ToLower(strings.TrimSpace(string(output))), nil
 }
 
 func applyRemoteAddSource(ctx context.Context, builder operationBuilder, operation Add, options upstream.AddAndCopyOptions, source string) (retErr error) {

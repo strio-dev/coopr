@@ -32,11 +32,11 @@ func TestAssembleImageIndexCopiesTwoCompleteGraphs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if root.MediaType != v1.MediaTypeImageIndex || !sameDescriptor(root, Descriptor(v1.MediaTypeImageIndex, indexData)) {
+	if root.MediaType != v1.MediaTypeImageIndex || !content.Equal(root, Descriptor(v1.MediaTypeImageIndex, indexData)) {
 		t.Fatalf("root = %+v", root)
 	}
 	storedRoot, err := LayoutRoot(output)
-	if err != nil || !sameDescriptor(storedRoot, root) {
+	if err != nil || !content.Equal(storedRoot, root) {
 		t.Fatalf("layout root = %+v, err = %v", storedRoot, err)
 	}
 	var index v1.Index
@@ -218,3 +218,12 @@ func mustJSON(t *testing.T, value any) []byte {
 }
 
 var _ content.ReadOnlyStorage = (*orasoci.Store)(nil)
+
+func TestPlatformKeyUsesNativeFeatureSet(t *testing.T) {
+	plain := v1.Platform{OS: "linux", Architecture: "amd64", OSFeatures: []string{"x"}}
+	repeated := plain
+	repeated.OSFeatures = []string{"x", "", "x"}
+	if platformKey(plain) != platformKey(repeated) {
+		t.Fatal("duplicate and empty feature entries must use the native platform identity")
+	}
+}

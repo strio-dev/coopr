@@ -2,7 +2,6 @@
 package cache
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -168,6 +167,5 @@ func (k Key) Digest() (digest.Digest, error) {
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256(data)
-	return digest.Digest(fmt.Sprintf("sha256:%x", sum)), nil
+	return digest.FromBytes(data), nil
 }

@@ -3,7 +3,6 @@
 package buildah
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,12 +10,12 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
-	"syscall"
 
 	"github.com/moby/sys/capability"
+	"github.com/moby/sys/userns"
 	"github.com/opencontainers/runtime-spec/specs-go"
+	"go.podman.io/storage/pkg/ioutils"
 	"golang.org/x/sys/unix"
 )
 
@@ -161,36 +160,19 @@ func applyBuildKitInsecureSpec(_ context.Context, spec *specs.Spec) error {
 }
 
 func currentCapabilityNames() ([]string, error) {
-	status, err := os.Open("/proc/self/status")
+	// Use the process leader, matching /proc/self/status even when Go moves
+	// this goroutine between threads with different effective capabilities.
+	current, err := capability.NewPid2(os.Getpid())
 	if err != nil {
 		return nil, fmt.Errorf("read current capabilities: %w", err)
 	}
-	defer func() { _ = status.Close() }()
-	var effective uint64
-	found := false
-	scanner := bufio.NewScanner(status)
-	for scanner.Scan() {
-		name, value, ok := strings.Cut(scanner.Text(), ":")
-		if !ok || strings.TrimSpace(name) != "CapEff" {
-			continue
-		}
-		effective, err = strconv.ParseUint(strings.TrimSpace(value), 16, 64)
-		if err != nil {
-			return nil, fmt.Errorf("parse current capabilities: %w", err)
-		}
-		found = true
-		break
-	}
-	if err := scanner.Err(); err != nil {
+	if err := current.Load(); err != nil {
 		return nil, fmt.Errorf("read current capabilities: %w", err)
-	}
-	if !found {
-		return nil, errors.New("read current capabilities: CapEff is missing from /proc/self/status")
 	}
 	known := capability.ListKnown()
 	capabilities := make([]string, 0, len(known))
 	for _, item := range known {
-		if uint(item) < 64 && effective&(uint64(1)<<uint(item)) != 0 {
+		if current.Get(capability.EFFECTIVE, item) {
 			capabilities = append(capabilities, "CAP_"+strings.ToUpper(item.String()))
 		}
 	}
@@ -198,12 +180,7 @@ func currentCapabilityNames() ([]string, error) {
 }
 
 func runningInUserNamespace() bool {
-	const initialUserNamespaceInode = 0xEFFFFFFD
-	var stat syscall.Stat_t
-	if err := syscall.Stat("/proc/self/ns/user", &stat); err != nil {
-		return false
-	}
-	return stat.Ino != initialUserNamespaceInode
+	return userns.RunningInUserNS()
 }
 
 func freeLoopDeviceID() int {
@@ -234,38 +211,6 @@ func makeRuntimeMountsWritable(spec *specs.Spec) {
 	}
 }
 
-func atomicWriteRuntimeConfig(path string, data []byte) (retErr error) {
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".coopr-insecure-config-*")
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	closed := false
-	defer func() {
-		if !closed {
-			if closeErr := temporary.Close(); closeErr != nil && retErr == nil {
-				retErr = closeErr
-			}
-		}
-		if removeErr := os.Remove(temporaryPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) && retErr == nil {
-			retErr = removeErr
-		}
-	}()
-	if err := temporary.Chmod(0o600); err != nil {
-		return err
-	}
-	if _, err := temporary.Write(data); err != nil {
-		return err
-	}
-	if err := temporary.Sync(); err != nil {
-		return err
-	}
-	if err := temporary.Close(); err != nil {
-		return err
-	}
-	closed = true
-	if err := os.Rename(temporaryPath, path); err != nil {
-		return err
-	}
-	return nil
+func atomicWriteRuntimeConfig(path string, data []byte) error {
+	return ioutils.AtomicWriteFileWithOpts(path, data, 0o600, &ioutils.AtomicFileWriterOptions{})
 }

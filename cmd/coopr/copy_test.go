@@ -119,7 +119,7 @@ func TestTagAndCopyRejectTransportSources(t *testing.T) {
 			for _, source := range []string{"docker://example.com/app:latest", "docker-daemon:app:latest", "oci-archive:/tmp/app.tar"} {
 				var out, errs bytes.Buffer
 				args := append(append(append([]string{}, globals...), prefix...), command, source, "destination")
-				if code := run(args, &out, &errs); code == 0 || !strings.Contains(errs.String(), "resolve local image name") {
+				if code := run(args, &out, &errs); code != 125 || !strings.Contains(errs.String(), "unsupported transport") || !strings.Contains(errs.String(), "for looking up local images") {
 					t.Fatalf("%v status=%d stderr=%s", args, code, &errs)
 				}
 				if out.Len() != 0 {
@@ -136,7 +136,7 @@ func TestImagePushRequiresLocalSource(t *testing.T) {
 	for _, source := range []string{"docker://example.com/app:latest", "docker-daemon:app:latest", "oci-archive:/tmp/app.tar"} {
 		var out, errs bytes.Buffer
 		args := append(append([]string{}, globals...), "push", "--quiet", source, "oci-archive:"+filepath.Join(t.TempDir(), "image.tar"))
-		if code := run(args, &out, &errs); code == 0 || !strings.Contains(errs.String(), "resolve local image name") {
+		if code := run(args, &out, &errs); code != 125 || !strings.Contains(errs.String(), "unsupported transport") || !strings.Contains(errs.String(), "for looking up local images") {
 			t.Fatalf("%v status=%d stderr=%s", args, code, &errs)
 		}
 		if out.Len() != 0 {

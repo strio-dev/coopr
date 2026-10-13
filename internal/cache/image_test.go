@@ -8,7 +8,10 @@ import (
 	"path/filepath"
 	"testing"
 
+	"oras.land/oras-go/v2/content"
+
 	"coopr/internal/oci"
+
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	orasoci "oras.land/oras-go/v2/content/oci"
@@ -83,7 +86,7 @@ func TestInstructionImageStorePreservesExactGraph(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = os.RemoveAll(layout) }()
-	if !sameDescriptor(got.Image, manifest) || !bytes.Equal(got.RootMetadata, record.RootMetadata) {
+	if !content.Equal(got.Image, manifest) || !bytes.Equal(got.RootMetadata, record.RootMetadata) {
 		t.Fatalf("record = %+v, want %+v", got, record)
 	}
 	restored, err := orasoci.New(layout)

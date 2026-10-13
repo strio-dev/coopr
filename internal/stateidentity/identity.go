@@ -506,7 +506,7 @@ func field(h hash.Hash, b []byte) {
 	_, _ = h.Write(b)
 }
 func domainHash(domain string) hash.Hash { h := sha256.New(); field(h, []byte(domain)); return h }
-func sum(h hash.Hash) digest.Digest      { return digest.Digest(fmt.Sprintf("sha256:%x", h.Sum(nil))) }
+func sum(h hash.Hash) digest.Digest      { return digest.NewDigest(digest.SHA256, h) }
 
 func hashConfig(raw json.RawMessage) (digest.Digest, error) {
 	if !utf8.Valid(raw) {

@@ -11,7 +11,10 @@ import (
 	"strings"
 	"testing"
 
+	"oras.land/oras-go/v2/content"
+
 	"coopr/internal/oci"
+
 	"github.com/google/go-containerregistry/pkg/registry"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -90,7 +93,7 @@ func TestPackageStoreRegistrySeedsIndependentLocalLayout(t *testing.T) {
 		t.Fatal(err)
 	}
 	repeated, err := remote.PutPackage(ctx, key, record, source)
-	if err != nil || !sameDescriptor(repeated, root) {
+	if err != nil || !content.Equal(repeated, root) {
 		t.Fatalf("idempotent package cache publication: descriptor=%+v err=%v", repeated, err)
 	}
 	if _, _, err := local.LookupPackage(ctx, key); !errors.Is(err, ErrMiss) {
@@ -101,7 +104,7 @@ func TestPackageStoreRegistrySeedsIndependentLocalLayout(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = os.Remove(downloaded) }()
-	if !sameDescriptor(got.Artifact, root) {
+	if !content.Equal(got.Artifact, root) {
 		t.Fatalf("verified package artifact = %+v, want %+v", got.Artifact, root)
 	}
 	if _, err := local.PutPackage(ctx, key, *got, downloaded); err != nil {
@@ -116,7 +119,7 @@ func TestPackageStoreRegistrySeedsIndependentLocalLayout(t *testing.T) {
 	if err != nil || !bytes.Equal(contents, data) {
 		t.Fatalf("seeded package bytes = %q, error %v", contents, err)
 	}
-	if seeded.Stage != record.Stage || !sameDescriptor(seeded.Descriptor, record.Descriptor) || !bytes.Equal(seeded.Config, record.Config) {
+	if seeded.Stage != record.Stage || !content.Equal(seeded.Descriptor, record.Descriptor) || !bytes.Equal(seeded.Config, record.Config) {
 		t.Fatalf("seeded package record = %+v, want %+v", seeded, record)
 	}
 }

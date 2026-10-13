@@ -25,7 +25,7 @@ func TestNonNegativeBytesMatchesBuildahUnits(t *testing.T) {
 			t.Fatalf("value=%q got=%d Buildah=%d err=%v", value, got, upstream.Memory, err)
 		}
 	}
-	for _, value := range []string{"", "-1m", "1mc", "1kibx", "1bb", "1ib", "NaN", "Inf", "1e100p", " 1k", "1 k ", "1e", "1e3e"} {
+	for _, value := range []string{"", "-1m", "1mc", "1kibx", "1bb", "1ib", "NaN", "Inf", "1e100p", " 1k", "1 k ", "1e", "1e3e", "9223372036854775808", "9223372036854775808b", "8192PiB", "1e300p"} {
 		if _, err := parseNonNegativeBytes("memory", value); err == nil {
 			t.Fatalf("invalid size %q accepted", value)
 		}
@@ -37,5 +37,19 @@ func TestNonNegativeBytesIgnoresUnrelatedHostConfiguration(t *testing.T) {
 	got, err := parseNonNegativeBytes("memory", "64m")
 	if err != nil || got != 64<<20 {
 		t.Fatalf("size=%d err=%v", got, err)
+	}
+}
+
+func TestNonNegativeBytesInt64Boundary(t *testing.T) {
+	for _, value := range []string{"9223372036854774784", "9223372036854774784b", "8191.999999999999PiB"} {
+		got, err := parseNonNegativeBytes("memory", value)
+		if err != nil || got != 9223372036854774784 {
+			t.Errorf("value=%q size=%d err=%v", value, got, err)
+		}
+	}
+	for _, value := range []string{"9223372036854775807", "9223372036854775807b", "9223372036854775808", "8192PiB", "1e100p", "1e300p"} {
+		if size, err := parseNonNegativeBytes("memory", value); err == nil {
+			t.Errorf("overflow %q accepted as %d", value, size)
+		}
 	}
 }

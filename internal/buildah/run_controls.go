@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/docker/go-units"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	upstream "go.podman.io/buildah"
 	"go.podman.io/buildah/define"
@@ -634,31 +635,13 @@ func parseRunNamespace(name, value string) (define.NamespaceOption, bool, error)
 // parseNonNegativeBytes accepts Buildah's binary RAM units (b, k, m, g, t, p,
 // optionally suffixed with b or ib), without reading host container defaults.
 func parseNonNegativeBytes(name, value string) (int64, error) {
-	invalid := fmt.Errorf("invalid %s %q: expected a nonnegative byte size", name, value)
-	split := strings.LastIndexAny(value, "0123456789. ")
-	if split < 0 {
-		return 0, invalid
+	size, err := units.RAMInBytes(value)
+	// go-units converts float64 to int64 without checking overflow. ARM64
+	// saturates at MaxInt64; that value is not an in-range float64 integer.
+	if err != nil || size < 0 || size == math.MaxInt64 {
+		return 0, fmt.Errorf("invalid %s %q: expected a nonnegative byte size", name, value)
 	}
-	number := value[:split+1]
-	if value[split] == ' ' {
-		number = value[:split]
-	}
-	size, err := strconv.ParseFloat(number, 64)
-	if err != nil || size < 0 {
-		return 0, invalid
-	}
-	suffix := strings.ToLower(value[split+1:])
-	if suffix != "" && suffix != "b" {
-		power := strings.IndexByte("kmgtp", suffix[0]) + 1
-		if power == 0 || (len(suffix) != 1 && suffix[1:] != "b" && suffix[1:] != "ib") {
-			return 0, invalid
-		}
-		size = math.Ldexp(size, power*10)
-	}
-	if size < 0 || size >= math.Exp2(63) || math.IsNaN(size) {
-		return 0, invalid
-	}
-	return int64(size), nil
+	return size, nil
 }
 
 func normalizeDNSServers(values []string) ([]string, error) {

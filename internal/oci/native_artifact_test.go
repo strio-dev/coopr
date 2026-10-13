@@ -18,6 +18,9 @@ import (
 	"testing"
 	"time"
 
+	"oras.land/oras-go/v2/content"
+
+	"github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 
@@ -250,7 +253,7 @@ func TestNativeCacheTargetPreservesRawEnvelope(t *testing.T) {
 		t.Fatal(err)
 	}
 	desc, err := target.Resolve(context.Background(), "stable")
-	if err != nil || !sameDescriptor(desc, index) {
+	if err != nil || !content.Equal(desc, index) {
 		t.Fatalf("index resolve: %+v %v", desc, err)
 	}
 	for _, item := range []struct {
@@ -441,7 +444,7 @@ func TestConcurrentCacheGraphsKeepOwnMirrorBlobAnchors(t *testing.T) {
 	}
 	for i := 0; i < 2; i++ {
 		root, err := target.Resolve(ctx, fmt.Sprintf("graph-%d", i))
-		if err != nil || !sameDescriptor(root, roots[i]) {
+		if err != nil || !content.Equal(root, roots[i]) {
 			t.Fatalf("resolve graph %d: %v", i, err)
 		}
 	}
@@ -464,5 +467,34 @@ func TestConcurrentCacheGraphsKeepOwnMirrorBlobAnchors(t *testing.T) {
 		if err := <-done; err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// A destination must reject invalid bytes before opening any registry transport.
+func TestNativeArtifactRejectsInvalidContent(t *testing.T) {
+	data := []byte(`{"schemaVersion":2}`)
+	valid := Descriptor(v1.MediaTypeImageManifest, data)
+	for _, failure := range []string{"digest", "short", "trailing", "negative size"} {
+		t.Run(failure, func(t *testing.T) {
+			desc := valid
+			payload := append([]byte(nil), data...)
+			switch failure {
+			case "negative size":
+				desc.Size = -1
+			case "digest":
+				payload[0] = '['
+			case "short":
+				payload = payload[:len(payload)-1]
+			case "trailing":
+				payload = append(payload, ' ')
+			}
+			repository := &nativeArtifactRepository{uploaded: map[digest.Digest][]byte{desc.Digest: payload}}
+			if err := repository.Push(context.Background(), desc, bytes.NewReader(payload)); err == nil {
+				t.Fatal("Push accepted invalid content")
+			}
+			if err := repository.Tag(context.Background(), desc, "latest"); err == nil {
+				t.Fatal("Tag accepted invalid content")
+			}
+		})
 	}
 }

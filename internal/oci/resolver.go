@@ -599,7 +599,7 @@ func validateComponent(meta ComponentMetadata, layers []v1.Descriptor, platform 
 	}
 	seen := make(map[string]bool, len(meta.Packages))
 	for i, pkg := range meta.Packages {
-		if pkg.Stage == "" || !wanted[pkg.Stage] || seen[pkg.Stage] || pkg.Descriptor.MediaType != ComponentPackageType || pkg.Descriptor.Digest != layers[i].Digest || pkg.Descriptor.Size != layers[i].Size || pkg.Descriptor.MediaType != layers[i].MediaType {
+		if pkg.Stage == "" || !wanted[pkg.Stage] || seen[pkg.Stage] || pkg.Descriptor.MediaType != ComponentPackageType || !content.Equal(pkg.Descriptor, layers[i]) {
 			return fmt.Errorf("component package %d is invalid or unreachable", i)
 		}
 		seen[pkg.Stage] = true
@@ -676,9 +676,9 @@ func (r *Resolver) Download(ctx context.Context, resolved *Resolved, desc v1.Des
 	if err := checkDescriptor(desc); err != nil {
 		return err
 	}
-	reachable := desc.Digest == resolved.Config.Digest && desc.Size == resolved.Config.Size && desc.MediaType == resolved.Config.MediaType
+	reachable := content.Equal(desc, resolved.Config)
 	for _, layer := range resolved.Layers {
-		reachable = reachable || desc.Digest == layer.Digest && desc.Size == layer.Size && desc.MediaType == layer.MediaType
+		reachable = reachable || content.Equal(desc, layer)
 	}
 	if !reachable {
 		return fmt.Errorf("descriptor is not reachable from selected manifest")
@@ -724,7 +724,9 @@ func (r *Resolver) Download(ctx context.Context, resolved *Resolved, desc v1.Des
 
 // Descriptor verifies a byte slice before it is used as registry content.
 func Descriptor(mediaType string, data []byte) v1.Descriptor {
-	return v1.Descriptor{MediaType: strings.TrimSpace(mediaType), Digest: digest.FromBytes(data), Size: int64(len(data))}
+	descriptor := content.NewDescriptorFromBytes(strings.TrimSpace(mediaType), data)
+	descriptor.MediaType = strings.TrimSpace(mediaType)
+	return descriptor
 }
 
 // VersionedManifest is a convenience for test and future publisher code.

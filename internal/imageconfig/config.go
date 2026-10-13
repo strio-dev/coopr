@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"coopr/internal/definition"
+	dockerspec "github.com/moby/docker-image-spec/specs-go/v1"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -47,14 +48,7 @@ type Config struct {
 
 // Healthcheck is Docker's runtime healthcheck image configuration. Durations
 // use the Docker configuration representation: integer nanoseconds in JSON.
-type Healthcheck struct {
-	Test          []string      `json:",omitempty"`
-	Interval      time.Duration `json:",omitempty"`
-	Timeout       time.Duration `json:",omitempty"`
-	StartPeriod   time.Duration `json:",omitempty"`
-	StartInterval time.Duration `json:",omitempty"`
-	Retries       int           `json:",omitempty"`
-}
+type Healthcheck = dockerspec.HealthcheckConfig
 
 // Parse validates and preserves an OCI image configuration document. An empty
 // document is accepted as scratch configuration.

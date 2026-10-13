@@ -23,13 +23,15 @@ func gitWorkerEnvironment(parent []string) []string {
 	environment := make([]string, 0, len(parent)+4)
 	for _, entry := range parent {
 		name, _, _ := strings.Cut(entry, "=")
-		if strings.HasPrefix(name, "GIT_") || name == "SSH_ASKPASS" {
+		if strings.HasPrefix(name, "GIT_") || name == "SSH_ASKPASS" || name == "SSH_AUTH_SOCK" {
 			continue
 		}
 		environment = append(environment, entry)
 	}
 	return append(environment,
 		"GIT_TERMINAL_PROMPT=0",
+		"GIT_ALLOW_PROTOCOL=git:http:https",
+		"GIT_SSH_COMMAND=/bin/false",
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CONFIG_GLOBAL=/dev/null",
 		"GIT_ASKPASS=/bin/false",

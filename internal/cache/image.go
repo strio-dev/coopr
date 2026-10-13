@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"coopr/internal/oci"
+
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2"
@@ -239,14 +240,14 @@ func (s *OCIStore) LookupImage(ctx context.Context, key ImageKey) (*ImageRecord,
 	if err := record.validate(key); err != nil {
 		return nil, "", err
 	}
-	if !sameDescriptor(artifact.Layers[0], record.Image) {
+	if !content.Equal(artifact.Layers[0], record.Image) {
 		return nil, "", errors.New("instruction image differs from cache artifact")
 	}
 	if (record.BaseImage == nil) != (len(artifact.Layers) == 1) {
 		return nil, "", errors.New("cached base image differs from artifact")
 	}
 	if record.BaseImage != nil {
-		if !sameDescriptor(artifact.Layers[1], *record.BaseImage) {
+		if !content.Equal(artifact.Layers[1], *record.BaseImage) {
 			return nil, "", errors.New("cached base image differs from artifact")
 		}
 		if err := verifyImageGraph(ctx, target, *record.BaseImage); err != nil {

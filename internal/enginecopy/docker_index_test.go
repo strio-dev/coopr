@@ -369,3 +369,20 @@ func dockerArchiveRoot(t *testing.T, data []byte) v1.Descriptor {
 	t.Fatal("archive has no index.json")
 	return v1.Descriptor{}
 }
+
+func TestDockerLoadResponseUsesNativeErrors(t *testing.T) {
+	for _, tc := range []struct {
+		input  string
+		failed bool
+	}{
+		{`{"stream":"loaded"}`, false},
+		{`{"errorDetail":{"message":"failed"}}`, true},
+		{`{"errorDetail":{}}`, true},
+		{`{"error":"legacy-only"}`, false},
+		{`{`, true},
+	} {
+		if err := decodeDockerLoadResponse(strings.NewReader(tc.input)); (err != nil) != tc.failed {
+			t.Errorf("%s: %v", tc.input, err)
+		}
+	}
+}

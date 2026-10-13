@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,8 +14,10 @@ import (
 	"strings"
 	"testing"
 
+	"coopr/internal/definition"
 	"coopr/internal/localstore"
 	"coopr/internal/oci"
+	"coopr/internal/planner"
 	"github.com/google/go-containerregistry/pkg/registry"
 	"github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
@@ -241,7 +244,7 @@ func TestCopyRootRegistryUsesCredentialsAndDirectCertLeaf(t *testing.T) {
 	}
 }
 
-func TestArchiveDestinationCannotOverwriteStore(t *testing.T) {
+func TestArchiveDestinationInsideStoreUsesNativePolicy(t *testing.T) {
 	ctx := context.Background()
 	storeDir := filepath.Join(t.TempDir(), "images")
 	source, root := imageFixture(t, ctx)
@@ -257,18 +260,232 @@ func TestArchiveDestinationCannotOverwriteStore(t *testing.T) {
 	if err := os.Symlink(storeDir, alias); err != nil {
 		t.Fatal(err)
 	}
-	destination, err := ParseDestination("oci-archive:"+filepath.Join(alias, "index.json")+":app", oci.Image)
+	destination, err := ParseDestination("oci-archive:"+filepath.Join(alias, "export.tar")+":app", oci.Image)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = CopyRoot(ctx, oci.Image, storeDir, root, destination, Options{})
-	if err == nil || !strings.Contains(err.Error(), "would overwrite the Coopr store") {
-		t.Fatalf("store archive overwrite = %v", err)
+	if err != nil {
+		t.Fatalf("archive export within store = %v", err)
 	}
 	after, err := os.ReadFile(index)
 	if err != nil || !bytes.Equal(before, after) {
-		t.Fatalf("store index changed after rejected archive: %v", err)
+		t.Fatalf("store index changed during archive export: %v", err)
 	}
+}
+
+func TestComponentArchiveProtectsStore(t *testing.T) {
+	ctx := context.Background()
+	source, root := componentExportFixture(t, ctx)
+	blob := filepath.Join("blobs", root.Digest.Algorithm().String(), root.Digest.Encoded())
+	for _, reserved := range []string{".", "index.json", "oci-layout", ".coopr-store.lock", ".coopr-activity.lock", "blobs", blob, filepath.Join("blobs", "new", "export.tar")} {
+		for _, aliased := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/alias=%t", reserved, aliased), func(t *testing.T) {
+				storeDir := filepath.Join(t.TempDir(), "components")
+				if err := localstore.Put(ctx, storeDir, source, root, "example:latest"); err != nil {
+					t.Fatal(err)
+				}
+				outputRoot := storeDir
+				if aliased {
+					outputRoot = filepath.Join(t.TempDir(), "store-alias")
+					if err := os.Symlink(storeDir, outputRoot); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := os.WriteFile(filepath.Join(storeDir, ".coopr-activity.lock"), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				before := map[string][]byte{}
+				for _, name := range []string{"index.json", "oci-layout", ".coopr-store.lock", ".coopr-activity.lock", blob} {
+					data, err := os.ReadFile(filepath.Join(storeDir, name))
+					if err != nil {
+						t.Fatal(err)
+					}
+					before[name] = data
+				}
+				destination := Destination{Transport: "oci-archive", Name: filepath.Join(outputRoot, reserved)}
+				if _, err := CopyRoot(ctx, oci.Component, storeDir, root, destination, Options{ComponentStoreDir: outputRoot}); err == nil || !strings.Contains(err.Error(), "component store") {
+					t.Fatalf("reserved output accepted or wrong error: %v", err)
+				}
+				for name, data := range before {
+					after, err := os.ReadFile(filepath.Join(storeDir, name))
+					if err != nil || !bytes.Equal(data, after) {
+						t.Fatalf("store file %s changed: %v", name, err)
+					}
+				}
+				store, err := localstore.Open(ctx, storeDir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				selected, err := store.Resolve(ctx, "example:latest")
+				if err != nil || selected.Digest != root.Digest {
+					t.Fatalf("component no longer resolves: %v", err)
+				}
+				resolver, err := oci.NewResolver(oci.Options{ComponentStoreDir: storeDir})
+				if err != nil {
+					t.Fatal(err)
+				}
+				resolved, err := resolver.Resolve(ctx, "example:latest", v1.Platform{OS: "linux", Architecture: "amd64"}, oci.Component)
+				if err != nil || resolved.Component == nil {
+					t.Fatalf("component metadata no longer readable: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestComponentArchiveExportPlacement(t *testing.T) {
+	ctx := context.Background()
+	source, root := componentExportFixture(t, ctx)
+	storeDir := filepath.Join(t.TempDir(), "components")
+	if err := localstore.Put(ctx, storeDir, source, root, "example:latest"); err != nil {
+		t.Fatal(err)
+	}
+	index := filepath.Join(storeDir, "index.json")
+	before, err := os.ReadFile(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, transport := range []string{"oci-archive", "oci-dir"} {
+		for _, output := range []string{filepath.Join(t.TempDir(), "component.tar"), filepath.Join(storeDir, "exports", transport+".tar")} {
+			if _, err := CopyRoot(ctx, oci.Component, storeDir, root, Destination{Transport: transport, Name: output}, Options{ComponentStoreDir: storeDir}); err != nil {
+				t.Fatalf("valid export %s: %v", output, err)
+			}
+			file, err := os.Open(output)
+			if err != nil {
+				t.Fatal(err)
+			}
+			header, readErr := tar.NewReader(file).Next()
+			closeErr := file.Close()
+			if readErr != nil || closeErr != nil || header == nil {
+				t.Fatalf("export not an archive: %v, %v", readErr, closeErr)
+			}
+		}
+	}
+	// Atomic archive installation replaces this link itself, not its target.
+	leaf := filepath.Join(t.TempDir(), "export.tar")
+	if err := os.Symlink(index, leaf); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CopyRoot(ctx, oci.Component, storeDir, root, Destination{Transport: "oci-archive", Name: leaf}, Options{ComponentStoreDir: storeDir}); err != nil {
+		t.Fatalf("leaf symlink export: %v", err)
+	}
+	after, err := os.ReadFile(index)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("leaf symlink target changed: %v", err)
+	}
+	// A temporary source must not be able to overwrite the persistent store.
+	sourcePath := t.TempDir()
+	if err := localstore.Put(ctx, sourcePath, source, root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CopyRoot(ctx, oci.Component, sourcePath, root, Destination{Transport: "oci-archive", Name: index}, Options{ComponentStoreDir: storeDir}); err == nil || !strings.Contains(err.Error(), "component store") {
+		t.Fatalf("persistent store overwrite: %v", err)
+	}
+}
+
+func TestComponentArchiveProtectsSymlinkedStoreData(t *testing.T) {
+	ctx := context.Background()
+	source, root := componentExportFixture(t, ctx)
+	storeDir := filepath.Join(t.TempDir(), "components")
+	if err := localstore.Put(ctx, storeDir, source, root, "example:latest"); err != nil {
+		t.Fatal(err)
+	}
+	external := t.TempDir()
+	for _, name := range []string{"index.json", "blobs"} {
+		original, moved := filepath.Join(storeDir, name), filepath.Join(external, name)
+		if err := os.Rename(original, moved); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(moved, original); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, output := range []string{filepath.Join(external, "index.json"), filepath.Join(external, "blobs", root.Digest.Algorithm().String(), root.Digest.Encoded()), filepath.Join(external, "blobs", "new", "export.tar")} {
+		if _, err := CopyRoot(ctx, oci.Component, storeDir, root, Destination{Transport: "oci-archive", Name: output}, Options{ComponentStoreDir: storeDir}); err == nil || !strings.Contains(err.Error(), "component store") {
+			t.Fatalf("symlinked store data overwrite at %s: %v", output, err)
+		}
+	}
+	resolver, err := oci.NewResolver(oci.Options{ComponentStoreDir: storeDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolver.Resolve(ctx, "example:latest", v1.Platform{OS: "linux", Architecture: "amd64"}, oci.Component)
+	if err != nil || resolved.Component == nil {
+		t.Fatalf("symlinked store unreadable: %v", err)
+	}
+}
+
+func TestComponentArchiveProtectsStoreAfterSymlinkDotDot(t *testing.T) {
+	ctx := context.Background()
+	source, root := componentExportFixture(t, ctx)
+	base := t.TempDir()
+	storeDir := filepath.Join(base, "components")
+	if err := localstore.Put(ctx, storeDir, source, root, "example:latest"); err != nil {
+		t.Fatal(err)
+	}
+	child := filepath.Join(storeDir, "child")
+	if err := os.Mkdir(child, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(base, "alias")
+	if err := os.Symlink(child, alias); err != nil {
+		t.Fatal(err)
+	}
+	index := filepath.Join(storeDir, "index.json")
+	before, err := os.ReadFile(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Join/Abs would clean away .. before the kernel resolves the symlink.
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relative, err := filepath.Rel(cwd, alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, prefix := range []string{alias, relative} {
+		output := prefix + "/../index.json"
+		if _, err := CopyRoot(ctx, oci.Component, storeDir, root, Destination{Transport: "oci-archive", Name: output}, Options{ComponentStoreDir: storeDir}); err == nil || !strings.Contains(err.Error(), "component store") {
+			t.Fatalf("symlink-dotdot store overwrite: %v", err)
+		}
+		after, err := os.ReadFile(index)
+		if err != nil || !bytes.Equal(before, after) {
+			t.Fatalf("component index changed: %v", err)
+		}
+	}
+	// A safe sibling still follows the same raw path semantics as Rename.
+	output := alias + "/../export.tar"
+	if _, err := CopyRoot(ctx, oci.Component, storeDir, root, Destination{Transport: "oci-archive", Name: output}, Options{ComponentStoreDir: storeDir}); err != nil {
+		t.Fatalf("safe symlink-dotdot export: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(storeDir, "export.tar")); err != nil {
+		t.Fatalf("export path semantics changed: %v", err)
+	}
+}
+
+func componentExportFixture(t *testing.T, ctx context.Context) (*orasoci.Store, v1.Descriptor) {
+	t.Helper()
+	def, err := definition.Parse(strings.NewReader("extend { env GREETING=hello }"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	publication, err := planner.Create(def, planner.Options{Mode: planner.Publish, Platform: "linux/amd64"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	layout := t.TempDir()
+	root, err := oci.WriteComponentLayout(ctx, layout, oci.ComponentMetadata{Version: oci.ComponentVersion, Platform: v1.Platform{OS: "linux", Architecture: "amd64"}, Component: *publication.Component}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := orasoci.NewWithContext(ctx, layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store, root
 }
 
 func imageFixture(t *testing.T, ctx context.Context) (*orasoci.Store, v1.Descriptor) {

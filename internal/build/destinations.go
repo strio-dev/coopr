@@ -14,6 +14,7 @@ import (
 	"github.com/containerd/platforms"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"go.podman.io/storage/pkg/ioutils"
 )
 
 func outputDestinations(kind oci.Kind, tag string, tags []string, push bool) ([]transfer.Destination, error) {
@@ -236,16 +237,5 @@ func writeOutputMetadata(path, iidPath string, root v1.Descriptor, variants []oc
 }
 
 func writeResultFile(path string, data []byte) error {
-	file, err := os.CreateTemp(filepath.Dir(path), ".coopr-result-*")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = file.Close(); _ = os.Remove(file.Name()) }()
-	if _, err := file.Write(data); err != nil {
-		return err
-	}
-	if err := file.Close(); err != nil {
-		return err
-	}
-	return os.Rename(file.Name(), path)
+	return ioutils.AtomicWriteFileWithOpts(path, data, 0o600, &ioutils.AtomicFileWriterOptions{NoSync: true})
 }

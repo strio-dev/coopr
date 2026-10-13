@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"oras.land/oras-go/v2/content"
+
 	"go.podman.io/storage"
 
 	"coopr/internal/buildah"
@@ -380,18 +382,7 @@ func copyStoredImage(ctx context.Context, source string, destination Destination
 		}
 		return destination.Name, nil
 	}
-	if destination.isPath() {
-		if err := rejectStoreArchivePath(storeDir, destination.Name); err != nil {
-			return "", err
-		}
-		for _, boundary := range []string{storeOptions.GraphRoot, storeOptions.RunRoot, storeOptions.ImageStore} {
-			if boundary != "" {
-				if err := rejectStoreArchivePath(boundary, destination.Name); err != nil {
-					return "", err
-				}
-			}
-		}
-	}
+
 	if destination.Transport == "registry" {
 		return publishStoredImage(ctx, selection.ImageID, selection.Manifest, destination.Name, opts)
 	}
@@ -458,19 +449,6 @@ func copyStoredIndex(ctx context.Context, storeDir string, root v1.Descriptor, i
 		return destination.Name, nil
 	}
 
-	if destination.isPath() {
-		if err := rejectStoreArchivePath(storeDir, destination.Name); err != nil {
-			return "", err
-		}
-		for _, boundary := range []string{storeOptions.GraphRoot, storeOptions.RunRoot, storeOptions.ImageStore} {
-			if boundary != "" {
-				if err := rejectStoreArchivePath(boundary, destination.Name); err != nil {
-					return "", err
-				}
-			}
-		}
-	}
-
 	if destination.Transport == "dir" || destination.Transport == "oci" || destination.Transport == "docker-archive" || destination.Transport == "containers-storage" {
 		transferOptions, cleanup, err := storedTransferOptions("", root.Digest, opts)
 		if err != nil {
@@ -532,7 +510,7 @@ func copyStoredIndex(ctx context.Context, storeDir string, root v1.Descriptor, i
 				return "", fmt.Errorf("inspect exported platform %s: %w", key, err)
 			}
 		}
-		if manifest.Digest != manifestInIndex.Digest || manifest.Size != manifestInIndex.Size || manifest.MediaType != manifestInIndex.MediaType {
+		if !content.Equal(manifest, manifestInIndex) {
 			changed = true
 			manifestInIndex.Digest, manifestInIndex.Size, manifestInIndex.MediaType = manifest.Digest, manifest.Size, manifest.MediaType
 			if len(manifestInIndex.Data) != 0 {
@@ -597,7 +575,7 @@ func copyStoredImageOutput(ctx context.Context, layout string, root v1.Descripto
 // Origin descriptors identify the input, not necessarily resident runnable
 // bytes: decryption can retain a ciphertext origin beside a plaintext manifest.
 func storedSelectionHasManifest(selection oci.StoredSelection, manifest v1.Descriptor) bool {
-	return selection.Manifest.Digest == manifest.Digest && selection.Manifest.Size == manifest.Size && selection.Manifest.MediaType == manifest.MediaType
+	return content.Equal(selection.Manifest, manifest)
 }
 
 func storedSelections(ctx context.Context, opts Options, selector string) (root v1.Descriptor, data []byte, selections map[string]oci.StoredSelection, err error) {
@@ -659,7 +637,7 @@ func copyRoot(ctx context.Context, kind oci.Kind, storeDir string, root v1.Descr
 		return "", err
 	}
 	resolved, err := store.Resolve(ctx, root.Digest.String())
-	if err != nil || resolved.Digest != root.Digest || resolved.Size != root.Size || resolved.MediaType != root.MediaType {
+	if err != nil || !content.Equal(resolved, root) {
 		return "", fmt.Errorf("local OCI root %s is missing or differs: %v", root.Digest, err)
 	}
 	switch destination.Transport {
@@ -669,28 +647,7 @@ func copyRoot(ctx context.Context, kind oci.Kind, storeDir string, root v1.Descr
 		}
 		return LocalReference(destination.Name, root), nil
 	case "oci-archive", "oci-dir", "dir", "oci", "docker-archive", "containers-storage":
-		if destination.isPath() {
-			if err := rejectStoreArchivePath(storeDir, destination.Name); err != nil {
-				return "", err
-			}
-		}
-		if kind == oci.Image {
-			options, err := nativeStoreOptions(opts)
-			if err != nil {
-				return "", err
-			}
-			for _, boundary := range []string{options.GraphRoot, options.RunRoot, options.ImageStore} {
-				if !destination.isPath() {
-					continue
-				}
-				if boundary == "" {
-					continue
-				}
-				if err := rejectStoreArchivePath(boundary, destination.Name); err != nil {
-					return "", err
-				}
-			}
-		}
+
 		if opts.ArchiveReference != "" {
 			root.Annotations = maps.Clone(root.Annotations)
 			if root.Annotations == nil {
@@ -703,6 +660,13 @@ func copyRoot(ctx context.Context, kind oci.Kind, storeDir string, root v1.Descr
 				return copyImageDestination(ctx, storeDir, root, destination, opts, preparedPolicy)
 			}
 			return copyImageArchive(ctx, storeDir, root, destination, opts, preparedPolicy)
+		}
+		componentStore, err := storeDirectory(oci.Component, opts)
+		if err != nil {
+			return "", err
+		}
+		if err := validateComponentArchiveOutput(destination.Name, storeDir, componentStore); err != nil {
+			return "", err
 		}
 		if err := localstore.WriteArchive(ctx, store, root, destination.Name); err != nil {
 			return "", err
@@ -748,46 +712,6 @@ func copyRoot(ctx context.Context, kind oci.Kind, storeDir string, root v1.Descr
 	}
 }
 
-func rejectStoreArchivePath(storeDir, output string) error {
-	storePath, err := canonicalArchiveBoundary(storeDir)
-	if err != nil {
-		return err
-	}
-	parent, err := canonicalArchiveBoundary(filepath.Dir(output))
-	if err != nil {
-		return err
-	}
-	relative, err := filepath.Rel(storePath, filepath.Join(parent, filepath.Base(output)))
-	if err != nil {
-		return err
-	}
-	if relative == "." || relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("archive output %q would overwrite the Coopr store", output)
-	}
-	return nil
-}
-
-// A configured native root or output parent need not exist yet. Resolve existing
-// ancestors without creating directories while checking the archive boundary.
-func canonicalArchiveBoundary(path string) (string, error) {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return "", err
-	}
-	var suffix []string
-	for {
-		resolved, err := filepath.EvalSymlinks(abs)
-		if err == nil {
-			return filepath.Join(append([]string{resolved}, suffix...)...), nil
-		}
-		if !errors.Is(err, os.ErrNotExist) || abs == filepath.Dir(abs) {
-			return "", err
-		}
-		suffix = append([]string{filepath.Base(abs)}, suffix...)
-		abs = filepath.Dir(abs)
-	}
-}
-
 func storeDirectory(kind oci.Kind, opts Options) (string, error) {
 	switch kind {
 	case oci.Image:
@@ -822,12 +746,4 @@ func localSelector(value string, kind oci.Kind) (string, error) {
 		return "", fmt.Errorf("invalid image reference %q", selector)
 	}
 	return selector, nil
-}
-
-func (destination Destination) isPath() bool {
-	switch destination.Transport {
-	case "dir", "oci", "docker-archive", "oci-archive", "oci-dir":
-		return true
-	}
-	return false
 }

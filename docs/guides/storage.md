@@ -209,4 +209,6 @@ Pruning reports removed names and images, followed by reclaimed space from nativ
 
 `XDG_DATA_HOME` defaults to `~/.local/share`. The graph root is the image store directory selected by native `storage.conf`, which also controls runtime paths and the storage driver. Component storage follows the data home independently. Rootful native storage normally uses `/var/lib/containers/storage` and `/run/containers/storage`.
 
-The published Coopr container keeps images, components, and caches under `/var/lib`. See [configuration](../reference/configuration.md) for overrides and the [container guide](container.md) for a persistent volume.
+Coopr honors explicit `graphroot` and `runroot` settings even when running rootless. Native defaults apply when the effective configuration omits these keys or leaves them empty. To override system paths for one user, set these keys in `$XDG_CONFIG_HOME/containers/storage.conf` (normally `~/.config/containers/storage.conf`); see the [native storage configuration reference](https://github.com/podman-container-tools/container-libs/blob/6eac452fac5c9d9ad8f86b6fd6109f8f32659f77/storage/docs/containers-storage.conf.5.md).
+
+The published Coopr container uses these native image-store defaults. See [configuration](../reference/configuration.md) for overrides and the [container guide](container.md) for persistent storage.

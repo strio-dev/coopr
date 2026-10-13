@@ -5,10 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"coopr/internal/imagestore"
 	"coopr/internal/localstore"
 
+	securejoin "github.com/cyphar/filepath-securejoin"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	imagecopy "go.podman.io/image/v5/copy"
@@ -21,6 +24,68 @@ import (
 	"oras.land/oras-go/v2/content"
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
+
+// Component stores have OCI metadata and locks that an atomic archive rename
+// must not replace. Unused export paths remain valid, including inside a store.
+func validateComponentArchiveOutput(output string, stores ...string) error {
+	canonical := func(path string) (string, error) {
+		absolute, err := filepath.Abs(path)
+		if err != nil {
+			return "", err
+		}
+		return securejoin.SecureJoin(string(filepath.Separator), absolute)
+	}
+	absolute := output
+	if !filepath.IsAbs(absolute) {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		absolute = cwd + string(filepath.Separator) + absolute
+	}
+	// Split before resolving: Abs/Dir/Join would clean away .. before a
+	// preceding symlink, unlike the kernel when WriteArchive renames output.
+	directory, filename := filepath.Split(absolute)
+	parent, err := securejoin.SecureJoin(string(filepath.Separator), directory)
+	if err != nil {
+		return err
+	}
+	// WriteArchive renames onto the filename, replacing a leaf symlink itself.
+	destination := filepath.Join(parent, filename)
+	for _, store := range stores {
+		for _, name := range []string{".", v1.ImageIndexFile, v1.ImageLayoutFile, ".coopr-store.lock", ".coopr-activity.lock", "blobs"} {
+			path := filepath.Join(store, name)
+			absolute, err := filepath.Abs(path)
+			if err != nil {
+				return err
+			}
+			parent, err := canonical(filepath.Dir(absolute))
+			if err != nil {
+				return err
+			}
+			literal := filepath.Join(parent, filepath.Base(absolute))
+			resolved, err := canonical(path)
+			if err != nil {
+				return err
+			}
+			for _, protected := range []string{literal, resolved} {
+				if destination == protected {
+					return fmt.Errorf("output %s would overwrite the component store", output)
+				}
+				if name == "blobs" {
+					relative, err := filepath.Rel(protected, destination)
+					if err != nil {
+						return err
+					}
+					if relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+						return fmt.Errorf("output %s would overwrite component store blobs", output)
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
 
 func copyImageArchive(ctx context.Context, layoutPath string, root v1.Descriptor, destination Destination, opts Options, policy *signature.Policy) (_ string, retErr error) {
 	source, err := imagestore.LayoutReference(layoutPath, root)

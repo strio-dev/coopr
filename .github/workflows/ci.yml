@@ -265,8 +265,12 @@ jobs:
         uses: *github-script
         with:
           script: |
-            const releases = await github.paginate(github.rest.repos.listReleases, { ...context.repo, per_page: 100 });
-            const release = releases.find(item => item.tag_name === process.env.GITHUB_REF_NAME);
+            let release;
+            try {
+              ({ data: release } = await github.rest.repos.getReleaseByTag({ ...context.repo, tag: process.env.GITHUB_REF_NAME }));
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
             core.setOutput('exists', Boolean(release));
             core.setOutput('published', Boolean(release && !release.draft));
       - name: Download release artifacts

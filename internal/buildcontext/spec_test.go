@@ -107,3 +107,21 @@ func TestParseRepeatedNamesUseLastContext(t *testing.T) {
 		t.Fatalf("contexts = %+v, want %+v", got, want)
 	}
 }
+
+func TestNativeGitClassificationSharedSSHAndHTTPInputs(t *testing.T) {
+	for _, value := range []string{"builder@example.invalid:repo.git#main:dir", "ssh://builder@example.invalid/repo.git", "https://example.invalid/repo.git?token=opaque", "git://example.invalid/repo"} {
+		if !IsGitSource(value) {
+			t.Errorf("Git source %q not recognized", value)
+		}
+	}
+	for _, value := range []string{"https://example.invalid/archive.tar.gz", "./repo.git", "../repo.git"} {
+		if IsGitSource(value) {
+			t.Errorf("non-Git source %q classified remote", value)
+		}
+	}
+	for _, value := range []string{"builder@example.invalid:repo.git", "ssh://builder@example.invalid/repo.git"} {
+		if !IsSSHGitSource(value) {
+			t.Errorf("SSH source %q not recognized", value)
+		}
+	}
+}

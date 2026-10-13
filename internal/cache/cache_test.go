@@ -13,8 +13,11 @@ import (
 	"testing"
 	"time"
 
+	"oras.land/oras-go/v2/content"
+
 	"coopr/internal/oci"
 	"coopr/internal/stateidentity"
+
 	"github.com/gofrs/flock"
 	"github.com/google/go-containerregistry/pkg/registry"
 	digest "github.com/opencontainers/go-digest"
@@ -123,7 +126,7 @@ func TestStoreLocalAndRegistryRoundTrip(t *testing.T) {
 			if got.Output != record.Output || snapshotPath == "" {
 				t.Fatalf("bad record: %+v %q", got, snapshotPath)
 			}
-			if !sameDescriptor(got.Descriptor, root) {
+			if !content.Equal(got.Descriptor, root) {
 				t.Fatalf("verified descriptor missing: %+v, want %+v", got.Descriptor, root)
 			}
 			read, err := os.ReadFile(snapshotPath)
