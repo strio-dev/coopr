@@ -128,6 +128,42 @@ func TestAuthoredInlineOnBuildRejectsLossyHeader(t *testing.T) {
 	}
 }
 
+func TestAuthoredInlineOnBuildPreservesQuotedHeader(t *testing.T) {
+	for _, kind := range []string{"copy", "add"} {
+		for _, source := range []struct{ word, value string }{
+			{"ordinary", "ordinary"}, {`has"quote`, `has"quote`}, {"has'quote", "has'quote"}, {`back\slash`, "backslash"},
+		} {
+			for _, destination := range []struct{ word, value string }{
+				{"/out/", "/out/"}, {`/out"quote/`, `/out"quote/`}, {`/back\slash/`, "/backslash/"},
+			} {
+				t.Run(kind+"/"+source.word+"/"+destination.word, func(t *testing.T) {
+					authored := `onbuild { ` + kind + ` ` + strconv.Quote(source.word) + ` ` + strconv.Quote(destination.word) + ` { file "inline" "Hello ${name}\n\n"; file "raw" #"""
+${literal}
+
+"""#; }; }`
+					parsed, err := parseFragment(strings.NewReader(authored))
+					if err != nil {
+						t.Fatal(err)
+					}
+					trigger := parsed.Instructions[0].Arguments[0]
+					got, err := onbuildparse.Parse(trigger)
+					if err != nil {
+						t.Fatal(err)
+					}
+					wantFiles := []definition.InlineFile{{Path: "inline", Data: "Hello ${name}\n\n", Expand: true}, {Path: "raw", Data: "${literal}\n"}}
+					deferred, err := onbuildparse.ParseDeferred(trigger)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(got) != 1 || got[0].Name != kind || !reflect.DeepEqual(got[0].Arguments, []string{source.value, destination.value}) || len(deferred) != 1 || !reflect.DeepEqual(deferred[0].InlineFiles, wantFiles) {
+						t.Fatalf("trigger %q parsed=%#v deferred=%#v", trigger, got, deferred)
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestAuthoredInlineOnBuildPreservesNULAndEmbeddedCRContent(t *testing.T) {
 	parsed, err := parseFragment(strings.NewReader(`onbuild { copy "/out/" { file "nul" "nul\u{0}exact\n"; file "cr" "a\rb\n"; }; }`))
 	if err != nil {

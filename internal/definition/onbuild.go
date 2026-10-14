@@ -314,7 +314,8 @@ func formatOnBuildInlineCopyOrAdd(inst Instruction, flags []string) (string, err
 		return "", fmt.Errorf("ONBUILD %s inline filenames cannot be represented as Dockerfile heredocs", strings.ToUpper(inst.Name))
 	}
 	// Flags are validated by imagebuilder. Here only check the shared source
-	// conversion, which reparses heredoc words after lexical quote removal.
+	// conversion. Ordinary paths retain lexical quoting and escapes; heredoc
+	// names and contents are decoded separately.
 	node := decoded.AST.Children[0]
 	node.Flags = nil
 	command, err := buildkitinstructions.ParseInstruction(node)

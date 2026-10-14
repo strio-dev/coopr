@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -27,7 +28,13 @@ import (
 	"github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/common/libimage"
+	imagecopy "go.podman.io/image/v5/copy"
+	"go.podman.io/image/v5/pkg/blobinfocache/none"
+	imagestorage "go.podman.io/image/v5/storage"
+	"go.podman.io/image/v5/transports/alltransports"
+	"go.podman.io/image/v5/types"
 	"go.podman.io/storage"
+	"oras.land/oras-go/v2/content"
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
 
@@ -1288,22 +1295,109 @@ func TestImageInspectEncryptedIndexUsesPlaintextNativeImage(t *testing.T) {
 		if testing.Short() {
 			t.Skip("native image export requires user namespaces")
 		}
+		ctx := context.Background()
+		plainRaw, err := os.ReadFile(filepath.Join(layout, "blobs", "sha256", plaintext.Digest.Encoded()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var plainManifest v1.Manifest
+		if err := json.Unmarshal(plainRaw, &plainManifest); err != nil {
+			t.Fatal(err)
+		}
+		configRaw, err := os.ReadFile(filepath.Join(layout, "blobs", "sha256", plainManifest.Config.Digest.Encoded()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertIndex := func(raw []byte, mediaType string) v1.Index {
+			t.Helper()
+			var index v1.Index
+			if err := json.Unmarshal(raw, &index); err != nil {
+				t.Fatal(err)
+			}
+			if mediaType != v1.MediaTypeImageIndex || index.MediaType != mediaType || len(index.Manifests) != 1 || index.Manifests[0].Digest != plaintext.Digest || index.Manifests[0].Size != plaintext.Size || index.Manifests[0].MediaType != plaintext.MediaType || !reflect.DeepEqual(index.Manifests[0].Platform, &platform) {
+				t.Fatalf("native list did not retain its one runnable plaintext child: type=%s index=%s", mediaType, raw)
+			}
+			return index
+		}
+		server := httptest.NewServer(registry.New())
+		defer server.Close()
+		remote := strings.TrimPrefix(server.URL, "http://") + "/test/decrypted:latest"
+		nativeRemote := strings.TrimPrefix(server.URL, "http://") + "/test/native-plaintext:latest"
+		nativeArchivePath := filepath.Join(t.TempDir(), "native-plaintext.tar")
+		// A public native list containing the resident plaintext image is the
+		// whole-list control. Inspect still selects the image from the list.
+		if err := buildah.WithStore(options, func(backend storage.Store) error {
+			previous := imagestorage.Transport.GetStoreIfSet()
+			imagestorage.Transport.SetStore(backend)
+			defer imagestorage.Transport.SetStore(previous)
+			native, err := libimage.RuntimeFromStore(backend, nil)
+			if err != nil {
+				return err
+			}
+			list, err := native.CreateManifestList("plaintext-control")
+			if err != nil {
+				return err
+			}
+			ref, err := manifestMemberReference(ctx, backend, "plaintext")
+			if err != nil {
+				return err
+			}
+			if _, err := list.Add(ctx, ref, nil); err != nil {
+				return err
+			}
+			pushOptions := &libimage.ManifestListPushOptions{ImageListSelection: imagecopy.CopyAllImages, CopyOptions: libimage.CopyOptions{ManifestMIMEType: v1.MediaTypeImageManifest, InsecureSkipTLSVerify: types.OptionalBoolTrue}}
+			if _, err := list.Push(ctx, "oci-archive:"+nativeArchivePath+":control", pushOptions); err != nil {
+				return err
+			}
+			_, err = list.Push(ctx, "docker://"+nativeRemote, pushOptions)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		nativeArchive, err := orasoci.NewFromTar(ctx, nativeArchivePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		nativeRoot, err := nativeArchive.Resolve(ctx, "control")
+		if err != nil {
+			t.Fatal(err)
+		}
+		nativeRaw, err := content.FetchAll(ctx, nativeArchive, nativeRoot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		nativeIndex := assertIndex(nativeRaw, nativeRoot.MediaType)
+
 		archivePath := filepath.Join(t.TempDir(), "plaintext.tar")
 		stdout.Reset()
 		stderr.Reset()
 		if status := run(imageIOArgs(options, "save", "--format", "oci-archive", "--output", archivePath, "encrypted-list"), &stdout, &stderr); status != 0 {
 			t.Fatalf("decrypted-origin save status=%d: %s", status, &stderr)
 		}
-		archive, err := orasoci.NewFromTar(context.Background(), archivePath)
+		archive, err := orasoci.NewFromTar(ctx, archivePath)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := archive.Resolve(context.Background(), plaintext.Digest.String()); err != nil {
-			t.Fatalf("decrypted save did not retain plaintext root: %v", err)
+		savedRoot, err := archive.Resolve(ctx, "localhost/encrypted-list:latest")
+		if err != nil || savedRoot.MediaType != v1.MediaTypeImageIndex || savedRoot.Annotations[v1.AnnotationRefName] != "localhost/encrypted-list:latest" {
+			t.Fatalf("saved outer root lost native list identity/name: %+v, %v", savedRoot, err)
 		}
-		server := httptest.NewServer(registry.New())
-		defer server.Close()
-		remote := strings.TrimPrefix(server.URL, "http://") + "/test/decrypted:latest"
+		savedRaw, err := content.FetchAll(ctx, archive, savedRoot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if savedIndex := assertIndex(savedRaw, savedRoot.MediaType); !reflect.DeepEqual(savedIndex, nativeIndex) {
+			t.Fatalf("saved list differs from public native plaintext-list control: %s, native %s", savedRaw, nativeRaw)
+		}
+		for _, blob := range []struct {
+			desc v1.Descriptor
+			data []byte
+		}{{plaintext, plainRaw}, {plainManifest.Config, configRaw}} {
+			raw, err := content.FetchAll(ctx, archive, blob.desc)
+			if err != nil || !bytes.Equal(raw, blob.data) {
+				t.Fatalf("saved plaintext blob %s changed: %v", blob.desc.Digest, err)
+			}
+		}
 		stdout.Reset()
 		stderr.Reset()
 		if status := run(imageIOArgs(options, "push", "--tls-verify=false", "encrypted-list", remote), &stdout, &stderr); status != 0 {
@@ -1313,10 +1407,48 @@ func TestImageInspectEncryptedIndexUsesPlaintextNativeImage(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		raw, mediaType, err := resolver.RemoteImageManifest(context.Background(), remote)
-		if err != nil || mediaType != plaintext.MediaType || digest.FromBytes(raw) != plaintext.Digest {
-			t.Fatalf("decrypted push changed runnable root: type=%s digest=%s err=%v", mediaType, digest.FromBytes(raw), err)
+		raw, mediaType, err := resolver.RemoteImageManifest(ctx, remote)
+		if err != nil {
+			t.Fatal(err)
 		}
+		pushedIndex := assertIndex(raw, mediaType)
+		nativeRaw, nativeMediaType, err := resolver.RemoteImageManifest(ctx, nativeRemote)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if nativeIndex := assertIndex(nativeRaw, nativeMediaType); !reflect.DeepEqual(pushedIndex, nativeIndex) {
+			t.Fatalf("pushed list differs from public native plaintext-list control: %s, native %s", raw, nativeRaw)
+		}
+		ref, err := alltransports.ParseImageName("docker://" + remote)
+		if err != nil {
+			t.Fatal(err)
+		}
+		source, err := ref.NewImageSource(ctx, &types.SystemContext{DockerInsecureSkipTLSVerify: types.OptionalBoolTrue})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := source.Close(); err != nil {
+				t.Error(err)
+			}
+		}()
+		raw, _, err = source.GetManifest(ctx, &plaintext.Digest)
+		if err != nil || !bytes.Equal(raw, plainRaw) {
+			t.Fatalf("pushed runnable plaintext manifest changed: %v", err)
+		}
+		configStream, _, err := source.GetBlob(ctx, types.BlobInfo{Digest: plainManifest.Config.Digest, Size: plainManifest.Config.Size}, none.NoCache)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, readErr := io.ReadAll(configStream)
+		if err := errors.Join(readErr, configStream.Close()); err != nil || !bytes.Equal(raw, configRaw) {
+			t.Fatalf("pushed plaintext config changed: %v", err)
+		}
+		var config v1.Image
+		if err := json.Unmarshal(raw, &config); err != nil || config.Config.Labels["test"] != "decrypted" || len(plainManifest.Layers) != 0 {
+			t.Fatalf("plaintext config/empty layer payload changed: %s, %v", raw, err)
+		}
+
 	})
 }
 

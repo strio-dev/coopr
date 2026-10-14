@@ -2,13 +2,16 @@ package build
 
 import (
 	"archive/tar"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -20,6 +23,13 @@ import (
 	"github.com/google/go-containerregistry/pkg/registry"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"go.podman.io/common/libimage"
+	"go.podman.io/common/libimage/manifests"
+	imagecopy "go.podman.io/image/v5/copy"
+	"go.podman.io/image/v5/signature"
+	imagestorage "go.podman.io/image/v5/storage"
+	"go.podman.io/image/v5/transports/alltransports"
+	"go.podman.io/storage"
 )
 
 const (
@@ -73,8 +83,10 @@ func TestDockerFormatSurvivesCatalogCopyToArchiveAndRegistry(t *testing.T) {
 		t.Fatalf("copy catalog image to OCI archive: %v", err)
 	}
 	archiveRoot, archiveManifest, archiveConfig := readDockerTransferArchive(t, archive)
-	assertDockerTransferIdentity(t, selection.Manifest, archiveRoot, archiveManifest)
-	assertDockerTransferConfig(t, archiveConfig)
+	nativeRoot, nativeManifest, nativeConfig := readDockerTransferArchive(t, nativeDockerTransferArchive(t, ctx, nativeBuildTestStore(storeDir), tag))
+	if archiveRoot.Digest != nativeRoot.Digest || archiveRoot.MediaType != v1.MediaTypeImageManifest || archiveManifest.Config.MediaType != v1.MediaTypeImageConfig || !reflect.DeepEqual(archiveManifest, nativeManifest) || !bytes.Equal(archiveConfig, nativeConfig) {
+		t.Fatalf("OCI archive differs from native Docker-to-OCI conversion: root=%+v native=%+v", archiveRoot, nativeRoot)
+	}
 
 	server := httptest.NewServer(registry.New())
 	defer server.Close()
@@ -146,6 +158,21 @@ func assertDockerTransferConfig(t *testing.T, data []byte) {
 
 func readDockerTransferArchive(t *testing.T, path string) (v1.Descriptor, v1.Manifest, []byte) {
 	t.Helper()
+	root, blobs := readDockerTransferArchiveBlobs(t, path)
+	manifestData := blobs[transferBlobPath(root.Digest)]
+	var manifest v1.Manifest
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	config := blobs[transferBlobPath(manifest.Config.Digest)]
+	if digest.FromBytes(config) != manifest.Config.Digest {
+		t.Fatalf("archive config bytes do not match %s", manifest.Config.Digest)
+	}
+	return root, manifest, config
+}
+
+func readDockerTransferArchiveBlobs(t *testing.T, path string) (v1.Descriptor, map[string][]byte) {
+	t.Helper()
 	file, err := os.Open(path)
 	if err != nil {
 		t.Fatal(err)
@@ -179,17 +206,61 @@ func readDockerTransferArchive(t *testing.T, path string) (v1.Descriptor, v1.Man
 	if digest.FromBytes(manifestData) != root.Digest {
 		t.Fatalf("archive manifest bytes do not match %s", root.Digest)
 	}
-	var manifest v1.Manifest
-	if err := json.Unmarshal(manifestData, &manifest); err != nil {
-		t.Fatalf("decode archive manifest: %v", err)
-	}
-	config := blobs[transferBlobPath(manifest.Config.Digest)]
-	if digest.FromBytes(config) != manifest.Config.Digest {
-		t.Fatalf("archive config bytes do not match %s", manifest.Config.Digest)
-	}
-	return root, manifest, config
+	return root, blobs
 }
 
 func transferBlobPath(value digest.Digest) string {
 	return fmt.Sprintf("blobs/%s/%s", value.Algorithm(), value.Encoded())
+}
+
+// Use the public native copy path as the format-conversion control, independently
+// of Coopr's transfer dispatcher and prepared-source handling.
+func nativeDockerTransferArchive(t *testing.T, ctx context.Context, options buildah.StoreOptions, source string) string {
+	t.Helper()
+	archive := filepath.Join(t.TempDir(), "native.oci.tar")
+	err := buildah.WithStore(options, func(backend storage.Store) error {
+		previous := imagestorage.Transport.GetStoreIfSet()
+		imagestorage.Transport.SetStore(backend)
+		defer imagestorage.Transport.SetStore(previous)
+		native, err := libimage.RuntimeFromStore(backend, nil)
+		if err != nil {
+			return err
+		}
+		image, _, err := native.LookupImage(source, &libimage.LookupImageOptions{ManifestList: true})
+		if err != nil {
+			return err
+		}
+		ref, err := image.StorageReference()
+		if err != nil {
+			return err
+		}
+		isList, err := image.IsManifestList(ctx)
+		if err != nil {
+			return err
+		}
+		if isList {
+			_, list, err := manifests.LoadFromImage(backend, image.ID())
+			if err != nil {
+				return err
+			}
+			ref, err = list.Reference(backend, imagecopy.CopyAllImages, nil)
+			if err != nil {
+				return err
+			}
+		}
+		destination, err := alltransports.ParseImageName("oci-archive:" + archive)
+		if err != nil {
+			return err
+		}
+		policy, err := signature.NewPolicyContext(&signature.Policy{Default: signature.PolicyRequirements{signature.NewPRInsecureAcceptAnything()}})
+		if err != nil {
+			return err
+		}
+		_, copyErr := imagecopy.Image(ctx, policy, destination, ref, &imagecopy.Options{ImageListSelection: imagecopy.CopyAllImages})
+		return errors.Join(copyErr, policy.Destroy())
+	})
+	if err != nil {
+		t.Fatalf("native OCI archive control: %v", err)
+	}
+	return archive
 }

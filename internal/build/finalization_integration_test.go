@@ -2,14 +2,18 @@ package build
 
 import (
 	"archive/tar"
+	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"coopr/internal/buildah"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"go.podman.io/storage"
 )
 
 func TestDockerAnnotationControlsAreIgnored(t *testing.T) {
@@ -25,12 +29,13 @@ func TestDockerAnnotationControlsAreIgnored(t *testing.T) {
 `), 0600); err != nil {
 		t.Fatal(err)
 	}
+	store := buildah.StoreOptions{GraphRoot: filepath.Join(root, "store", "graph"), RunRoot: filepath.Join(root, "run"), GraphDriverName: "vfs"}
 	for _, format := range []string{"docker", "oci"} {
 		for attempt := range 2 {
 			archive := filepath.Join(root, format+".tar")
-			_, err := buildArchive(t, archive, context.Background(), Options{
+			result, err := buildArchive(t, archive, context.Background(), Options{
 				File: definition, Format: format,
-				BuildStore: buildah.StoreOptions{GraphRoot: filepath.Join(root, "store", "graph"), RunRoot: filepath.Join(root, "run"), GraphDriverName: "vfs"},
+				BuildStore: store,
 				ImageControls: buildah.ImageControls{
 					Annotations:      []string{"org.example.kept=value", "org.example.removed=value"},
 					UnsetAnnotations: []string{"org.example.removed"}, DropInheritedAnnotations: true,
@@ -44,8 +49,23 @@ func TestDockerAnnotationControlsAreIgnored(t *testing.T) {
 				t.Fatalf("%s attempt %d lost image configuration", format, attempt)
 			}
 			if format == "docker" {
-				if len(manifest.Annotations) != 0 || manifest.Config.MediaType == v1.MediaTypeImageConfig {
-					t.Fatalf("Docker manifest retained OCI metadata: %+v", manifest)
+				var stored v1.Manifest
+				if err := buildah.WithStore(store, func(backend storage.Store) error {
+					raw, err := backend.ImageBigData(result.ImageID, storage.ImageDigestBigDataKey)
+					if err != nil {
+						return err
+					}
+					return json.Unmarshal(raw, &stored)
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if stored.MediaType != dockerSchema2ManifestMediaType || stored.Config.MediaType != dockerImageConfigMediaType || len(stored.Annotations) != 0 {
+					t.Fatalf("stored Docker manifest retained OCI metadata: %+v", stored)
+				}
+				archiveRoot, archiveManifest, archiveConfig := readDockerTransferArchive(t, archive)
+				nativeRoot, nativeManifest, nativeConfig := readDockerTransferArchive(t, nativeDockerTransferArchive(t, context.Background(), store, result.ImageID))
+				if archiveRoot.Digest != nativeRoot.Digest || archiveRoot.MediaType != v1.MediaTypeImageManifest || archiveManifest.Config.MediaType != v1.MediaTypeImageConfig || !reflect.DeepEqual(archiveManifest, nativeManifest) || !bytes.Equal(archiveConfig, nativeConfig) || len(manifest.Annotations) != 0 {
+					t.Fatalf("Docker OCI archive differs from native conversion: %+v", manifest)
 				}
 			} else if manifest.Annotations["org.example.kept"] != "value" || manifest.Annotations["org.example.removed"] != "" {
 				t.Fatalf("OCI annotations = %+v", manifest.Annotations)

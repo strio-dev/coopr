@@ -1,6 +1,7 @@
 package build
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -307,11 +308,40 @@ func TestRunBuildsDockerManifestList(t *testing.T) {
 	if _, err := transfer.Copy(ctx, oci.Image, tag, transfer.Destination{Transport: "oci-archive", Name: archive}, transfer.Options{BuildStore: nativeBuildTestStore(storeDir)}); err != nil {
 		t.Fatalf("copy Docker list to archive: %v", err)
 	}
-	source, err := orasoci.NewFromTar(ctx, archive)
-	if err != nil {
-		t.Fatal(err)
+
+	archiveRoot, blobs := readDockerTransferArchiveBlobs(t, archive)
+	nativeRoot, nativeBlobs := readDockerTransferArchiveBlobs(t, nativeDockerTransferArchive(t, ctx, nativeBuildTestStore(storeDir), tag))
+	copied := blobs[transferBlobPath(archiveRoot.Digest)]
+	if archiveRoot.MediaType != v1.MediaTypeImageIndex || archiveRoot.Digest != nativeRoot.Digest || !bytes.Equal(copied, nativeBlobs[transferBlobPath(nativeRoot.Digest)]) {
+		t.Fatalf("Docker list OCI archive differs from native conversion: root=%+v native=%+v", archiveRoot, nativeRoot)
 	}
-	if copied, err := content.FetchAll(ctx, source, root); err != nil || string(copied) != string(data) {
-		t.Fatalf("Docker list archive changed index bytes: %v", err)
+	var converted v1.Index
+	if err := json.Unmarshal(copied, &converted); err != nil || converted.MediaType != v1.MediaTypeImageIndex || len(converted.Manifests) != len(index.Manifests) {
+		t.Fatalf("converted OCI index = %+v, %v", converted, err)
+	}
+	for i, child := range converted.Manifests {
+		if child.MediaType != v1.MediaTypeImageManifest || !reflect.DeepEqual(child.Platform, index.Manifests[i].Platform) {
+			t.Fatalf("converted child %d = %+v", i, child)
+		}
+		raw := blobs[transferBlobPath(child.Digest)]
+		if digest.FromBytes(raw) != child.Digest || !bytes.Equal(raw, nativeBlobs[transferBlobPath(child.Digest)]) {
+			t.Fatalf("converted child %d differs from native archive", i)
+		}
+		var manifest v1.Manifest
+		if err := json.Unmarshal(raw, &manifest); err != nil || manifest.Config.MediaType != v1.MediaTypeImageConfig {
+			t.Fatalf("converted child manifest = %+v, %v", manifest, err)
+		}
+		config := blobs[transferBlobPath(manifest.Config.Digest)]
+		if digest.FromBytes(config) != manifest.Config.Digest || !bytes.Equal(config, nativeBlobs[transferBlobPath(manifest.Config.Digest)]) {
+			t.Fatalf("converted child %d config differs from native archive", i)
+		}
+		var image v1.Image
+		if err := json.Unmarshal(config, &image); err != nil || image.Config.Labels["format"] != "docker" || image.Architecture != child.Platform.Architecture || image.OS != child.Platform.OS {
+			t.Fatalf("converted child %d lost platform/config: %+v, %v", i, image, err)
+		}
+	}
+	storedRoot, storedData, _, found, err := testStoredImageIndex(ctx, nativeBuildTestStore(storeDir), tag)
+	if err != nil || !found || storedRoot.Digest != root.Digest || !bytes.Equal(storedData, data) {
+		t.Fatalf("archive conversion changed stored Docker list: %t, %v", found, err)
 	}
 }
