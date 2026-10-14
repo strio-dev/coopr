@@ -67,14 +67,13 @@ cosign-acceptance:
 
 # Build the local documentation site with the repository-pinned Zensical.
 docs-build:
-    nix develop path:. -c zensical build --clean --strict
+    nix build --no-update-lock-file path:.#docs --out-link result-docs
 
 # Preview documentation on localhost; this does not publish the site.
 docs-serve:
-    nix develop path:. -c zensical serve
+    nix run --no-update-lock-file path:.#docs-preview
 
 # Build documentation strictly and parse its KDL examples.
 docs-check: docs-build
-    nix develop path:. -c python3 -B -m unittest discover -s docs/.overrides -p test_highlight.py
     nix develop path:. -c go test -count=1 ./internal/definition -run TestDocumentationKDLExamples
     nix develop path:. -c python3 nix/tests/installer.py docs/install.sh

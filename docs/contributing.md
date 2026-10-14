@@ -54,9 +54,9 @@ just docs-serve
 just docs-check
 ```
 
-Open the preview at <http://127.0.0.1:8000>. `docs-check` builds the site strictly, tests the KDL highlighter, parses public KDL examples, and tests the installer with local fixtures. The Nix docs check also tests copy controls and verifies that the installer reaches the site unchanged.
+Open the preview at <http://127.0.0.1:8000>. `docs-check` builds the site strictly, parses public KDL examples, and tests the installer with local fixtures. `just docs-build` puts the generated site in `result-docs/` and verifies that the installer reaches the site unchanged.
 
-KDL code blocks use Nix-packaged Chroma through Zensical's custom formatter; other languages use Pygments. Both build the highlighting into the HTML. Keep the formatter in `docs/.overrides`, which is excluded from the published site.
+Styling, templates, copy controls, and highlighting come from the pinned [Strio Zensical theme](https://github.com/strio-dev/strio-zensical-theme). Its Nix helpers supply the shared files during builds and previews. Coopr keeps its content, navigation, logo, and favicon in this repository.
 
 Add pages to `zensical.toml`. Keep tutorials runnable from a fresh checkout and use the existing syntax and assets.
 

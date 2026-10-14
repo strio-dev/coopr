@@ -1,13 +1,13 @@
 # Build images. Reuse the parts.
 
-<div class="coopr-intro" markdown>
+<div class="strio-intro" markdown>
 Coopr builds OCI container images from ordered `.coopr` definitions.
 Reuse common build steps and files as components from your repository or an OCI registry.
 </div>
 
 [Get started](getting-started/index.md){ .md-button .md-button--primary }
 [Build hello world](tutorials/first-image.md){ .md-button }
-{ .coopr-actions }
+{ .strio-actions }
 
 ## Install Coopr
 
@@ -18,16 +18,16 @@ coopr --version
 
 See [installation](getting-started/index.md) for requirements, release binaries, the Coopr container, and Nix.
 
-<div class="coopr-paths" markdown>
-<div class="coopr-path" markdown>
-<p class="coopr-path__title">Start with an image</p>
+<div class="strio-paths" markdown>
+<div class="strio-path" markdown>
+<p class="strio-path__title">Start with an image</p>
 
 Write a definition with familiar `from`, `run`, and `copy` steps. Build and tag the image locally.
 
 [First-image tutorial](tutorials/first-image.md)
 </div>
-<div class="coopr-path" markdown>
-<p class="coopr-path__title">Share a component</p>
+<div class="strio-path" markdown>
+<p class="strio-path__title">Share a component</p>
 
 Share build steps and packaged files between images. Start with a local component, then package it for an OCI registry.
 

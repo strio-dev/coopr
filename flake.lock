@@ -82,7 +82,31 @@
         "flake-parts": "flake-parts",
         "nix-github-actions": "nix-github-actions",
         "nix2container": "nix2container",
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs",
+        "strio-theme": "strio-theme"
+      }
+    },
+    "strio-theme": {
+      "inputs": {
+        "flake-parts": [
+          "flake-parts"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1792015464,
+        "narHash": "sha256-m62o2AKswK4QNjB4MYFChXizLH1cPJS7MOadxbfb+MI=",
+        "owner": "strio-dev",
+        "repo": "strio-zensical-theme",
+        "rev": "dfb85b4813c825e92e7f263875be3e4e262bf417",
+        "type": "github"
+      },
+      "original": {
+        "owner": "strio-dev",
+        "repo": "strio-zensical-theme",
+        "type": "github"
       }
     }
   },
