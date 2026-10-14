@@ -59,6 +59,7 @@ type StoredTransferOptions struct {
 	LocalName              string
 	RegistryDestination    string
 	Destination            string
+	ArchiveUncompressed    *bool
 	RegistryInstance       bool
 	AuthFile               string
 	CertDir                string
@@ -670,6 +671,9 @@ func storedTransferSystemContext(options StoredTransferOptions, registriesDir st
 		AuthFilePath: authFile, DockerCertPath: certDir, RegistriesDirPath: registriesDir,
 		BigFilesTemporaryDir: os.TempDir(), SignaturePolicyPath: options.SignaturePolicyPath,
 		DockerDaemonHost: os.Getenv("DOCKER_HOST"),
+	}
+	if (strings.HasPrefix(options.Destination, "oci-archive:") || strings.HasPrefix(options.Destination, "oci:")) && options.ArchiveUncompressed != nil {
+		system.OCIAcceptUncompressedLayers = *options.ArchiveUncompressed
 	}
 	oci.ApplyTLSVerify(system, options.TLSVerify)
 	if options.Credentials != "" {

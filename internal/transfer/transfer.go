@@ -3,13 +3,10 @@ package transfer
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
-	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -289,10 +286,6 @@ func Copy(ctx context.Context, kind oci.Kind, source string, destination Destina
 }
 
 func copyStoredImage(ctx context.Context, source string, destination Destination, opts Options) (result string, retErr error) {
-	storeDir, err := storeDirectory(oci.Image, opts)
-	if err != nil {
-		return "", err
-	}
 	selector, err := localSelector(source, oci.Image)
 	if err != nil {
 		return "", err
@@ -386,7 +379,7 @@ func copyStoredImage(ctx context.Context, source string, destination Destination
 			}
 		}
 		if copyIndex {
-			return copyStoredIndex(ctx, storeDir, root, indexData, selections, destination, opts)
+			return copyStoredIndex(ctx, root, indexData, selections, destination, opts)
 		}
 	}
 	platform := opts.Platform
@@ -432,36 +425,25 @@ func copyStoredImage(ctx context.Context, source string, destination Destination
 	if destination.Transport == "registry" {
 		return publishStoredImage(ctx, selection.ImageID, selection.Manifest, destination.Name, opts)
 	}
-	if destination.Transport == "dir" || destination.Transport == "oci" || destination.Transport == "docker-archive" || destination.Transport == "containers-storage" || destination.Transport == "docker" {
-		transferOptions, cleanup, err := storedTransferOptions(selection.ImageID, selection.Manifest.Digest, opts)
-		if err != nil {
-			return "", err
-		}
-		defer func() { retErr = errors.Join(retErr, cleanup()) }()
-		transferOptions.Destination = destination.String()
-		return buildah.TransferStoredImageSupervised(ctx, transferOptions)
-	}
 	if (destination.Transport == "oci-dir" || destination.Transport == "oci-archive") && !opts.Push.RemoveSignatures {
 		if err := rejectStoredArchiveSignatures(ctx, storeOptions, selection.Manifest, map[string]oci.StoredSelection{"selected": selection}, destination.Transport); err != nil {
 			return "", err
 		}
 	}
-	stageDir, err := os.MkdirTemp("", "coopr-image-copy-*")
+	if destination.Transport == "oci-dir" {
+		destination.Transport = "oci"
+	}
+	transferOptions, cleanup, err := storedTransferOptions(selection.ImageID, selection.Manifest.Digest, opts)
 	if err != nil {
 		return "", err
 	}
-	defer func() { _ = os.RemoveAll(stageDir) }()
-	layout := filepath.Join(stageDir, "layout")
-	exported, err := buildah.ExportStoredImageSelectedSupervised(ctx, storeOptions, selection.ImageID, selection.Manifest.Digest, layout, opts.SignaturePolicyPath)
-	if err != nil {
-		return "", fmt.Errorf("export stored image %s: %w", source, err)
+	defer func() { retErr = errors.Join(retErr, cleanup()) }()
+	transferOptions.ArchiveUncompressed = opts.ArchiveUncompressed
+	if destination.Transport == "oci-archive" || destination.Transport == "oci" {
+		destination.ArchiveReference = opts.ArchiveReference
 	}
-	root, err := oci.LayoutRoot(exported.Layout)
-	if err != nil {
-		return "", err
-	}
-
-	return copyStoredImageOutput(ctx, exported.Layout, root, destination, opts)
+	transferOptions.Destination = destination.String()
+	return buildah.TransferStoredImageSupervised(ctx, transferOptions)
 }
 
 // Native local copies can share a config ID. Remove only the selected
@@ -553,7 +535,7 @@ func tagStoredSelection(ctx context.Context, storeOptions buildah.StoreOptions, 
 	})
 }
 
-func copyStoredIndex(ctx context.Context, storeDir string, root v1.Descriptor, indexData []byte, selections map[string]oci.StoredSelection, destination Destination, opts Options) (result string, retErr error) {
+func copyStoredIndex(ctx context.Context, root v1.Descriptor, indexData []byte, selections map[string]oci.StoredSelection, destination Destination, opts Options) (result string, retErr error) {
 	storeOptions, err := nativeStoreOptions(opts)
 	if err != nil {
 		return "", err
@@ -609,109 +591,25 @@ func copyStoredIndex(ctx context.Context, storeDir string, root v1.Descriptor, i
 		}
 	}
 
-	if destination.Transport == "registry" || destination.Transport == "dir" || destination.Transport == "oci" || destination.Transport == "docker-archive" || destination.Transport == "containers-storage" {
-		transferOptions, cleanup, err := storedTransferOptions("", root.Digest, opts)
-		if err != nil {
-			return "", err
-		}
-		defer func() { retErr = errors.Join(retErr, cleanup()) }()
-		transferOptions.Index = &buildah.StoredIndexSnapshot{Root: root, Data: indexData, Selections: selections}
-		if destination.Transport == "registry" {
-			transferOptions.RegistryDestination = destination.Name
-		} else {
-			transferOptions.Destination = destination.String()
-		}
-		return buildah.TransferStoredImageSupervised(ctx, transferOptions)
+	if destination.Transport == "oci-dir" {
+		destination.Transport = "oci"
 	}
-
-	stageDir, err := os.MkdirTemp("", "coopr-index-copy-*")
+	transferOptions, cleanup, err := storedTransferOptions("", root.Digest, opts)
 	if err != nil {
 		return "", err
 	}
-	defer func() { _ = os.RemoveAll(stageDir) }()
-	var index v1.Index
-	if err := json.Unmarshal(indexData, &index); err != nil {
-		return "", fmt.Errorf("decode stored image index: %w", err)
+	defer func() { retErr = errors.Join(retErr, cleanup()) }()
+	transferOptions.Index = &buildah.StoredIndexSnapshot{Root: root, Data: indexData, Selections: selections}
+	transferOptions.ArchiveUncompressed = opts.ArchiveUncompressed
+	if destination.Transport == "oci-archive" || destination.Transport == "oci" {
+		destination.ArchiveReference = opts.ArchiveReference
 	}
-	variants := make([]oci.ImageVariant, 0, len(index.Manifests))
-	changed := false
-	for i, manifestInIndex := range index.Manifests {
-		var selection oci.StoredSelection
-		found := false
-		for _, candidate := range selections {
-			if storedSelectionHasManifest(candidate, manifestInIndex) {
-				selection = candidate
-				found = true
-				break
-			}
-			if candidate.SourceManifest != nil && content.Equal(*candidate.SourceManifest, manifestInIndex) {
-				selection, found = candidate, true
-			}
-		}
-		if !found {
-			return "", fmt.Errorf("stored image index lacks member %s", manifestInIndex.Digest)
-		}
-		platform, err := selection.Platform()
-		if err != nil {
-			return "", err
-		}
-		key := platforms.Format(platform)
-		var manifest v1.Descriptor
-		var exportedLayout string
-		output := filepath.Join(stageDir, fmt.Sprintf("image-%d", i))
-		exported, err := buildah.ExportStoredImageSelectedSupervised(ctx, storeOptions, selection.ImageID, selection.Manifest.Digest, output, opts.SignaturePolicyPath)
-		if err != nil {
-			return "", fmt.Errorf("export stored platform %s: %w", key, err)
-		}
-		exportedLayout = exported.Layout
-		manifest, err = oci.LayoutRoot(exported.Layout)
-		if err != nil {
-			return "", fmt.Errorf("inspect exported platform %s: %w", key, err)
-		}
-
-		if !content.Equal(manifest, manifestInIndex) {
-			changed = true
-			manifestInIndex.Digest, manifestInIndex.Size, manifestInIndex.MediaType = manifest.Digest, manifest.Size, manifest.MediaType
-			if len(manifestInIndex.Data) != 0 {
-				// Embedded content must describe the emitted manifest, not its origin.
-				raw, err := os.ReadFile(filepath.Join(exportedLayout, "blobs", manifest.Digest.Algorithm().String(), manifest.Digest.Encoded()))
-				if err != nil {
-					return "", err
-				}
-				manifestInIndex.Data = raw
-			}
-		}
-		index.Manifests[i] = manifestInIndex
-		variants = append(variants, oci.ImageVariant{Layout: exportedLayout, Manifest: manifestInIndex, Platform: platform})
+	if destination.Transport == "registry" {
+		transferOptions.RegistryDestination = destination.Name
+	} else {
+		transferOptions.Destination = destination.String()
 	}
-	if changed {
-		root, indexData, err = oci.RewriteImageIndex(root, indexData, index.Manifests)
-		if err != nil {
-			return "", err
-		}
-	}
-	layout := filepath.Join(stageDir, "index")
-
-	if err := oci.RestoreImageIndex(ctx, layout, root, indexData, variants); err != nil {
-		return "", fmt.Errorf("restore multi-platform image: %w", err)
-	}
-	return copyStoredImageOutput(ctx, layout, root, destination, opts)
-}
-
-// Only native exports whose original sources passed policy verification reach
-// this continuation. Public CopyRoot always evaluates the caller's policy.
-func copyStoredImageOutput(ctx context.Context, layout string, root v1.Descriptor, destination Destination, opts Options) (string, error) {
-	source, err := imagestore.LayoutReference(layout, root)
-	if err != nil {
-		return "", err
-	}
-	return copyRoot(ctx, oci.Image, layout, root, destination, opts, oci.PreparedImagePolicy(source))
-}
-
-// Origin descriptors identify the input, not necessarily resident runnable
-// bytes: decryption can retain a ciphertext origin beside a plaintext manifest.
-func storedSelectionHasManifest(selection oci.StoredSelection, manifest v1.Descriptor) bool {
-	return content.Equal(selection.Manifest, manifest)
+	return buildah.TransferStoredImageSupervised(ctx, transferOptions)
 }
 
 func storedSelections(ctx context.Context, opts Options, selector string) (root v1.Descriptor, data []byte, selections map[string]oci.StoredSelection, err error) {

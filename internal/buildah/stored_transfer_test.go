@@ -128,3 +128,29 @@ func TestStoredManifestTransferSelectionSurvivesWorkerJSON(t *testing.T) {
 		}
 	}
 }
+
+func TestStoredArchiveCompressionOptionSurvivesWorkerJSON(t *testing.T) {
+	for _, value := range []*bool{nil, new(false), new(true)} {
+		for _, destination := range []string{"oci-archive:/tmp/output.tar:test", "oci:/tmp/output:test", "dir:/tmp/output"} {
+			data, err := json.Marshal(storedTransferRequest{Options: StoredTransferOptions{Destination: destination, ArchiveUncompressed: value}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded storedTransferRequest
+			if err := json.Unmarshal(data, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			system, err := storedTransferSystemContext(decoded.Options, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := (strings.HasPrefix(destination, "oci-archive:") || strings.HasPrefix(destination, "oci:")) && value != nil && *value
+			if system.OCIAcceptUncompressedLayers != want {
+				t.Fatalf("archive option after IPC for %s = %t, want %t", destination, system.OCIAcceptUncompressedLayers, want)
+			}
+			if (decoded.Options.ArchiveUncompressed == nil) != (value == nil) {
+				t.Fatal("worker lost explicit archive option presence")
+			}
+		}
+	}
+}

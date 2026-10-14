@@ -167,42 +167,48 @@ func TestCopyDecryptedIndexPreservesArtifactsAndMetadata(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, selector := range []string{"mixed-decrypted", root.Digest.String()} {
-				output := t.TempDir()
-				_, err := Copy(ctx, oci.Image, selector, Destination{Transport: "oci", Name: output, ArchiveReference: "test"}, Options{BuildStore: store, SignaturePolicyPath: policy})
-				if err != nil {
-					t.Fatal(err)
-				}
-				emitted, err := oci.LayoutRoot(output)
-				if err != nil {
-					t.Fatal(err)
-				}
-				raw, err := os.ReadFile(filepath.Join(output, "blobs", emitted.Digest.Algorithm().String(), emitted.Digest.Encoded()))
-				if err != nil {
-					t.Fatal(err)
-				}
-				var index v1.Index
-				if err := json.Unmarshal(raw, &index); err != nil {
-					t.Fatal(err)
-				}
-				if !reflect.DeepEqual(index, expected) {
-					t.Fatalf("transformed mixed index metadata/members changed:\n got %s\nwant %+v", raw, expected)
-				}
-				got, err := os.ReadFile(filepath.Join(output, "blobs", artifact.Digest.Algorithm().String(), artifact.Digest.Encoded()))
-				if err != nil || !bytes.Equal(got, artifactRaw) {
-					t.Fatalf("artifact manifest changed: %v", err)
-				}
-				var manifest v1.Manifest
-				if err := json.Unmarshal(got, &manifest); err != nil {
-					t.Fatal(err)
-				}
-				config, err := os.ReadFile(filepath.Join(output, "blobs", manifest.Config.Digest.Algorithm().String(), manifest.Config.Digest.Encoded()))
-				if err != nil || string(config) != `{"native":"config"}` {
-					t.Fatalf("artifact config changed: %s %v", config, err)
-				}
-				if fixture.files {
-					got, err := os.ReadFile(filepath.Join(output, "blobs", manifest.Layers[0].Digest.Algorithm().String(), manifest.Layers[0].Digest.Encoded()))
-					if err != nil || !bytes.Equal(got, payload) {
-						t.Fatalf("artifact payload changed: %v", err)
+				for _, transport := range []string{"oci", "oci-archive", "oci-dir"} {
+					output := t.TempDir()
+					destination := Destination{Transport: transport, Name: output, ArchiveReference: "test"}
+					if transport == "oci-archive" {
+						destination.Name = filepath.Join(output, "mixed.tar")
+					}
+					_, err := Copy(ctx, oci.Image, selector, destination, Options{BuildStore: store, SignaturePolicyPath: policy})
+					if err != nil {
+						t.Fatal(err)
+					}
+					emitted, err := oci.LayoutRoot(output)
+					if transport == "oci-archive" {
+						emitted, err = selectedCopyArchiveRoot(t, destination.Name), nil
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					raw := artifactOutputBlob(t, destination, emitted.Digest)
+					var index v1.Index
+					if err := json.Unmarshal(raw, &index); err != nil {
+						t.Fatal(err)
+					}
+					if !reflect.DeepEqual(index, expected) {
+						t.Fatalf("transformed mixed index metadata/members changed:\n got %s\nwant %+v", raw, expected)
+					}
+					got := artifactOutputBlob(t, destination, artifact.Digest)
+					if !bytes.Equal(got, artifactRaw) {
+						t.Fatal("artifact manifest changed")
+					}
+					var manifest v1.Manifest
+					if err := json.Unmarshal(got, &manifest); err != nil {
+						t.Fatal(err)
+					}
+					config := artifactOutputBlob(t, destination, manifest.Config.Digest)
+					if string(config) != `{"native":"config"}` {
+						t.Fatalf("artifact config changed: %s", config)
+					}
+					if fixture.files {
+						got := artifactOutputBlob(t, destination, manifest.Layers[0].Digest)
+						if !bytes.Equal(got, payload) {
+							t.Fatal("artifact payload changed")
+						}
 					}
 				}
 			}
