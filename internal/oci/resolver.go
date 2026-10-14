@@ -22,6 +22,7 @@ import (
 	digest "github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"go.podman.io/common/pkg/auth"
 	"go.podman.io/common/pkg/retry"
 	nativemanifest "go.podman.io/image/v5/manifest"
 	"go.podman.io/image/v5/types"
@@ -199,10 +200,14 @@ func NormalizePullPolicy(policy string, pull bool) (PullPolicy, error) {
 	}
 }
 
-// NormalizeRegistryPaths validates explicit registry credential and
-// certificate inputs and makes them safe to pass across worker processes.
+// NormalizeRegistryPaths resolves native auth defaults, validates registry inputs,
+// and makes paths safe to pass across worker processes.
 func NormalizeRegistryPaths(authFile, certDir string) (string, string, error) {
 	var err error
+	explicitAuthFile := authFile != "" || os.Getenv("REGISTRY_AUTH_FILE") != ""
+	if authFile == "" {
+		authFile = auth.GetDefaultAuthFile()
+	}
 	if authFile != "" {
 		authFile, err = filepath.Abs(authFile)
 		if err != nil {
@@ -216,7 +221,11 @@ func NormalizeRegistryPaths(authFile, certDir string) (string, string, error) {
 		}
 	}
 	if err := validateCredentialFile(authFile); err != nil {
-		return "", "", err
+		if explicitAuthFile || !errors.Is(err, os.ErrNotExist) {
+			return "", "", err
+		}
+		// An absent Docker search file is optional, unlike an explicit authfile.
+		authFile = ""
 	}
 	if err := validateCertificateDirectory(certDir); err != nil {
 		return "", "", err
@@ -557,9 +566,9 @@ func (r *Resolver) resolveRoot(ctx context.Context, source content.ReadOnlyStora
 		if err := json.Unmarshal(configData, &config); err != nil {
 			return nil, fmt.Errorf("decode image config: %w", err)
 		}
-		if !platformEqual(config.Platform, platform) {
-			return nil, fmt.Errorf("image config platform does not match requested platform")
-		}
+		// Native image pulling admits configurations with omitted or different
+		// platform fields and warns during materialization. Descriptor selection
+		// belongs to the native manifest-list chooser, not config admission.
 	case Component:
 		if manifest.ArtifactType != ComponentArtifactType || manifest.Config.MediaType != ComponentConfigType {
 			return nil, fmt.Errorf("expected Coopr component artifact/config, got %q/%q", manifest.ArtifactType, manifest.Config.MediaType)

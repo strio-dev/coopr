@@ -44,6 +44,8 @@ type stageWorkerRequest struct {
 	BaseName              string                 `json:"base_name,omitempty"`
 	PreserveBaseImageAnns bool                   `json:"preserve_base_image_annotations,omitempty"`
 	BaseManifest          digest.Digest          `json:"base_manifest,omitempty"`
+	BaseCommandSet        bool                   `json:"base_command_set,omitempty"`
+	CommandSet            bool                   `json:"command_set,omitempty"`
 	BaseLogical           json.RawMessage        `json:"base_logical"`
 	Logical               json.RawMessage        `json:"logical"`
 	Operations            []planner.Operation    `json:"operations,omitempty"`
@@ -116,6 +118,7 @@ type stageWorkerResponse struct {
 	BaseImageID           string                          `json:"base_image_id,omitempty"`
 	ImageID               string                          `json:"image_id,omitempty"`
 	ManifestDigest        digest.Digest                   `json:"manifest_digest,omitempty"`
+	CommandSet            bool                            `json:"command_set,omitempty"`
 	Config                json.RawMessage                 `json:"config,omitempty"`
 	Result                Result                          `json:"result"`
 	Root                  *PackageRootMetadata            `json:"root,omitempty"`
@@ -197,7 +200,7 @@ func (executor *graphExecutor) executeGraphStageIsolated(ctx context.Context, pl
 		ExecutableOrigin:  executor.options.executableOrigin,
 		ProgressPrefix:    prepared.progressPrefix,
 		ProgressReference: executor.options.ProgressReference,
-		Mode:              plan.Mode, Stage: prepared.stage, Base: prepared.base, BaseName: prepared.baseName, BaseRoot: prepared.baseRoot, RetainsCaller: prepared.retainsCaller, PreserveBaseImageAnns: prepared.preserveBaseImageAnnotations, BaseManifest: prepared.baseManifest, Logical: logical, BaseLogical: baseLogical,
+		Mode:              plan.Mode, Stage: prepared.stage, Base: prepared.base, BaseName: prepared.baseName, BaseRoot: prepared.baseRoot, RetainsCaller: prepared.retainsCaller, PreserveBaseImageAnns: prepared.preserveBaseImageAnnotations, BaseManifest: prepared.baseManifest, Logical: logical, BaseLogical: baseLogical, CommandSet: prepared.logical.CommandSet(), BaseCommandSet: prepared.baseLogical.CommandSet(),
 		Operations: prepared.operations, Aliases: aliases, Images: encodedImages,
 		CacheScope: prepared.cacheScope, Jobs: 1, LogRusage: executor.options.LogRusage, RusageLogFile: executor.options.RusageLogFile,
 		Output: stageWorkerOutput(prepared.stage.ID, imageOutputID), CaptureRoot: graphStageNeedsRootMetadata(plan, prepared.stage.ID, observed),
@@ -359,7 +362,7 @@ func stageWorkerResult(response stageWorkerResponse, stageID string, store stora
 	if image.ID != response.ImageID {
 		return executedGraphStage{}, fmt.Errorf("stage %s result image ID is not canonical", stageID)
 	}
-	finalConfig, err := imageconfig.Parse(response.Config)
+	finalConfig, err := imageconfig.Restore(response.Config, response.CommandSet)
 	if err != nil {
 		return executedGraphStage{}, fmt.Errorf("decode stage %s result config: %w", stageID, err)
 	}
@@ -443,11 +446,11 @@ func executeStageWorkerRequestControlled(ctx context.Context, request stageWorke
 	if request.Jobs < 1 {
 		request.Jobs = 1
 	}
-	logical, err := imageconfig.Parse(request.Logical)
+	logical, err := imageconfig.Restore(request.Logical, request.CommandSet)
 	if err != nil {
 		return response, fmt.Errorf("decode stage %s image config: %w", request.Stage.ID, err)
 	}
-	baseLogical, err := imageconfig.Parse(request.BaseLogical)
+	baseLogical, err := imageconfig.Restore(request.BaseLogical, request.BaseCommandSet)
 	if err != nil {
 		return response, fmt.Errorf("decode stage %s base image config: %w", request.Stage.ID, err)
 	}
@@ -470,6 +473,9 @@ func executeStageWorkerRequestControlled(ctx context.Context, request stageWorke
 	}
 	var resolver *oci.Resolver
 	if request.ResolverEnabled {
+		if err := ConfigureRuntimeConfig(request.RunControls); err != nil {
+			return response, err
+		}
 		registry := request.RegistryOptions
 		registry.ProgressWriter = os.Stderr
 		registry.Pull, registry.PullPolicy = request.Pull, request.PullPolicy
@@ -556,7 +562,7 @@ func executeStageWorkerRequestControlled(ctx context.Context, request stageWorke
 		return response, fmt.Errorf("marshal stage %s result config: %w", request.Stage.ID, err)
 	}
 	response = stageWorkerResponse{
-		BaseImageID: finished.state.baseImageID, RetainsCaller: finished.state.retainsCaller, ImageID: finished.state.storageImageID, ManifestDigest: finished.state.manifestDigest, Config: config, Result: finished.result, Root: finished.root,
+		BaseImageID: finished.state.baseImageID, RetainsCaller: finished.state.retainsCaller, ImageID: finished.state.storageImageID, ManifestDigest: finished.state.manifestDigest, Config: config, CommandSet: finished.state.config.CommandSet(), Result: finished.result, Root: finished.root,
 		ComponentCacheStats: cacheStats(executor.componentCache), InstructionCacheStats: portableInstructionCacheStats(executor.instructionPortableCache),
 	}
 	if executor.componentCache != nil {

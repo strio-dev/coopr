@@ -2,7 +2,6 @@ package buildah
 
 import (
 	"context"
-	"coopr/internal/imageconfig"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +18,7 @@ import (
 
 	"coopr/internal/cache"
 	"coopr/internal/definition"
+	"coopr/internal/imageconfig"
 	"coopr/internal/oci"
 	"coopr/internal/planner"
 	"coopr/internal/stateidentity"
@@ -44,7 +44,7 @@ func TestComponentCacheKeyIncludesStageLabels(t *testing.T) {
 	key := func(stageLabels bool) digest.Digest {
 		t.Helper()
 		executor.options.Lifecycle.StageLabels = stageLabels
-		key, err := new(componentCache).key(executor, input, resolved, nil, v1.Platform{OS: "linux", Architecture: "amd64"})
+		key, err := new(componentCache).key(executor, input, resolved, nil, v1.Platform{OS: "linux", Architecture: "amd64"}, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -78,7 +78,7 @@ func TestComponentCacheKeyIncludesTransientRunMounts(t *testing.T) {
 				TransientMountCount: len(mounts),
 			}}}}},
 		}
-		cacheKey, err := new(componentCache).key(executor, input, resolved, nil, v1.Platform{OS: "linux", Architecture: "amd64"})
+		cacheKey, err := new(componentCache).key(executor, input, resolved, nil, v1.Platform{OS: "linux", Architecture: "amd64"}, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -227,7 +227,7 @@ func TestComponentCacheEligibilityFailsClosed(t *testing.T) {
 		{"workdir", nil, nil, true},
 		{"run", map[string]string{"network": "none"}, nil, true},
 		{"run", map[string]string{"network": "default"}, nil, true},
-		{"run", map[string]string{"network": "host"}, nil, false},
+		{"run", map[string]string{"network": "host"}, nil, true},
 		{"run", map[string]string{"network": "none"}, []definition.Instruction{{Name: "mount", Arguments: []string{"cache"}, Properties: map[string]string{"target": "/cache"}}}, true},
 		{"run", map[string]string{"network": "none"}, []definition.Instruction{{Name: "mount", Arguments: []string{"secret"}, Properties: map[string]string{"id": "token"}}}, true},
 		{"run", map[string]string{"network": "none"}, []definition.Instruction{{Name: "mount", Arguments: []string{"bind"}, Properties: map[string]string{"from": "pkg", "target": "/input"}}}, true},
@@ -248,12 +248,8 @@ func TestComponentCacheEligibilityFailsClosed(t *testing.T) {
 				}},
 				PackageInputs: map[string]oci.Package{"pkg": {}},
 			}
-			if got := componentCacheEligible(resolved, RunControls{}); got != test.want {
+			if got := componentCacheEligible(resolved); got != test.want {
 				t.Fatalf("componentCacheEligible(%s) = %v, want %v", test.name, got, test.want)
-			}
-			wantWithDevice := test.want && test.name != "run"
-			if got := componentCacheEligible(resolved, RunControls{Devices: []string{"/dev/test-device"}}); got != wantWithDevice {
-				t.Fatalf("componentCacheEligible(%s, global device) = %v, want %v", test.name, got, wantWithDevice)
 			}
 		})
 	}
@@ -369,7 +365,7 @@ func TestComponentImageCacheKeyRejectsOldLoweringAndCallerGraphChanges(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	original.Lowering = "coopr-buildah-component-v2"
+	original.Lowering = "coopr-buildah-component-image-v6"
 	b, err := componentImageCacheKey(original, "oci")
 	if err != nil {
 		t.Fatal(err)
@@ -379,6 +375,19 @@ func TestComponentImageCacheKeyRejectsOldLoweringAndCallerGraphChanges(t *testin
 	c, err := componentImageCacheKey(original, "oci")
 	if err != nil {
 		t.Fatal(err)
+	}
+	original.Inputs["caller-command-set"] = digest.FromString("false")
+	inherited, err := componentImageCacheKey(original, "oci")
+	if err != nil {
+		t.Fatal(err)
+	}
+	original.Inputs["caller-command-set"] = digest.FromString("true")
+	authored, err := componentImageCacheKey(original, "oci")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inherited.Instruction == authored.Instruction {
+		t.Fatal("same image with different CMD authorship reused image key")
 	}
 	if a.Instruction == b.Instruction || a.Instruction == c.Instruction {
 		t.Fatal("old snapshot semantics or alternate caller graph reused image key")
@@ -519,6 +528,7 @@ func TestComponentImageCacheInvalidMetadataMissesBeforeSeed(t *testing.T) {
 	}{
 		{"missing-root", func(r *cache.ImageRecord) { r.RootMetadata = nil }, false},
 		{"missing-config", func(r *cache.ImageRecord) { r.LogicalConfig = nil }, false},
+		{"missing-command-state", func(r *cache.ImageRecord) { r.CommandSet = nil }, false},
 		{"missing-lineage", func(r *cache.ImageRecord) { r.RetainsCaller = nil }, false},
 		{"missing-base", func(r *cache.ImageRecord) { r.BaseImage = nil }, false},
 		{"malformed-config", func(r *cache.ImageRecord) { r.LogicalConfig = json.RawMessage(`{`) }, false},
@@ -593,5 +603,45 @@ func TestComponentCachedExtensionsAgreeWhenNativeDockerRepresentsThem(t *testing
 				t.Fatal("accepted conflicting native extension")
 			}
 		})
+	}
+}
+
+func TestComponentCacheKeySeparatesIdenticalImageCommandAuthorship(t *testing.T) {
+	config := imageconfig.New()
+	if err := config.Apply(definition.Instruction{Name: "cmd", Arguments: []string{"hello"}}); err != nil {
+		t.Fatal(err)
+	}
+	inherited := config.Clone()
+	authoredRaw, err := config.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inheritedRaw, err := inherited.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(authoredRaw) != string(inheritedRaw) {
+		t.Fatal("fixture OCI configs differ")
+	}
+	resolved := &ResolvedComponentPlan{Identity: digest.FromString("component"), Plan: &planner.Plan{}}
+	executor := &graphExecutor{store: componentCacheKeyStore{}}
+	var keys []digest.Digest
+	for _, logical := range []*imageconfig.Config{config, inherited} {
+		key, err := new(componentCache).key(executor, validComponentTestKey().Input, resolved, nil, v1.Platform{OS: "linux", Architecture: "amd64"}, logical.CommandSet())
+		if err != nil {
+			t.Fatal(err)
+		}
+		imageKey, err := componentImageCacheKey(key, "oci")
+		if err != nil {
+			t.Fatal(err)
+		}
+		identity, err := imageKey.Digest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, identity)
+	}
+	if keys[0] == keys[1] {
+		t.Fatal("identical OCI bytes with distinct evaluation state share a component image/relay key")
 	}
 }

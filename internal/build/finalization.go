@@ -63,24 +63,23 @@ func validateFinalization(opts *Options, platforms []string, destinations []tran
 		}
 	}
 	if opts.Signing.Enabled() {
-		probe := transfer.Destination{Transport: "local"}
-		if opts.Signing.SigstorePrivateKeyFile != "" {
-			probe.Transport = "registry"
-		}
-		if err := transfer.ValidateSigningDestination(oci.Image, probe, opts.Signing); err != nil {
-			return err
-		}
 		validDestination := false
 		for _, destination := range destinations {
-			if opts.Signing.SigstorePrivateKeyFile != "" && destination.Transport == "registry" || opts.Signing.SignBy != "" && (destination.Transport == "registry" || destination.Transport == "local") {
-				validDestination = true
+			// Bare local tags are retained unsigned for Sigstore. Native push
+			// transports receive all requested signers and validate them upstream.
+			if destination.Transport == "local" && opts.Signing.SignBy == "" {
+				continue
 			}
+			if err := transfer.ValidateSigningDestination(oci.Image, destination, opts.Signing); err != nil {
+				return err
+			}
+			validDestination = true
 		}
 		if !validDestination {
-			if opts.Signing.SigstorePrivateKeyFile != "" {
-				return errors.New("sigstore image signing requires a registry destination (--push --tag NAME)")
+			if err := transfer.ValidateSigningDestination(oci.Image, transfer.Destination{Transport: "local"}, opts.Signing); err != nil {
+				return err
 			}
-			return errors.New("GPG image signing requires a local or registry destination (--tag NAME or --push --tag NAME)")
+			return errors.New("image signing requires a destination (--tag NAME or --push --tag NAME)")
 		}
 	} else if opts.Signing.PassphraseFile != "" {
 		return errors.New("--sign-passphrase-file requires --sign-by or --sign-by-sigstore-private-key")

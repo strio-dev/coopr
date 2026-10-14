@@ -9,6 +9,8 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	buildahparse "go.podman.io/buildah/pkg/parse"
+	commonconfig "go.podman.io/common/pkg/config"
 )
 
 type storageSelection struct {
@@ -40,6 +42,20 @@ func addGlobalFlags(root *cobra.Command, prepareNamespace func() error) {
 		}
 		logrus.SetLevel(level)
 		logrus.SetOutput(cmd.ErrOrStderr())
+		modules, _ := cmd.Flags().GetStringArray("module")
+		if _, err := commonconfig.New(&commonconfig.Options{Modules: modules, SetDefault: true}); err != nil {
+			return fmt.Errorf("load containers configuration: %w", err)
+		}
+		if flag := cmd.Flags().Lookup("creds"); flag != nil && flag.Changed {
+			credentials, _ := cmd.Flags().GetString("creds")
+			auth, err := buildahparse.AuthConfig(credentials)
+			if err != nil {
+				return err
+			}
+			if err := cmd.Flags().Set("creds", auth.Username+":"+auth.Password); err != nil {
+				return err
+			}
+		}
 		if cmd.Annotations[nativeStorageAnnotation] != "true" {
 			return nil
 		}

@@ -4,46 +4,14 @@ import (
 	"coopr/internal/oci"
 	"fmt"
 	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 	"go.podman.io/buildah/define"
 	buildahparse "go.podman.io/buildah/pkg/parse"
 )
 
-type pullValue struct {
-	policy *string
-	pull   *bool
-}
-
-func (value pullValue) String() string {
-	if *value.policy == "" {
-		return string(oci.PullMissing)
-	}
-	return *value.policy
-}
-
-func (value pullValue) Type() string { return "string" }
-
-func (value pullValue) Set(policy string) error {
-	flags := pflag.NewFlagSet("pull", pflag.ContinueOnError)
-	flags.String("pull", policy, "")
-	flags.Bool("pull-always", false, "")
-	flags.Bool("pull-never", false, "")
-	nativePolicy, err := buildahparse.PullPolicyFromFlagSet(flags, flags.Lookup)
-	if err != nil {
-		return err
-	}
-	normalized, err := nativePullPolicyString(nativePolicy)
-	if err != nil {
-		return err
-	}
-	*value.policy, *value.pull = normalized, false
-	return nil
-}
-
-func addPullFlags(command *cobra.Command, policy *string, pull *bool) {
+func addPullFlags(command *cobra.Command, policy *string) {
 	flags := command.Flags()
 	*policy = string(oci.PullMissing)
-	flags.Var(pullValue{policy, pull}, "pull", "base image pull policy: always, missing, never, or newer (without a value: always)")
+	flags.StringVar(policy, "pull", string(oci.PullMissing), "base image pull policy: always, missing, never, or newer (without a value: always)")
 	flags.Lookup("pull").NoOptDefVal = "always"
 	flags.Bool("pull-always", false, "always pull base images")
 	flags.Bool("pull-never", false, "use only base images already in storage")

@@ -3,6 +3,7 @@ package buildah
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -17,9 +18,12 @@ import (
 	"time"
 
 	"coopr/internal/buildcontext"
+	"github.com/docker/go-connections/tlsconfig"
 	opencontainersdigest "github.com/opencontainers/go-digest"
 	upstream "go.podman.io/buildah"
 	"go.podman.io/buildah/copier"
+	"go.podman.io/image/v5/pkg/tlsclientconfig"
+	"go.podman.io/image/v5/types"
 )
 
 const (
@@ -34,6 +38,7 @@ type addSourceCredentialProvider interface {
 }
 
 func applyAddSources(ctx context.Context, builder operationBuilder, policy contextPolicy, operation Add, options upstream.AddAndCopyOptions) error {
+	options = remoteAddOptions(builder, options)
 	if len(operation.Sources) == 0 || operation.Destination == "" {
 		return errors.New("ADD requires at least one source and a destination")
 	}
@@ -351,7 +356,12 @@ func applyRemoteAddSource(ctx context.Context, builder operationBuilder, operati
 	if err := setRemoteAddAuthorization(request, builder); err != nil {
 		return fmt.Errorf("authorize ADD source %q: %w", source, err)
 	}
-	response, err := remoteAddHTTPClient(builder).Do(request) //nolint:gosec // ADD explicitly permits authored remote URLs.
+	client, err := configuredRemoteAddHTTPClient(builder, options)
+	if err != nil {
+		return err
+	}
+	defer client.CloseIdleConnections()
+	response, err := client.Do(request) //nolint:gosec // ADD explicitly permits authored remote URLs.
 	if err != nil {
 		if errors.Is(err, errRemoteAddRedirectCredentials) {
 			return errRemoteAddRedirectCredentials
@@ -420,6 +430,39 @@ func applyRemoteAddSource(ctx context.Context, builder operationBuilder, operati
 }
 
 var errRemoteAddRedirectCredentials = errors.New("ADD redirect URL must not include credentials")
+
+// remoteAddOptions forwards only native HTTP TLS policy, never registry credentials.
+func remoteAddOptions(builder any, options upstream.AddAndCopyOptions) upstream.AddAndCopyOptions {
+	var system *types.SystemContext
+	switch source := builder.(type) {
+	case nativeBuilder:
+		system = source.systemContext
+	case buildCredentialSource:
+		system = source.systemContext
+	}
+	if system != nil {
+		if options.CertPath == "" {
+			options.CertPath = system.DockerCertPath
+		}
+		if options.InsecureSkipTLSVerify == types.OptionalBoolUndefined {
+			options.InsecureSkipTLSVerify = system.DockerInsecureSkipTLSVerify
+		}
+	}
+	return options
+}
+
+func configuredRemoteAddHTTPClient(builder any, options upstream.AddAndCopyOptions) (*http.Client, error) {
+	options = remoteAddOptions(builder, options)
+	// Use the same TLS defaults and public certificate loader as native Buildah ADD.
+	configuration := &tls.Config{CipherSuites: tlsconfig.ClientDefault().CipherSuites}
+	if err := tlsclientconfig.SetupCertificates(options.CertPath, configuration); err != nil {
+		return nil, err
+	}
+	configuration.InsecureSkipVerify = options.InsecureSkipTLSVerify == types.OptionalBoolTrue
+	client := remoteAddHTTPClient(builder)
+	client.Transport = &http.Transport{TLSClientConfig: configuration, Proxy: http.ProxyFromEnvironment}
+	return client, nil
+}
 
 func remoteAddHTTPClient(builder any) *http.Client {
 	return &http.Client{CheckRedirect: func(request *http.Request, via []*http.Request) error {

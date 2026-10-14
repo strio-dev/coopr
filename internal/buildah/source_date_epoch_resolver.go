@@ -14,6 +14,7 @@ import (
 	"coopr/internal/buildcontext"
 	"coopr/internal/planner"
 	opencontainersdigest "github.com/opencontainers/go-digest"
+	upstream "go.podman.io/buildah"
 	storagearchive "go.podman.io/storage/pkg/archive"
 )
 
@@ -84,7 +85,12 @@ func resolveHTTPSourceDateEpoch(ctx context.Context, reference, checksum string,
 	if err := setRemoteAddAuthorization(request, credentials); err != nil {
 		return nil, fmt.Errorf("authorize source metadata request: %w", err)
 	}
-	response, err := remoteAddHTTPClient(credentials).Do(request) //nolint:gosec // The authored remote ADD URL is intentional.
+	client, err := configuredRemoteAddHTTPClient(credentials, upstream.AddAndCopyOptions{})
+	if err != nil {
+		return nil, err
+	}
+	defer client.CloseIdleConnections()
+	response, err := client.Do(request) //nolint:gosec // The authored remote ADD URL is intentional.
 	if err != nil {
 		return nil, fmt.Errorf("download source metadata: %w", err)
 	}

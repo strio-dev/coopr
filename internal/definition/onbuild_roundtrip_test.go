@@ -64,7 +64,7 @@ func TestOnBuildMetadataRoundTripsOrdinaryInstructions(t *testing.T) {
 		{name: "shell", child: `shell "/bin/bash" "-euxo" "pipefail" "-c"`, want: []definition.Instruction{{Name: "shell", Arguments: []string{"/bin/bash", "-euxo", "pipefail", "-c"}}}},
 		{name: "user", child: `user "1000:1000"`, want: []definition.Instruction{{Name: "user", Arguments: []string{"1000:1000"}}}},
 		{name: "workdir", child: `workdir "/work dir/$later"`, want: []definition.Instruction{{Name: "workdir", Arguments: []string{"/work dir/$later"}}}},
-		{name: "expose", child: `expose "8080/tcp" "8443"`, want: []definition.Instruction{{Name: "expose", Arguments: []string{"8080/tcp"}}, {Name: "expose", Arguments: []string{"8443"}}}},
+		{name: "expose", child: `expose "8080/tcp" "8443"`, want: []definition.Instruction{{Name: "expose", Arguments: []string{"8080/tcp", "8443"}}}},
 		{name: "volume", child: `volume "/one path" "/two"`, want: []definition.Instruction{{Name: "volume", Arguments: []string{"/one path"}}, {Name: "volume", Arguments: []string{"/two"}}}},
 		{name: "stopsignal", child: `stopsignal "SIGTERM"`, want: []definition.Instruction{{Name: "stopsignal", Arguments: []string{"SIGTERM"}}}},
 		{name: "healthcheck exec", child: `healthcheck interval="30s" timeout="3s" start-period="5s" start-interval="1s" retries=4 { exec "/bin/check" "$later" }`, want: []definition.Instruction{{Name: "healthcheck", Arguments: []string{"CMD", "/bin/check", "$later"}, Properties: map[string]string{"interval": "30s", "timeout": "3s", "start-period": "5s", "start-interval": "1s", "retries": "4"}}}},

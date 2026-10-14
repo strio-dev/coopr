@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"coopr/internal/oci"
-	"github.com/containerd/platforms"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/buildah/pkg/cli"
 	"go.podman.io/buildah/pkg/sourcepolicy"
@@ -225,11 +224,6 @@ func resolveTransportSource(ctx context.Context, resolver *oci.Resolver, referen
 	var parsed v1.Image
 	if err := json.Unmarshal(config, &parsed); err != nil {
 		return ResolvedImageSource{}, err
-	}
-	actualPlatform := platforms.Normalize(parsed.Platform)
-	requestedPlatform := platforms.Normalize(platform)
-	if actualPlatform.OS != requestedPlatform.OS || actualPlatform.Architecture != requestedPlatform.Architecture || requestedPlatform.Variant != "" && actualPlatform.Variant != requestedPlatform.Variant {
-		return ResolvedImageSource{}, fmt.Errorf("base image %q platform %s/%s/%s differs from requested %s/%s/%s", reference, parsed.OS, parsed.Architecture, parsed.Variant, platform.OS, platform.Architecture, platform.Variant)
 	}
 	descriptor := oci.Descriptor(mediaType, raw)
 	return ResolvedImageSource{ImageID: id, Root: descriptor, Selected: descriptor, ConfigData: config, Reference: reference}, nil

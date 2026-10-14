@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 	buildahcli "go.podman.io/buildah/pkg/cli"
 	buildahparse "go.podman.io/buildah/pkg/parse"
+	"go.podman.io/common/pkg/auth"
 )
 
 type buildControlFlags struct {
@@ -105,17 +106,44 @@ type registryFlags struct {
 	tlsVerify      bool
 	credentials    string
 	retry          uint
+	nativeRetry    buildahcli.FromAndBudResults
 	retryDelay     time.Duration
 	decryptionKeys []string
 }
 
 func (flags *registryFlags) addTo(command *cobra.Command) {
 	set := command.Flags()
-	set.StringVar(&flags.authFile, "authfile", "", "path to a containers-auth.json or Docker config.json registry credential file")
+	set.StringVar(&flags.authFile, "authfile", auth.GetDefaultAuthFile(), "path to a containers-auth.json or Docker config.json registry credential file")
 	set.StringVar(&flags.certDir, "cert-dir", "", "directory containing ca.crt and optional client certificates")
 	set.StringVar(&flags.credentials, "creds", "", "registry username[:password] (overrides authfile)")
-	set.UintVar(&flags.retry, "retry", 3, "number of registry retries after the first attempt")
-	set.DurationVar(&flags.retryDelay, "retry-delay", 0, "delay between registry retries (default: native exponential backoff)")
+	native, setupErr := buildahcli.GetFromAndBudFlags(&flags.nativeRetry, new(buildahcli.UserNSResults), new(buildahcli.NameSpaceResults))
+	if setupErr == nil {
+		addNativeFlags(command, &native, buildahcli.GetFromAndBudFlagsCompletions(), "retry", "retry-delay")
+	}
+	before := command.PreRunE
+	command.PreRunE = func(cmd *cobra.Command, args []string) error {
+		if setupErr != nil {
+			return setupErr
+		}
+		// Match native flag parsing: policy and duration validation happens only
+		// when executing, so --help remains available for invalid values.
+		if flags.nativeRetry.Retry < 0 {
+			return fmt.Errorf("--retry must be non-negative")
+		}
+		flags.retry = uint(flags.nativeRetry.Retry)
+		flags.retryDelay = 0
+		if cmd.Flags().Changed("retry-delay") && flags.nativeRetry.RetryDelay != "" {
+			delay, err := time.ParseDuration(flags.nativeRetry.RetryDelay)
+			if err != nil {
+				return fmt.Errorf("unable to parse value provided %q as --retry-delay: %w", flags.nativeRetry.RetryDelay, err)
+			}
+			flags.retryDelay = delay
+		}
+		if before != nil {
+			return before(cmd, args)
+		}
+		return nil
+	}
 	set.BoolVar(&flags.tlsVerify, "tls-verify", true, "require valid HTTPS certificates for registry connections")
 }
 
@@ -126,9 +154,18 @@ func (flags registryFlags) tlsPolicy(command *cobra.Command) *bool {
 	return &flags.tlsVerify
 }
 
+func (flags registryFlags) authFileOption(command *cobra.Command) string {
+	if !command.Flags().Changed("authfile") && os.Getenv("REGISTRY_AUTH_FILE") == "" {
+		// Leave implicit Docker credentials to native resolution. Passing the default
+		// as an explicit path would make an absent config.json mandatory.
+		return ""
+	}
+	return flags.authFile
+}
+
 func (flags registryFlags) transferOptions(command *cobra.Command) transfer.Options {
 	return transfer.Options{
-		AuthFile: flags.authFile, CertDir: flags.certDir, TLSVerify: flags.tlsPolicy(command),
+		AuthFile: flags.authFileOption(command), CertDir: flags.certDir, TLSVerify: flags.tlsPolicy(command),
 		Credentials: flags.credentials, Retry: flags.retry, RetrySet: command.Flags().Changed("retry"),
 		RetryDelay: flags.retryDelay, DecryptionKeys: flags.decryptionKeys,
 		SignaturePolicyPath: commandSignaturePolicy(command),

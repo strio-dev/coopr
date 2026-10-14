@@ -119,6 +119,9 @@ func copyAddWithDigest(ctx context.Context, builder operationBuilder, contextDir
 		if len(copied.Sources) == 0 && len(copied.InlineFiles) == 0 || copied.Destination == "" {
 			return "", errors.New("COPY requires at least one source and a destination")
 		}
+		if err := addInlineData(builder, copied.Destination, copied.InlineFiles, upstream.AddAndCopyOptions{Chown: copied.Chown, Chmod: copied.Chmod, Link: copied.Link, Hasher: hasher, DryRun: dryRun}); err != nil {
+			return "", err
+		}
 		if len(copied.Sources) != 0 {
 			if err := requireLocalCopySources(copied.Sources); err != nil {
 				return "", err
@@ -135,14 +138,12 @@ func copyAddWithDigest(ctx context.Context, builder operationBuilder, contextDir
 				return "", err
 			}
 		}
-		for _, source := range copied.InlineFiles {
-			if err := addInlineData(builder, copied.Destination, source, upstream.AddAndCopyOptions{Chown: copied.Chown, Chmod: copied.Chmod, Link: copied.Link, Excludes: slices.Clone(copied.Excludes), Hasher: hasher, DryRun: dryRun}); err != nil {
-				return "", err
-			}
-		}
 	case Add:
 		if len(copied.Sources) == 0 && len(copied.InlineFiles) == 0 || copied.Destination == "" {
 			return "", errors.New("ADD requires at least one source and a destination")
+		}
+		if err := addInlineData(builder, copied.Destination, copied.InlineFiles, upstream.AddAndCopyOptions{Chown: copied.Chown, Chmod: copied.Chmod, Link: copied.Link, Hasher: hasher, DryRun: dryRun}); err != nil {
+			return "", err
 		}
 		if len(copied.Sources) != 0 {
 			policy, err := prepareContextPolicyWithIgnore(contextDir, artifacts, copied.IgnoreFile)
@@ -157,11 +158,6 @@ func copyAddWithDigest(ctx context.Context, builder operationBuilder, contextDir
 				return "", err
 			}
 		}
-		for _, source := range copied.InlineFiles {
-			if err := addInlineData(builder, copied.Destination, source, upstream.AddAndCopyOptions{Chown: copied.Chown, Chmod: copied.Chmod, Link: copied.Link, Excludes: slices.Clone(copied.Excludes), Hasher: hasher, DryRun: dryRun}); err != nil {
-				return "", err
-			}
-		}
 	case copyFromImageOperation:
 		native, ok := builder.(nativeBuilder)
 		if !ok {
@@ -171,13 +167,11 @@ func copyAddWithDigest(ctx context.Context, builder operationBuilder, contextDir
 		options.Excludes = slices.Clone(copied.options.Excludes)
 		options.Hasher = hasher
 		options.DryRun = dryRun
+		if err := addInlineData(builder, copied.destination, copied.inlineFiles, inlineCopyOptions(options)); err != nil {
+			return "", err
+		}
 		if len(copied.sources) != 0 {
 			if err := CopyFromImage(copied.store, copied.imageID, native.Builder, copied.destination, copied.extract, options, copied.sources...); err != nil {
-				return "", err
-			}
-		}
-		for _, source := range copied.inlineFiles {
-			if err := addInlineData(builder, copied.destination, source, inlineCopyOptions(options)); err != nil {
 				return "", err
 			}
 		}

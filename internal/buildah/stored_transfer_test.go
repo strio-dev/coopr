@@ -73,6 +73,26 @@ func TestStoredTransferRejectsConflictingSources(t *testing.T) {
 			want:    "requires exactly one source",
 		},
 		{
+			name:    "image and manifest list",
+			options: StoredTransferOptions{ImageID: "image", ManifestList: "list", Destination: "oci:output"},
+			want:    "requires exactly one source",
+		},
+		{
+			name:    "index and manifest list",
+			options: StoredTransferOptions{Index: index, ManifestList: "list", Destination: "oci:output"},
+			want:    "requires exactly one source",
+		},
+		{
+			name:    "manifest list without native destination",
+			options: StoredTransferOptions{ManifestList: "list", RegistryDestination: "example.com/list:test"},
+			want:    "manifest-list transfer requires a native push destination",
+		},
+		{
+			name:    "manifest list selected instance",
+			options: StoredTransferOptions{ManifestList: "list", Destination: "oci:output", RegistryInstance: true},
+			want:    "manifest-list transfer requires a native push destination",
+		},
+		{
 			name:    "local index signing",
 			options: StoredTransferOptions{Index: index, LocalName: "example:latest", SignBy: "key"},
 			want:    "cannot sign an index snapshot locally",
@@ -89,5 +109,22 @@ func TestStoredTransferRejectsConflictingSources(t *testing.T) {
 				t.Fatalf("transfer error = %v, want %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestStoredManifestTransferSelectionSurvivesWorkerJSON(t *testing.T) {
+	for _, all := range []bool{false, true} {
+		original := StoredTransferOptions{ManifestList: "local-list", ManifestListAll: all, Destination: "oci:/tmp/output:test"}
+		data, err := json.Marshal(storedTransferRequest{Options: original})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded storedTransferRequest
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		if decoded.Options.ManifestList != original.ManifestList || decoded.Options.ManifestListAll != all || decoded.Options.Destination != original.Destination {
+			t.Fatalf("manifest worker options changed: %+v", decoded.Options)
+		}
 	}
 }

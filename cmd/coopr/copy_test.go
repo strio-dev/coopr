@@ -36,8 +36,7 @@ func TestPushCommandsRejectInvalidInputsBeforeTransfer(t *testing.T) {
 		{[]string{"push", "sha256:" + strings.Repeat("a", 64), "docker-daemon:"}, "requires a name"},
 		{[]string{"push", "--platform", "linux/", "missing:latest", "destination:latest"}, "invalid"},
 		{[]string{"push", "--sign-passphrase-file", "secret", "missing:latest", "docker://example.com/app:test"}, "requires --sign-by or --sign-by-sigstore-private-key"},
-		{[]string{"push", "--sign-by-sigstore-private-key", "cosign.key", "missing:latest", "oci-archive:copy.tar"}, "requires a registry"},
-		{[]string{"push", "--sign-by", "0123456789ABCDEF", "--sign-by-sigstore-private-key", "cosign.key", "missing:latest", "docker://example.com/app:test"}, "mutually exclusive"},
+		{[]string{"push", "--sign-by", "0123456789ABCDEF", "--sign-by-sigstore-private-key", "cosign.key", "--sign-passphrase-file", "secret", "missing:latest", "docker://example.com/app:test"}, "only one"},
 		{[]string{"component", "push", "sha256:" + strings.Repeat("a", 64), "docker-daemon:app:dev"}, "cannot store Coopr component"},
 	} {
 		var out, diagnostics bytes.Buffer

@@ -2,7 +2,6 @@
 package transfer
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,6 +16,7 @@ import (
 
 	"oras.land/oras-go/v2/content"
 
+	"go.podman.io/common/libimage/manifests"
 	"go.podman.io/storage"
 
 	"coopr/internal/buildah"
@@ -30,7 +30,6 @@ import (
 	"github.com/containerd/platforms"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
-	imagecopy "go.podman.io/image/v5/copy"
 	dockertransport "go.podman.io/image/v5/docker"
 	dockerdaemon "go.podman.io/image/v5/docker/daemon"
 	imagereference "go.podman.io/image/v5/docker/reference"
@@ -39,7 +38,6 @@ import (
 	imagestorage "go.podman.io/image/v5/storage"
 	"go.podman.io/image/v5/transports/alltransports"
 	"go.podman.io/image/v5/types"
-	orasoci "oras.land/oras-go/v2/content/oci"
 )
 
 type Destination struct {
@@ -69,6 +67,7 @@ type PushOptions = buildah.PushOptions
 type Options struct {
 	Push                PushOptions
 	ProgressWriter      io.Writer `json:"-"`
+	signingOutput       io.Writer
 	ArchiveUncompressed *bool
 	ArchiveReference    string // Name in the archive's outer index; rooted graph bytes are unchanged.
 	ComponentStoreDir   string
@@ -85,6 +84,10 @@ type Options struct {
 	Platform            v1.Platform
 	PlatformExplicit    bool
 	Signing             SigningOptions
+}
+
+func (opts Options) isPlainLocalAlias(destination Destination) bool {
+	return destination.Transport == "local" && !opts.PlatformExplicit && !opts.Signing.Enabled() && !opts.Push.RemoveSignatures && !opts.Push.ChangesManifest()
 }
 
 func (opts Options) RegistryOptions() oci.Options {
@@ -221,10 +224,17 @@ func LocalReference(tag string, root v1.Descriptor) string {
 	return tag
 }
 
-// Copy resolves a Coopr-local source and applies the destination without
-// running any build step. A bare digest remains immutable if a mutable name
-// is retargeted later.
+// Copy resolves a Coopr-local source without running a build step. Ordinary
+// local aliases preserve native record identity; digest-selected exports retain
+// the requested immutable manifest even after the source name changes.
 func Copy(ctx context.Context, kind oci.Kind, source string, destination Destination, opts Options) (result string, retErr error) {
+	if kind == oci.Image && !opts.isPlainLocalAlias(destination) {
+		var err error
+		opts.Push, err = opts.Push.WithDefaults()
+		if err != nil {
+			return "", err
+		}
+	}
 	if destination.ArchiveReference != "" {
 		opts.ArchiveReference = destination.ArchiveReference
 	}
@@ -278,7 +288,7 @@ func Copy(ctx context.Context, kind oci.Kind, source string, destination Destina
 	return CopyRoot(ctx, kind, storeDir, root, destination, opts)
 }
 
-func copyStoredImage(ctx context.Context, source string, destination Destination, opts Options) (string, error) {
+func copyStoredImage(ctx context.Context, source string, destination Destination, opts Options) (result string, retErr error) {
 	storeDir, err := storeDirectory(oci.Image, opts)
 	if err != nil {
 		return "", err
@@ -323,29 +333,82 @@ func copyStoredImage(ctx context.Context, source string, destination Destination
 		}
 	}
 
+	// Ordinary local aliases follow native tag identity, independently of the
+	// immutable manifest selected for export or explicit-platform copies.
+	if opts.isPlainLocalAlias(destination) {
+		options, err := nativeStoreOptions(opts)
+		if err != nil {
+			return "", err
+		}
+		if err := buildah.WithStore(options, func(backend storage.Store) error {
+			image, err := oci.LookupStoredNativeImage(ctx, backend, selector)
+			if err != nil {
+				return err
+			}
+			return image.Tag(destination.Name)
+		}); err != nil {
+			return "", fmt.Errorf("tag stored image %s: %w", source, err)
+		}
+		return destination.Name, nil
+	}
 	if !opts.PlatformExplicit {
 		root, indexData, selections, err := storedSelections(ctx, opts, selector)
 		if err != nil {
 			return "", fmt.Errorf("resolve %s: %w", source, err)
 		}
 		var index v1.Index
-		complete := len(indexData) != 0 && json.Unmarshal(indexData, &index) == nil && len(index.Manifests) != 0
-		if complete {
+		copyIndex := len(indexData) != 0 && json.Unmarshal(indexData, &index) == nil && len(index.Manifests) != 0
+		membersResident := copyIndex
+		if copyIndex {
 			for _, child := range index.Manifests {
-				resident := false
+				exact, resident := false, false
 				for _, selection := range selections {
 					if storedSelectionHasManifest(selection, child) {
-						resident = true
+						exact, resident = true, true
 						break
 					}
+					if selection.SourceManifest != nil && content.Equal(*selection.SourceManifest, child) {
+						resident = true
+					}
 				}
-				if !resident {
-					complete = false
-					break
-				}
+				copyIndex = copyIndex && exact
+				membersResident = membersResident && resident
 			}
 		}
-		if complete {
+		// Decryption retains the source descriptor beside its runnable plaintext
+		// image. Such a member is transformed, not missing; export the selected
+		// plaintext image unless another member of an actual list is absent.
+		// Complete origin data cannot promote a native image into a list.
+		// Local aliases also preserve native list identity after decryption.
+		if len(indexData) != 0 {
+			options, err := nativeStoreOptions(opts)
+			if err != nil {
+				return "", err
+			}
+			if err := buildah.WithStore(options, func(backend storage.Store) error {
+				image, err := oci.LookupStoredNativeImage(ctx, backend, selector)
+				if err != nil {
+					return err
+				}
+				nativeList, err := image.IsManifestList(ctx)
+				if err != nil {
+					return err
+				}
+				if copyIndex || !membersResident || destination.Transport == "local" {
+					copyIndex = nativeList
+				}
+				if nativeList || digest.Digest(selector).Validate() == nil || strings.Contains(selector, "@") {
+					return nil
+				}
+				// Mutable image names select their native image, not a resident
+				// sibling from retained origin metadata, even on another platform.
+				selector = image.Digest().String()
+				return nil
+			}); err != nil {
+				return "", fmt.Errorf("resolve stored index %s: %w", source, err)
+			}
+		}
+		if copyIndex {
 			return copyStoredIndex(ctx, storeDir, root, indexData, selections, destination, opts)
 		}
 	}
@@ -372,6 +435,12 @@ func copyStoredImage(ctx context.Context, source string, destination Destination
 		// source was an index. Otherwise the alias would still resolve to the
 		// complete index and silently copy every platform later.
 		selection.Root = selection.Manifest
+		if opts.Push.RemoveSignatures {
+			if err := removeStoredManifestSignatures(ctx, storeOptions, selection.ImageID, selection.Manifest.Digest); err != nil {
+				return "", err
+			}
+		}
+
 		if opts.Signing.SignBy != "" {
 			if err := signStoredImage(ctx, selection.ImageID, selection.Manifest.Digest, destination.Name, opts); err != nil {
 				return "", err
@@ -391,9 +460,14 @@ func copyStoredImage(ctx context.Context, source string, destination Destination
 		if err != nil {
 			return "", err
 		}
-		defer cleanup()
+		defer func() { retErr = errors.Join(retErr, cleanup()) }()
 		transferOptions.Destination = destination.String()
 		return buildah.TransferStoredImageSupervised(ctx, transferOptions)
+	}
+	if (destination.Transport == "oci-dir" || destination.Transport == "oci-archive") && !opts.Push.RemoveSignatures {
+		if err := rejectStoredArchiveSignatures(ctx, storeOptions, selection.Manifest, map[string]oci.StoredSelection{"selected": selection}, destination.Transport); err != nil {
+			return "", err
+		}
 	}
 	stageDir, err := os.MkdirTemp("", "coopr-image-copy-*")
 	if err != nil {
@@ -413,6 +487,88 @@ func copyStoredImage(ctx context.Context, source string, destination Destination
 	return copyStoredImageOutput(ctx, exported.Layout, root, destination, opts)
 }
 
+// Native local copies can share a config ID. Remove only the selected
+// manifest's signatures, retaining siblings and unrelated native metadata.
+func removeStoredManifestSignatures(ctx context.Context, options buildah.StoreOptions, imageID string, selected digest.Digest) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return buildah.WithStore(options, func(backend storage.Store) error {
+		return removeStoredManifestSignaturesInStore(backend, imageID, selected)
+	})
+}
+
+func removeStoredManifestSignaturesInStore(backend storage.Store, imageID string, selected digest.Digest) error {
+	lock, err := manifests.LockerForImage(backend, imageID)
+	if err != nil {
+		return err
+	}
+	lock.Lock()
+	defer lock.Unlock()
+	raw, err := backend.ImageBigData(imageID, storage.ImageDigestBigDataKey)
+	if err != nil {
+		return err
+	}
+	previous, err := oci.CaptureStoredSignatures(backend, imageID)
+	if err != nil {
+		return err
+	}
+	return oci.WriteStoredManifestSignatures(backend, imageID, selected, digest.FromBytes(raw) == selected, nil, previous)
+}
+
+// OCI archive/layout destinations cannot store native signatures. Check before
+// an unsigned export can erase that information; explicit removal allows it.
+func rejectStoredArchiveSignatures(ctx context.Context, options buildah.StoreOptions, root v1.Descriptor, selections map[string]oci.StoredSelection, transport string) error {
+	return buildah.WithStore(options, func(backend storage.Store) error {
+
+		roots, err := backend.ImagesByDigest(root.Digest)
+		if err != nil && !errors.Is(err, storage.ErrImageUnknown) {
+			return err
+		}
+		for _, image := range roots {
+			// The same native record may hold both a selected leaf and a root.
+			// Check the root separately instead of overwriting its leaf entry.
+			if err := rejectStoredManifestSignatures(ctx, backend, image.ID, root.Digest, transport); err != nil {
+				return err
+			}
+		}
+		for _, selected := range selections {
+			if err := rejectStoredManifestSignatures(ctx, backend, selected.ImageID, selected.Manifest.Digest, transport); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func rejectStoredManifestSignatures(ctx context.Context, backend storage.Store, imageID string, selected digest.Digest, transport string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	lock, err := manifests.LockerForImage(backend, imageID)
+	if err != nil {
+		return err
+	}
+	lock.Lock()
+	defer lock.Unlock()
+	raw, err := backend.ImageBigData(imageID, storage.ImageDigestBigDataKey)
+	if err != nil {
+		return err
+	}
+	state, err := oci.CaptureStoredSignatures(backend, imageID)
+	if err != nil {
+		return err
+	}
+	blobs, err := oci.StoredSignatureBlobs(state, selected, digest.FromBytes(raw) == selected)
+	if err != nil {
+		return err
+	}
+	if len(blobs) != 0 {
+		return fmt.Errorf("cannot copy signatures to %s: storing signatures for OCI images is not supported; explicitly remove signatures to continue", transport)
+	}
+	return nil
+}
+
 func tagStoredSelection(ctx context.Context, storeOptions buildah.StoreOptions, selection oci.StoredSelection, name string) error {
 	return buildah.WithStore(storeOptions, func(backend storage.Store) error {
 		_, err := imagestore.FromStore(backend).TagSelected(ctx, selection.ImageID, selection.Manifest, name)
@@ -420,7 +576,7 @@ func tagStoredSelection(ctx context.Context, storeOptions buildah.StoreOptions, 
 	})
 }
 
-func copyStoredIndex(ctx context.Context, storeDir string, root v1.Descriptor, indexData []byte, selections map[string]oci.StoredSelection, destination Destination, opts Options) (string, error) {
+func copyStoredIndex(ctx context.Context, storeDir string, root v1.Descriptor, indexData []byte, selections map[string]oci.StoredSelection, destination Destination, opts Options) (result string, retErr error) {
 	storeOptions, err := nativeStoreOptions(opts)
 	if err != nil {
 		return "", err
@@ -430,6 +586,12 @@ func copyStoredIndex(ctx context.Context, storeDir string, root v1.Descriptor, i
 			if err := buildah.VerifyStoredImageSelectedSupervised(ctx, storeOptions, selection.ImageID, selection.Manifest); err != nil {
 				return "", fmt.Errorf("verify stored image %s: %w", selection.Manifest.Digest, err)
 			}
+			if opts.Push.RemoveSignatures {
+				if err := removeStoredManifestSignatures(ctx, storeOptions, selection.ImageID, selection.Manifest.Digest); err != nil {
+					return "", err
+				}
+			}
+
 			if opts.Signing.SignBy != "" {
 				if err := signStoredImage(ctx, selection.ImageID, selection.Manifest.Digest, destination.Name, opts); err != nil {
 					return "", err
@@ -442,6 +604,21 @@ func copyStoredIndex(ctx context.Context, storeDir string, root v1.Descriptor, i
 		}
 		if err := buildah.WithStore(storeOptions, func(backend storage.Store) error {
 			_, err := imagestore.FromStore(backend).WriteStoredIndex(ctx, root, indexData, imageIDs, destination.Name)
+			if err == nil && opts.Push.RemoveSignatures {
+				// Index export collects exact-root signatures from every native
+				// record retaining this digest, including historical roots.
+				// Clear the same contributors so a later alias export cannot
+				// resurrect signatures from an older record's metadata.
+				records, lookupErr := backend.ImagesByDigest(root.Digest)
+				if lookupErr != nil {
+					return lookupErr
+				}
+				for _, record := range records {
+					if err := removeStoredManifestSignaturesInStore(backend, record.ID, root.Digest); err != nil {
+						return err
+					}
+				}
+			}
 			return err
 		}); err != nil {
 			return "", fmt.Errorf("tag stored multi-platform image: %w", err)
@@ -449,14 +626,24 @@ func copyStoredIndex(ctx context.Context, storeDir string, root v1.Descriptor, i
 		return destination.Name, nil
 	}
 
-	if destination.Transport == "dir" || destination.Transport == "oci" || destination.Transport == "docker-archive" || destination.Transport == "containers-storage" {
+	if (destination.Transport == "oci-dir" || destination.Transport == "oci-archive") && !opts.Push.RemoveSignatures {
+		if err := rejectStoredArchiveSignatures(ctx, storeOptions, root, selections, destination.Transport); err != nil {
+			return "", err
+		}
+	}
+
+	if destination.Transport == "registry" || destination.Transport == "dir" || destination.Transport == "oci" || destination.Transport == "docker-archive" || destination.Transport == "containers-storage" {
 		transferOptions, cleanup, err := storedTransferOptions("", root.Digest, opts)
 		if err != nil {
 			return "", err
 		}
-		defer cleanup()
+		defer func() { retErr = errors.Join(retErr, cleanup()) }()
 		transferOptions.Index = &buildah.StoredIndexSnapshot{Root: root, Data: indexData, Selections: selections}
-		transferOptions.Destination = destination.String()
+		if destination.Transport == "registry" {
+			transferOptions.RegistryDestination = destination.Name
+		} else {
+			transferOptions.Destination = destination.String()
+		}
 		return buildah.TransferStoredImageSupervised(ctx, transferOptions)
 	}
 
@@ -490,36 +677,24 @@ func copyStoredIndex(ctx context.Context, storeDir string, root v1.Descriptor, i
 		}
 		key := platforms.Format(platform)
 		var manifest v1.Descriptor
-		var manifestData []byte
 		var exportedLayout string
-		if destination.Transport == "registry" {
-			published, err := publishStoredImageInstance(ctx, selection.ImageID, selection.Manifest, destination.Name, opts)
-			if err != nil {
-				return "", fmt.Errorf("publish stored platform %s: %w", key, err)
-			}
-			manifest, manifestData = published.Manifest, published.ManifestData
-		} else {
-			output := filepath.Join(stageDir, fmt.Sprintf("image-%d", i))
-			exported, err := buildah.ExportStoredImageSelectedSupervised(ctx, storeOptions, selection.ImageID, selection.Manifest.Digest, output, opts.SignaturePolicyPath)
-			if err != nil {
-				return "", fmt.Errorf("export stored platform %s: %w", key, err)
-			}
-			exportedLayout = exported.Layout
-			manifest, err = oci.LayoutRoot(exported.Layout)
-			if err != nil {
-				return "", fmt.Errorf("inspect exported platform %s: %w", key, err)
-			}
+		output := filepath.Join(stageDir, fmt.Sprintf("image-%d", i))
+		exported, err := buildah.ExportStoredImageSelectedSupervised(ctx, storeOptions, selection.ImageID, selection.Manifest.Digest, output, opts.SignaturePolicyPath)
+		if err != nil {
+			return "", fmt.Errorf("export stored platform %s: %w", key, err)
 		}
+		exportedLayout = exported.Layout
+		manifest, err = oci.LayoutRoot(exported.Layout)
+		if err != nil {
+			return "", fmt.Errorf("inspect exported platform %s: %w", key, err)
+		}
+
 		if !content.Equal(manifest, manifestInIndex) {
 			changed = true
 			manifestInIndex.Digest, manifestInIndex.Size, manifestInIndex.MediaType = manifest.Digest, manifest.Size, manifest.MediaType
 			if len(manifestInIndex.Data) != 0 {
 				// Embedded content must describe the emitted manifest, not its origin.
-				raw := manifestData
-				var err error
-				if raw == nil {
-					raw, err = os.ReadFile(filepath.Join(exportedLayout, "blobs", manifest.Digest.Algorithm().String(), manifest.Digest.Encoded()))
-				}
+				raw, err := os.ReadFile(filepath.Join(exportedLayout, "blobs", manifest.Digest.Algorithm().String(), manifest.Digest.Encoded()))
 				if err != nil {
 					return "", err
 				}
@@ -536,25 +711,6 @@ func copyStoredIndex(ctx context.Context, storeDir string, root v1.Descriptor, i
 		}
 	}
 	layout := filepath.Join(stageDir, "index")
-	if destination.Transport == "registry" {
-		// Native member copies already preserved signatures. Publish only the
-		// root so layout sources cannot replace their signature attachments.
-		store, err := orasoci.NewWithContext(ctx, layout)
-		if err != nil {
-			return "", err
-		}
-		if err := store.Push(ctx, root, bytes.NewReader(indexData)); err != nil {
-			return "", err
-		}
-		if err := store.Tag(ctx, root, root.Digest.String()); err != nil {
-			return "", err
-		}
-		src, err := imagestore.LayoutReference(layout, root)
-		if err != nil {
-			return "", err
-		}
-		return publishImageReferenceSelection(ctx, src, root, destination.Name, opts, imagecopy.CopySpecificImages)
-	}
 
 	if err := oci.RestoreImageIndex(ctx, layout, root, indexData, variants); err != nil {
 		return "", fmt.Errorf("restore multi-platform image: %w", err)
@@ -618,6 +774,13 @@ func CopyRoot(ctx context.Context, kind oci.Kind, storeDir string, root v1.Descr
 }
 
 func copyRoot(ctx context.Context, kind oci.Kind, storeDir string, root v1.Descriptor, destination Destination, opts Options, preparedPolicy *signature.Policy) (_ string, retErr error) {
+	if kind == oci.Image {
+		var err error
+		opts.Push, err = opts.Push.WithDefaults()
+		if err != nil {
+			return "", err
+		}
+	}
 	if destination.ArchiveReference != "" {
 		opts.ArchiveReference = destination.ArchiveReference
 	}
@@ -689,7 +852,7 @@ func copyRoot(ctx context.Context, kind oci.Kind, storeDir string, root v1.Descr
 		err := localstore.WithReadLock(ctx, storeDir, func() error {
 			var copyErr error
 			if root.MediaType == v1.MediaTypeImageIndex || root.MediaType == "application/vnd.docker.distribution.manifest.list.v2+json" {
-				if !opts.Push.ChangesManifest() && !opts.Push.RemoveSignatures {
+				if !opts.Signing.Enabled() && !opts.Push.ChangesManifest() && !opts.Push.RemoveSignatures {
 					result, copyErr = enginecopy.CopyIndex(ctx, storeDir, root, destination.Name)
 					result += "@" + root.Digest.String()
 					return copyErr

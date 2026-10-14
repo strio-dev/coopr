@@ -429,10 +429,11 @@ func TestInvalidHealthcheckAndOnBuildSyntax(t *testing.T) {
 		{`healthcheck NONE retries=3`, "does not accept properties"},
 		{`healthcheck "one" "two"`, "exactly one command"},
 		{`healthcheck "true" bogus="1s"`, `unsupported property "bogus"`},
-		{`healthcheck "true" retries="three"`, "nonnegative integer"},
+		{`healthcheck "true" retries="three"`, "positive integer"},
 		{`healthcheck "true" interval="now"`, "duration"},
-		{`healthcheck "true" interval="1us"`, "less than 1ms"},
-		{`healthcheck "true" start-period="-1s"`, "less than 1ms"},
+		{`healthcheck "true" interval="0s"`, "positive"},
+		{`healthcheck "true" retries=0`, "positive integer"},
+		{`healthcheck "true" start-period="-1s"`, "positive"},
 		{`healthcheck NONE { exec "/check" }`, "cannot combine"},
 		{`onbuild`, "exactly one child"},
 		{`onbuild "RUN true"`, "exactly one child"},
@@ -445,7 +446,7 @@ func TestInvalidHealthcheckAndOnBuildSyntax(t *testing.T) {
 			t.Errorf("parseFragment(%q) error = %v, want containing %q", test.source, err, test.want)
 		}
 	}
-	for _, source := range []string{`healthcheck "true" interval="0s" retries=4`, `healthcheck "true" start-period="1ms"`} {
+	for _, source := range []string{`healthcheck "true" interval="1ns" retries=4`, `healthcheck "true" start-period="1ms"`} {
 		if _, err := parseFragment(strings.NewReader(source)); err != nil {
 			t.Errorf("parseFragment(%q): %v", source, err)
 		}

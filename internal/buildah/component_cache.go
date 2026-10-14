@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,13 +19,17 @@ import (
 	"coopr/internal/imageconfig"
 	"coopr/internal/planner"
 	"coopr/internal/stateidentity"
+	"github.com/moby/buildkit/util/entitlements"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/buildah/define"
+	buildahparse "go.podman.io/buildah/pkg/parse"
 	"go.podman.io/image/v5/types"
+	"tags.cncf.io/container-device-interface/pkg/cdi"
+	"tags.cncf.io/container-device-interface/pkg/parser"
 )
 
-const portableCacheLoweringVersion = "coopr-buildah-component-image-v5"
+const portableCacheLoweringVersion = "coopr-buildah-component-image-v8"
 
 type componentCache struct {
 	images      *portableInstructionCache
@@ -254,7 +260,7 @@ func relayedCachePath(root, relative string, directory bool) (string, error) {
 	return resolvedPath, nil
 }
 
-func componentCacheEligible(resolved *ResolvedComponentPlan, controls RunControls) bool {
+func componentCacheEligible(resolved *ResolvedComponentPlan) bool {
 	if resolved == nil || resolved.Plan == nil || len(resolved.Plan.Outputs) != 1 {
 		return false
 	}
@@ -268,8 +274,14 @@ func componentCacheEligible(resolved *ResolvedComponentPlan, controls RunControl
 		if stage.Name != "" {
 			inputs[strings.ToLower(stage.Name)] = true
 		}
-		if stage.AwaitingComponent != nil || stage.DeferredImageSource || stage.SourceContext != "" || stage.DynamicBaseStage != "" {
+		if stage.AwaitingComponent != nil || stage.DeferredImageSource || stage.DynamicBaseStage != "" {
 			return false
+		}
+		if stage.SourceContext != "" {
+			selected, found := resolved.SelectedBases[graphNamedContextKey(stage.SourceContext, stage.Platform)]
+			if !found || selected.Selected.Digest.Validate() != nil {
+				return false
+			}
 		}
 		if stage.Kind == "package-input" {
 			if _, ok := resolved.PackageInputs[stage.ID]; !ok {
@@ -282,6 +294,16 @@ func componentCacheEligible(resolved *ResolvedComponentPlan, controls RunControl
 	}
 	for _, stage := range resolved.Plan.Stages {
 		for _, operation := range stage.Operations {
+			operationInputs := maps.Clone(inputs)
+			for _, reference := range operationStageReferences(operation) {
+				key := ResolvedBaseKey{Reference: reference.source, Platform: stage.Platform}
+				if reference.context != "" {
+					key = graphNamedContextKey(reference.context, stage.Platform)
+				}
+				if selected, found := resolved.SelectedBases[key]; found && selected.Selected.Digest.Validate() == nil {
+					operationInputs[strings.ToLower(reference.source)] = true
+				}
+			}
 			switch operation.Name {
 			case "layer":
 				if operation.LayerBoundary != "begin" && operation.LayerBoundary != "end" {
@@ -294,11 +316,11 @@ func componentCacheEligible(resolved *ResolvedComponentPlan, controls RunControl
 			case "onbuild", "healthcheck":
 			// Deferred/image configuration only; body validation belongs to the public parser.
 			case "run":
-				if len(controls.Devices) != 0 || !componentCacheRunEligible(operation, inputs) {
+				if !componentCacheRunEligible(operation, operationInputs) {
 					return false
 				}
 			case "copy", "add":
-				if len(operation.Children) != 0 || !inputs[strings.ToLower(operation.Properties["from"])] {
+				if len(operation.Children) != 0 || !operationInputs[strings.ToLower(operation.Properties["from"])] {
 					return false
 				}
 			default:
@@ -310,13 +332,10 @@ func componentCacheEligible(resolved *ResolvedComponentPlan, controls RunControl
 }
 
 func componentCacheRunEligible(operation planner.Operation, packages map[string]bool) bool {
-	if network := operation.Properties["network"]; network != "" && network != "default" && network != "none" {
-		return false
-	}
-	if operation.Properties["security"] == "insecure" || hasRunDeviceOptions(operation) {
-		return false
-	}
 	for _, child := range operation.Children {
+		if child.Name == "device" {
+			continue
+		}
 		if child.Name != "mount" || len(child.Arguments) != 1 {
 			return false
 		}
@@ -356,12 +375,13 @@ func cacheIdentityConfig(raw json.RawMessage) (json.RawMessage, error) {
 	return json.Marshal(object)
 }
 
-func (c *componentCache) key(executor *graphExecutor, input stateidentity.Identity, resolved *ResolvedComponentPlan, parameters map[string]string, platform v1.Platform) (cache.Key, error) {
+func (c *componentCache) key(executor *graphExecutor, input stateidentity.Identity, resolved *ResolvedComponentPlan, parameters map[string]string, platform v1.Platform, commandSet bool) (cache.Key, error) {
 	packages := make(map[string]v1.Descriptor, len(resolved.PackageInputs))
 	for stageID, pkg := range resolved.PackageInputs {
 		packages[stageID] = pkg.Descriptor
 	}
 	inputs := componentCacheInputs(resolved)
+	inputs["caller-command-set"] = digest.FromString(fmt.Sprint(commandSet))
 	policy, err := json.Marshal(struct {
 		Timestamp        *int64 `json:"timestamp,omitempty"`
 		SourceDateEpoch  *int64 `json:"source_date_epoch,omitempty"`
@@ -577,7 +597,7 @@ func (c *componentCache) lookup(ctx context.Context, executor *graphExecutor, ke
 	if err != nil {
 		return instructionCacheEntry{}, nil, err
 	}
-	config, err := imageconfig.Parse(entry.LogicalConfig)
+	config, err := imageconfig.Restore(entry.LogicalConfig, *entry.CommandSet)
 	if err != nil {
 		return instructionCacheEntry{}, nil, err
 	}
@@ -606,7 +626,7 @@ func (c *componentCache) record(ctx context.Context, executor *graphExecutor, ke
 	}
 	images := c.imageCache()
 	before := images.stats
-	images.recordImage(ctx, executor, imageKey, imageID, manifest, root, system, raw, baseImageID, &retainsCaller)
+	images.recordImage(ctx, executor, imageKey, imageID, manifest, root, system, raw, baseImageID, &retainsCaller, new(config.CommandSet()))
 	c.stats = addCacheStats(c.stats, cacheStatsDifference(images.stats, before))
 }
 
@@ -704,10 +724,10 @@ func componentCachedConfigMatchesImage(logical, native []byte) error {
 }
 
 func validateComponentImageCacheHit(ctx context.Context, executor *graphExecutor, record *cache.ImageRecord, entry instructionCacheEntry, system *types.SystemContext) error {
-	if entry.RootMetadata == nil || entry.RetainsCaller == nil || len(entry.LogicalConfig) == 0 || record.BaseImage == nil || entry.BaseImageID == "" {
+	if entry.RootMetadata == nil || entry.RetainsCaller == nil || entry.CommandSet == nil || len(entry.LogicalConfig) == 0 || record.BaseImage == nil || entry.BaseImageID == "" {
 		return errors.New("cached component image is missing root metadata, logical configuration, executed lineage or effective base image")
 	}
-	logical, err := imageconfig.Parse(entry.LogicalConfig)
+	logical, err := imageconfig.Restore(entry.LogicalConfig, *entry.CommandSet)
 	if err != nil {
 		return err
 	}
@@ -747,4 +767,75 @@ type componentCacheCaller struct {
 	ImageID              string
 	Manifest             digest.Digest
 	RetainsCallerAllowed bool
+}
+
+// cacheRunDeviceIdentity captures selected CDI names after request aliases, not
+// mutable hardware/driver state. Selection and authorization run before reuse.
+func cacheRunDeviceIdentity(operation planner.Operation, controls RunControls, allowed entitlements.Set) (digest.Digest, error) {
+	if operation.Name != "run" || !hasRunDeviceOptions(operation) && len(controls.Devices) == 0 {
+		return "", nil
+	}
+	requests, err := lowerRunDevices(operation.Instruction)
+	if err != nil {
+		return "", err
+	}
+	needsCDI := len(requests) != 0
+	for _, device := range controls.Devices {
+		needsCDI = needsCDI || parser.IsQualifiedName(device)
+	}
+	var cache *cdi.Cache
+	var selected []string
+	if needsCDI {
+		cache, err = newRunDeviceCacheWithDirs("", controls.CDISpecDirs)
+		if err != nil {
+			return "", err
+		}
+		if err := authorizePlannedOperation(operation, allowed, cache); err != nil {
+			return "", err
+		}
+		requests, _ = applyRunDeviceEntitlementAliases(requests, allowed)
+		selected, err = resolveRunDeviceSpecs(cache, requests)
+		if err != nil {
+			return "", err
+		}
+	}
+	for _, device := range controls.Devices {
+		if parser.IsQualifiedName(device) {
+			names, err := resolveRunDeviceSpecs(cache, []runDeviceRequest{{Name: device, Required: true}})
+			if err != nil {
+				return "", err
+			}
+			selected = append(selected, names...)
+		} else {
+			source, _, _, err := buildahparse.Device(device)
+			if err != nil {
+				return "", err
+			}
+			if _, err := os.Stat(source); err != nil {
+				return "", fmt.Errorf("inspect requested device %q: %w", source, err)
+			}
+			selected = append(selected, device)
+		}
+	}
+	data, err := json.Marshal(selected)
+	if err != nil {
+		return "", err
+	}
+	return digest.FromBytes(data), nil
+}
+
+func cacheGraphDeviceInputs(stages []planner.Stage, controls RunControls, allowed entitlements.Set) (map[string]digest.Digest, error) {
+	inputs := make(map[string]digest.Digest)
+	for _, stage := range stages {
+		for index, operation := range stage.Operations {
+			identity, err := cacheRunDeviceIdentity(operation, controls, allowed)
+			if err != nil {
+				return nil, fmt.Errorf("stage %s operation %d: %w", stage.ID, index+1, err)
+			}
+			if identity != "" {
+				inputs["devices-"+stage.ID+"-"+strconv.Itoa(index)] = identity
+			}
+		}
+	}
+	return inputs, nil
 }

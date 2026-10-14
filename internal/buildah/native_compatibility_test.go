@@ -7,12 +7,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/docker/go-connections/nat"
 	upstream "go.podman.io/buildah"
 	"go.podman.io/buildah/define"
 	"go.podman.io/image/v5/types"
@@ -90,33 +88,6 @@ func TestRemoteAddRootURLExplicitFile(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "has no filename") {
 			t.Fatalf("destination %q error=%v", destination, err)
 		}
-	}
-}
-
-func TestExposePinnedPortGrammarDifferential(t *testing.T) {
-	for _, raw := range []string{"80", "81/UDP", "82-83/sCtP", "127.0.0.1:9000:84", "9000-9002:80", "9000-9001:80-81", "[::1]:9000:80", "::1:9000:80", "0", "65535", "65536", "-1", "90-80", "8000-8002:80-81", "not-an-ip:8000:80", "[::gg]:9000:80", "80/http", "/tcp", "http", "80/tcp/udp"} {
-		t.Run(raw, func(t *testing.T) {
-			mappings, wantErr := nat.ParsePortSpec(raw)
-			got, err := normalizeExposedPorts([]string{raw})
-			if (err != nil) != (wantErr != nil) {
-				t.Fatalf("error=%v native=%v", err, wantErr)
-			}
-			if err != nil {
-				return
-			}
-			want := make([]string, 0, len(mappings))
-			for _, mapping := range mappings {
-				want = append(want, string(mapping.Port))
-			}
-			if !reflect.DeepEqual(got, want) {
-				t.Fatalf("ports=%v native=%v", got, want)
-			}
-		})
-	}
-	got, err := normalizeExposedPorts([]string{"83/UDP", "80-82", "83/UDP"})
-	want := []string{"83/udp", "80/tcp", "81/tcp", "82/tcp", "83/udp"}
-	if err != nil || !reflect.DeepEqual(got, want) {
-		t.Fatalf("ordered ports=%v error=%v", got, err)
 	}
 }
 

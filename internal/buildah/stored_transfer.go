@@ -1,7 +1,6 @@
 package buildah
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -27,6 +26,7 @@ import (
 	"go.podman.io/image/v5/docker"
 	imagereference "go.podman.io/image/v5/docker/reference"
 	"go.podman.io/image/v5/manifest"
+	imagecli "go.podman.io/image/v5/pkg/cli"
 	"go.podman.io/image/v5/signature"
 	imagestorage "go.podman.io/image/v5/storage"
 	"go.podman.io/image/v5/transports/alltransports"
@@ -54,6 +54,8 @@ type StoredTransferOptions struct {
 	ImageID                string
 	ExpectedManifest       digest.Digest
 	Index                  *StoredIndexSnapshot
+	ManifestList           string
+	ManifestListAll        bool
 	LocalName              string
 	RegistryDestination    string
 	Destination            string
@@ -67,14 +69,21 @@ type StoredTransferOptions struct {
 	RetryDelay             time.Duration
 	SignaturePolicyPath    string
 	SignBy                 string
+	SigstoreParameterFile  string
+	SequoiaFingerprint     string
 	SigstorePrivateKeyFile string
 	SigningPassphraseFile  string
+	SigstorePassphraseFile string
+	sigstorePassword       *[]byte
 }
 
 type storedTransferRequest struct {
-	Progress   bool                  `json:"progress,omitempty"`
-	Options    StoredTransferOptions `json:"options"`
-	ResultPath string                `json:"result_path"`
+	Protocol           string                `json:"protocol,omitempty"`
+	CosignPasswordFile string                `json:"cosign_password_file,omitempty"`
+	CredentialsFile    string                `json:"credentials_file,omitempty"`
+	Progress           bool                  `json:"progress,omitempty"`
+	Options            StoredTransferOptions `json:"options"`
+	ResultPath         string                `json:"result_path"`
 }
 
 type StoredTransferResult struct {
@@ -97,7 +106,7 @@ func TransferStoredImageSupervised(ctx context.Context, options StoredTransferOp
 }
 
 // TransferStoredImageResultSupervised returns the actual native copied manifest.
-func TransferStoredImageResultSupervised(ctx context.Context, options StoredTransferOptions) (StoredTransferResult, error) {
+func TransferStoredImageResultSupervised(ctx context.Context, options StoredTransferOptions) (_ StoredTransferResult, retErr error) {
 	if ctx == nil {
 		return StoredTransferResult{}, errors.New("stored transfer context is nil")
 	}
@@ -110,8 +119,21 @@ func TransferStoredImageResultSupervised(ctx context.Context, options StoredTran
 			destinations++
 		}
 	}
-	if (options.ImageID != "") == (options.Index != nil) || destinations != 1 {
+	sources := 0
+	if options.ImageID != "" {
+		sources++
+	}
+	if options.Index != nil {
+		sources++
+	}
+	if options.ManifestList != "" {
+		sources++
+	}
+	if sources != 1 || destinations != 1 {
 		return StoredTransferResult{}, errors.New("stored transfer requires exactly one source and exactly one destination")
+	}
+	if options.ManifestList != "" && (options.Destination == "" || options.RegistryInstance) {
+		return StoredTransferResult{}, errors.New("manifest-list transfer requires a native push destination")
 	}
 	if options.Index != nil {
 		if options.LocalName != "" {
@@ -121,20 +143,63 @@ func TransferStoredImageResultSupervised(ctx context.Context, options StoredTran
 			return StoredTransferResult{}, fmt.Errorf("index snapshot is %s, want %s", options.Index.Root.Digest, options.ExpectedManifest)
 		}
 	}
+	var err error
+	options.AuthFile, options.CertDir, err = oci.NormalizeRegistryPaths(options.AuthFile, options.CertDir)
+	if err != nil {
+		return StoredTransferResult{}, err
+	}
+	options.Push, err = options.Push.WithDefaults()
+	if err != nil {
+		return StoredTransferResult{}, err
+	}
+	retries, err := oci.RegistryRetryOptions(oci.Options{Retry: options.Retry, RetrySet: options.RetrySet, RetryDelay: options.RetryDelay})
+	if err != nil {
+		return StoredTransferResult{}, err
+	}
+	options.Retry, options.RetrySet, options.RetryDelay = uint(retries.MaxRetry), true, retries.Delay
 	jobDir, err := os.MkdirTemp("", ".coopr-stored-transfer-*")
 	if err != nil {
 		return StoredTransferResult{}, err
 	}
-	defer func() { _ = os.RemoveAll(jobDir) }()
+	defer func() { retErr = errors.Join(retErr, os.RemoveAll(jobDir)) }()
+	helper := ""
+	if options.SequoiaFingerprint != "" && !NativeSequoia {
+		helper, err = FindSequoiaHelper(ctx)
+		if err != nil {
+			return StoredTransferResult{}, err
+		}
+	}
 	request := storedTransferRequest{Options: options, Progress: options.ProgressWriter != nil, ResultPath: filepath.Join(jobDir, "result.json")}
+	if helper != "" {
+		request.Protocol = SequoiaHelperProtocol
+		request.CredentialsFile, err = StageSigningSecret(jobDir, "credentials", []byte(options.Credentials))
+		if err != nil {
+			return StoredTransferResult{}, err
+		}
+		request.Options.Credentials = ""
+		if request.Options.SigstorePassphraseFile == "" {
+			request.CosignPasswordFile, err = StageSigningSecret(jobDir, "cosign-password", []byte(os.Getenv("COSIGN_PASSWORD")))
+			if err != nil {
+				return StoredTransferResult{}, err
+			}
+		}
+	}
 	requestPath := filepath.Join(jobDir, "request.json")
 	if err := writeWorkerJSON(requestPath, request); err != nil {
 		return StoredTransferResult{}, err
 	}
 	command := reexec.Command(storedTransferWorkerName, requestPath)
+	// Authentication output is independent of quiet or redirected progress.
+	command.Stdin = os.Stdin
+	command.Stdout = os.Stderr
 	command.Stderr = options.ProgressWriter
 	command.Env = append(withoutSigningPassword(os.Environ()), "TMPDIR="+jobDir)
-	processErr := runWorkerProcess(ctx, command, workerGrace)
+	var processErr error
+	if helper != "" {
+		processErr = RunSequoiaWorker(ctx, helper, storedTransferWorkerName, requestPath, jobDir, options.ProgressWriter)
+	} else {
+		processErr = runWorkerProcess(ctx, command, workerGrace)
+	}
 	var response storedTransferResponse
 	if err := readWorkerJSON(request.ResultPath, &response); err != nil {
 		return StoredTransferResult{}, errors.Join(processErr, err)
@@ -166,6 +231,23 @@ func executeStoredTransferWorker(requestPath string) error {
 	if err := readWorkerJSON(requestPath, &request); err != nil {
 		return err
 	}
+	if request.Protocol != "" && (request.Protocol != SequoiaHelperProtocol || !NativeSequoia) {
+		return errors.New("incompatible Sequoia stored transfer protocol")
+	}
+	if request.CredentialsFile != "" {
+		value, err := os.ReadFile(request.CredentialsFile)
+		if err != nil {
+			return err
+		}
+		request.Options.Credentials = string(value)
+	}
+	if request.CosignPasswordFile != "" {
+		value, err := os.ReadFile(request.CosignPasswordFile)
+		if err != nil {
+			return err
+		}
+		request.Options.sigstorePassword = &value
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 	if request.Progress {
@@ -190,6 +272,9 @@ func transferStoredImage(ctx context.Context, options StoredTransferOptions) (_ 
 		return StoredTransferResult{}, err
 	}
 	defer func() { retErr = errors.Join(retErr, lease.Close()) }()
+	if options.ManifestList != "" {
+		return pushStoredManifestList(ctx, lease.store, options)
+	}
 	var baseSource types.ImageReference
 	if options.Index == nil {
 		baseSource, err = imagestorage.Transport.NewStoreReference(lease.store, nil, options.ImageID)
@@ -221,7 +306,7 @@ func transferStoredImage(ctx context.Context, options StoredTransferOptions) (_ 
 			return StoredTransferResult{}, fmt.Errorf("open registry destination %q: %w", options.RegistryDestination, err)
 		}
 	}
-	passphrase, err := readStoredTransferPassphrase(options.SigningPassphraseFile)
+	sigstorePassphrase, gpgPassphrase, err := storedTransferPassphrases(options)
 	if err != nil {
 		return StoredTransferResult{}, err
 	}
@@ -230,7 +315,7 @@ func transferStoredImage(ctx context.Context, options StoredTransferOptions) (_ 
 		return StoredTransferResult{}, err
 	}
 	if options.RegistryDestination != "" {
-		registriesDir, err := storedSigstoreAttachmentsConfig(system, dst)
+		registriesDir, err := SigstoreAttachmentsConfig(system, dst)
 		if err != nil {
 			return StoredTransferResult{}, err
 		}
@@ -266,7 +351,7 @@ func transferStoredImage(ctx context.Context, options StoredTransferOptions) (_ 
 		if options.SignBy == "" || options.SigstorePrivateKeyFile != "" {
 			return StoredTransferResult{}, errors.New("local stored-image signing requires exactly one GPG key")
 		}
-		if err := signStoredManifest(ctx, lease.store, baseSource, system, options.ImageID, options.ExpectedManifest, localIdentity, options.SignBy, string(passphrase)); err != nil {
+		if err := signStoredManifest(ctx, lease.store, baseSource, system, options.ImageID, options.ExpectedManifest, localIdentity, options.SignBy, gpgPassphrase); err != nil {
 			return StoredTransferResult{}, fmt.Errorf("sign stored image: %w", err)
 		}
 		return StoredTransferResult{Reference: options.LocalName}, nil
@@ -282,7 +367,13 @@ func transferStoredImage(ctx context.Context, options StoredTransferOptions) (_ 
 		}
 		defer func() { retErr = errors.Join(retErr, policyContext.Destroy()) }()
 	}
+	signers, cleanupSigners, err := NativeSigners(options.SigstoreParameterFile, options.SequoiaFingerprint, sigstorePassphrase, gpgPassphrase, os.Stdout)
+	if err != nil {
+		return StoredTransferResult{}, err
+	}
+	defer cleanupSigners()
 	copyOptions := &imagecopy.Options{
+		Signers:      signers,
 		ReportWriter: options.ProgressWriter,
 		SourceCtx:    system, DestinationCtx: system,
 		ImageListSelection:           imagecopy.CopySystemImage,
@@ -293,11 +384,8 @@ func transferStoredImage(ctx context.Context, options StoredTransferOptions) (_ 
 		copyOptions.ImageListSelection = imagecopy.CopyAllImages
 	}
 
-	if options.SignBy != "" {
-		copyOptions.SignPassphrase = string(passphrase)
-	} else if options.SigstorePrivateKeyFile != "" {
-		copyOptions.SignSigstorePrivateKeyPassphrase = passphrase
-	}
+	copyOptions.SignPassphrase = gpgPassphrase
+	copyOptions.SignSigstorePrivateKeyPassphrase = sigstorePassphrase
 	if err := options.Push.Apply(copyOptions); err != nil {
 		return StoredTransferResult{}, err
 	}
@@ -592,19 +680,44 @@ func storedTransferSystemContext(options StoredTransferOptions, registriesDir st
 	return system, nil
 }
 
-func readStoredTransferPassphrase(path string) ([]byte, error) {
-	if path == "" {
-		return nil, nil
+// Explicit passphrases apply to one legacy signing mode. The environment
+// fallback belongs only to Sigstore; GPG continues to use its own agent.
+func storedTransferPassphrases(options StoredTransferOptions) ([]byte, string, error) {
+	explicit, err := readStoredTransferPassphrase(options.SigningPassphraseFile)
+	if err != nil {
+		return nil, "", err
 	}
-	value, err := os.ReadFile(path)
+	var sigstorePassphrase []byte
+	var gpgPassphrase string
+	if options.SignBy != "" || options.SequoiaFingerprint != "" {
+		gpgPassphrase = string(explicit)
+	} else {
+		sigstorePassphrase = explicit
+	}
+	if options.SigstorePassphraseFile != "" {
+		// This private file stages raw COSIGN_PASSWORD bytes, not a user first-line file.
+		sigstorePassphrase, err = os.ReadFile(options.SigstorePassphraseFile)
+		if err != nil {
+			return nil, "", err
+		}
+	}
+	if options.sigstorePassword != nil {
+		sigstorePassphrase = *options.sigstorePassword
+	}
+	return sigstorePassphrase, gpgPassphrase, nil
+}
+
+func readStoredTransferPassphrase(path string) ([]byte, error) {
+	value, err := imagecli.ReadPassphraseFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read signing passphrase file: %w", err)
 	}
-	value, _, _ = bytes.Cut(value, []byte("\n"))
-	return bytes.TrimSuffix(value, []byte("\r")), nil
+	return []byte(value), nil
 }
 
-func storedSigstoreAttachmentsConfig(system *types.SystemContext, destination types.ImageReference) (string, error) {
+// SigstoreAttachmentsConfig enables native registry attachments while preserving
+// the configured simple-signing lookaside for the destination.
+func SigstoreAttachmentsConfig(system *types.SystemContext, destination types.ImageReference) (string, error) {
 	named := destination.DockerReference()
 	if named == nil {
 		return "", errors.New("sigstore attachments require a named registry destination")

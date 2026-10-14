@@ -44,9 +44,24 @@ func newImageCommand() *cobra.Command {
 func newImagesCommand() *cobra.Command { return newImageListCommand("images") }
 
 type imageListOptions struct {
-	quiet, all, digests, noTrunc, noheading bool
-	format, sort                            string
-	filters                                 []string
+	quiet, all, digests, noTrunc, noheading, history bool
+	format, sort                                     string
+	filters                                          []string
+}
+
+// imageSortValue follows Podman's command-local validate.ChoiceValue boundary.
+// Its command package is not a public API; keep the same accepted values and
+// case-sensitive comparison without adding a Podman dependency.
+type imageSortValue struct{ value *string }
+
+func (value imageSortValue) String() string { return *value.value }
+func (value imageSortValue) Type() string   { return "choice" }
+func (value imageSortValue) Set(sort string) error {
+	if !slices.Contains([]string{"created", "id", "repository", "size", "tag"}, sort) {
+		return fmt.Errorf("%q is not a valid value.  Choose from: %q", sort, "created, id, repository, size, tag")
+	}
+	*value.value = sort
+	return nil
 }
 
 type imageListRow struct {
@@ -73,7 +88,16 @@ func (i imageListRow) ID() string {
 	}
 	return i.fullID[:min(12, len(i.fullID))]
 }
-func (i imageListRow) History() string      { return strings.Join(i.history, ", ") }
+func (i imageListRow) History() string {
+	history := i.history
+	if len(history) > 0 && history[0] == i.Repository+":"+i.Tag {
+		history = history[1:]
+	}
+	if len(history) == 0 {
+		return "<none>"
+	}
+	return strings.Join(history, ", ")
+}
 func (i imageListRow) Created() string      { return units.HumanDuration(time.Since(i.created)) + " ago" }
 func (i imageListRow) CreatedSince() string { return i.Created() }
 func (i imageListRow) CreatedAt() string    { return i.created.UTC().String() }
@@ -110,9 +134,6 @@ func newImageListCommand(use string) *cobra.Command {
 	cmd := &cobra.Command{Use: use + " [IMAGE]", Annotations: map[string]string{nativeStorageAnnotation: "true"}, Short: "List locally stored container images", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) > 0 && len(options.filters) > 0 {
 			return errors.New("cannot specify an image and filters")
-		}
-		if !slices.Contains([]string{"created", "id", "repository", "size", "tag"}, options.sort) {
-			return fmt.Errorf("invalid sort value %q", options.sort)
 		}
 		if options.format != "" && !report.IsJSON(options.format) {
 			if _, err := report.New(io.Discard, "images").Parse(report.OriginUser, options.format); err != nil {
@@ -219,6 +240,9 @@ func newImageListCommand(use string) *cobra.Command {
 			if options.digests {
 				format = "{{range .}}{{.Repository}}\t{{.Tag}}\t{{.Digest}}\t{{.ID}}\t{{.CreatedSince}}\t{{.Size}}\n{{end -}}"
 			}
+			if options.history {
+				format = strings.Replace(format, "\n{{end -}}", "\t{{.History}}\n{{end -}}", 1)
+			}
 			origin := report.OriginPodman
 			if options.format != "" {
 				format = options.format
@@ -256,12 +280,13 @@ func newImageListCommand(use string) *cobra.Command {
 	flags := cmd.Flags()
 	flags.BoolVarP(&options.quiet, "quiet", "q", false, "display only image IDs")
 	flags.BoolVarP(&options.all, "all", "a", false, "show intermediate images")
+	flags.BoolVar(&options.history, "history", false, "display image name history")
 	flags.BoolVar(&options.digests, "digests", false, "show image digests")
 	flags.BoolVar(&options.noTrunc, "no-trunc", false, "display full image IDs")
 	flags.BoolVarP(&options.noheading, "noheading", "n", false, "omit table headings")
 	flags.StringVar(&options.format, "format", "", "format output using a Go template or JSON")
 	flags.StringArrayVarP(&options.filters, "filter", "f", nil, "filter images by native image properties")
-	flags.StringVar(&options.sort, "sort", "created", "sort by created, id, repository, size, or tag")
+	flags.Var(imageSortValue{&options.sort}, "sort", "sort by created, id, repository, size, or tag")
 	return cmd
 }
 

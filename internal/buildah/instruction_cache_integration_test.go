@@ -222,7 +222,7 @@ devices:
 	if err := os.WriteFile(containersConf, []byte(fmt.Sprintf("[engine]\ncdi_spec_dirs=[%q]\n", cdiDir)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("CONTAINERS_CONF", containersConf)
+	t.Setenv("CONTAINERS_CONF_OVERRIDE", containersConf)
 	plan := testPlan(t, fmt.Sprintf(`
 from %q {
     run "test \"$COOPR_CDI_PROOF\" = available && printf cached-device-run >/proof" network="none" {

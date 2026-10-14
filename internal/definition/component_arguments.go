@@ -16,7 +16,7 @@ func (inst Instruction) ComponentArguments() (map[string]string, error) {
 	}
 	parameters := make(map[string]string, len(inst.Children))
 	for i, binding := range inst.Children {
-		if binding.Name != "arg" || len(binding.Arguments) != 2 || len(binding.Properties) != 0 || len(binding.Children) != 0 || binding.Form != "" || binding.Commands != nil || len(binding.InlineFiles) != 0 || binding.LayerBoundary != "" || binding.ProcessQuotes || binding.DeferredOnBuild != "" {
+		if binding.Name != "arg" || len(binding.Arguments) != 2 || len(binding.Properties) != 0 || len(binding.Children) != 0 || binding.Form != "" || binding.Commands != nil || len(binding.InlineFiles) != 0 || binding.LayerBoundary != "" || binding.ProcessQuotes || binding.NativeContinuation || len(binding.PropertyOrder) != 0 || binding.DeferredOnBuild != "" {
 			return nil, fmt.Errorf("component child %d: expected arg with a name, value, and no properties or children", i+1)
 		}
 		name, value := binding.Arguments[0], binding.Arguments[1]

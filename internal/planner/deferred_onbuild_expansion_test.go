@@ -168,7 +168,7 @@ func TestDeferredDockerOnBuildWordsExpandOnceInChildScope(t *testing.T) {
 		}
 	}
 
-	if got, want := operations[6].InlineFiles, []definition.InlineFile{{Path: "EOF", Data: "$later\nchild\n"}}; !reflect.DeepEqual(got, want) {
+	if got, want := operations[6].InlineFiles, []definition.InlineFile{{Path: "EOF", Data: "\\$later\nchild\n"}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("unquoted heredoc = %#v, want %#v", got, want)
 	}
 	if got, want := operations[7].InlineFiles, []definition.InlineFile{{Path: "EOF", Data: "\\$later\n$later\n"}}; !reflect.DeepEqual(got, want) {

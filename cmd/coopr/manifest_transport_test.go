@@ -127,6 +127,9 @@ func TestManifestFilesystemTransportLifecycle(t *testing.T) {
 }
 
 func TestManifestPushFilesystemTransports(t *testing.T) {
+	if testing.Short() {
+		t.Skip("supervised native manifest push requires a rootless user namespace")
+	}
 	ctx := context.Background()
 	options := maintenanceStoreOptions(t.TempDir())
 	native := v1.Platform{OS: "linux", Architecture: runtime.GOARCH}

@@ -128,14 +128,12 @@ func TestHealthcheckNoneAndMalformedDockerConfig(t *testing.T) {
 	}
 	tests := []struct{ raw, want string }{
 		{`{"config":{"Healthcheck":[]}}`, "config.Healthcheck"},
+		{`{"config":{"Healthcheck":{"Test":"CMD"}}}`, "config.Healthcheck"},
+		{`{"config":{"Healthcheck":{"Interval":"1s"}}}`, "config.Healthcheck"},
+		{`{"config":{"Healthcheck":{"Retries":1.5}}}`, "config.Healthcheck"},
+		{`{"config":{"Shell":42}}`, "config.Shell"},
 		{`{"config":{"Healthcheck":{"Test":["NONE"],"Test":["NONE"]}}}`, `duplicate key "Test"`},
 		{`{"config":{"Healthcheck":{"test":["NONE"]}}}`, `must be spelled "Test"`},
-		{`{"config":{"Healthcheck":{"Test":[]}}}`, "test"},
-		{`{"config":{"Healthcheck":{"Test":["OTHER","true"]}}}`, "CMD, CMD-SHELL, or NONE"},
-		{`{"config":{"Healthcheck":{"Test":["CMD-SHELL","one","two"]}}}`, "exactly one command"},
-		{`{"config":{"Healthcheck":{"Test":["NONE"],"Interval":1}}}`, "NONE"},
-		{`{"config":{"Healthcheck":{"Test":["CMD","true"],"Interval":-1}}}`, "Interval"},
-		{`{"config":{"Healthcheck":{"Test":["CMD","true"],"Retries":-1}}}`, "retries"},
 		{`{"config":{"OnBuild":"RUN true"}}`, "config.OnBuild"},
 		{"{\"config\":{\"OnBuild\":[\"RUN true\\u0000\"]}}", "without NUL"},
 	}
@@ -448,5 +446,68 @@ func TestFlattenPackagePreservesSafeExtensions(t *testing.T) {
 	checkField(t, nested(t, config), "vendorNested", true)
 	if err := config.FlattenPackage("bad", nil); err == nil {
 		t.Fatal("accepted invalid flattened layer digest")
+	}
+}
+
+func TestContinueAndRestorePreserveStageCommandState(t *testing.T) {
+	original := New()
+	if err := original.Apply(instruction("cmd", []string{"hello"}, nil)); err != nil {
+		t.Fatal(err)
+	}
+	data, err := original.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := Restore(data, original.CommandSet())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, config := range []*Config{original.Continue(), restored} {
+		if err := config.Apply(instruction("entrypoint", []string{"echo"}, nil)); err != nil {
+			t.Fatal(err)
+		}
+		checkField(t, nested(t, config), "Cmd", []any{"hello"})
+	}
+	inherited, err := Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if original.CommandSet() == inherited.CommandSet() {
+		t.Fatal("FROM retained stage-local CMD authorship")
+	}
+	inheritedData, err := inherited.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(inheritedData) {
+		t.Fatal("CMD authorship leaked into OCI config")
+	}
+	if _, err := Restore([]byte(`{`), true); err == nil {
+		t.Fatal("accepted malformed snapshot")
+	}
+}
+
+func TestHealthcheckSubMillisecondSurvivesExecutorAdoption(t *testing.T) {
+	config, err := Parse([]byte(`{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := config.Apply(instruction("healthcheck", []string{"CMD", "true"}, map[string]string{"interval": "1ns", "timeout": "2ns", "start-period": "3ns", "start-interval": "4ns"})); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := config.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.AdoptExecutorProvenance(raw); err != nil {
+		t.Fatal(err)
+	}
+	health, err := restored.Healthcheck()
+	if err != nil || health.Interval != 1 || health.Timeout != 2 || health.StartPeriod != 3 || health.StartInterval != 4 {
+		t.Fatalf("health=%#v error=%v", health, err)
 	}
 }

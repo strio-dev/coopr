@@ -7,12 +7,9 @@ import (
 	upstream "go.podman.io/buildah"
 )
 
-func validateTimestampOptions(timestamp, sourceDateEpoch *int64, rewrite bool) error {
+func validateTimestampOptions(timestamp, sourceDateEpoch *int64, _ bool) error {
 	if timestamp != nil && sourceDateEpoch != nil {
 		return errors.New("timestamp and source date epoch are mutually exclusive")
-	}
-	if timestamp != nil && rewrite {
-		return errors.New("rewrite timestamp cannot be combined with timestamp")
 	}
 	return nil
 }

@@ -7,6 +7,7 @@
   gpgme,
   libseccomp,
   version ? "dev",
+  buildTestBinaries ? false,
 }:
 let
   testSource = lib.fileset.toSource {
@@ -23,7 +24,7 @@ let
 in
 (buildGoModule.override { go = go_1_27; }) (finalAttrs: {
   pname = "coopr";
-  inherit version;
+  inherit version buildTestBinaries;
   src = lib.cleanSourceWith {
     src = testSource;
     filter =
@@ -45,7 +46,7 @@ in
   passthru.testSource = testSource;
   # Vendor test imports too, preserving the complete pinned dependency tree.
   overrideModAttrs = _: _: { src = testSource; };
-  vendorHash = "sha256-F8Ra2wMgTVc6EefgQ8mRNUluZMAHm5hhtWDwLR1B1aw=";
+  vendorHash = "sha256-tUtpsFcAxdmAXx6ZfBqnVLhXpV8Q/tFLp645NV0hSCk=";
   subPackages = [ "./cmd/coopr" ];
   ldflags = [ "-X main.version=${version}" ];
   tags = [

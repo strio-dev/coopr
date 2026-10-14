@@ -26,6 +26,7 @@ let
           "build"
           "container"
           "release-binary"
+          "sequoia-helper"
         ]
         ++ lib.optional (system == "aarch64-linux") "test"
       ) self.checks.${system}

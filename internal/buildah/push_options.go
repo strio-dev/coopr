@@ -14,22 +14,50 @@ import (
 
 // PushOptions are serializable native image-copy controls shared with workers.
 type PushOptions struct {
-	AddCompression    []string
-	Format            string
-	CompressionFormat string
-	CompressionLevel  *int
-	ForceCompression  bool
-	EncryptionKeys    []string
-	EncryptLayers     []int
-	RemoveSignatures  bool
+	// Compress requests directory transport compression, as in Podman push.
+	Compress                    bool
+	AddCompression              []string
+	Format                      string
+	CompressionFormat           string
+	CompressionLevel            *int
+	ForceCompression            bool
+	ForceCompressionSet         bool
+	CompressionDefaultsResolved bool
+	EncryptionKeys              []string
+	EncryptLayers               []int
+	RemoveSignatures            bool
 }
 
 func (p PushOptions) ChangesManifest() bool {
-	return p.Format != "" || p.CompressionFormat != "" || p.CompressionLevel != nil || len(p.EncryptionKeys) > 0 || len(p.AddCompression) > 0 || p.ForceCompression
+	return p.Compress || p.Format != "" || p.CompressionFormat != "" || p.CompressionLevel != nil || len(p.EncryptionKeys) > 0 || len(p.AddCompression) > 0 || p.ForceCompression
 }
 func (p PushOptions) Validate() error {
 	return p.Apply(&imagecopy.Options{DestinationCtx: &types.SystemContext{}})
 }
+
+// WithDefaults resolves the native containers.conf publication defaults before
+// transport selection and before options are sent to a worker.
+func (p PushOptions) WithDefaults() (PushOptions, error) {
+	if p.CompressionDefaultsResolved {
+		return p, nil
+	}
+	cfg, err := config.Default()
+	if err != nil {
+		return p, err
+	}
+	if p.CompressionFormat == "" && (cfg.Engine.CompressionFormat != "gzip" || p.ForceCompression) {
+		p.CompressionFormat = cfg.Engine.CompressionFormat
+	}
+	if p.CompressionFormat != "" && !p.ForceCompressionSet {
+		p.ForceCompression = true
+	}
+	if p.CompressionLevel == nil {
+		p.CompressionLevel = cfg.Engine.CompressionLevel
+	}
+	p.CompressionDefaultsResolved = true
+	return p, nil
+}
+
 func (p PushOptions) Apply(options *imagecopy.Options) error {
 	switch p.Format {
 	case "":
@@ -42,16 +70,16 @@ func (p PushOptions) Apply(options *imagecopy.Options) error {
 	default:
 		return fmt.Errorf("unsupported manifest format %q", p.Format)
 	}
-	if p.CompressionFormat == "" && (p.ForceCompression || p.CompressionLevel != nil) {
-		cfg, err := config.Default()
-		if err != nil {
-			return err
-		}
-		p.CompressionFormat = cfg.Engine.CompressionFormat
+	var err error
+	p, err = p.WithDefaults()
+	if err != nil {
+		return err
 	}
+
 	if options.DestinationCtx == nil {
 		options.DestinationCtx = &types.SystemContext{}
 	}
+	options.DestinationCtx.DirForceCompress = options.DestinationCtx.DirForceCompress || p.Compress
 	if p.CompressionFormat != "" {
 		algorithm, err := compression.AlgorithmByName(p.CompressionFormat)
 		if err != nil {

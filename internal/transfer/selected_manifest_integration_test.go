@@ -28,6 +28,7 @@ import (
 	"github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"go.podman.io/common/libimage"
 	cstorage "go.podman.io/storage"
 	"go.podman.io/storage/pkg/reexec"
 	"go.podman.io/storage/pkg/unshare"
@@ -164,11 +165,51 @@ func TestCopyPinnedManifestExportsExactVariantSharingImageID(t *testing.T) {
 		t.Fatalf("registry copy = %q, want %q", result, want)
 	}
 	assertRemoteManifestDigests(t, ctx, registryName, olderOCI.Manifest, nil)
+	var nativeAliasID string
+	var nativeAliasDigest digest.Digest
+	if err := buildah.WithStore(store, func(backend cstorage.Store) error {
+		nativeRuntime, err := libimage.RuntimeFromStore(backend, nil)
+		if err != nil {
+			return err
+		}
+		source := strings.TrimSuffix(olderRef, ":oci") + "@" + olderOCI.Manifest.Digest.String()
+		image, _, err := nativeRuntime.LookupImage(source, &libimage.LookupImageOptions{ManifestList: true})
+		if err != nil {
+			return fmt.Errorf("native retained-manifest lookup: %w", err)
+		}
+		nativeAliasID = image.ID()
+		if err := image.Tag("native-pinned:latest"); err != nil {
+			return err
+		}
+		alias, err := backend.Image("localhost/native-pinned:latest")
+		if err != nil {
+			return err
+		}
+		if alias.ID != nativeAliasID {
+			t.Fatalf("native tag changed record: got=%s want=%s", alias.ID, nativeAliasID)
+		}
+		data, err := backend.ImageBigData(alias.ID, cstorage.ImageDigestBigDataKey)
+		if err != nil {
+			return err
+		}
+		nativeAliasDigest = digest.FromBytes(data)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if got, err := Copy(ctx, oci.Image, olderOCI.Manifest.Digest.String(), Destination{Transport: "local", Name: "pinned:latest"}, Options{BuildStore: store}); err != nil || got != "pinned:latest" {
 		t.Fatalf("tag pinned OCI manifest locally = %q, %v", got, err)
 	}
-	if tagged, _, found, err := lookupStoredImage(ctx, Options{BuildStore: store}, "pinned:latest", v1.Platform{OS: "linux", Architecture: runtime.GOARCH}, true); err != nil || !found || tagged.Manifest.Digest != olderOCI.Manifest.Digest {
+	if tagged, _, found, err := lookupStoredImage(ctx, Options{BuildStore: store}, "pinned:latest", native, true); err != nil || !found || tagged.Manifest.Digest != nativeAliasDigest || tagged.ImageID != nativeAliasID {
 		t.Fatalf("local pinned tag = %+v, found=%t, err=%v", tagged, found, err)
+	}
+	if _, err := Copy(ctx, oci.Image, olderOCI.Manifest.Digest.String(), Destination{Transport: "local", Name: "pinned-explicit:latest"}, Options{
+		BuildStore: store, Platform: native, PlatformExplicit: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if tagged, _, found, err := lookupStoredImage(ctx, Options{BuildStore: store}, "pinned-explicit:latest", native, true); err != nil || !found || tagged.Manifest.Digest != olderOCI.Manifest.Digest {
+		t.Fatalf("explicit-platform local copy lost selected OCI manifest: selected=%+v found=%t err=%v", tagged, found, err)
 	}
 
 	missing := olderOCI

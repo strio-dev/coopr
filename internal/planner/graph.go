@@ -321,6 +321,7 @@ func cloneInstruction(inst definition.Instruction) definition.Instruction {
 	inst.Arguments = slices.Clone(inst.Arguments)
 	inst.Commands = cloneCommands(inst.Commands)
 	inst.Properties = maps.Clone(inst.Properties)
+	inst.PropertyOrder = slices.Clone(inst.PropertyOrder)
 	inst.InlineFiles = slices.Clone(inst.InlineFiles)
 	if inst.Children != nil {
 		children := make([]definition.Instruction, len(inst.Children))

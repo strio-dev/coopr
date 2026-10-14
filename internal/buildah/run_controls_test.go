@@ -23,7 +23,7 @@ func TestParseRunControlsCanonicalizesBuildahSettings(t *testing.T) {
 	if controls.Memory != 64<<20 || controls.MemorySwap != 128<<20 || controls.ShmSize != 32<<20 {
 		t.Fatalf("canonical sizes = %+v", controls)
 	}
-	if !reflect.DeepEqual(controls.DNSServers, []string{"2001:db8::1"}) || !reflect.DeepEqual(controls.DNSSearch, []string{"example.test"}) {
+	if !reflect.DeepEqual(controls.DNSServers, []string{"2001:0db8::1", "2001:db8::1"}) || !reflect.DeepEqual(controls.DNSSearch, []string{"Example.TEST", "example.test"}) {
 		t.Fatalf("canonical DNS controls = %+v", controls)
 	}
 	common := controls.commonBuildOptions([]string{"host.test:127.0.0.1"})
@@ -37,10 +37,7 @@ func TestParseRunControlsRejectsInvalidValues(t *testing.T) {
 		{Memory: "nope"},
 		{Memory: "-1m"},
 		{ShmSize: "-1"},
-		{DNSServers: []string{"not-an-ip"}},
 		{DNSServers: []string{"none", "1.1.1.1"}},
-		{DNSSearch: []string{"bad domain"}},
-		{DNSOptions: []string{"ndots:2,timeout:1"}},
 		{Ulimits: []string{"not-a-limit"}},
 	}
 	for _, input := range tests {
@@ -247,13 +244,13 @@ hooks_dir = ["` + hooks + `"]
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(controls.BaseCapabilities, []string{"CAP_CHOWN", "CAP_NET_BIND_SERVICE"}) ||
-		!reflect.DeepEqual(controls.DNSServers, []string{"192.0.2.53"}) || controls.ShmSize != 32<<20 ||
+		len(controls.DNSServers) != 0 || controls.DNSConfigDigest == "" || controls.ShmSize != 32<<20 ||
 		!reflect.DeepEqual(controls.Ulimits, []string{"nofile=512:1024"}) || len(controls.Volumes) != 1 ||
 		controls.CgroupManager != "cgroupfs" || !reflect.DeepEqual(controls.CDISpecDirs, []string{cdi}) || !reflect.DeepEqual(controls.HooksDirs, []string{hooks}) {
 		t.Fatalf("effective containers.conf defaults = %+v", controls)
 	}
 	common := controls.commonBuildOptions(nil)
-	if common.ShmSize != "33554432" || !reflect.DeepEqual(common.DNSSearch, []string{"example.test"}) || !reflect.DeepEqual(common.DNSOptions, []string{"ndots:2"}) {
+	if common.ShmSize != "33554432" || len(common.DNSSearch) != 0 || len(common.DNSOptions) != 0 {
 		t.Fatalf("Buildah options from containers.conf = %+v", common)
 	}
 	options := upstream.BuilderOptions{Capabilities: []string{"CAP_SYS_ADMIN"}, CommonBuildOpts: common}

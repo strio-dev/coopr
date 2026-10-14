@@ -36,6 +36,10 @@
               "https://github.com/strio-dev/coopr/releases/download/${version}/coopr-sources.tar.gz";
           nix2container = (import inputs.nix2container { inherit pkgs; }).nix2container;
           coopr = pkgs.callPackage ./nix/package.nix { inherit version; };
+          podman-sequoia = pkgs.callPackage ./nix/podman-sequoia.nix { };
+          coopr-sequoia-signing = pkgs.callPackage ./nix/sequoia-helper.nix {
+            inherit coopr podman-sequoia;
+          };
           coopr-static = pkgs.callPackage ./nix/package-static.nix { inherit pkgs version; };
           release-sources = pkgs.callPackage ./nix/release-sources.nix {
             inherit
@@ -66,6 +70,7 @@
             default = coopr;
             inherit
               coopr
+              coopr-sequoia-signing
               coopr-static
               docs
               container
@@ -75,6 +80,7 @@
             release-binary = release.binary;
             release-source = release.sources;
             container-source = release.sourceImage;
+            coopr-sequoia-signing-sources = coopr-sequoia-signing.sources;
           };
           apps = {
             default = config.apps.coopr;
@@ -87,6 +93,7 @@
             inherit
               pkgs
               coopr
+              coopr-sequoia-signing
               coopr-static
               container
               docs

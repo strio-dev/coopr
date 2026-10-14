@@ -5,11 +5,13 @@ package buildcontext
 import (
 	"errors"
 	"fmt"
-	"github.com/moby/buildkit/util/gitutil"
 	"net/url"
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/moby/buildkit/util/gitutil"
+	nativeparse "go.podman.io/buildah/pkg/parse"
 )
 
 type Kind string
@@ -83,12 +85,6 @@ func parseOne(value string) (Spec, error) {
 	}
 
 	switch {
-	case strings.HasPrefix(source, "docker-image://"), strings.HasPrefix(source, "container-image://"):
-		_, reference, _ := strings.Cut(source, "://")
-		if reference == "" || strings.ContainsAny(reference, " \t\r\n") || strings.Contains(reference, "://") {
-			return Spec{}, fmt.Errorf("invalid docker-image build context %q", source)
-		}
-		return Spec{Name: name, Kind: DockerImage, Reference: reference}, nil
 	case strings.HasPrefix(source, "oci-layout://"):
 		path, reference, err := parseOCILayout(strings.TrimPrefix(source, "oci-layout://"))
 		if err != nil {
@@ -101,17 +97,24 @@ func parseOne(value string) (Spec, error) {
 		return Spec{}, errors.New("remote build context URL must not contain credentials")
 	case IsGitSource(source):
 		return Spec{Name: name, Kind: Git, Reference: source}, nil
-	case isHTTPSource(source):
-		return Spec{Name: name, Kind: HTTPArchive, Reference: source}, nil
+	}
+	native, err := nativeparse.GetAdditionalBuildContext(source)
+	if err != nil {
+		return Spec{}, fmt.Errorf("invalid build context %q: %w", source, err)
+	}
+	switch {
+	case native.IsImage:
+		if strings.ContainsAny(native.Value, " \t\r\n") || strings.Contains(native.Value, "://") {
+			return Spec{}, fmt.Errorf("invalid docker-image build context %q", source)
+		}
+		return Spec{Name: name, Kind: DockerImage, Reference: native.Value}, nil
+	case native.IsURL && isHTTPSource(native.Value):
+		return Spec{Name: name, Kind: HTTPArchive, Reference: native.Value}, nil
 	case strings.Contains(source, "://"):
 		scheme, _, _ := strings.Cut(source, "://")
 		return Spec{}, fmt.Errorf("unsupported build context scheme %q", scheme)
 	default:
-		path, err := filepath.Abs(source)
-		if err != nil {
-			return Spec{}, fmt.Errorf("normalize build context path %q: %w", source, err)
-		}
-		return Spec{Name: name, Kind: Local, Path: filepath.Clean(path)}, nil
+		return Spec{Name: name, Kind: Local, Path: filepath.Clean(native.Value)}, nil
 	}
 }
 

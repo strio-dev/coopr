@@ -80,7 +80,7 @@ Pin image and component references by digest for fixed content, including extern
 
 Image inputs honor native registry routing and `policy.json` signature policy; this does not verify component signatures. Keep TLS verification enabled. See [runtime and trust configuration](../reference/configuration.md#runtime-and-trust).
 
-Image publication supports keyed signing. Keyless signing is unsupported, and keyed Sigstore signatures do not include a Rekor transparency-log entry.
+Image publication supports GPG and Sigstore signing. Sigstore parameter files use the native containers/image format, including private keys, Fulcio/OIDC keyless signing and optional Rekor transparency-log settings. Direct private-key signing does not add a Rekor entry automatically. See [signing options](../reference/cli.md#manifest-lists) for authentication and passphrase handling.
 
 ## Nested container profile
 

@@ -232,17 +232,14 @@ func TestBuildExecutionOptionsDistinguishNetworkAndHosts(t *testing.T) {
 	}
 }
 
-func TestHostGatewayDisablesBuildResultCaches(t *testing.T) {
+func TestHostGatewayUsesDeclaredBuildResultCacheInput(t *testing.T) {
 	_, hosts, err := NormalizeBuildNetworkOptions("default", []string{"gateway.test:host-gateway"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if buildResultCacheEligible(hosts) {
-		t.Fatal("runtime-resolved host-gateway was treated as a stable cache input")
-	}
 	input := instructionCacheTestInput(planner.Operation{Instruction: definition.Instruction{Name: "run", Arguments: []string{"true"}}})
 	input.AddHosts = hosts
-	if key, cacheable, err := instructionCacheKey(input); err != nil || cacheable || key != "" {
+	if key, cacheable, err := instructionCacheKey(input); err != nil || !cacheable || key == "" {
 		t.Fatalf("host-gateway instruction cache key = %q, %v, %v", key, cacheable, err)
 	}
 }
@@ -268,11 +265,11 @@ func TestImplicitNoneEnablesPortablePackageAndComponentCaches(t *testing.T) {
 	operation := planner.Operation{Instruction: definition.Instruction{Name: "run", Properties: map[string]string{"network": "default"}}}
 	original := []planner.Stage{{ID: "output", Kind: "extend", Operations: []planner.Operation{operation}}}
 	effective := resolveBuildNetwork(original, "none")
-	if _, eligible := packageCacheEligibility(effective, RunControls{}); !eligible {
+	if _, eligible := packageCacheEligibility(effective); !eligible {
 		t.Fatal("implicit build-wide none did not enable package cache eligibility")
 	}
 	resolved := &ResolvedComponentPlan{Plan: &planner.Plan{Outputs: []string{"output"}, Stages: effective}}
-	if !componentCacheEligible(resolved, RunControls{}) {
+	if !componentCacheEligible(resolved) {
 		t.Fatal("implicit build-wide none did not enable component cache eligibility")
 	}
 	plan := &planner.Plan{DefinitionType: "component", Platform: "linux/amd64"}

@@ -50,7 +50,7 @@ func TestBuildLifecycleDefaultsMatchPodman(t *testing.T) {
 	}
 }
 
-func TestBuildControlParserCanonicalizesRepeatedValues(t *testing.T) {
+func TestBuildControlParserPreservesNativeDNSValues(t *testing.T) {
 	flags := buildControlFlags{
 		FromAndBudResults: buildahcli.FromAndBudResults{HTTPProxy: true, DNSServers: []string{"2001:0db8::1", "2001:db8::1"}, DNSSearch: []string{"Example.TEST"}, Memory: "64m", MemorySwap: "128m", Ulimit: []string{"nofile=1024:2048"}},
 	}
@@ -58,8 +58,8 @@ func TestBuildControlParserCanonicalizesRepeatedValues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(controls.DNSServers, []string{"2001:db8::1"}) || !reflect.DeepEqual(controls.DNSSearch, []string{"example.test"}) {
-		t.Fatalf("canonical controls = %+v", controls)
+	if !reflect.DeepEqual(controls.DNSServers, []string{"2001:0db8::1", "2001:db8::1"}) || !reflect.DeepEqual(controls.DNSSearch, []string{"Example.TEST"}) {
+		t.Fatalf("native DNS controls = %+v", controls)
 	}
 }
 
@@ -146,8 +146,11 @@ func TestPullPolicyFlagsUseMissingByDefault(t *testing.T) {
 				t.Fatalf("%s --pull=%s became %q", test.name, policy, flag.Value.String())
 			}
 		}
-		if err := test.cmd.ParseFlags([]string{"--pull=invalid"}); err == nil {
-			t.Fatalf("%s accepted invalid pull policy", test.name)
+		if err := test.cmd.ParseFlags([]string{"--pull=invalid"}); err != nil {
+			t.Fatalf("%s must defer native policy validation until execution: %v", test.name, err)
+		}
+		if _, err := resolveBuildPullPolicy(test.cmd); err == nil {
+			t.Fatalf("%s accepted invalid pull policy at execution", test.name)
 		}
 	}
 }

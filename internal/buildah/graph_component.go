@@ -334,12 +334,29 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 		return nil, fmt.Errorf("capture current component caller root: %w", err)
 	}
 	var cacheInputConfig json.RawMessage
-	cacheable := executor.componentCache != nil && (len(executor.componentCache.readStores) != 0 || len(executor.componentCache.writeStores) != 0) && buildResultCacheEligible(executor.options.AddHosts) && componentCacheEligible(resolved, executor.options.RunControls)
+	cacheable := executor.componentCache != nil && (len(executor.componentCache.readStores) != 0 || len(executor.componentCache.writeStores) != 0) && componentCacheEligible(resolved)
 
 	if cacheable && executor.instructionRuntime == "" && componentCacheNeedsRuntime(resolved) {
 		cacheable = false
 	}
+	var deviceInputs map[string]digest.Digest
 	if cacheable {
+		deviceInputs, err = cacheGraphDeviceInputs(resolved.Plan.Stages, executor.options.RunControls, executor.allowedEntitlements)
+		if err != nil {
+			return nil, err
+		}
+		// A whole-result hit skips stage execution, so request authorization
+		// must precede the lookup just as it precedes instruction-cache hits.
+		for _, stage := range resolved.Plan.Stages {
+			for _, operation := range stage.Operations {
+				if hasRunDeviceOptions(operation) {
+					continue
+				} // Checked during device selection above.
+				if err := authorizePlannedOperation(operation, executor.allowedEntitlements, nil); err != nil {
+					return nil, fmt.Errorf("component %s: %w", resolved.Identity, err)
+				}
+			}
+		}
 		preCommitConfig, err := logical.MarshalJSON()
 		if err == nil {
 			cacheInputConfig, err = cacheIdentityConfig(preCommitConfig)
@@ -453,10 +470,13 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 				_ = os.Remove(snapshotPath)
 			}
 			if configErr == nil && eligible {
-				key, keyErr := executor.componentCache.key(executor, identity, resolved, parameters, platform)
+				key, keyErr := executor.componentCache.key(executor, identity, resolved, parameters, platform, logical.CommandSet())
 				if keyErr == nil {
 					if key.Inputs == nil {
 						key.Inputs = map[string]digest.Digest{}
+					}
+					for name, identity := range deviceInputs {
+						key.Inputs[name] = identity
 					}
 					key.Inputs["caller-image"] = callerManifest
 					candidateKey = &key
@@ -531,7 +551,7 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 			},
 			progressStageTotal: stageTotal,
 			progressPrefix:     progress.prefix + "[component " + progressText(operation.Arguments[0]) + "] ",
-			caller:             stageState{storageImageID: callerImageID, manifestDigest: callerManifest, config: logical.Clone(), root: rootBaseline},
+			caller:             stageState{storageImageID: callerImageID, manifestDigest: callerManifest, config: logical.Continue(), root: rootBaseline},
 			packages:           packages,
 			bindPackages:       bindPackages,
 			cacheScope: CacheMountScope{
@@ -544,7 +564,7 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 		_, err = executor.executePlanGraph(ctx, resolved.Plan, resolved.Plan.Stages, "", observed, func(_ storage.Store, stage planner.Stage, imageID string, config *imageconfig.Config, root *PackageRootMetadata) error {
 			if stage.ID == outputID {
 				componentImageID = imageID
-				componentConfig = config.Clone()
+				componentConfig = config.Continue()
 				componentRoot = root
 			}
 			return nil
@@ -618,7 +638,7 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 		if err := caller.Delete(); err != nil {
 			return nil, fmt.Errorf("delete nonlayered component caller: %w", err)
 		}
-		*logical = *componentConfig.Clone()
+		*logical = *componentConfig.Continue()
 		*builderOptions = nonLayerOptions
 		if len(adoption) != 0 && adoption[0].manifest != nil {
 			// The returned builder has a mutable net delta against its effective base.
@@ -663,7 +683,7 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 	if err := caller.Delete(); err != nil {
 		return nil, fmt.Errorf("delete component caller: %w", err)
 	}
-	*logical = *componentConfig.Clone()
+	*logical = *componentConfig.Continue()
 	*builderOptions = adoptOptions
 	if len(adoption) != 0 && adoption[0].manifest != nil {
 		*adoption[0].manifest = componentManifest

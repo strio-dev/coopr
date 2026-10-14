@@ -44,23 +44,23 @@ func TestSigningOptionsPassphraseAndDestinationValidation(t *testing.T) {
 	if err := ValidateSigningDestination(oci.Component, Destination{Transport: "registry"}, options); err == nil || !strings.Contains(err.Error(), "only for images") {
 		t.Fatalf("component signing accepted: %v", err)
 	}
-	if err := ValidateSigningDestination(oci.Image, Destination{Transport: "local"}, options); err == nil || !strings.Contains(err.Error(), "requires a registry") {
+	if err := ValidateSigningDestination(oci.Image, Destination{Transport: "local"}, options); err == nil || !strings.Contains(err.Error(), "requires a native push destination") {
 		t.Fatalf("local signing accepted: %v", err)
 	}
 	if err := ValidateSigningDestination(oci.Image, Destination{Transport: "local"}, SigningOptions{SignBy: "fingerprint"}); err != nil {
 		t.Fatalf("local GPG signing rejected: %v", err)
 	}
 	missingStore := filepath.Join(t.TempDir(), "must-not-be-created")
-	if _, err := Copy(context.Background(), oci.Image, "source:latest", Destination{Transport: "local", Name: "dest:latest"}, Options{BuildStore: nativeTestStore(missingStore), Signing: options}); err == nil || !strings.Contains(err.Error(), "requires a registry") {
+	if _, err := Copy(context.Background(), oci.Image, "source:latest", Destination{Transport: "local", Name: "dest:latest"}, Options{BuildStore: nativeTestStore(missingStore), Signing: options}); err == nil || !strings.Contains(err.Error(), "requires a native push destination") {
 		t.Fatalf("Copy accepted nonregistry signing: %v", err)
 	}
-	if _, err := CopyRoot(context.Background(), oci.Image, missingStore, v1.Descriptor{}, Destination{Transport: "local", Name: "example:latest"}, Options{Signing: options}); err == nil || !strings.Contains(err.Error(), "requires a registry") {
+	if _, err := CopyRoot(context.Background(), oci.Image, missingStore, v1.Descriptor{}, Destination{Transport: "local", Name: "example:latest"}, Options{Signing: options}); err == nil || !strings.Contains(err.Error(), "requires a native push destination") {
 		t.Fatalf("copy did not validate signing before opening its store: %v", err)
 	}
 	if _, err := os.Stat(missingStore); !os.IsNotExist(err) {
 		t.Fatalf("invalid signed copy created its store: %v", err)
 	}
-	if err := ValidateSigningDestination(oci.Image, Destination{Transport: "registry"}, SigningOptions{SignBy: "fingerprint", SigstorePrivateKeyFile: "key"}); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+	if err := ValidateSigningDestination(oci.Image, Destination{Transport: "registry"}, SigningOptions{SignBy: "fingerprint", SigstorePrivateKeyFile: "key", PassphraseFile: "password"}); err == nil || !strings.Contains(err.Error(), "only one") {
 		t.Fatalf("multiple signing modes accepted: %v", err)
 	}
 
@@ -74,11 +74,11 @@ func TestSigningOptionsPassphraseAndDestinationValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	sigstorePassphrase, gpgPassphrase, err = (SigningOptions{SigstorePrivateKeyFile: "key", PassphraseFile: passphraseFile}).passphrases()
-	if err != nil || string(sigstorePassphrase) != "from-file" || gpgPassphrase != "" {
+	if err != nil || string(sigstorePassphrase) != "from-file\r" || gpgPassphrase != "" {
 		t.Fatalf("sigstore file passphrases = %q/%q, %v", sigstorePassphrase, gpgPassphrase, err)
 	}
 	sigstorePassphrase, gpgPassphrase, err = (SigningOptions{SignBy: "fingerprint", PassphraseFile: passphraseFile}).passphrases()
-	if err != nil || sigstorePassphrase != nil || gpgPassphrase != "from-file" {
+	if err != nil || sigstorePassphrase != nil || gpgPassphrase != "from-file\r" {
 		t.Fatalf("GPG file passphrases = %q/%q, %v", sigstorePassphrase, gpgPassphrase, err)
 	}
 }
@@ -99,8 +99,12 @@ func TestStoredTransferOptionsCaptureCosignPasswordForSanitizedWorker(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	passphraseFile := options.SigningPassphraseFile
-	defer cleanup()
+	passphraseFile := options.SigstorePassphraseFile
+	defer func() {
+		if err := cleanup(); err != nil {
+			t.Error(err)
+		}
+	}()
 	if passphraseFile == "" {
 		t.Fatal("COSIGN_PASSWORD was not captured for the sanitized worker")
 	}
@@ -111,7 +115,9 @@ func TestStoredTransferOptionsCaptureCosignPasswordForSanitizedWorker(t *testing
 	if string(data) != "worker-only-passphrase" {
 		t.Fatalf("captured passphrase = %q", data)
 	}
-	cleanup()
+	if err := cleanup(); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(passphraseFile); !os.IsNotExist(err) {
 		t.Fatalf("captured passphrase file remains after cleanup: %v", err)
 	}
@@ -334,6 +340,8 @@ func TestSignStoredImageWithGPGKey(t *testing.T) {
 				output := filepath.Join(t.TempDir(), "output")
 				_, err := Copy(ctx, oci.Image, input.selector, Destination{Transport: transport, Name: output}, Options{
 					BuildStore: storeOptions, SignaturePolicyPath: policy,
+					// OCI outputs require explicit removal after source-policy verification.
+					Push: PushOptions{RemoveSignatures: true},
 				})
 				if !allowed {
 					if err == nil || !strings.Contains(strings.ToLower(err.Error()), "signature") {

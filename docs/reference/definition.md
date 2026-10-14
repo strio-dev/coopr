@@ -106,7 +106,7 @@ shell "/bin/bash" "-c"
 run "echo hello"
 ```
 
-It configures shell-form RUN, CMD and ENTRYPOINT, including their `script` children. HEALTHCHECK `script` uses the CMD-SHELL healthcheck form.
+It configures shell-form RUN, CMD and ENTRYPOINT, including their `script` children. HEALTHCHECK `script` uses the CMD-SHELL healthcheck form. SHELL arguments and MAINTAINER text stay literal; build arguments and environment variables are not substituted into them.
 
 ### Multiline commands
 
@@ -121,7 +121,7 @@ run """
 
 The opening delimiter is followed by a newline; the closing delimiter goes on its own line. KDL removes the closing delimiter's indentation. Normal string escapes still apply: write `\\` to pass a literal backslash to the shell, as in the `printf` above.
 
-A positional multiline RUN starting with a `#!` interpreter line executes with that interpreter. An explicit `script` child always uses the configured shell, even if its text starts with `#!`. Authored COPY/ADD read files from their source; they have no inline-content form.
+A positional multiline RUN starting with a `#!` interpreter line executes with that interpreter. An explicit `script` child always uses the configured shell, even if its text starts with `#!`. COPY/ADD can read source files or create inline files with named `file` children (see below).
 
 ## Layer groups
 
@@ -187,6 +187,20 @@ run "make" {
 }
 ```
 
+COPY/ADD accept repeated `file "name" "content"` children. The last positional argument is the destination; ordinary source paths may precede it:
+
+```kdl
+copy "existing.txt" "/etc/app/" chmod=0o640 {
+    file "greeting.txt" "Hello ${name}\n"
+    file "literal.txt" #"${name} is literal"#
+    file "empty.txt" ""
+}
+```
+
+Filenames are literal local paths, including any `$` characters; they cannot be empty, absolute, `.` or escape their temporary source directory. Content uses the exact decoded KDL bytes, including empty bodies and final newlines. Ordinary strings expand ARG/ENV references in the current stage or component scope using native heredoc word expansion: quotes and backslashes remain data; single quotes and escaped dollars suppress expansion. Raw strings (`#"..."#` and `#"""..."""#`) disable that expansion. Both ordinary and raw KDL multiline forms retain their decoded multiline value; KDL removes the opening and closing boundary newlines. Filenames reject NUL. COPY/ADD content can include NUL bytes, written as `\u{0}` in an ordinary KDL string.
+
+Inline files run as one native COPY/ADD batch before ordinary sources. Repeated filenames retain their order, and ordinary same-name sources overwrite inline files. Ignore files and `exclude` patterns filter ordinary sources; inline content bypasses them. Ownership, mode, link, destination and source-path handling use the existing native COPY/ADD operations. Inline data and expansion results participate in cache identity. Package-time argument references in expanding bodies become fixed package inputs; EXTEND bodies expand at invocation.
+
 Child options retain their order. COPY reads context files, earlier stages, packages, named contexts, or images. ADD also fetches HTTP/Git sources and extracts archives; COPY rejects remote URLs before connecting. Files cannot escape the selected context through paths or symlinks. See [security](../guides/security.md) for credentials and entitlements.
 
 ## Healthchecks and triggers
@@ -198,11 +212,19 @@ healthcheck interval="30s" timeout="3s" retries=3 {
 onbuild { copy "generated" "/generated" }
 ```
 
-Timing properties are `interval`, `timeout`, `start-period`, and `start-interval`; `retries` is a nonnegative integer. `healthcheck NONE` disables a healthcheck and takes no other options. Quoted `"NONE"` remains a shell command; `exec "NONE"` remains an executable argument.
+Timing properties are `interval`, `timeout`, `start-period`, and `start-interval`. Supplied durations must be positive, including values below a millisecond; `retries` must be an integer from 1 through 2147483647. Omit an option to use the native default. `healthcheck NONE` disables a healthcheck and takes no other options. Quoted `"NONE"` remains a shell command; `exec "NONE"` remains an executable argument.
 
-ONBUILD wraps one supported image instruction. Stage declarations, `component`, `layer`, `maintainer`, and nested `onbuild` are not supported inside it. A child FROM executes inherited triggers before its authored instructions, using the child's context, then clears them. Local stage sources must be available before that child FROM.
+ONBUILD wraps one supported image instruction. Stage declarations, `maintainer`, `component`, `layer`, and nested `onbuild` are not supported inside it. Existing external MAINTAINER triggers can be imported and retain their literal text. A child FROM executes inherited triggers before its authored instructions, using the child's context, then clears them. Local stage sources must be available before that child FROM.
 
-ONBUILD stores Dockerfile-compatible trigger text. Healthcheck timing/retries, RUN network/security, device `required`, and COPY/ADD boolean flags must be literal values there, as the Dockerfile parser reads them before child-stage expansion. RUN mount values can use child-stage arguments, including typed options such as `required` and `mode`:
+Inline COPY/ADD inside ONBUILD must round-trip through native Dockerfile heredocs. Nonempty content must end in LF and contain no complete line equal to its filename (the native delimiter). Embedded CR and NUL bytes are supported; CRLF is rejected because native parsing strips the CR at line endings. Empty bodies are rejected because native Buildah creates one LF byte. Filenames and repeated-name payloads must survive both native and Coopr source parsing exactly; unrepresentable names (including spaces) or conflicting duplicate payloads are rejected. Ordinary source paths and the destination must also survive the native shell-form header; whitespace-containing paths cannot be mixed with heredocs and are rejected. Coopr never appends bytes, renames files, or splits instructions to encode these cases. Ordinary bodies expand in the child stage; raw bodies remain literal.
+
+ONBUILD stores Dockerfile trigger text using Buildah’s native instruction and mount options. RUN `network`, COPY/ADD boolean flags, and mount values can use child-stage arguments, including typed mount options such as `required` and `mode`. Healthcheck timing/retries, RUN `security`, and device `required` must remain literal.
+
+Mount flags represented without values, including `readonly`/`ro`/`rw`, `nosuid`, `U`, and `Z`, require literal booleans in ONBUILD. Readonly booleans select native read-only or writable access; other toggles emit their flag when true and omit it when false. Cache `relabel` must be literal `private` or `shared`. Secret and SSH mounts cannot specify readonly access flags in ONBUILD.
+
+A parameterized mount type can use `source`/`src` for bind/cache, read-only access for bind/cache/tmpfs, and `mode` for cache/secret/SSH. The child’s resolved type validates the native fields. Conversions that change the native field identity require a literal type: secret `source` becomes `id`, tmpfs `mode` becomes `tmpfs-mode`, and cache `relabel` becomes `Z`/`z`. A dynamic `mode` field is not silently rewritten when the child selects tmpfs.
+
+For example, these mount values resolve in the child stage:
 
 ```kdl
 onbuild {
@@ -222,14 +244,14 @@ The fixed properties for stage and execution instructions are:
 | `extend` | `as`; required stage body. |
 | `package` | Required `as` name and stage body. |
 | `run` | `network`, `security`; repeatable `script`, `exec`, `mount`, and `device` children. |
-| `copy` | `from`, `chown`, `chmod`, `link`, `parents`; repeatable `exclude` children listing patterns. |
-| `add` | COPY properties plus `checksum`, `keep-git-dir`, `unpack`; `exclude` children. |
+| `copy` | `from`, `chown`, `chmod`, `link`, `parents`; repeatable `exclude` children listing patterns and named `file` children. |
+| `add` | COPY properties plus `checksum`, `keep-git-dir`, `unpack`; `exclude` and named `file` children. |
 | `healthcheck` | `interval`, `timeout`, `start-period`, `start-interval`, `retries`; one `script` or `exec` child instead of positional shell text. |
 | `device` | One or more CDI selectors and optional `required` boolean; child of RUN. |
 | `env`, `label` | User-defined key/value properties. |
 | `component` | Component reference argument; optional `arg "NAME" "VALUE"` children. No properties. |
 
-Other stage instructions accept no properties. CMD and ENTRYPOINT accept one `script` or `exec` child instead of positional shell text. `script`, `exec`, `exclude`, `mount`, and `device` are nested forms, not independent stage instructions.
+Other stage instructions accept no properties. CMD and ENTRYPOINT accept one `script` or `exec` child instead of positional shell text. `script`, `exec`, `file`, `exclude`, `mount`, and `device` are nested forms, not independent stage instructions.
 
 ENV and LABEL accept key/value properties or one name/value pair. Do not mix the two forms in one instruction:
 
@@ -254,7 +276,7 @@ COPY/ADD options have these effects:
 
 Boolean properties accept the forms in [values and forms](#values-and-forms).
 
-Healthcheck and ONBUILD configuration extensions survive OCI and Docker outputs, though receiving runtimes may ignore them. Imported Docker ONBUILD heredocs retain their Dockerfile semantics, including executable/empty RUN scripts and COPY/ADD filenames. This does not add authored inline COPY/ADD syntax.
+Healthcheck and ONBUILD configuration extensions survive OCI and Docker outputs, though receiving runtimes may ignore them. Imported Docker ONBUILD heredocs retain their Dockerfile semantics, including executable/empty RUN scripts and COPY/ADD filenames. Authored inline COPY/ADD uses the `file` children described above.
 
 ### RUN mount options
 
@@ -268,7 +290,7 @@ Mount types and values may use arguments and are validated after expansion. Moun
 | `secret` | `id`, `source`, `target`, `required`, `mode`, `uid`, `gid`, `env`, `readonly`. |
 | `ssh` | `id`, `target`, `required`, `mode`, `uid`, `gid`, `readonly`. |
 
-`sharing` accepts `shared`, `private`, or `locked`. Secret `source`/`src` names a supplied secret ID; it does not read a host path directly. `size` sets the tmpfs capacity; `mode`, `uid`, and `gid` set mount-specific permissions and ownership. Secret `env` exposes the secret as an environment variable.
+`sharing` supports `shared` or `locked`. The bundled Buildah backend rejects `private`; use distinct cache IDs for separate caches. Secret `source`/`src` names a supplied secret ID; it does not read a host path directly. `size` sets the tmpfs capacity; `mode`, `uid`, and `gid` set mount-specific permissions and ownership. Secret `env` exposes the secret as an environment variable.
 
 Bind/cache native options are `nosuid`, `nodev`, `noexec`, `u`, `shared`, `rshared`, `private`, `rprivate`, `slave`, `rslave`, `bind-propagation`, and `relabel`. Propagation accepts those six propagation modes; relabel accepts `private` or `shared`. Host ownership changes, relabeling, and mount behavior require the selected runtime’s permissions.
 

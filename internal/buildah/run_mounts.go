@@ -220,14 +220,11 @@ func serializeRunMount(mount RunMount, contextDir string) (string, error) {
 			if value != "private" && value != "shared" {
 				return "", fmt.Errorf("%s mount relabel must be private or shared", mount.Type)
 			}
-			if mount.Type == "cache" {
-				if value == "private" {
-					fields = append(fields, "Z")
-				} else {
-					fields = append(fields, "z")
-				}
+			name, value = definition.NativeMountField(mount.Type, name, value)
+			if value == "" {
+				fields = append(fields, name)
 			} else {
-				fields = append(fields, "relabel="+value)
+				fields = append(fields, name+"="+value)
 			}
 		case "bind-propagation":
 			if !slices.Contains([]string{"shared", "rshared", "private", "rprivate", "slave", "rslave"}, value) {
@@ -244,14 +241,9 @@ func serializeRunMount(mount RunMount, contextDir string) (string, error) {
 			} else if mount.Type == "bind" {
 				fields = append(fields, "readwrite")
 			}
-		case "size":
-			fields = append(fields, "tmpfs-size="+value)
-		case "mode":
-			if mount.Type == "tmpfs" {
-				fields = append(fields, "tmpfs-mode="+value)
-			} else {
-				fields = append(fields, name+"="+value)
-			}
+		case "size", "mode":
+			name, value = definition.NativeMountField(mount.Type, name, value)
+			fields = append(fields, name+"="+value)
 		default:
 			fields = append(fields, name+"="+value)
 		}

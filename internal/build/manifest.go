@@ -14,6 +14,7 @@ import (
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/common/libimage/manifests"
+	"go.podman.io/image/v5/manifest"
 	"go.podman.io/storage"
 )
 
@@ -79,8 +80,17 @@ func appendManifest(ctx context.Context, name, format string, store buildah.Stor
 			if err := json.Unmarshal(indexData, &index); err != nil {
 				return err
 			}
-			if len(index.Manifests) != len(existing) {
-				return fmt.Errorf("manifest %s has unavailable instances; pull the complete list before appending", name)
+			for _, member := range index.Manifests {
+				available := false
+				for _, candidate := range existing {
+					if candidate.Manifest.Digest == member.Digest && candidate.Manifest.Size == member.Size && candidate.Manifest.MediaType == member.MediaType {
+						available = true
+						break
+					}
+				}
+				if !available {
+					return fmt.Errorf("manifest %s has unavailable instances; pull the complete list before appending", name)
+				}
 			}
 			defaultData, err := backend.ImageBigData(image.ID, storage.ImageDigestBigDataKey)
 			if err != nil {
@@ -104,44 +114,98 @@ func appendManifest(ctx context.Context, name, format string, store buildah.Stor
 		for key, selection := range selections {
 			result[key] = selection
 		}
-		keys := make([]string, 0, len(result))
-		for key := range result {
+		keys := make([]string, 0, len(selections))
+		for key := range selections {
 			keys = append(keys, key)
 		}
 		slices.Sort(keys)
-		combined := make([]oci.ImageVariant, 0, len(result))
-		imageIDs := make(map[digest.Digest]string, len(result))
+		native := manifests.Create()
+		mediaType := v1.MediaTypeImageIndex
+		switch format {
+		case "", "oci":
+		case "docker":
+			mediaType = manifest.DockerV2ListMediaType
+		default:
+			return fmt.Errorf("unsupported image index format %q (want oci or docker)", format)
+		}
+		if len(result) == 0 {
+			return errors.New("image index requires at least one variant")
+		}
+		// Native mutation emits the requested list
+		// format. Existing descriptor occurrences are retained separately: the
+		// resident selection map is a lookup, not an ordered descriptor list.
 		for _, key := range keys {
-			platform, err := result[key].Platform()
+			selection := selections[key]
+			platform, err := selection.Platform()
 			if err != nil {
 				return err
 			}
-			selection := result[key]
+			if platform.OS != "linux" || platform.Architecture == "" {
+				return fmt.Errorf("unsupported platform %q/%q", platform.OS, platform.Architecture)
+			}
 			if selection.Manifest.Platform == nil {
 				selection.Manifest.Platform = &platform
 			}
 			result[key] = selection
-			combined = append(combined, oci.ImageVariant{Manifest: selection.Manifest, Platform: platform})
-			imageIDs[selection.Manifest.Digest] = selection.ImageID
+			if err := native.AddInstance(selection.Manifest.Digest, selection.Manifest.Size, selection.Manifest.MediaType, platform.OS, platform.Architecture, platform.OSVersion, platform.OSFeatures, platform.Variant, nil, nil); err != nil {
+				return err
+			}
 		}
-		root, data, err = oci.RetainedImageIndexDescriptor(combined, format)
+		data, err = native.Serialize(mediaType)
 		if err != nil {
 			return err
 		}
+		var combinedIndex v1.Index
+		if err := json.Unmarshal(data, &combinedIndex); err != nil {
+			return err
+		}
+		combinedIndex.Manifests = nil
 		if previousIndex != nil {
-			var combinedIndex v1.Index
-			if err := json.Unmarshal(data, &combinedIndex); err != nil {
-				return err
+			for _, member := range previousIndex.Manifests {
+				replaced := false
+				for key := range selections {
+					if prior, ok := previous[key]; ok && prior.Manifest.Digest == member.Digest {
+						// Platform keys replace their selected instance. Other
+						// distinct instances of the same platform remain.
+						replaced = true
+						break
+					}
+				}
+				if !replaced {
+					combinedIndex.Manifests = append(combinedIndex.Manifests, member)
+				}
 			}
 			combinedIndex.Annotations = previousIndex.Annotations
 			combinedIndex.Subject = previousIndex.Subject
 			combinedIndex.ArtifactType = previousIndex.ArtifactType
-			data, err = json.Marshal(combinedIndex)
-			if err != nil {
-				return err
-			}
-			root = oci.Descriptor(combinedIndex.MediaType, data)
 		}
+		for _, key := range keys {
+			combinedIndex.Manifests = append(combinedIndex.Manifests, result[key].Manifest)
+		}
+		data, err = json.Marshal(combinedIndex)
+		if err != nil {
+			return err
+		}
+		root = oci.Descriptor(mediaType, data)
+		imageIDs := make(map[digest.Digest]string, len(result))
+		for key, selection := range result {
+			// Drop lookup aliases for an instance explicitly replaced above.
+			if previousIndex != nil {
+				retained := false
+				for _, member := range combinedIndex.Manifests {
+					if member.Digest == selection.Manifest.Digest {
+						retained = true
+						break
+					}
+				}
+				if !retained {
+					delete(result, key)
+					continue
+				}
+			}
+			imageIDs[selection.Manifest.Digest] = selection.ImageID
+		}
+
 		for key, selection := range result {
 			selection.Root = root
 			result[key] = selection

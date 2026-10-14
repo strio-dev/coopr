@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"strconv"
 	"time"
 
@@ -12,43 +11,42 @@ import (
 
 type buildTimeFlags struct {
 	buildahcli.BudResults
-	sourceDateEpoch int64
 }
 
 func (f *buildTimeFlags) addTo(cmd *cobra.Command) {
-	flags := cmd.Flags()
 	native := buildahcli.GetBudFlags(&f.BudResults)
-	addNativeFlags(cmd, &native, buildahcli.GetBudFlagsCompletions(), "cache-ttl", "timestamp")
-	flags.Int64Var(&f.sourceDateEpoch, "source-date-epoch", 0, "set the image creation timestamp to epoch seconds")
-	cmd.MarkFlagsMutuallyExclusive("timestamp", "source-date-epoch")
-	cmd.MarkFlagsMutuallyExclusive("timestamp", "rewrite-timestamp")
+	addNativeFlags(cmd, &native, buildahcli.GetBudFlagsCompletions(), "cache-ttl", "timestamp", "source-date-epoch")
 }
 
 func (f buildTimeFlags) values(cmd *cobra.Command) (timestamp, epoch *int64, ttl *time.Duration, err error) {
 	if cmd.Flags().Changed("cache-ttl") {
 		duration, parseErr := time.ParseDuration(f.CacheTTL)
-		if parseErr != nil || duration < 0 {
-			return nil, nil, nil, fmt.Errorf("invalid cache-ttl %q: expected a nonnegative duration", f.CacheTTL)
+		if parseErr != nil {
+			return nil, nil, nil, fmt.Errorf("invalid cache-ttl %q: %w", f.CacheTTL, parseErr)
+		}
+		if duration == 0 && cmd.Flags().Changed("no-cache") {
+			noCache, err := cmd.Flags().GetBool("no-cache")
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			if !noCache {
+				return nil, nil, nil, fmt.Errorf("cannot use --cache-ttl with duration as 0 and --no-cache=false")
+			}
 		}
 		ttl = &duration
 	}
 	if cmd.Flags().Changed("timestamp") {
-		if f.Timestamp < 0 {
-			return nil, nil, nil, fmt.Errorf("timestamp must be nonnegative")
-		}
 		timestamp = &f.Timestamp
 	}
-	if cmd.Flags().Changed("source-date-epoch") {
-		if f.sourceDateEpoch < 0 {
-			return nil, nil, nil, fmt.Errorf("source-date-epoch must be nonnegative")
-		}
-		epoch = &f.sourceDateEpoch
-	} else if value, ok := os.LookupEnv("SOURCE_DATE_EPOCH"); ok {
-		parsed, parseErr := strconv.ParseInt(value, 10, 64)
-		if parseErr != nil || parsed < 0 {
-			return nil, nil, nil, fmt.Errorf("invalid SOURCE_DATE_EPOCH %q: expected nonnegative epoch seconds", value)
+	if f.SourceDateEpoch != "" {
+		parsed, parseErr := strconv.ParseInt(f.SourceDateEpoch, 10, 64)
+		if parseErr != nil {
+			return nil, nil, nil, fmt.Errorf("invalid SOURCE_DATE_EPOCH %q: %w", f.SourceDateEpoch, parseErr)
 		}
 		epoch = &parsed
+	}
+	if timestamp != nil && epoch != nil {
+		return nil, nil, nil, fmt.Errorf("timestamp and source date epoch are mutually exclusive")
 	}
 	return timestamp, epoch, ttl, nil
 }

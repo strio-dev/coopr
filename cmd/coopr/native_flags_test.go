@@ -12,11 +12,12 @@ import (
 
 func TestBuildFlagContracts(t *testing.T) {
 	t.Setenv("BUILDAH_LAYERS", "")
+	t.Setenv("SOURCE_DATE_EPOCH", "")
 	for _, command := range []*cobra.Command{newBuildCommand(), newComponentBuildCommand()} {
 		for _, test := range []struct{ name, kind, value, shorthand string }{
 			{"file", "stringArray", "[]", "f"}, {"network", "string", "default", ""},
 			{"force-rm", "bool", "true", ""}, {"layers", "bool", "true", ""},
-			{"source-date-epoch", "int64", "0", ""}, {"jobs", "int", "1", "j"},
+			{"source-date-epoch", "string", "", ""}, {"jobs", "int", "1", "j"},
 		} {
 			flag := command.Flags().Lookup(test.name)
 			if flag == nil || flag.Value.Type() != test.kind || flag.DefValue != test.value || flag.Shorthand != test.shorthand {

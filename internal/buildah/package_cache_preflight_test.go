@@ -240,7 +240,7 @@ extend {
 	}
 }
 
-func TestPackageCacheKeysExcludeGlobalDeviceRun(t *testing.T) {
+func TestPackageCacheKeysIncludeGlobalDeviceRun(t *testing.T) {
 	for _, instruction := range []string{`run "true"`, `env proof="metadata"`} {
 		plan := testPublicationPlan(t, `package as="bundle" {
     `+instruction+`
@@ -255,11 +255,12 @@ extend {
 			t.Fatal(err)
 		}
 		options := PlanOptions{
-			Store: StoreOptions{GraphDriverName: "vfs"}, Isolation: "rootless", Runtime: "crun",
-			RunControls: RunControls{Devices: []string{"/dev/test-device"}},
+			// Key calculation needs an executable identity, not a RUN runtime.
+			Store: StoreOptions{GraphDriverName: "vfs"}, Isolation: "rootless", Runtime: testWorkerBinary(t),
+			RunControls: RunControls{Devices: []string{"/dev/null"}},
 		}
 		keys, eligible, err := packageCacheKeys(context.Background(), options, plan, stages, outputs, nil)
-		want := strings.HasPrefix(instruction, "env")
+		want := true
 		if err != nil || eligible != want || (len(keys) != 0) != want {
 			t.Fatalf("global device with %s: eligible=%v keys=%v err=%v", instruction, eligible, keys, err)
 		}

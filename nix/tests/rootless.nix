@@ -2,6 +2,7 @@
   lib,
   pkgs,
   coopr,
+  coopr-sequoia-signing,
   coopr-static,
   container,
 }:
@@ -49,17 +50,19 @@ let
     }
   ];
   buildahGroupNames = map (group: group.name) buildahGroups ++ [ "core" ];
-  integrationTests = coopr.overrideAttrs {
+  integrationTests = (coopr.override { buildTestBinaries = true; }).overrideAttrs {
     pname = "coopr-rootless-tests";
     src = coopr.testSource;
     goModules = coopr.goModules;
     doCheck = false;
-    buildPhase = ''
-      runHook preBuild
-      mkdir -p "$out/bin"
-      for package in cmd/coopr internal/build internal/buildah internal/transfer internal/acceptance; do
-        go test -trimpath -c -o "$out/bin/$(basename "$package").test" "./$package"
-      done
+    subPackages = [
+      "cmd/coopr"
+      "internal/build"
+      "internal/buildah"
+      "internal/transfer"
+      "internal/acceptance"
+    ];
+    postInstall = ''
       go build -trimpath -o "$out/bin/test2json" cmd/test2json
       mkdir -p "$out/groups"
       "$out/bin/buildah.test" -test.list '^(Test|Example|Fuzz)' > "$out/buildah.inventory"
@@ -79,13 +82,10 @@ let
       diff -u expected unique
       sort "$out"/groups/*.txt > actual
       diff -u expected actual
-      runHook postBuild
     '';
-    installPhase = "runHook preInstall; runHook postInstall";
-    postInstall = "";
     env = {
       inherit (coopr) CGO_ENABLED;
-      GOFLAGS = "-tags=${lib.concatStringsSep "," coopr.tags}";
+      GOFLAGS = "-trimpath -tags=${lib.concatStringsSep "," coopr.tags}";
     };
   };
   makeTest =
@@ -94,6 +94,7 @@ let
       packages ? [ ],
       group ? null,
       acceptance ? null,
+      withSequoia ? false,
     }:
     let
       testPackages = if group != null then [ "internal/buildah" ] else packages;
@@ -120,7 +121,18 @@ let
         };
         text = ''
           test "$(id -u)" = 1000
-          export PATH="${pkgs.git}/libexec/git-core:$PATH"
+          export PATH="${pkgs.python3}/bin:${pkgs.git}/libexec/git-core:$PATH"
+          ${lib.optionalString withSequoia ''
+            export PATH="${
+              lib.makeBinPath [
+                coopr-sequoia-signing
+                pkgs.sequoia-sq
+              ]
+            }:$PATH"
+            command -v coopr-sequoia-signing
+            command -v sq
+            test "$(coopr-sequoia-signing --protocol-version)" = coopr-sequoia-signing/1
+          ''}
           export GOCACHE="$HOME/.cache/go-build"
           systemctl --user show-environment >/dev/null
           test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
@@ -149,6 +161,68 @@ let
                 })
             done
           ''}
+          ${lib.optionalString (lib.elem "cmd/coopr" testPackages) ''
+            for required in \
+              TestNativeHistoryJSONFormatsEmpty \
+              TestNativeInfoTemplateFunctions \
+              TestNativeSaveConfiguredMultiImageAndExplicitOverride \
+              TestNativePullImplicitDockerAuthAndExplicitMissingFile \
+              TestNativeSaveLoadTerminalGuards \
+              TestNativeComponentArchiveTerminalGuards \
+              TestNativeBuildImplicitDockerAuth \
+              TestBuildRemoteAddTLSOptions \
+              TestBuildCommandsCacheTTLControls; do
+              ${pkgs.jq}/bin/jq -es --arg required "$required" '
+                any(.[]; .Test == $required and .Action == "pass")
+              ' "$HOME/coopr.test.json" >/dev/null
+            done
+          ''}
+          ${lib.optionalString (lib.elem "internal/build" testPackages) ''
+            ${pkgs.jq}/bin/jq -es '
+              any(.[]; .Test == "TestPinnedAlwaysPlatformDiscoveryMatchesNativeFrontend" and .Action == "pass")
+            ' "$HOME/build.test.json" >/dev/null
+          ''}
+          ${lib.optionalString (lib.elem "internal/transfer" testPackages) ''
+            for required in \
+              TestWholeIndexOptionalVariantExportMatchesNative \
+              TestWholeIndexOptionalVariantExportMatchesNative/omitted-variant \
+              TestWholeIndexOptionalVariantExportMatchesNative/different-real-architecture \
+              TestWholeIndexOptionalVariantExportMatchesNative/omitted-platform-fields \
+              TestSigningPreservesNativePasswordBytes/environment_multiline/stored \
+              TestSigningPreservesNativePasswordBytes/environment_carriage_return/stored \
+              TestSigningPreservesNativePasswordBytes/explicit_first_line/stored; do
+              ${pkgs.jq}/bin/jq -es --arg required "$required" '
+                any(.[]; .Test == $required and .Action == "pass")
+              ' "$HOME/transfer.test.json" >/dev/null
+            done
+          ''}
+          ${lib.optionalString withSequoia ''
+            # Presence alone cannot satisfy the optional backend's live proof.
+            for required in \
+              TestSequoiaHelperSignsRegistryGraph \
+              TestSequoiaHelperSignsNativeRoutes \
+              TestSequoiaHelperSignsTransformedManifest \
+              TestSequoiaHelperNativeDestinationBoundaries \
+              TestSequoiaHelperDirectCopiesPreserveProtocolAndProtectSecrets \
+              TestSequoiaHelperTransferCancellationCleansSecrets \
+              TestSigningGapProtectedSequoiaGraph \
+              TestSigningPreservesNativePasswordBytes \
+              TestSigningGapFulcioOIDCRekor \
+              TestSigningGapRejectsUntrustedOIDCToken \
+              TestStoredIndexRegistryRetainsRootSignature \
+              TestStoredIndexRegistryRetainsVerifiableSignatures \
+              TestStoredSignatureActionsFollowNativeDestinations \
+              TestLocalSignatureRemovalPreservesSiblingManifest \
+              TestCopyIncompleteIndexDoesNotSilentlySelectOneMember \
+              TestCopyPulledLeafRetainsOriginWithoutBecomingManifestList \
+              TestCopyDecryptedIndexDistinguishesMissingMembers \
+              TestStoredIndexPushHonorsNativePolicyAndImmutableRoot \
+              TestStoredTransferOptionsReportsPasswordCleanupFailure; do
+              ${pkgs.jq}/bin/jq -es --arg required "$required" '
+                any(.[]; .Test == $required and .Action == "pass")
+              ' "$HOME/transfer.test.json" >/dev/null
+            done
+          ''}
           ${lib.optionalString (group != null) ''
             ${pkgs.jq}/bin/jq -r '
               select(.Action == "pass" or .Action == "skip" or .Action == "fail")
@@ -157,11 +231,45 @@ let
             ' "$HOME/buildah.test.json" | sort > completed
             sort "$selected" > expected
             diff -u expected completed
-            if grep -qx TestBuildPlanExecutesForeignBinaryThroughRegisteredBinfmt "$selected"; then
-              ${pkgs.jq}/bin/jq -es '
-                any(.[]; .Test == "TestBuildPlanExecutesForeignBinaryThroughRegisteredBinfmt" and .Action == "pass")
-              ' "$HOME/buildah.test.json" >/dev/null
-            fi
+            for required in \
+              TestBuildPlanExecutesForeignBinaryThroughRegisteredBinfmt \
+              TestRetainStoredLayoutLayersPreservesCompressionVariants \
+              TestImportedExposeRootlessImage \
+              TestNegativeCacheTTLMatchesNativeBuildah \
+              TestWarmDeviceRunCacheStillRequiresEntitlement \
+              TestBuildDefinitionUsesContainersConfigRuntimeDefaults \
+              TestResolveImageSourcePinnedAlwaysUsesNativePolicy \
+              TestWorkDirMetadataMatchesNativeBuildah \
+              TestInheritedConfigurationAdmissionMatchesNativeBuildah \
+              TestAggregateCachesInvalidateOldWorkdirSemantics \
+              TestRemoteAddTLSPolicyMatchesNative \
+              TestRemoteAddTLSBuildCacheAndEpoch \
+              TestRemoteAddTLSCredentialRedirect \
+              TestNetworkInterfaceUsesNativeConfiguration \
+              TestDNSControlsMatchNativeParser \
+              TestDNSConfiguredDefaultsStayNativeAndInvalidateCache \
+              TestStoredTransferPassphrasesUseNativeFilesAndRawStagedSecrets \
+              TestCacheGapAggregateRunAuthorizationAndFreshStoreReuse \
+              TestCacheGapNamedContextWholeComponentReuse \
+              TestCacheGapDynamicNestedAndDeferredGraphsReuseInstructions \
+              TestCacheGapPackageAuthorizationBeforeFreshStoreReuse \
+              TestCacheGapNamedContextContentInvalidation \
+              TestCacheGapNestedWarmCacheStillChecksAuthorization \
+              TestCacheGapNativeCommitRootMetadataComparator \
+              TestCacheGapUnpinnedHTTPAddPortableReuseAndInvalidation \
+              TestCacheGapUnpinnedGitAddPortableReuseAndInvalidation \
+              TestCacheGapDynamicNestedAndDeferredPackageProducersReuseInstructions \
+              TestCacheGapNativeDeviceCacheComparator \
+              TestCacheGapDeviceSelectionAndAuthorizationAcrossCacheScopes \
+              TestCacheGapOptionalDeviceAvailabilityInvalidatesPortableCache \
+              TestCacheGapHostGatewayCacheMatchesNative \
+              TestCacheGapConfiguredCDIDirectoryIgnoresBrokenDefaultSpecs; do
+              if grep -qx "$required" "$selected"; then
+                ${pkgs.jq}/bin/jq -es --arg required "$required" '
+                  any(.[]; .Test == $required and .Action == "pass")
+                ' "$HOME/buildah.test.json" >/dev/null
+              fi
+            done
           ''}
           ${lib.optionalString (acceptance != null) ''
             printf 'Running packaged acceptance: ${acceptance} CLI\n'
@@ -204,10 +312,17 @@ let
           autoSubUidGidRange = true;
           linger = true;
         };
-        environment.systemPackages = map (package: package.bin or package) runtime.nativeBuildInputs ++ [
-          pkgs.diffutils
-          pkgs.gnutar
-        ];
+        environment.systemPackages =
+          map (package: package.bin or package) runtime.nativeBuildInputs
+          ++ [
+            pkgs.diffutils
+            pkgs.gnutar
+            pkgs.python3
+          ]
+          ++ lib.optionals withSequoia [
+            coopr-sequoia-signing
+            pkgs.sequoia-sq
+          ];
       };
 
       testScript = ''
@@ -216,11 +331,24 @@ let
         machine.succeed("grep -qx enabled /proc/sys/fs/binfmt_misc/${foreignSystem}")
         machine.succeed("grep -q '^flags:.*F' /proc/sys/fs/binfmt_misc/${foreignSystem}")
         machine.succeed("su - coopr -c '${runner}' 2>&1 | tee /dev/ttyS0", timeout=85 * 60)
+        ${lib.optionalString (builtins.elem "cmd/coopr" testPackages) ''
+          machine.copy_from_machine("/home/coopr/coopr.test.json")
+        ''}
+        ${lib.optionalString (builtins.elem "internal/build" testPackages) ''
+          machine.copy_from_machine("/home/coopr/build.test.json")
+        ''}
+        ${lib.optionalString (builtins.elem "internal/buildah" testPackages) ''
+          machine.copy_from_machine("/home/coopr/buildah.test.json")
+        ''}
+        ${lib.optionalString (builtins.elem "internal/transfer" testPackages) ''
+          machine.copy_from_machine("/home/coopr/transfer.test.json")
+        ''}
       '';
     };
 in
 {
   rootless-native = makeTest "coopr-rootless-native" {
+    withSequoia = true;
     packages = [
       "cmd/coopr"
       "internal/build"

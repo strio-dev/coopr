@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/opencontainers/go-digest"
 	"go.podman.io/storage"
+	"maps"
 )
 
 type storedSignatureMetadata struct {
@@ -88,6 +89,7 @@ func StoredSignatureBlobs(state storedSignatureState, selected digest.Digest, se
 // WriteStoredManifestSignatures updates one manifest while preserving other metadata.
 func WriteStoredManifestSignatures(store storage.Store, imageID string, selected digest.Digest, selectedIsDefault bool, signatures [][]byte, previous storedSignatureState) error {
 	metadata := previous.parsed
+	metadata.SignaturesSizes = maps.Clone(previous.parsed.SignaturesSizes)
 	if metadata.SignaturesSizes == nil {
 		metadata.SignaturesSizes = map[digest.Digest][]int{}
 	}

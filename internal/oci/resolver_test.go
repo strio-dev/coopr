@@ -346,7 +346,7 @@ func TestResolveImageCompressionVariants(t *testing.T) {
 	}
 }
 
-func TestIndexSelectionRejectsWrongConfig(t *testing.T) {
+func TestIndexSelectionUsesNativeImagePlatformAdmission(t *testing.T) {
 	_, repo, resolver, name := testRepository(t, registry.New())
 	amd := v1.Platform{OS: "linux", Architecture: "amd64"}
 	arm := v1.Platform{OS: "linux", Architecture: "arm64"}
@@ -354,13 +354,13 @@ func TestIndexSelectionRejectsWrongConfig(t *testing.T) {
 	manifest.Platform = &amd
 	root := pushIndex(t, repo, "wrong-config", manifest)
 	_, err := resolver.Resolve(context.Background(), name+"@"+root.Digest.String(), amd, Image)
-	if err == nil || !strings.Contains(err.Error(), "config platform") {
-		t.Fatalf("wrong image config accepted: %v", err)
+	if err != nil {
+		t.Fatalf("native-compatible image config rejected: %v", err)
 	}
 	pushIndex(t, repo, "duplicate", manifest, manifest)
 	_, err = resolver.Resolve(context.Background(), name+":duplicate", amd, Image)
-	if err == nil || !strings.Contains(err.Error(), "config platform") {
-		t.Fatalf("duplicate platform bypassed config validation: %v", err)
+	if err != nil {
+		t.Fatalf("native-compatible duplicate image rejected: %v", err)
 	}
 	_, err = resolver.Resolve(context.Background(), name+":duplicate", arm, Image)
 	if err == nil || !strings.Contains(err.Error(), "no image found") {
@@ -496,52 +496,63 @@ func TestCorruptAndMissingBlob(t *testing.T) {
 }
 
 func TestAuthUsesDockerCredentials(t *testing.T) {
-	base := registry.New()
-	handler := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		username, password, ok := req.BasicAuth()
-		if !ok || username != "tester" || password != "secret" {
-			w.Header().Set("WWW-Authenticate", `Basic realm="registry"`)
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		base.ServeHTTP(w, req)
-	})
-	server := httptest.NewServer(handler)
-	defer server.Close()
-	host := strings.TrimPrefix(server.URL, "http://")
-	dir := t.TempDir()
-	config := fmt.Sprintf(`{"auths":{"%s":{"auth":"%s"}}}`, host, "dGVzdGVyOnNlY3JldA==")
-	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(config), 0600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("DOCKER_CONFIG", dir)
-	// Publishing uses the same Docker credential store as resolving.
-	store, err := NewResolver(Options{TLSVerify: boolOption(false)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	refForPublish, err := ParseReference(host + "/coopr/auth:private")
-	if err != nil {
-		t.Fatal(err)
-	}
-	repo, err := store.repository(refForPublish)
-	if err != nil {
-		t.Fatal(err)
-	}
-	platform := v1.Platform{OS: "linux", Architecture: "amd64"}
-	manifest, _ := imageManifest(t, repo, platform, "private")
-	ref := host + "/coopr/auth@" + manifest.Digest.String()
-	resolved, err := store.Resolve(context.Background(), ref, platform, Image)
-	if err != nil || resolved == nil {
-		t.Fatalf("Docker credential auth failed: %v", err)
-	}
-	t.Setenv("DOCKER_CONFIG", t.TempDir())
-	unauthorized, err := NewResolver(Options{TLSVerify: boolOption(false)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := unauthorized.Resolve(context.Background(), ref, platform, Image); err == nil {
-		t.Fatal("missing credentials succeeded")
+	for _, env := range []string{"DOCKER_CONFIG", "REGISTRY_AUTH_FILE"} {
+		t.Run(env, func(t *testing.T) {
+			base := registry.New()
+			handler := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				username, password, ok := req.BasicAuth()
+				if !ok || username != "tester" || password != "secret" {
+					w.Header().Set("WWW-Authenticate", `Basic realm="registry"`)
+					http.Error(w, "unauthorized", http.StatusUnauthorized)
+					return
+				}
+				base.ServeHTTP(w, req)
+			})
+			server := httptest.NewServer(handler)
+			defer server.Close()
+			host := strings.TrimPrefix(server.URL, "http://")
+			dir := t.TempDir()
+			config := fmt.Sprintf(`{"auths":{"%s":{"auth":"%s"}}}`, host, "dGVzdGVyOnNlY3JldA==")
+			if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(config), 0600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("REGISTRY_AUTH_FILE", "")
+			t.Setenv("DOCKER_CONFIG", "")
+			if env == "DOCKER_CONFIG" {
+				t.Setenv(env, dir)
+			} else {
+				t.Setenv(env, filepath.Join(dir, "config.json"))
+			}
+			// Publishing uses the same Docker credential store as resolving.
+			store, err := NewResolver(Options{TLSVerify: boolOption(false)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			refForPublish, err := ParseReference(host + "/coopr/auth:private")
+			if err != nil {
+				t.Fatal(err)
+			}
+			repo, err := store.repository(refForPublish)
+			if err != nil {
+				t.Fatal(err)
+			}
+			platform := v1.Platform{OS: "linux", Architecture: "amd64"}
+			manifest, _ := imageManifest(t, repo, platform, "private")
+			ref := host + "/coopr/auth@" + manifest.Digest.String()
+			resolved, err := store.Resolve(context.Background(), ref, platform, Image)
+			if err != nil || resolved == nil {
+				t.Fatalf("Docker credential auth failed: %v", err)
+			}
+			t.Setenv(env, "")
+			t.Setenv("DOCKER_CONFIG", t.TempDir())
+			unauthorized, err := NewResolver(Options{TLSVerify: boolOption(false)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := unauthorized.Resolve(context.Background(), ref, platform, Image); err == nil {
+				t.Fatal("missing credentials succeeded")
+			}
+		})
 	}
 }
 
@@ -765,4 +776,25 @@ func pushAndTag(repo oras.Target, desc v1.Descriptor, data []byte, tag string) e
 		return err
 	}
 	return repo.Tag(context.Background(), desc, tag)
+}
+
+func TestRegistryAuthDefaultValidation(t *testing.T) {
+	t.Setenv("DOCKER_CONFIG", t.TempDir())
+	t.Setenv("REGISTRY_AUTH_FILE", "")
+	if _, _, err := NormalizeRegistryPaths("", ""); err != nil {
+		t.Fatalf("absent Docker search file: %v", err)
+	}
+	missing := filepath.Join(t.TempDir(), "auth.json")
+	t.Setenv("REGISTRY_AUTH_FILE", missing)
+	if _, _, err := NormalizeRegistryPaths("", ""); err == nil {
+		t.Fatal("missing explicitly selected REGISTRY_AUTH_FILE accepted")
+	}
+	supplied := filepath.Join(t.TempDir(), "auth.json")
+	if err := os.WriteFile(supplied, []byte(`{"auths":{}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := NormalizeRegistryPaths(supplied, "")
+	if err != nil || got != supplied {
+		t.Fatalf("explicit option did not override environment: %q %v", got, err)
+	}
 }

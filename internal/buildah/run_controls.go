@@ -3,10 +3,10 @@ package buildah
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math"
-	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -80,6 +80,7 @@ type RunControls struct {
 	DNSServers       []string                 `json:"dns_servers,omitempty"`
 	DNSSearch        []string                 `json:"dns_search,omitempty"`
 	DNSOptions       []string                 `json:"dns_options,omitempty"`
+	DNSConfigDigest  string                   `json:"dns_config_digest,omitempty"`
 	Memory           int64                    `json:"memory,omitempty"`
 	MemorySwap       int64                    `json:"memory_swap,omitempty"`
 	CPUPeriod        uint64                   `json:"cpu_period,omitempty"`
@@ -190,30 +191,28 @@ func ParseRunControls(input RunControlInput) (RunControls, error) {
 		}
 		controls.ShmSizeSet = true
 	}
-	dnsServers := input.DNSServers
-	if dnsServers == nil {
-		dnsServers = containerConfig.Containers.DNSServers.Get()
+	// Keep explicit DNS values separate: native RUN prepends containers.conf
+	// defaults itself. Its CLI conflict policy is private, with no standalone
+	// exported parser; resolver syntax and file generation remain native.
+	controls.DNSServers = slices.Clone(input.DNSServers)
+	controls.DNSSearch = slices.Clone(input.DNSSearch)
+	controls.DNSOptions = slices.Clone(input.DNSOptions)
+	noDNS := slices.ContainsFunc(controls.DNSServers, func(value string) bool { return strings.EqualFold(value, "none") })
+	if noDNS && len(controls.DNSServers) > 1 {
+		return RunControls{}, fmt.Errorf("invalid --dns, --dns=none may not be used with any other --dns options")
 	}
-	controls.DNSServers, err = normalizeDNSServers(dnsServers)
+	if noDNS && len(controls.DNSSearch) > 0 {
+		return RunControls{}, fmt.Errorf("invalid --dns-search, --dns-search may not be used with --dns=none")
+	}
+	if noDNS && len(controls.DNSOptions) > 0 {
+		return RunControls{}, fmt.Errorf("invalid --dns-option, --dns-option may not be used with --dns=none")
+	}
+	defaults, err := json.Marshal([3][]string{containerConfig.Containers.DNSServers.Get(), containerConfig.Containers.DNSSearches.Get(), containerConfig.Containers.DNSOptions.Get()})
 	if err != nil {
 		return RunControls{}, err
 	}
-	dnsSearch := input.DNSSearch
-	if dnsSearch == nil {
-		dnsSearch = containerConfig.Containers.DNSSearches.Get()
-	}
-	controls.DNSSearch, err = normalizeDNSSearch(dnsSearch)
-	if err != nil {
-		return RunControls{}, err
-	}
-	dnsOptions := input.DNSOptions
-	if dnsOptions == nil {
-		dnsOptions = containerConfig.Containers.DNSOptions.Get()
-	}
-	controls.DNSOptions, err = normalizeDNSOptions(dnsOptions)
-	if err != nil {
-		return RunControls{}, err
-	}
+	dnsHash := sha256.Sum256(defaults)
+	controls.DNSConfigDigest = "sha256:" + hex.EncodeToString(dnsHash[:])
 	ulimits := input.Ulimits
 	if ulimits == nil {
 		ulimits = containerConfig.Containers.DefaultUlimits.Get()
@@ -642,63 +641,6 @@ func parseNonNegativeBytes(name, value string) (int64, error) {
 		return 0, fmt.Errorf("invalid %s %q: expected a nonnegative byte size", name, value)
 	}
 	return size, nil
-}
-
-func normalizeDNSServers(values []string) ([]string, error) {
-	result := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if strings.EqualFold(value, "none") {
-			if len(values) != 1 {
-				return nil, fmt.Errorf("dns value none cannot be combined with a server")
-			}
-			return []string{"none"}, nil
-		}
-		ip := net.ParseIP(value)
-		if ip == nil {
-			return nil, fmt.Errorf("invalid DNS server %q", value)
-		}
-		result = appendUniqueRunControl(result, ip.String())
-	}
-	return result, nil
-}
-
-func normalizeDNSSearch(values []string) ([]string, error) {
-	result := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.ToLower(strings.TrimSpace(value))
-		if value == "." {
-			result = appendUniqueRunControl(result, value)
-			continue
-		}
-		if value == "" || len(value) > 253 || strings.ContainsAny(value, " \t\r\n\x00") {
-			return nil, fmt.Errorf("invalid DNS search domain %q", value)
-		}
-		for _, label := range strings.Split(strings.TrimSuffix(value, "."), ".") {
-			if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
-				return nil, fmt.Errorf("invalid DNS search domain %q", value)
-			}
-			for _, char := range label {
-				if char != '-' && (char < 'a' || char > 'z') && (char < '0' || char > '9') {
-					return nil, fmt.Errorf("invalid DNS search domain %q", value)
-				}
-			}
-		}
-		result = appendUniqueRunControl(result, value)
-	}
-	return result, nil
-}
-
-func normalizeDNSOptions(values []string) ([]string, error) {
-	result := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" || strings.ContainsAny(value, " \t\r\n\x00,") {
-			return nil, fmt.Errorf("invalid DNS option %q", value)
-		}
-		result = appendUniqueRunControl(result, value)
-	}
-	return result, nil
 }
 
 func appendUniqueRunControl(values []string, value string) []string {

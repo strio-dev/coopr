@@ -13,8 +13,8 @@ import (
 	"coopr/internal/definition"
 	"coopr/internal/imageconfig"
 	"coopr/internal/oci"
+	"coopr/internal/onbuildparse"
 	"coopr/internal/planner"
-	"github.com/docker/go-connections/nat"
 	buildkitinstructions "github.com/moby/buildkit/frontend/dockerfile/instructions"
 	"go.podman.io/buildah/pkg/sourcepolicy"
 	"go.podman.io/common/pkg/signal"
@@ -280,11 +280,7 @@ func lowerOperationWithCacheMountIDs(operation planner.Operation, shell []string
 		if len(instruction.Arguments) != 0 {
 			return nil, nil, fmt.Errorf("%s requires properties or a key/value pair", strings.ToUpper(instruction.Name))
 		}
-		keys := make([]string, 0, len(instruction.Properties))
-		for key := range instruction.Properties {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
+		keys := definition.OrderedPropertyKeys(instruction)
 		lowered := make([]Operation, 0, len(keys))
 		for _, key := range keys {
 			lowered = append(lowered, keyValueOperation(instruction.Name, key, instruction.Properties[key]))
@@ -341,11 +337,7 @@ func lowerOperationWithCacheMountIDs(operation planner.Operation, shell []string
 		if len(instruction.Arguments) == 0 {
 			return nil, nil, fmt.Errorf("EXPOSE requires at least one port")
 		}
-		ports := make([]string, 0, len(instruction.Arguments))
-		for _, value := range instruction.Arguments {
-			ports = append(ports, strings.Fields(value)...)
-		}
-		normalized, err := normalizeExposedPorts(ports)
+		normalized, err := onbuildparse.ExposedPorts(instruction.Arguments)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -411,24 +403,6 @@ func lowerOperationWithCacheMountIDs(operation planner.Operation, shell []string
 	default:
 		return nil, nil, fmt.Errorf("instruction is not supported by the direct Buildah adapter")
 	}
-}
-
-// normalizeExposedPorts mirrors BuildKit's Dockerfile EXPOSE normalization:
-// bare ports use tcp, ranges expand into individual ports, and protocols are
-// case-insensitive. Legacy host/IP mappings remain accepted for compatibility,
-// but only their container-side ports are recorded in the image config.
-func normalizeExposedPorts(ports []string) ([]string, error) {
-	result := make([]string, 0, len(ports))
-	for _, rawPort := range ports {
-		mappings, err := nat.ParsePortSpec(rawPort)
-		if err != nil {
-			return nil, fmt.Errorf("invalid port %q: %w", rawPort, err)
-		}
-		for _, mapping := range mappings {
-			result = append(result, string(mapping.Port))
-		}
-	}
-	return result, nil
 }
 
 func lowerRunDevices(instruction definition.Instruction) ([]runDeviceRequest, error) {

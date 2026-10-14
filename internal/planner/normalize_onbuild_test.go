@@ -65,3 +65,18 @@ func TestNormalizeLeavesRuntimeCommandsForTheirRuntime(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizePreservesLiteralShellAndMaintainer(t *testing.T) {
+	for _, inst := range []definition.Instruction{
+		{Name: "shell", Arguments: []string{"/bin/sh", "-c", "$VALUE"}},
+		{Name: "maintainer", Arguments: []string{"$VALUE"}},
+	} {
+		got, err := normalize(inst, scope{"VALUE": {value: "expanded", present: true}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Arguments[len(got.Arguments)-1] != "$VALUE" {
+			t.Fatalf("%s expanded: %v", inst.Name, got.Arguments)
+		}
+	}
+}

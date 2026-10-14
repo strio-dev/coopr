@@ -203,6 +203,20 @@ extend {
 			t.Fatalf("packaged builds did not use fuse-overlayfs: %v", err)
 		}
 	})
+	t.Run("MultipleExecInstallation", func(t *testing.T) {
+		a.t = t
+		a.write("sequence.coopr", "from \""+base+`" {
+    run {
+        exec "/bin/sh" "-c" "printf first >/sequence"
+        exec "/bin/sh" "-c" "printf second >>/sequence"
+    }
+    cmd { exec "/bin/cat" "/sequence" }
+}
+`)
+		a.coopr(false, "none", "build", "/work/sequence.coopr", "--tag", "coopr-release-sequence:acceptance", "--platform", a.platform)
+		a.coopr(false, "none", "save", "--format", "oci-archive", "--output", "/work/sequence.oci.tar", "coopr-release-sequence:acceptance")
+		a.assertImage("sequence.oci.tar", "firstsecond", a.platform)
+	})
 	t.Run("SelfContainedLocalState", func(t *testing.T) {
 		a.t = t
 		a.write("self-component.coopr", `extend {

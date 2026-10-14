@@ -18,9 +18,11 @@ import (
 	"github.com/opencontainers/go-digest"
 	"github.com/spf13/cobra"
 	"go.podman.io/common/libimage"
+	commonconfig "go.podman.io/common/pkg/config"
 	"go.podman.io/common/pkg/download"
 	"go.podman.io/common/pkg/report"
 	"go.podman.io/storage"
+	"golang.org/x/term"
 )
 
 func imageIOCommand(use, short string, args cobra.PositionalArgs, run func(*cobra.Command, []string) error) *cobra.Command {
@@ -37,7 +39,7 @@ func newImagePullCommand() *cobra.Command {
 	var decrypt []string
 	var quiet, allTags bool
 	cmd := imageIOCommand("pull <image>...", "Pull images into the local container store", cobra.MinimumNArgs(1), func(cmd *cobra.Command, args []string) error {
-		platform, err := platforms.Parse(platformValue)
+		platform, err := pullPlatform(cmd, platformValue)
 		if err != nil {
 			return fmt.Errorf("invalid pull platform %q: %w", platformValue, err)
 		}
@@ -81,6 +83,12 @@ func newImagePullCommand() *cobra.Command {
 	registry.addTo(cmd)
 	addSignaturePolicyFlag(cmd.Flags())
 	imagePlatformFlag(cmd, &platformValue)
+	cmd.Flags().String("arch", runtime.GOARCH, "prefer the specified image architecture")
+	cmd.Flags().String("os", runtime.GOOS, "prefer the specified image operating system")
+	cmd.Flags().String("variant", "", "prefer the specified image architecture variant")
+	for _, flag := range []string{"arch", "os", "variant"} {
+		cmd.MarkFlagsMutuallyExclusive("platform", flag)
+	}
 	cmd.Flags().BoolVarP(&allTags, "all-tags", "a", false, "pull all tags in the repository")
 	cmd.Flags().StringVar(&policy, "policy", "always", "pull policy: always, missing, never, or newer")
 	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "suppress pull progress")
@@ -193,6 +201,18 @@ func newImageSaveCommand() *cobra.Command {
 		if cmd.Flags().Changed("compress") && format != "docker-dir" {
 			return errors.New("--compress can only be set when --format is docker-dir")
 		}
+		if !cmd.Flags().Changed("multi-image-archive") {
+			effective, err := commonconfig.Default()
+			if err != nil {
+				return err
+			}
+			multi = effective.Engine.MultiImageArchive
+		}
+		if output == "" || output == "-" {
+			if streamIsTerminal(cmd.OutOrStdout()) {
+				return errors.New("refusing to save to terminal. Use -o flag or redirect")
+			}
+		}
 		if multi && format != "docker-archive" {
 			return errors.New("--multi-image-archive requires docker-archive")
 		}
@@ -292,6 +312,9 @@ func newImageLoadCommand() *cobra.Command {
 			defer func() { _ = os.Remove(downloaded) }()
 		}
 		if path == "" || path == "-" {
+			if streamIsTerminal(cmd.InOrStdin()) {
+				return errors.New("cannot read from terminal, use command-line redirection or the --input flag")
+			}
 			temp, err := os.CreateTemp("", "coopr-load-*.tar")
 			if err != nil {
 				return err
@@ -353,7 +376,7 @@ func newImageHistoryCommand() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		if format != "" && format != "json" && !quiet {
+		if format != "" && !report.IsJSON(format) && !quiet {
 			if _, err := report.New(io.Discard, "history").Parse(report.OriginUser, format); err != nil {
 				return err
 			}
@@ -366,7 +389,10 @@ func newImageHistoryCommand() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		if format == "json" {
+		if report.IsJSON(format) {
+			if history == nil {
+				history = []libimage.ImageHistory{}
+			}
 			return writeJSON(cmd, history)
 		}
 		return writeImageHistory(cmd.OutOrStdout(), history, format, quiet, noTrunc, human)
@@ -450,4 +476,11 @@ func saveProgress(cmd *cobra.Command, quiet bool) io.Writer {
 		return nil
 	}
 	return cmd.ErrOrStderr()
+}
+
+// Inspect the command's actual stream so redirected and embedded callers keep
+// their normal pipe/buffer behavior instead of inheriting the process terminal.
+func streamIsTerminal(stream any) bool {
+	file, ok := stream.(interface{ Fd() uintptr })
+	return ok && term.IsTerminal(int(file.Fd()))
 }

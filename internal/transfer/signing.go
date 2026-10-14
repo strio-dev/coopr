@@ -19,27 +19,54 @@ import (
 	"go.podman.io/common/pkg/retry"
 	imagecopy "go.podman.io/image/v5/copy"
 	"go.podman.io/image/v5/docker"
+	"go.podman.io/image/v5/pkg/cli/sigstore/params"
 	"go.podman.io/image/v5/signature"
 	"go.podman.io/image/v5/types"
 )
 
-// SigningOptions configures image signing during registry publication.
+// SigningOptions configures image signing during native image publication.
 // The passphrase is loaded only when the transfer starts, so secret bytes never
 // enter a build request, worker protocol, cache key, or log message.
 type SigningOptions struct {
 	SignBy                 string
+	SigstoreParameterFile  string
+	SequoiaFingerprint     string
 	SigstorePrivateKeyFile string
 	PassphraseFile         string
+	sigstorePassword       *[]byte
 }
 
 func (options SigningOptions) Enabled() bool {
-	return options.SignBy != "" || options.SigstorePrivateKeyFile != ""
+	return options.SignBy != "" || options.SigstorePrivateKeyFile != "" || options.SigstoreParameterFile != "" || options.SequoiaFingerprint != ""
 }
 
 // ContextArtifacts identifies signing credentials that must be excluded from
 // build inputs. GPGME uses the ambient GnuPG home rather than a key-file option.
 func (options SigningOptions) ContextArtifacts() ([]string, error) {
 	paths := []string{options.SigstorePrivateKeyFile, options.PassphraseFile}
+	if options.SigstoreParameterFile != "" {
+		paths = append(paths, options.SigstoreParameterFile)
+		parameters, err := params.ParseFile(options.SigstoreParameterFile)
+		if err != nil {
+			return nil, err
+		}
+		paths = append(paths, parameters.PrivateKeyFile, parameters.PrivateKeyPassphraseFile)
+	}
+	if options.SequoiaFingerprint != "" {
+		home := os.Getenv("SEQUOIA_HOME")
+		if home == "" {
+			config := os.Getenv("XDG_DATA_HOME")
+			if config == "" {
+				userHome, err := os.UserHomeDir()
+				if err != nil {
+					return nil, err
+				}
+				config = filepath.Join(userHome, ".local", "share")
+			}
+			home = filepath.Join(config, "sequoia")
+		}
+		paths = append(paths, home)
+	}
 	if options.SignBy != "" {
 		home := os.Getenv("GNUPGHOME")
 		if home == "" {
@@ -60,23 +87,31 @@ func (options SigningOptions) ContextArtifacts() ([]string, error) {
 
 // ValidateSigningDestination enforces image-signing mode and transport rules.
 func ValidateSigningDestination(kind oci.Kind, destination Destination, options SigningOptions) error {
-	if options.SignBy != "" && options.SigstorePrivateKeyFile != "" {
-		return errors.New("--sign-by and --sign-by-sigstore-private-key are mutually exclusive")
+	if options.PassphraseFile != "" {
+		count := 0
+		for _, mode := range []string{options.SignBy, options.SequoiaFingerprint, options.SigstorePrivateKeyFile} {
+			if mode != "" {
+				count++
+			}
+		}
+		if count > 1 {
+			return errors.New("only one of --sign-by, --sign-by-sq-fingerprint and --sign-by-sigstore-private-key can be used with --sign-passphrase-file")
+		}
 	}
 	if !options.Enabled() {
 		if options.PassphraseFile != "" {
-			return errors.New("--sign-passphrase-file requires --sign-by or --sign-by-sigstore-private-key")
+			return errors.New("--sign-passphrase-file requires --sign-by or --sign-by-sigstore-private-key, or another signing mode (--sign-by-sq-fingerprint or --sign-by-sigstore)")
 		}
 		return nil
 	}
 	if kind != oci.Image {
 		return errors.New("signing is supported only for images")
 	}
-	if options.SigstorePrivateKeyFile != "" && destination.Transport != "registry" {
-		return fmt.Errorf("signing requires a registry destination; got %s transport", destination.Transport)
+	if options.SigstorePrivateKeyFile != "" && destination.Transport == "local" {
+		return errors.New("sigstore private-key signing requires a native push destination; Coopr local signing supports only --sign-by")
 	}
-	if options.SignBy != "" && destination.Transport != "registry" && destination.Transport != "local" {
-		return fmt.Errorf("GPG signing requires a local or registry destination; got %s transport", destination.Transport)
+	if (options.SigstoreParameterFile != "" || options.SequoiaFingerprint != "") && destination.Transport == "local" {
+		return errors.New("parameter-file and Sequoia signing require a native push destination; Coopr local signing supports only --sign-by")
 	}
 	return nil
 }
@@ -100,6 +135,10 @@ func publishImageReference(ctx context.Context, src types.ImageReference, root v
 }
 
 func publishImageReferenceSelection(ctx context.Context, src types.ImageReference, root v1.Descriptor, destination string, opts Options, selection imagecopy.ImageListSelection) (_ string, retErr error) {
+	if needsSequoiaHelper(opts) {
+		return transferWithSequoiaHelper(ctx, "publish-reference", src.Transport().Name()+":"+src.StringWithinTransport(), root, Destination{Transport: "registry", Name: destination}, opts, false, selection)
+	}
+
 	dst, err := docker.ParseReference("//" + destination)
 	if err != nil {
 		return "", fmt.Errorf("open registry destination %q: %w", destination, err)
@@ -108,14 +147,6 @@ func publishImageReferenceSelection(ctx context.Context, src types.ImageReferenc
 	if err != nil {
 		return "", err
 	}
-	registriesDir := ""
-	if opts.Signing.SigstorePrivateKeyFile != "" {
-		registriesDir, err = sigstoreAttachmentsConfig()
-		if err != nil {
-			return "", err
-		}
-		defer func() { retErr = errors.Join(retErr, os.RemoveAll(registriesDir)) }()
-	}
 	sigstorePassphrase, gpgPassphrase, err := opts.Signing.passphrases()
 	if err != nil {
 		return "", err
@@ -123,9 +154,17 @@ func publishImageReferenceSelection(ctx context.Context, src types.ImageReferenc
 	if _, err := oci.ParseReference(destination); err != nil {
 		return "", fmt.Errorf("parse registry destination: %w", err)
 	}
-	system, err := signedTransferSystemContext(authFile, certDir, registriesDir, opts)
+	system, err := signedTransferSystemContext(authFile, certDir, "", opts)
 	if err != nil {
 		return "", err
+	}
+	if opts.Signing.SigstorePrivateKeyFile != "" || opts.Signing.SigstoreParameterFile != "" {
+		registriesDir, err := buildah.SigstoreAttachmentsConfig(system, dst)
+		if err != nil {
+			return "", err
+		}
+		defer func() { retErr = errors.Join(retErr, os.RemoveAll(registriesDir)) }()
+		system.RegistriesDirPath = registriesDir
 	}
 	policy, err := signature.DefaultPolicy(system)
 	if err != nil {
@@ -136,7 +175,13 @@ func publishImageReferenceSelection(ctx context.Context, src types.ImageReferenc
 		return "", fmt.Errorf("initialize image policy: %w", err)
 	}
 	defer func() { retErr = errors.Join(retErr, policyContext.Destroy()) }()
+	signers, cleanupSigners, err := buildah.NativeSigners(opts.Signing.SigstoreParameterFile, opts.Signing.SequoiaFingerprint, sigstorePassphrase, gpgPassphrase, opts.signingInteractionOutput())
+	if err != nil {
+		return "", err
+	}
+	defer cleanupSigners()
 	copyOptions := &imagecopy.Options{
+		Signers:      signers,
 		ReportWriter: opts.ProgressWriter,
 		SourceCtx:    system, DestinationCtx: system, PreserveDigests: true,
 		ImageListSelection:               selection,
@@ -176,12 +221,12 @@ func nativeRetryOptions(opts Options) (*retry.Options, error) {
 	})
 }
 
-func publishStoredImage(ctx context.Context, imageID string, root v1.Descriptor, destination string, opts Options) (string, error) {
+func publishStoredImage(ctx context.Context, imageID string, root v1.Descriptor, destination string, opts Options) (result string, retErr error) {
 	transferOptions, cleanup, err := storedTransferOptions(imageID, root.Digest, opts)
 	if err != nil {
 		return "", err
 	}
-	defer cleanup()
+	defer func() { retErr = errors.Join(retErr, cleanup()) }()
 	transferOptions.RegistryDestination = destination
 	repository, err := buildah.TransferStoredImageSupervised(ctx, transferOptions)
 	if err != nil {
@@ -210,12 +255,12 @@ func signedTransferSystemContext(authFile, certDir, registriesDir string, opts O
 	return system, nil
 }
 
-func signStoredImage(ctx context.Context, imageID string, manifest digest.Digest, name string, opts Options) error {
+func signStoredImage(ctx context.Context, imageID string, manifest digest.Digest, name string, opts Options) (retErr error) {
 	transferOptions, cleanup, err := storedTransferOptions(imageID, manifest, opts)
 	if err != nil {
 		return err
 	}
-	defer cleanup()
+	defer func() { retErr = errors.Join(retErr, cleanup()) }()
 	transferOptions.LocalName = name
 	if _, err := buildah.TransferStoredImageSupervised(ctx, transferOptions); err != nil {
 		return fmt.Errorf("sign local image %s: %w", name, err)
@@ -223,34 +268,34 @@ func signStoredImage(ctx context.Context, imageID string, manifest digest.Digest
 	return nil
 }
 
-func storedTransferOptions(imageID string, manifest digest.Digest, opts Options) (buildah.StoredTransferOptions, func(), error) {
+func storedTransferOptions(imageID string, manifest digest.Digest, opts Options) (buildah.StoredTransferOptions, func() error, error) {
 	storeOptions, err := nativeStoreOptions(opts)
 	if err != nil {
-		return buildah.StoredTransferOptions{}, func() {}, err
+		return buildah.StoredTransferOptions{}, func() error { return nil }, err
 	}
-	passphraseFile := opts.Signing.PassphraseFile
-	cleanup := func() {}
-	if opts.Signing.SigstorePrivateKeyFile != "" && passphraseFile == "" {
+	sigstorePassphraseFile := ""
+	cleanup := func() error { return nil }
+	if (opts.Signing.SigstorePrivateKeyFile != "" || opts.Signing.SigstoreParameterFile != "") && opts.Signing.PassphraseFile == "" {
 		if password := os.Getenv("COSIGN_PASSWORD"); password != "" {
 			file, err := os.CreateTemp("", "coopr-signing-passphrase-*")
 			if err != nil {
 				return buildah.StoredTransferOptions{}, cleanup, fmt.Errorf("create signing passphrase file: %w", err)
 			}
-			passphraseFile = file.Name()
-			cleanup = func() { _ = os.Remove(passphraseFile) }
+			sigstorePassphraseFile = file.Name()
+			cleanup = func() error {
+				if err := os.Remove(sigstorePassphraseFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+					return fmt.Errorf("remove signing passphrase file: %w", err)
+				}
+				return nil
+			}
 			if err := file.Chmod(0o600); err != nil {
-				_ = file.Close()
-				cleanup()
-				return buildah.StoredTransferOptions{}, func() {}, err
+				return buildah.StoredTransferOptions{}, func() error { return nil }, errors.Join(err, file.Close(), cleanup())
 			}
 			if _, err := file.WriteString(password); err != nil {
-				_ = file.Close()
-				cleanup()
-				return buildah.StoredTransferOptions{}, func() {}, err
+				return buildah.StoredTransferOptions{}, func() error { return nil }, errors.Join(err, file.Close(), cleanup())
 			}
 			if err := file.Close(); err != nil {
-				cleanup()
-				return buildah.StoredTransferOptions{}, func() {}, err
+				return buildah.StoredTransferOptions{}, func() error { return nil }, errors.Join(err, cleanup())
 			}
 		}
 	}
@@ -269,8 +314,11 @@ func storedTransferOptions(imageID string, manifest digest.Digest, opts Options)
 		RetryDelay:             opts.RetryDelay,
 		SignaturePolicyPath:    opts.SignaturePolicyPath,
 		SignBy:                 opts.Signing.SignBy,
+		SigstoreParameterFile:  opts.Signing.SigstoreParameterFile,
+		SequoiaFingerprint:     opts.Signing.SequoiaFingerprint,
 		SigstorePrivateKeyFile: opts.Signing.SigstorePrivateKeyFile,
-		SigningPassphraseFile:  passphraseFile,
+		SigningPassphraseFile:  opts.Signing.PassphraseFile,
+		SigstorePassphraseFile: sigstorePassphraseFile,
 	}, cleanup, nil
 }
 
@@ -280,12 +328,19 @@ func (options SigningOptions) passphrases() ([]byte, string, error) {
 		if err != nil {
 			return nil, "", err
 		}
-		if options.SignBy != "" {
-			return nil, string(value), nil
+		if options.SignBy != "" || options.SequoiaFingerprint != "" {
+			var sigstore []byte
+			if options.sigstorePassword != nil {
+				sigstore = *options.sigstorePassword
+			}
+			return sigstore, string(value), nil
 		}
 		return value, "", nil
 	}
-	if options.SigstorePrivateKeyFile != "" {
+	if options.SigstorePrivateKeyFile != "" || options.SigstoreParameterFile != "" {
+		if options.sigstorePassword != nil {
+			return *options.sigstorePassword, "", nil
+		}
 		return []byte(os.Getenv("COSIGN_PASSWORD")), "", nil
 	}
 	return nil, "", nil
@@ -296,7 +351,7 @@ func readPassphraseFile(path string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read signing passphrase file: %w", err)
 	}
-	return []byte(strings.TrimSuffix(value, "\r")), nil
+	return []byte(value), nil
 }
 
 func sigstoreAttachmentsConfig() (string, error) {
@@ -316,14 +371,4 @@ func sigstoreAttachmentsConfig() (string, error) {
 		return "", fmt.Errorf("write signature registry configuration: %w", err)
 	}
 	return dir, nil
-}
-
-func publishStoredImageInstance(ctx context.Context, imageID string, root v1.Descriptor, destination string, opts Options) (buildah.StoredTransferResult, error) {
-	options, cleanup, err := storedTransferOptions(imageID, root.Digest, opts)
-	if err != nil {
-		return buildah.StoredTransferResult{}, err
-	}
-	defer cleanup()
-	options.RegistryDestination, options.RegistryInstance = destination, true
-	return buildah.TransferStoredImageResultSupervised(ctx, options)
 }

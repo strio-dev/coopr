@@ -70,6 +70,9 @@ func TestManifestInlineOverridesAndNamedMember(t *testing.T) {
 }
 
 func TestManifestRemoteInspectAndPushRemoval(t *testing.T) {
+	if testing.Short() {
+		t.Skip("supervised native manifest push requires a rootless user namespace")
+	}
 	ctx := context.Background()
 	server := httptest.NewServer(registry.New())
 	defer server.Close()

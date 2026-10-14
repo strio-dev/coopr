@@ -25,6 +25,8 @@ from "scratch" {
     run "true"
 }
 `, arguments: map[string]string{"SOURCE_DATE_EPOCH": "00123"}, context: epochPointer(946684800), want: epochPointer(123)},
+		{name: "negative Unix epoch", source: `arg "SOURCE_DATE_EPOCH" "-1"
+from "scratch" {run "true"}`, want: epochPointer(-1)},
 		{name: "global default", source: `arg "SOURCE_DATE_EPOCH" "456"
 from "scratch" {
     run "true"
@@ -92,7 +94,7 @@ func TestSourceDateEpochRejectsInvalidValue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, value := range []string{"tomorrow", "-1", "1.5", "253402300800", "named-remote-context"} {
+	for _, value := range []string{"tomorrow", "-62167219201", "1.5", "253402300800", "named-remote-context"} {
 		if _, err := Create(def, Options{Mode: Build, Arguments: map[string]string{"SOURCE_DATE_EPOCH": value}}); err == nil {
 			t.Fatalf("accepted SOURCE_DATE_EPOCH=%q", value)
 		}

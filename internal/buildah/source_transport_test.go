@@ -18,6 +18,10 @@ import (
 	"coopr/internal/oci"
 	"coopr/internal/planner"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"go.podman.io/buildah/define"
+	"go.podman.io/buildah/imagebuildah"
+	"go.podman.io/common/libimage"
+	libconfig "go.podman.io/common/pkg/config"
 	imagecopy "go.podman.io/image/v5/copy"
 	"go.podman.io/image/v5/signature"
 	"go.podman.io/image/v5/transports/alltransports"
@@ -111,6 +115,26 @@ func TestResolveOCITransportKeepsConfigAndManifest(t *testing.T) {
 	if resolved.Selected.Digest != expected.Digest || len(resolved.ConfigData) == 0 || resolved.Remote {
 		t.Fatalf("wrong selection: %+v", resolved)
 	}
+
+	t.Run("native-optional-variant-admission", func(t *testing.T) {
+		native, err := libimage.RuntimeFromStore(store, &libimage.RuntimeOptions{SystemContext: &types.SystemContext{SignaturePolicyPath: policy}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var warnings bytes.Buffer
+		if _, err := native.Pull(ctx, "oci:"+layout+":latest", libconfig.PullPolicyAlways, &libimage.PullOptions{CopyOptions: libimage.CopyOptions{OS: "linux", Architecture: "amd64", Variant: "v3", Writer: &warnings}}); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(warnings.String(), "does not match") {
+			t.Fatalf("missing native warning: %s", &warnings)
+		}
+		requested := platform
+		requested.Variant = "v3"
+		got, err := resolveBaseSource(ctx, resolver, "oci:out:latest", requested, store, &types.SystemContext{SignaturePolicyPath: policy}, root, "")
+		if err != nil || got.Selected.Digest != expected.Digest {
+			t.Fatalf("native-compatible transport admission: %+v %v", got, err)
+		}
+	})
 	if name, err := sourceBaseName(store, resolved); err != nil || name != "" {
 		t.Fatalf("filesystem transport invented Docker base name %q: %v", name, err)
 	}
@@ -487,4 +511,48 @@ func (reader *cancelingImageArchiveReader) Read(buffer []byte) (int, error) {
 		reader.cancel()
 	}
 	return n, err
+}
+
+func TestBaseTransportRejectionMatchesNativeBuildah(t *testing.T) {
+	f := newLocalComponentFixture(t)
+	var payload bytes.Buffer
+	writer := tar.NewWriter(&payload)
+	if err := writer.WriteHeader(&tar.Header{Name: "message", Mode: 0644, Size: 5}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write([]byte("hello")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(f.contextDir, "rootfs.tar")
+	if err := os.WriteFile(archive, payload.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := acquireStore(f.options.Store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := lease.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	file := filepath.Join(f.contextDir, "Containerfile")
+	if err := os.WriteFile(file, []byte("FROM tarball:"+archive+"\nENV proof=native\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	nativeID, _, err := imagebuildah.BuildDockerfiles(f.ctx, lease.store, define.BuildOptions{ContextDirectory: f.contextDir, Layers: true, PullPolicy: define.PullIfMissing, Isolation: define.IsolationOCIRootless, Runtime: "crun", CommonBuildOpts: &define.CommonBuildOptions{}, SystemContext: f.options.SystemContext, Out: io.Discard, Err: io.Discard, RemoveIntermediateCtrs: true, ForceRmIntermediateCtrs: true}, file)
+	if err == nil || !strings.Contains(err.Error(), `unexpected container image transport "tarball"`) {
+		t.Fatalf("native tarball FROM rejection: %s %v", nativeID, err)
+	}
+	resolver, err := oci.NewResolver(oci.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected, err := resolveBaseSource(f.ctx, resolver, "tarball:rootfs.tar", v1.Platform{OS: "linux", Architecture: "amd64"}, lease.store, f.options.SystemContext, f.contextDir, "")
+	if err == nil || !strings.Contains(err.Error(), `unexpected container image transport "tarball"`) {
+		t.Fatalf("Coopr tarball FROM diverges from native rejection: %+v %v", selected, err)
+	}
 }

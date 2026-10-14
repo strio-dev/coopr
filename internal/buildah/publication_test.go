@@ -352,14 +352,13 @@ extend {
 
 func TestPackageCacheEligibilityRejectsUndeclaredInputs(t *testing.T) {
 	base := planner.Stage{Operations: []planner.Operation{{Instruction: definition.Instruction{Name: "run", Arguments: []string{"true"}, Properties: map[string]string{"network": "none"}}}}}
-	if _, eligible := packageCacheEligibility([]planner.Stage{base}, RunControls{}); !eligible {
+	if _, eligible := packageCacheEligibility([]planner.Stage{base}); !eligible {
 		t.Fatal("network-isolated RUN was not package-cache eligible")
 	}
-	controls := RunControls{Devices: []string{"/dev/test-device"}}
-	if _, eligible := packageCacheEligibility([]planner.Stage{base}, controls); eligible {
-		t.Fatal("RUN with a global device was portable package-cache eligible")
-	}
 	eligible := []planner.Operation{
+		{Instruction: definition.Instruction{Name: "run", Arguments: []string{"true"}, Properties: map[string]string{"network": "host"}}},
+		{Instruction: definition.Instruction{Name: "run", Arguments: []string{"true"}, Properties: map[string]string{"network": "none", "security": "insecure"}}},
+
 		{Instruction: definition.Instruction{Name: "run", Arguments: []string{"true"}, Properties: map[string]string{"network": "default"}}},
 		{Instruction: definition.Instruction{Name: "run", Arguments: []string{"true"}, Properties: map[string]string{"network": "none"}, Children: []definition.Instruction{{Name: "mount", Arguments: []string{"secret"}, Properties: map[string]string{"id": "token"}}}}},
 		{Instruction: definition.Instruction{Name: "run", Arguments: []string{"true"}, Properties: map[string]string{"network": "none"}, Children: []definition.Instruction{{Name: "mount", Arguments: []string{"ssh"}}}}},
@@ -367,20 +366,15 @@ func TestPackageCacheEligibilityRejectsUndeclaredInputs(t *testing.T) {
 		{Instruction: definition.Instruction{Name: "add", Arguments: []string{"https://example.invalid/payload", "/payload"}, Properties: map[string]string{"checksum": digest.FromString("payload").String()}}},
 	}
 	for index, operation := range eligible {
-		if _, ok := packageCacheEligibility([]planner.Stage{{Operations: []planner.Operation{operation}}}, RunControls{}); !ok {
+		if _, ok := packageCacheEligibility([]planner.Stage{{Operations: []planner.Operation{operation}}}); !ok {
 			t.Errorf("declared-input operation %d was not package-cache eligible", index)
-		}
-		if _, got := packageCacheEligibility([]planner.Stage{{Operations: []planner.Operation{operation}}}, controls); got != (operation.Name != "run") {
-			t.Errorf("global-device operation %d eligibility = %v", index, got)
 		}
 	}
 	tests := []planner.Operation{
-		{Instruction: definition.Instruction{Name: "run", Arguments: []string{"true"}, Properties: map[string]string{"network": "host"}}},
-		{Instruction: definition.Instruction{Name: "run", Arguments: []string{"true"}, Properties: map[string]string{"network": "none", "security": "insecure"}}},
 		{Instruction: definition.Instruction{Name: "add", Arguments: []string{"https://example.invalid/payload", "/payload"}}},
 	}
 	for index, operation := range tests {
-		if _, eligible := packageCacheEligibility([]planner.Stage{{Operations: []planner.Operation{operation}}}, RunControls{}); eligible {
+		if _, eligible := packageCacheEligibility([]planner.Stage{{Operations: []planner.Operation{operation}}}); eligible {
 			t.Errorf("undeclared-input operation %d was package-cache eligible", index)
 		}
 	}

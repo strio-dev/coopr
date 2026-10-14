@@ -34,7 +34,6 @@ func planDefinitionInWorker(ctx context.Context, request planWorkerRequest) (*pl
 	planning.AwaitComponentReturns = true
 	planning.DeferImageSource = deferredPolicySource(sourcePolicy)
 	planning.TransientRunMounts = TransientMountInstructions(request.TransientRunMounts)
-	planning.SourceDateEpochResolver = sourceDateEpochResolver(ctx, buildCredentialSource{secretSpecs: request.Secrets, sshSpecs: request.SSH})
 	system := &types.SystemContext{
 		SignaturePolicyPath:  request.SignaturePolicyPath,
 		BigFilesTemporaryDir: filepath.Dir(request.ResultPath),
@@ -42,6 +41,7 @@ func planDefinitionInWorker(ctx context.Context, request planWorkerRequest) (*pl
 		DockerCertPath:       request.CertDir,
 	}
 	oci.ApplyTLSVerify(system, request.TLSVerify)
+	planning.SourceDateEpochResolver = sourceDateEpochResolver(ctx, buildCredentialSource{secretSpecs: request.Secrets, sshSpecs: request.SSH, systemContext: system})
 	ensureResolver := func() error {
 		if resolver == nil {
 			var err error

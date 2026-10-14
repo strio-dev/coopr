@@ -4,99 +4,37 @@ import (
 	"context"
 	"errors"
 	"io"
-	"os"
 
 	"coopr/internal/buildah"
 	"coopr/internal/oci"
 	"coopr/internal/storeactivity"
 
 	"github.com/opencontainers/go-digest"
-	"go.podman.io/common/libimage"
-	imagecopy "go.podman.io/image/v5/copy"
-	imagestorage "go.podman.io/image/v5/storage"
-	"go.podman.io/storage"
-	"strings"
 )
 
-// PushManifestList uses the native manifest instance references, including remote
-// members, and the same signing credentials as ordinary Coopr transfers.
+// PushManifestList keeps native manifest references and artifact bookkeeping in
+// the existing isolated storage worker. The parent owns the activity lease for
+// the complete worker lifetime, including native copy and store cleanup.
 func PushManifestList(ctx context.Context, name string, destination Destination, opts Options, all bool, writer io.Writer) (result digest.Digest, retErr error) {
 	if err := ValidateSigningDestination(oci.Image, destination, opts.Signing); err != nil {
 		return "", err
 	}
-	store, err := nativeStoreOptions(opts)
+	options, cleanup, err := storedTransferOptions("", "", opts)
 	if err != nil {
 		return "", err
 	}
-
-	lease, err := storeactivity.AcquireShared(ctx, buildah.ActivityRoots(store, "")...)
+	defer func() { retErr = errors.Join(retErr, cleanup()) }()
+	options.ManifestList, options.ManifestListAll = name, all
+	options.Destination = destination.String()
+	options.ProgressWriter = writer
+	lease, err := storeactivity.AcquireShared(ctx, buildah.ActivityRoots(options.Store, "")...)
 	if err != nil {
 		return "", err
 	}
 	defer func() { retErr = errors.Join(retErr, lease.Close()) }()
-	auth, cert, err := oci.NormalizeRegistryPaths(opts.AuthFile, opts.CertDir)
+	pushed, err := buildah.TransferStoredImageResultSupervised(ctx, options)
 	if err != nil {
 		return "", err
 	}
-	registriesDir := ""
-	if opts.Signing.SigstorePrivateKeyFile != "" {
-		registriesDir, err = sigstoreAttachmentsConfig()
-		if err != nil {
-			return "", err
-		}
-		defer func() { retErr = errors.Join(retErr, os.RemoveAll(registriesDir)) }()
-	}
-	system, err := signedTransferSystemContext(auth, cert, registriesDir, opts)
-	if err != nil {
-		return "", err
-	}
-	sigstorePassphrase, gpgPassphrase, err := opts.Signing.passphrases()
-	if err != nil {
-		return "", err
-	}
-	selection := imagecopy.CopySpecificImages
-	if all {
-		selection = imagecopy.CopyAllImages
-	}
-	copyOptions := &imagecopy.Options{DestinationCtx: system}
-	if err := opts.Push.Apply(copyOptions); err != nil {
-		return "", err
-	}
-	options := &libimage.ManifestListPushOptions{ImageListSelection: selection, CopyOptions: libimage.CopyOptions{
-		Writer: writer, SignaturePolicyPath: opts.SignaturePolicyPath,
-		ManifestMIMEType:  copyOptions.ForceManifestMIMEType,
-		CompressionFormat: system.CompressionFormat, CompressionLevel: system.CompressionLevel,
-		ForceCompressionFormat: copyOptions.ForceCompressionFormat,
-		RemoveSignatures:       copyOptions.RemoveSignatures,
-		SignBy:                 opts.Signing.SignBy, SignPassphrase: gpgPassphrase,
-		SignBySigstorePrivateKeyFile: opts.Signing.SigstorePrivateKeyFile, SignSigstorePrivateKeyPassphrase: sigstorePassphrase,
-	}}
-	options.AddCompression = opts.Push.AddCompression
-	if opts.RetrySet {
-		options.MaxRetries = &opts.Retry
-	}
-	if opts.RetryDelay != 0 {
-		options.RetryDelay = &opts.RetryDelay
-	}
-	retErr = buildah.WithStore(store, func(backend storage.Store) error {
-		native, err := libimage.RuntimeFromStore(backend, &libimage.RuntimeOptions{SystemContext: system})
-		if err != nil {
-			return err
-		}
-		list, err := native.LookupManifestList(name)
-		if err != nil {
-			return err
-		}
-		target := destination.String()
-		if destination.Transport == "containers-storage" && !strings.HasPrefix(destination.Name, "[") {
-			bound, err := imagestorage.Transport.ParseStoreReference(backend, destination.Name)
-			if err != nil {
-				return err
-			}
-			target = "containers-storage:" + bound.StringWithinTransport()
-		}
-		result, err = list.Push(ctx, target, options)
-		return err
-	})
-	return result, retErr
+	return pushed.Manifest.Digest, nil
 }

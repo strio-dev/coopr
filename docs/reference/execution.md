@@ -16,7 +16,7 @@ Image definitions contain FROM stages. Component definitions require EXTEND and 
 | `package as="NAME" { ... }` | Empty filesystem with scratch stage defaults; produces a stored package snapshot. |
 | `extend { ... }` | Consumer's current filesystem and configuration. Multiple roots start independently from that same state. |
 
-Before running instructions, FROM supplies the standard Linux PATH when its base has no `PATH` entry. An explicit empty or custom PATH is preserved. EXTEND inherits the caller without adding defaults.
+Before running instructions, FROM supplies the standard Linux PATH when its base has no `PATH` entry. An explicit empty or custom PATH is preserved. EXTEND inherits the caller without adding defaults. It also continues the caller’s CMD/ENTRYPOINT evaluation: an authored CMD survives a later ENTRYPOINT across a component call. A new FROM starts a fresh stage, where ENTRYPOINT clears an inherited CMD unless that stage authors its own CMD.
 
 ### Output selection
 
@@ -48,7 +48,9 @@ Executing foreign-architecture binaries requires host-provided `binfmt_misc` emu
 
 ### Inherited ONBUILD
 
-FROM runs inherited triggers in stored order before authored instructions, then clears them. Local COPY/ADD and bind mounts use the child build's context; inherited secret/SSH mounts use the child's supplied sources. EXTEND does not consume the caller's triggers.
+FROM runs inherited triggers in stored order before authored instructions, then clears them. Local COPY/ADD and bind mounts use the child build's context; inherited secret/SSH mounts use the child's supplied sources. Native RUN mount text is expanded in child scope before its type and fields are validated. Imported triggers retain their original native field spelling through that expansion. EXTEND does not consume the caller's triggers.
+
+Authored inline COPY/ADD bodies retain decoded KDL bytes and expand ordinary-string ARG/ENV references at their execution phase; raw bodies and filenames stay literal. ONBUILD serialization preserves child-time expansion and native filenames. Native heredocs always terminate their data with LF, including empty bodies, so authored ONBUILD inline files require nonempty LF-terminated content and reject delimiter collisions or other parsing losses. Ordinary authored inline files have no line-termination requirement. Inline batches precede ordinary sources, bypass context ignore/exclude filtering, and share the existing layer, worker and instruction-cache paths.
 
 Planning binds inherited ARGs and stage references before execution. Publication retains named stages and package snapshots that invocation-time triggers could activate. Invocation-only external bases resolve at invocation and remain pinned for execution. Inherited stage references must select retained stages declared before the child FROM; numeric references preserve their original source identities.
 
@@ -83,7 +85,7 @@ A component call adopts the selected output's complete image chain, filesystem a
 
 ## Instructions and image configuration
 
-The [syntax reference](definition.md#instructions) lists supported instructions and command forms. Unsupported instructions/options fail explicitly. Coopr expands component parameters and structural properties, including SHELL and MAINTAINER values.
+The [syntax reference](definition.md#instructions) lists supported instructions and command forms. Unsupported instructions/options fail explicitly. Coopr expands component parameters and structural properties. SHELL arguments and MAINTAINER text remain literal, matching native instruction behavior.
 
 Configuration-only instructions change stage state without changing the filesystem. Coopr preserves image configuration that the instructions do not modify. Filesystem metadata remains subject to the output format and runtime limits.
 
@@ -107,7 +109,7 @@ run "command" {
 }
 ```
 
-Repeatable `--add-host 'HOST[;HOST...]:IP'` applies to all RUNs and cache identities. `host-gateway` is accepted, but its host-dependent resolution disables RUN instruction and component/package result caching. See [security](../guides/security.md) for credentials and elevated access.
+Repeatable `--add-host 'HOST[;HOST...]:IP'` applies to all RUNs and cache identities. `host-gateway` resolves during execution; its declared host mapping participates in cache identity. See [security](../guides/security.md) for credentials and elevated access.
 
 ## Arguments and normalization
 
@@ -125,7 +127,7 @@ Unused supplied build arguments are ignored with a warning containing names only
 
 ### Timestamps and cache age
 
-`SOURCE_DATE_EPOCH` accepts a supplied Unix timestamp or global ARG default; empty clears it. It controls image/history creation and reaches RUN only after stage redeclaration. `--source-date-epoch` overrides the resolved value. An explicit numeric build argument overrides an authored `context` default.
+`SOURCE_DATE_EPOCH` accepts a supplied Unix timestamp or global ARG default; empty clears it. It controls image/history creation and reaches RUN only after stage redeclaration. `--source-date-epoch` overrides the resolved value; `--source-date-epoch=` clears the environment default. An empty environment value is unset, and negative Unix timestamps are accepted. An explicit numeric build argument overrides an authored `context` default.
 
 | Epoch source | Value |
 | --- | --- |
@@ -133,7 +135,7 @@ Unused supplied build arguments are ignored with a warning containing names only
 | Named context | Same Git/HTTP rules; unset for local directory, image, or OCI layout. |
 | Source-only stage name | Remote ADD metadata. Stage must use FROM scratch, ARGs, and exactly one HTTP(S)/Git ADD. |
 
-`--timestamp` forces creation and new-layer file times, including older files and package snapshots. It conflicts with explicit `--source-date-epoch` and `--rewrite-timestamp`. `--rewrite-timestamp` clamps newer layer/package file times to the epoch. Timestamp policies enter cache identities.
+`--timestamp` forces creation and new-layer file times, including older files and package snapshots. It conflicts with a nonempty source date epoch, including one from the environment. `--rewrite-timestamp` clamps newer layer/package file times when an epoch is set; without an epoch it does not clamp them. Timestamp policies enter cache identities.
 
 `--cache-ttl DURATION` limits reads by wall-clock publication age, independently of image timestamps. Zero disables reads while permitting fresh writes.
 
@@ -259,18 +261,18 @@ Instruction keys use the ordered OCI filesystem layers rather than the image's c
 | Cache | Reuses | Limits |
 | --- | --- | --- |
 | Local instruction | RUN, COPY, ADD, and WORKDIR checkpoints across image and component phases. | Metadata-only changes need no filesystem checkpoint. |
-| Portable instruction | Instruction checkpoints from an OCI cache. | Unpinned remote ADD and device-backed RUN stay local. Networked RUN and declared mounts can reuse results. |
+| Portable instruction | RUN, COPY, ADD, and WORKDIR checkpoints from an OCI cache. | Requires identified inputs and execution settings; source resolution and request authorization still run. |
 | Component state | The selected component output. | Requires a fixed invocation graph with fully identified inputs; see below. |
 | Package result | Completed package snapshots. | All selected package results must be available; otherwise their producers execute. |
 | Cache mount | Disposable tool data. | Names are scoped to their use unless explicitly supplied. Builds must work with empty mounts. |
 
 COPY/ADD measure their selected inputs. Checksum-pinned HTTP ADD can hit without downloading again; Git ADD resolves the commit and submodules before checking the cache. A cache hit therefore does not guarantee an entirely offline build.
 
-Whole-component reuse requires COPY/ADD and bind inputs to come from retained stages or packages. Deferred or dynamic image bases, named-context stages, nested component calls, device-backed or insecure RUNs, and RUN networks other than default/none bypass whole-component reuse. Individual instructions can still reuse eligible snapshots.
+Whole-component reuse requires a resolved invocation graph. COPY/ADD and bind inputs must identify retained stages, packages, or selected images and named contexts. Dynamic bases, generated image inputs, nested component calls, and caller-context inputs still pass through planning and execution, where individual instructions can reuse their snapshots. This keeps transitive input resolution and context side effects visible.
 
-Package-result caching supports networked RUN, bind/cache/tmpfs/secret/SSH mounts, and checksum-pinned remote ADD. Volume compatibility, layer policy, and stage-label settings participate in package-result identity. Unpinned remote ADD, nested components, RUN networks other than default/none, and insecure/device RUN bypass whole-package reuse; eligible instructions can still hit.
+Package-result caching supports networked and device-backed RUN, bind/cache/tmpfs/secret/SSH mounts, and checksum-pinned remote ADD. Volume compatibility, layer policy, and stage-label settings participate in package-result identity. Mutable remote ADD sources, nested components, dynamic bases, generated image inputs, and unplanned ONBUILD triggers must resolve before individual instructions reuse results instead of returning a whole-package hit. Writable context mounts execute to replay their side effects.
 
-Network responses, credentials/SSH-agent state, cache-mount contents, clock, randomness, and undeclared host inputs do not invalidate conventional cache results. A cache hit is not a reproducibility guarantee. Required reusable files belong in packages. Cache repositories are trusted inputs and may contain intermediate files absent from final images; protect them accordingly.
+Effective device names after entitlement aliases participate in cache identity, including whether an optional CDI device is present. Required devices and authorization are checked before reuse. Live device contents, network responses, credentials/SSH-agent state, cache-mount contents, clock, randomness, and undeclared host inputs do not invalidate conventional cache results. A cache hit is not a reproducibility guarantee. Required reusable files belong in packages. Cache repositories are trusted inputs and may contain intermediate files absent from final images; protect them accordingly.
 
 `--no-cache` bypasses instruction, component-state, and package-result reads, writes fresh results, and leaves cache mounts intact. `--cache-from` reads portable results; `--cache-to` writes them. Validated hits can seed another writable destination; read-only sources are never updated and write-only destinations are never queried. See the [caching guide](../guides/caching.md) for registry/local syntax and refresh commands.
 
@@ -280,7 +282,7 @@ Portable instruction cache identity includes the ordered filesystem layers and e
 
 Component-result cache identity also includes the input image chain. Restoration retains the selected output's image graph, configuration and root metadata; identity ignores the root directory's modification time. Metadata that the exporter cannot preserve can prevent portable reuse.
 
-Ordinary image commits have a Buildah/Podman limitation: changes to root-directory mode, owner, or portable xattrs may be discarded at layer commit. Coopr accepts such builds even when committed images cannot represent them. Package snapshots and cache checkpoints capture/restore these root attributes. Portable state snapshots cannot reuse outputs whose metadata the exporter cannot preserve, including subsecond file mtimes and nonportable xattrs.
+The pinned Buildah backend can discard changes to root-directory mode, owner, or portable xattrs at layer commit. Coopr accepts such builds even when committed images cannot represent them. Package snapshots and cache checkpoints capture/restore these root attributes. Portable state snapshots cannot reuse outputs whose metadata the exporter cannot preserve, including subsecond file mtimes and nonportable xattrs.
 
 ### Layers, storage, and copying
 

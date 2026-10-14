@@ -7,9 +7,12 @@ import (
 	"strings"
 	"testing"
 
+	"encoding/json"
 	"github.com/containerd/platforms"
 	"github.com/google/go-containerregistry/pkg/registry"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	nativemanifest "go.podman.io/image/v5/manifest"
+	"go.podman.io/image/v5/types"
 )
 
 func TestImagePlatformsReadsRegistryAndLayoutMetadata(t *testing.T) {
@@ -63,11 +66,60 @@ func TestImagePlatformsSkipsAuxiliaryAndUnsupportedArchitectures(t *testing.T) {
 	duplicate := manifest
 	duplicate.Platform = &v1.Platform{OS: "linux", Architecture: "x86_64"}
 	pushIndex(t, repo, "duplicate", manifest, duplicate)
-	if _, err := resolver.ImagePlatforms(ctx, name+":duplicate"); err == nil || !strings.Contains(err.Error(), "duplicate platform") {
+	if got, err := resolver.ImagePlatforms(ctx, name+":duplicate"); err != nil || !reflect.DeepEqual(got, []v1.Platform{amd64}) {
 		t.Fatalf("duplicate platform err=%v", err)
 	}
 	badLayout, badManifest := imageIndexTestLayout(t, ctx, *unsupported.Platform, "bad", false)
 	if _, err := LayoutImagePlatforms(ctx, badLayout, badManifest.Digest.String()); err == nil || !strings.Contains(err.Error(), "no runnable") {
 		t.Fatalf("unsupported single manifest err=%v", err)
+	}
+}
+
+func TestImagePlatformsUsesNativeIndexSelection(t *testing.T) {
+	ctx := context.Background()
+	for _, variant := range []string{"", "v3"} {
+		t.Run("descriptor-variant-"+variant, func(t *testing.T) {
+			_, repo, resolver, name := testRepository(t, registry.New())
+			configPlatform := v1.Platform{OS: "linux", Architecture: "amd64"}
+			selectedPlatform := configPlatform
+			selectedPlatform.Variant = variant
+			var members []v1.Descriptor
+			for _, marker := range []string{"first", "second"} {
+				child, _ := imageManifest(t, repo, configPlatform, marker)
+				child.Platform = &selectedPlatform
+				members = append(members, child)
+			}
+			root := pushIndex(t, repo, "variants", members...)
+			raw, err := fetchMetadata(ctx, repo, root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			list, err := nativemanifest.ListFromBlob(raw, root.MediaType)
+			if err != nil {
+				t.Fatal(err)
+			}
+			chosen, err := list.ChooseInstance(&types.SystemContext{OSChoice: "linux", ArchitectureChoice: "amd64", VariantChoice: variant})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := resolver.ImagePlatforms(ctx, name+":variants")
+			if err != nil || !reflect.DeepEqual(got, []v1.Platform{selectedPlatform}) {
+				t.Fatalf("platforms=%+v error=%v", got, err)
+			}
+			resolved, err := resolver.Resolve(ctx, name+":variants", selectedPlatform, Image)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resolved.Selected.Digest != chosen {
+				t.Fatalf("selected %s; native selected %s", resolved.Selected.Digest, chosen)
+			}
+			var config v1.Image
+			if err := json.Unmarshal(resolved.ConfigData, &config); err != nil {
+				t.Fatal(err)
+			}
+			if config.Variant != "" {
+				t.Fatal("rewrote image configuration")
+			}
+		})
 	}
 }

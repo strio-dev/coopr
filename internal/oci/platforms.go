@@ -68,11 +68,11 @@ func imagePlatforms(ctx context.Context, source content.ReadOnlyStorage, root v1
 		}
 		key := platforms.Format(platform)
 		if seen[key] {
-			return nil, fmt.Errorf("image index has duplicate platform %s", key)
+			continue
 		}
 		// Inspect each selected child using the ordinary image admission path;
 		// a platform label on an attestation is not proof of a runnable image.
-		if _, err := (&Resolver{}).resolveRoot(ctx, source, "platform-discovery", "", manifest, platform, Image); err != nil {
+		if _, err := (&Resolver{}).resolveRoot(ctx, source, "platform-discovery", "", root, platform, Image); err != nil {
 			return nil, fmt.Errorf("inspect image platform %s: %w", key, err)
 		}
 		seen[key] = true
