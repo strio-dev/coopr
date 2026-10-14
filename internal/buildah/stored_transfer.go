@@ -330,13 +330,15 @@ func transferStoredImage(ctx context.Context, options StoredTransferOptions) (_ 
 		if err != nil {
 			return StoredTransferResult{}, err
 		}
-		// Every original member passed the caller's policy above. Scope trust
-		// to this private directory instead of overriding storage policy.
-		policyContext, err = signature.NewPolicyContext(oci.PreparedImagePolicy(src))
-		if err != nil {
-			return StoredTransferResult{}, err
+		if src.Transport().Name() == directory.Transport.Name() {
+			// Staged members passed the caller's policy above. Native list
+			// references instead use the original policy below.
+			policyContext, err = signature.NewPolicyContext(oci.PreparedImagePolicy(src))
+			if err != nil {
+				return StoredTransferResult{}, err
+			}
+			defer func() { retErr = errors.Join(retErr, policyContext.Destroy()) }()
 		}
-		defer func() { retErr = errors.Join(retErr, policyContext.Destroy()) }()
 	} else if localIdentity == "" && options.ExpectedManifest != "" {
 		src, policyContext, sourceCleanup, err = verifiedStoredCopySourceReference(ctx, lease.store, baseSource, system, options.ImageID, options.ExpectedManifest)
 		defer func() { retErr = errors.Join(retErr, sourceCleanup()) }()

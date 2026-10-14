@@ -1,7 +1,6 @@
 package build
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -81,27 +80,8 @@ func appendManifest(ctx context.Context, name, format string, store buildah.Stor
 			if err := json.Unmarshal(indexData, &index); err != nil {
 				return err
 			}
-			for _, member := range index.Manifests {
-				available := false
-				for _, candidate := range existing {
-					if manifestSelectionMatches(candidate, member) {
-						available = true
-						break
-					}
-				}
-				if !available {
-					return fmt.Errorf("manifest %s has unavailable instances; pull the complete list before appending", name)
-				}
-			}
-			defaultData, err := backend.ImageBigData(image.ID, storage.ImageDigestBigDataKey)
-			if err != nil {
-				return err
-			}
-			if !bytes.Equal(defaultData, indexData) {
-				return fmt.Errorf("manifest name %s identifies a pulled image, not a native manifest list", name)
-			}
 			if _, _, err := manifests.LoadFromImage(backend, image.ID); err != nil {
-				return err
+				return fmt.Errorf("manifest name %s is not a native manifest list: %w", name, err)
 			}
 			existingID = image.ID
 			previous = existing

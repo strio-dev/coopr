@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -16,6 +18,8 @@ import (
 	"github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/common/libimage"
+	"go.podman.io/common/libimage/manifests"
+	imagecopy "go.podman.io/image/v5/copy"
 	imagestorage "go.podman.io/image/v5/storage"
 	"go.podman.io/image/v5/transports"
 	"go.podman.io/image/v5/types"
@@ -297,6 +301,167 @@ func TestManifestAppendRetainsEncryptedOrigin(t *testing.T) {
 			})
 			if err != nil {
 				t.Fatalf("append resident encrypted-origin list: %v", err)
+			}
+		})
+	}
+}
+
+func TestManifestAppendPreservesNativeArtifacts(t *testing.T) {
+	for _, artifactType := range []string{"application/vnd.coopr.test.artifact.v1", ""} {
+		t.Run("type="+artifactType, func(t *testing.T) {
+			ctx := context.Background()
+			options := nativeBuildTestStore(t.TempDir())
+			err := buildah.WithStore(options, func(store storage.Store) error {
+				// Native artifact Reference consults the global storage transport.
+				previousStore := imagestorage.Transport.GetStoreIfSet()
+				imagestorage.Transport.SetStore(store)
+				defer imagestorage.Transport.SetStore(previousStore)
+				rootDir := t.TempDir()
+				policy := filepath.Join(rootDir, "policy.json")
+				if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0600); err != nil {
+					return err
+				}
+				system := &types.SystemContext{SignaturePolicyPath: policy}
+				runtime, err := libimage.RuntimeFromStore(store, &libimage.RuntimeOptions{SystemContext: system})
+				if err != nil {
+					return err
+				}
+				payload := []byte("native artifact payload\n")
+				payloadPath := filepath.Join(rootDir, "artifact.txt")
+				if err := os.WriteFile(payloadPath, payload, 0600); err != nil {
+					return err
+				}
+				config := `{"native":"artifact config"}`
+				var artifact digest.Digest
+				for _, name := range []string{"artifact-append", "artifact-control"} {
+					handle, err := runtime.CreateManifestList(name)
+					if err != nil {
+						return err
+					}
+					artifact, err = handle.AddArtifact(ctx, &libimage.ManifestListAddArtifactOptions{Type: &artifactType, ConfigType: "application/vnd.coopr.test.config.v1+json", Config: config, Annotations: map[string]string{"artifact": "retained"}}, payloadPath)
+					if err != nil {
+						return err
+					}
+				}
+				original, err := store.ImageBigData("localhost/artifact-append:latest", storage.ImageDigestBigDataKey)
+				if err != nil {
+					return err
+				}
+				originalRoot := oci.Descriptor(v1.MediaTypeImageIndex, original)
+				var originalIndex v1.Index
+				if err := json.Unmarshal(original, &originalIndex); err != nil {
+					return err
+				}
+				if len(originalIndex.Manifests) != 1 || originalIndex.Manifests[0].ArtifactType != artifactType {
+					t.Fatalf("native artifact fixture: %s", original)
+				}
+				makeSelection := func(arch string) oci.StoredSelection {
+					rawConfig, _ := json.Marshal(v1.Image{Platform: v1.Platform{OS: "linux", Architecture: arch}, RootFS: v1.RootFS{Type: "layers"}})
+					cfg := oci.Descriptor(v1.MediaTypeImageConfig, rawConfig)
+					raw, _ := json.Marshal(v1.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: v1.MediaTypeImageManifest, Config: cfg})
+					desc := oci.Descriptor(v1.MediaTypeImageManifest, raw)
+					id := cfg.Digest.Encoded()
+					if _, err := store.CreateImage(id, nil, "", "", &storage.ImageOptions{BigData: []storage.ImageBigDataOption{
+						{Key: cfg.Digest.String(), Data: rawConfig, Digest: cfg.Digest},
+						{Key: storage.ImageDigestBigDataKey, Data: raw, Digest: desc.Digest},
+						{Key: storage.ImageDigestManifestBigDataNamePrefix + "-" + desc.Digest.String(), Data: raw, Digest: desc.Digest},
+					}}); err != nil {
+						t.Fatal(err)
+					}
+					return oci.StoredSelection{Root: desc, Manifest: desc, ImageID: id, ConfigData: rawConfig}
+				}
+				amd, arm := makeSelection("amd64"), makeSelection("arm64")
+				verifyExport := func(name string, wantMembers int) error {
+					_, list, err := manifests.LoadFromImage(store, name)
+					if err != nil {
+						return err
+					}
+					files, err := list.Files(artifact)
+					if err != nil || len(files) != 1 || files[0] != payloadPath {
+						return fmt.Errorf("artifact file locations changed: %v, %v", files, err)
+					}
+					handle, err := runtime.LookupManifestList(name)
+					if err != nil {
+						return err
+					}
+					layout := t.TempDir()
+					if _, err := handle.Push(ctx, "oci:"+layout+":exported", &libimage.ManifestListPushOptions{ImageListSelection: imagecopy.CopyAllImages, CopyOptions: libimage.CopyOptions{SignaturePolicyPath: policy}}); err != nil {
+						return fmt.Errorf("native push %s: %w", name, err)
+					}
+					artifactRaw, err := os.ReadFile(filepath.Join(layout, "blobs", "sha256", artifact.Encoded()))
+					if err != nil {
+						return err
+					}
+					var manifest v1.Manifest
+					if err := json.Unmarshal(artifactRaw, &manifest); err != nil {
+						return err
+					}
+					if manifest.ArtifactType != artifactType || manifest.Annotations["artifact"] != "retained" || len(manifest.Layers) != 1 {
+						return fmt.Errorf("artifact manifest changed: %s", artifactRaw)
+					}
+					for _, blob := range []struct {
+						desc v1.Descriptor
+						data []byte
+					}{{manifest.Config, []byte(config)}, {manifest.Layers[0], payload}} {
+						raw, err := os.ReadFile(filepath.Join(layout, "blobs", "sha256", blob.desc.Digest.Encoded()))
+						if err != nil {
+							return err
+						}
+						if !bytes.Equal(raw, blob.data) {
+							return fmt.Errorf("artifact blob %s changed", blob.desc.Digest)
+						}
+					}
+					data, err := store.ImageBigData(name, storage.ImageDigestBigDataKey)
+					if err != nil {
+						return err
+					}
+					var index v1.Index
+					if err := json.Unmarshal(data, &index); err != nil {
+						return err
+					}
+					if len(index.Manifests) != wantMembers || !reflect.DeepEqual(index.Manifests[0], originalIndex.Manifests[0]) {
+						return fmt.Errorf("native artifact descriptor changed: %s", data)
+					}
+					return nil
+				}
+				control, err := runtime.LookupManifestList("localhost/artifact-control:latest")
+				if err != nil {
+					return err
+				}
+				ref, err := imagestorage.Transport.NewStoreReference(store, nil, amd.ImageID)
+				if err != nil {
+					return err
+				}
+				if _, err := control.Add(ctx, transports.ImageName(ref), nil); err != nil {
+					return err
+				}
+				if err := verifyExport(control.ID(), 2); err != nil {
+					return fmt.Errorf("public native Add control: %w", err)
+				}
+				for i, selection := range []oci.StoredSelection{amd, arm} {
+					platform, err := selection.Platform()
+					if err != nil {
+						return err
+					}
+					_, _, _, id, err := appendManifest(ctx, "artifact-append", "oci", options, map[string]oci.StoredSelection{platform.OS + "/" + platform.Architecture: selection})
+					if err != nil {
+						return err
+					}
+					if err := verifyExport(id, i+2); err != nil {
+						return err
+					}
+					_, historical, _, err := oci.StoredImageSelections(ctx, store, originalRoot.Digest.String())
+					if err != nil {
+						return err
+					}
+					if !bytes.Equal(historical, original) {
+						t.Fatal("append changed historical artifact root")
+					}
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
 			}
 		})
 	}

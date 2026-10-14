@@ -639,7 +639,27 @@ func (s *Store) writeStoredIndex(ctx context.Context, existingID string, root v1
 		}
 	}()
 	list := manifests.Create()
+	if existingID != "" {
+		// Load native instance locations and artifact payloads rather than rebuilding
+		// their private metadata from the runnable image selections.
+		_, list, err = manifests.LoadFromImage(s.backend, existingID)
+		if err != nil {
+			return "", fmt.Errorf("load native image index: %w", err)
+		}
+		instances := list.Instances()
+		slices.Sort(instances)
+		for _, instance := range slices.Compact(instances) {
+			if !slices.ContainsFunc(index.Manifests, func(child v1.Descriptor) bool { return child.Digest == instance }) {
+				if err := list.Remove(instance); err != nil {
+					return "", fmt.Errorf("remove replaced image index child %s: %w", instance, err)
+				}
+			}
+		}
+	}
 	for _, child := range index.Manifests {
+		if slices.Contains(list.Instances(), child.Digest) {
+			continue
+		}
 		imageID := imageIDs[child.Digest]
 		if imageID == "" {
 			return "", fmt.Errorf("image index child %s has no stored image", child.Digest)

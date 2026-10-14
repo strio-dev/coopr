@@ -16,8 +16,10 @@ import (
 	specs "github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/common/libimage"
+	"go.podman.io/common/libimage/manifests"
 	imagecopy "go.podman.io/image/v5/copy"
 	"go.podman.io/image/v5/signature"
+	imagestorage "go.podman.io/image/v5/storage"
 	"go.podman.io/image/v5/transports/alltransports"
 	"go.podman.io/storage"
 )
@@ -127,7 +129,29 @@ func TestCopyDecryptedIndexDistinguishesMissingMembers(t *testing.T) {
 					}
 				}()
 				_, err = imagecopy.Image(ctx, policy, target, source, &imagecopy.Options{ImageListSelection: imagecopy.CopySystemImage})
-				return err
+				if err != nil || !missing {
+					return err
+				}
+				previous := imagestorage.Transport.GetStoreIfSet()
+				imagestorage.Transport.SetStore(backend)
+				defer imagestorage.Transport.SetStore(previous)
+				_, list, err := manifests.LoadFromImage(backend, nativeListID)
+				if err != nil {
+					return err
+				}
+				allSource, err := list.Reference(backend, imagecopy.CopyAllImages, nil)
+				if err != nil {
+					return err
+				}
+				allTarget, err := alltransports.ParseImageName("dir:" + filepath.Join(t.TempDir(), "native-all"))
+				if err != nil {
+					return err
+				}
+				_, allErr := imagecopy.Image(ctx, policy, allTarget, allSource, &imagecopy.Options{ImageListSelection: imagecopy.CopyAllImages})
+				if allErr == nil || !strings.Contains(allErr.Error(), "image not known") {
+					t.Fatalf("native whole-list missing-member control = %v", allErr)
+				}
+				return nil
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -160,9 +184,11 @@ func TestCopyDecryptedIndexDistinguishesMissingMembers(t *testing.T) {
 				output := filepath.Join(t.TempDir(), "coopr")
 				_, err := Copy(ctx, oci.Image, selector, Destination{Transport: "dir", Name: output}, Options{BuildStore: store, Platform: platform})
 				if missing {
-					if err == nil || !strings.HasPrefix(err.Error(), "stored index lacks manifest ") ||
-						!strings.HasSuffix(err.Error(), original.Digest.String()) && !strings.HasSuffix(err.Error(), sibling.Manifest.Digest.String()) {
+					if err == nil || !strings.Contains(err.Error(), "image not known") {
 						t.Fatalf("whole-list copy did not reject an unavailable original index member for %s: %v", selector, err)
+					}
+					if _, statErr := os.Stat(filepath.Join(output, "manifest.json")); !os.IsNotExist(statErr) {
+						t.Fatalf("failed whole-list copy published a manifest: %v", statErr)
 					}
 					t.Logf("whole-list copy of %s rejects missing sibling: %v", selector, err)
 					if _, err := Copy(ctx, oci.Image, selector, Destination{Transport: "dir", Name: output}, Options{BuildStore: store, Platform: platform, PlatformExplicit: true}); err != nil {

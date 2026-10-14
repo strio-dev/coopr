@@ -52,6 +52,26 @@ func prepareStoredIndexCopySource(ctx context.Context, store storage.Store, snap
 	if index.SchemaVersion != 2 || index.MediaType != "" && index.MediaType != root.MediaType {
 		return nil, cleanup, errors.New("invalid stored image index")
 	}
+	// Artifacts are native list members, but deliberately have no runnable
+	// StoredSelection. Let the native list supply their references rather than
+	// reconstructing them from image/platform metadata. Historical roots still
+	// use the snapshot path below unless a current native list matches exactly.
+	for _, member := range index.Manifests {
+		resident := false
+		for _, selection := range selections {
+			if selection.Manifest.Digest == member.Digest && selection.Manifest.Size == member.Size && selection.Manifest.MediaType == member.MediaType {
+				resident = true
+				break
+			}
+		}
+		if !resident {
+			reference, release, err := currentStoredIndexReference(ctx, store, root, original, system)
+			if err != nil || reference != nil {
+				return reference, release, err
+			}
+			break
+		}
+	}
 	temporaryDir, err := os.MkdirTemp("", "coopr-native-index-")
 	if err != nil {
 		return nil, cleanup, err
@@ -153,6 +173,66 @@ func prepareStoredIndexCopySource(ctx context.Context, store storage.Store, snap
 		}
 	}
 	return aggregate, cleanup, nil
+}
+
+// currentStoredIndexReference keeps the native list locked until the copy has
+// closed its sources. The native reference reads the image's current manifest,
+// so checking its bytes and holding the lock are both required for exact-root
+// selection. Binding the transport also covers native artifact references.
+func currentStoredIndexReference(ctx context.Context, store storage.Store, root v1.Descriptor, original []byte, system *types.SystemContext) (types.ImageReference, func() error, error) {
+	noop := func() error { return nil }
+	images, err := store.ImagesByDigest(root.Digest)
+	if err != nil {
+		return nil, noop, err
+	}
+	for _, image := range images {
+		lock, err := manifests.LockerForImage(store, image.ID)
+		if err != nil {
+			return nil, noop, err
+		}
+		lock.Lock()
+		raw, err := store.ImageBigData(image.ID, storage.ImageDigestBigDataKey)
+		if err != nil {
+			lock.Unlock()
+			return nil, noop, err
+		}
+		if !bytes.Equal(raw, original) {
+			lock.Unlock()
+			continue
+		}
+		_, list, err := manifests.LoadFromImage(store, image.ID)
+		if err != nil {
+			lock.Unlock()
+			return nil, noop, err
+		}
+		previous := imagestorage.Transport.GetStoreIfSet()
+		imagestorage.Transport.SetStore(store)
+		release := func() error {
+			imagestorage.Transport.SetStore(previous)
+			lock.Unlock()
+			return nil
+		}
+		reference, err := list.Reference(store, imagecopy.CopyAllImages, nil)
+		if err != nil {
+			_ = release()
+			return nil, noop, err
+		}
+		source, err := reference.NewImageSource(ctx, system)
+		if err == nil {
+			var data []byte
+			data, _, err = source.GetManifest(ctx, nil)
+			if err == nil && !bytes.Equal(data, original) {
+				err = errors.New("native list reference differs from stored index snapshot")
+			}
+			err = errors.Join(err, source.Close())
+		}
+		if err != nil {
+			_ = release()
+			return nil, noop, err
+		}
+		return reference, release, nil
+	}
+	return nil, noop, nil
 }
 
 // storedIndexSignatureBlobs collects exact-root signatures from existing
