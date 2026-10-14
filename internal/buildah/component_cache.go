@@ -381,6 +381,14 @@ func (c *componentCache) key(executor *graphExecutor, input stateidentity.Identi
 		packages[stageID] = pkg.Descriptor
 	}
 	inputs := componentCacheInputs(resolved)
+	invocation, err := json.Marshal(struct {
+		Stages  []planner.Stage `json:"stages"`
+		Outputs []string        `json:"outputs"`
+	}{resolved.Plan.Stages, resolved.Plan.Outputs})
+	if err != nil {
+		return cache.Key{}, err
+	}
+	inputs["invocation-plan"] = digest.FromBytes(invocation)
 	inputs["caller-command-set"] = digest.FromString(fmt.Sprint(commandSet))
 	policy, err := json.Marshal(struct {
 		Timestamp        *int64 `json:"timestamp,omitempty"`

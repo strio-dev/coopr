@@ -25,7 +25,7 @@ func TestNativeInstructionNormalization(t *testing.T) {
 		`USER ""`, `WORKDIR ""`,
 	}
 	for _, key := range []string{"TARGETOS", "TARGETARCH", "TARGETVARIANT", "TARGETPLATFORM", "BUILDOS", "BUILDARCH", "BUILDVARIANT", "BUILDPLATFORM"} {
-		cases = append(cases, "ARG "+key+"=custom\nENV RESULT=$"+key)
+		cases = append(cases, "ARG "+key+"\nENV RESULT=$"+key, "ARG "+key+"=custom\nENV RESULT=$"+key)
 	}
 	for _, instruction := range []string{"ENV", "LABEL", "USER", "WORKDIR"} {
 		for _, word := range []string{`${MISSING-default}`, `${X?bad}`, `${MISSING+set}`} {
@@ -65,7 +65,7 @@ func TestNativeInstructionNormalization(t *testing.T) {
 			}
 			var plan *Plan
 			if cooprErr == nil {
-				plan, cooprErr = Create(parse(t, `from "example.com/base:latest" {}`), Options{Mode: Build, StageBinds: map[string]StageBind{"0": {Inherited: inherited, BaseEnvironment: map[string]string{"KEY": "EXPANDED", "X": "set"}}}})
+				plan, cooprErr = Create(parse(t, `from "example.com/base:latest" {}`), Options{Mode: Build, Platform: native.BuiltinArgDefaults["TARGETPLATFORM"], StageBinds: map[string]StageBind{"0": {Inherited: inherited, BaseEnvironment: map[string]string{"KEY": "EXPANDED", "X": "set"}}}})
 			}
 			if (cooprErr == nil) != (nativeErr == nil) {
 				t.Fatalf("native error=%v; Coopr error=%v", nativeErr, cooprErr)

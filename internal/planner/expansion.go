@@ -151,16 +151,18 @@ func expandHeredoc(s string, values scope) (string, error) {
 func automaticPlatformScope(opts Options) scope {
 	targetOS, targetArch, targetVariant := splitPlatform(opts.Platform)
 	build := platforms.DefaultSpec()
+	// Buildah retains imagebuilder's host build defaults for every target platform.
+	buildDefaults := imagebuilder.NewBuilder(nil).BuiltinArgDefaults
 	targetStage := opts.Target
 	if targetStage == "" {
 		targetStage = "default"
 	}
 	values := scope{
-		"BUILDPLATFORM":   {value: platforms.Format(build), present: true},
-		"BUILDOS":         {value: build.OS, present: true},
+		"BUILDPLATFORM":   {value: buildDefaults["BUILDPLATFORM"], present: true},
+		"BUILDOS":         {value: buildDefaults["BUILDOS"], present: true},
 		"BUILDOSVERSION":  {value: build.OSVersion, present: true},
-		"BUILDARCH":       {value: build.Architecture, present: true},
-		"BUILDVARIANT":    {value: build.Variant, present: true},
+		"BUILDARCH":       {value: buildDefaults["BUILDARCH"], present: true},
+		"BUILDVARIANT":    {value: buildDefaults["BUILDVARIANT"], present: true},
 		"TARGETPLATFORM":  {value: opts.Platform, present: true},
 		"TARGETOS":        {value: targetOS, present: true},
 		"TARGETOSVERSION": {value: "", present: true},

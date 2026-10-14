@@ -16,6 +16,7 @@ import (
 
 	registryserver "github.com/google/go-containerregistry/pkg/registry"
 
+	"coopr/internal/buildcontext"
 	"coopr/internal/cache"
 	"coopr/internal/definition"
 	"coopr/internal/imageconfig"
@@ -32,6 +33,75 @@ type componentCacheKeyStore struct{ storage.Store }
 
 func (componentCacheKeyStore) GraphDriverName() string { return "vfs" }
 func (componentCacheKeyStore) GraphOptions() []string  { return nil }
+
+func TestComponentCacheKeyIncludesResolvedInvocation(t *testing.T) {
+	input := validComponentTestKey().Input
+	executor := &graphExecutor{store: componentCacheKeyStore{}}
+	plan := func() *planner.Plan {
+		return &planner.Plan{
+			Stages: []planner.Stage{
+				{ID: "0", Kind: "extend", Platform: "linux/amd64", Operations: []planner.Operation{
+					{Instruction: definition.Instruction{Name: "env", Properties: map[string]string{"RESULT": "amd64", "UNCHANGED": "value"}}},
+					{Instruction: definition.Instruction{Name: "run", Arguments: []string{"echo $BUILDARCH $BUILDVARIANT"}}, ArgumentsInScope: map[string]string{"BUILDARCH": "amd64", "BUILDVARIANT": ""}},
+				}},
+				{ID: "1", Kind: "extend", Platform: "linux/amd64", Dependencies: []string{"0"}},
+			},
+			Outputs: []string{"0"},
+			Contexts: []planner.ContextInput{{Spec: buildcontext.Spec{
+				Name: "unused", Kind: buildcontext.Local, Path: "/first/host/context",
+			}}},
+		}
+	}
+	key := func(plan *planner.Plan) digest.Digest {
+		t.Helper()
+		resolved := &ResolvedComponentPlan{Identity: digest.FromString("same-immutable-component"), Plan: plan}
+		key, err := new(componentCache).key(executor, input, resolved, map[string]string{"parameter": "unchanged"}, v1.Platform{OS: "linux", Architecture: "amd64"}, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		identity, err := key.Digest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return identity
+	}
+	baseline := key(plan())
+	for _, test := range []struct {
+		name   string
+		change func(*planner.Plan)
+	}{
+		{"build architecture scope", func(p *planner.Plan) { p.Stages[0].Operations[1].ArgumentsInScope["BUILDARCH"] = "arm64" }},
+		{"build variant scope", func(p *planner.Plan) { p.Stages[0].Operations[1].ArgumentsInScope["BUILDVARIANT"] = "v8" }},
+		{"expanded environment", func(p *planner.Plan) { p.Stages[0].Operations[0].Properties["RESULT"] = "arm64" }},
+		{"selected output", func(p *planner.Plan) { p.Outputs = []string{"1"} }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			changed := plan()
+			test.change(changed)
+			if key(changed) == baseline {
+				t.Fatalf("changed %s shares the original component cache key %s", test.name, baseline)
+			}
+		})
+	}
+	if key(plan()) != baseline {
+		t.Fatal("identical resolved invocation changed the component cache key")
+	}
+	reordered := plan()
+	reordered.Stages[0].Operations[0].Properties = map[string]string{}
+	reordered.Stages[0].Operations[0].Properties["UNCHANGED"] = "value"
+	reordered.Stages[0].Operations[0].Properties["RESULT"] = "amd64"
+	reordered.Stages[0].Operations[1].ArgumentsInScope = map[string]string{}
+	reordered.Stages[0].Operations[1].ArgumentsInScope["BUILDVARIANT"] = ""
+	reordered.Stages[0].Operations[1].ArgumentsInScope["BUILDARCH"] = "amd64"
+	if key(reordered) != baseline {
+		t.Fatal("map insertion order changed the component cache key")
+	}
+	relocated := plan()
+	relocated.Contexts[0].Path = "/different/host/context"
+	if key(relocated) != baseline {
+		t.Fatal("irrelevant host context path changed the component cache key")
+	}
+}
 
 func TestComponentCacheKeyIncludesStageLabels(t *testing.T) {
 	input := validComponentTestKey().Input
