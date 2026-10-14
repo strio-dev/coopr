@@ -265,7 +265,7 @@ func Build(ctx context.Context, request Request) (result Result, retErr error) {
 		}
 	}
 	if !linked {
-		adapter := nativeBuilder{Builder: builder, isolation: builderOptions.Isolation, runtime: effectiveRuntime(request.Runtime, request.RunControls), runtimeArgs: slices.Clone(request.RunControls.RuntimeFlags), secretSpecs: request.Secrets, sshSpecs: request.SSH, cgroupManager: request.RunControls.CgroupManager, cgroupManagerSet: request.RunControls.CgroupManagerSet, compatVolumes: request.Lifecycle.CompatVolumes, noLayers: true, runControls: request.RunControls}
+		adapter := nativeBuilder{Builder: builder, systemContext: builderOptions.SystemContext, isolation: builderOptions.Isolation, runtime: effectiveRuntime(request.Runtime, request.RunControls), runtimeArgs: slices.Clone(request.RunControls.RuntimeFlags), secretSpecs: request.Secrets, sshSpecs: request.SSH, cgroupManager: request.RunControls.CgroupManager, cgroupManagerSet: request.RunControls.CgroupManagerSet, compatVolumes: request.Lifecycle.CompatVolumes, noLayers: true, runControls: request.RunControls}
 		if err := applyOperationsWithArtifacts(ctx, adapter, request.ContextDir, artifacts, request.Operations); err != nil {
 			return Result{}, err
 		}
@@ -286,7 +286,7 @@ func Build(ctx context.Context, request Request) (result Result, retErr error) {
 			}
 			builder = replacement
 		}
-		adapter := nativeBuilder{Builder: builder, isolation: builderOptions.Isolation, runtime: effectiveRuntime(request.Runtime, request.RunControls), runtimeArgs: slices.Clone(request.RunControls.RuntimeFlags), secretSpecs: request.Secrets, sshSpecs: request.SSH, cgroupManager: request.RunControls.CgroupManager, cgroupManagerSet: request.RunControls.CgroupManagerSet, compatVolumes: request.Lifecycle.CompatVolumes, noLayers: true, runControls: request.RunControls}
+		adapter := nativeBuilder{Builder: builder, systemContext: builderOptions.SystemContext, isolation: builderOptions.Isolation, runtime: effectiveRuntime(request.Runtime, request.RunControls), runtimeArgs: slices.Clone(request.RunControls.RuntimeFlags), secretSpecs: request.Secrets, sshSpecs: request.SSH, cgroupManager: request.RunControls.CgroupManager, cgroupManagerSet: request.RunControls.CgroupManagerSet, compatVolumes: request.Lifecycle.CompatVolumes, noLayers: true, runControls: request.RunControls}
 		if err := applyOperationsWithArtifacts(ctx, adapter, request.ContextDir, artifacts, []Operation{operation}); err != nil {
 			return Result{}, fmt.Errorf("operation %d: %w", index+1, err)
 		}
@@ -586,9 +586,6 @@ func validateRequest(request Request) error {
 	if err := request.ImageControls.Validate(); err != nil {
 		return err
 	}
-	if err := validateCacheTTL(request.CacheTTL); err != nil {
-		return err
-	}
 	if err := validateTimestampOptions(request.Timestamp, request.SourceDateEpoch, request.RewriteTimestamp); err != nil {
 		return err
 	}
@@ -657,6 +654,7 @@ func rootCapabilities() []string {
 
 type nativeBuilder struct {
 	*upstream.Builder
+	systemContext    *types.SystemContext
 	executableOrigin string
 	isolation        define.Isolation
 	runtime          string

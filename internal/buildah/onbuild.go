@@ -9,7 +9,6 @@ import (
 	"coopr/internal/imageconfig"
 	"coopr/internal/onbuildparse"
 	"coopr/internal/planner"
-	"github.com/moby/buildkit/frontend/dockerfile/shell"
 )
 
 // stageBindFromImageConfig extracts the base-image state that must be known
@@ -25,6 +24,9 @@ func stageBindFromImageConfig(logical *imageconfig.Config) (planner.StageBind, e
 	triggers, err := logical.OnBuild()
 	if err != nil {
 		return planner.StageBind{}, err
+	}
+	if err := onbuildparse.ValidateInheritedTriggers(triggers); err != nil {
+		return planner.StageBind{}, fmt.Errorf("ONBUILD ingestion: %w", err)
 	}
 	bind := planner.StageBind{}
 	for index, trigger := range triggers {
@@ -75,6 +77,9 @@ func consumeOnBuild(logical *imageconfig.Config) ([]planner.Operation, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := onbuildparse.ValidateInheritedTriggers(triggers); err != nil {
+		return nil, fmt.Errorf("ONBUILD ingestion: %w", err)
+	}
 	var planned []planner.Operation
 	working := logical.Clone()
 	for index, trigger := range triggers {
@@ -82,16 +87,7 @@ func consumeOnBuild(logical *imageconfig.Config) ([]planner.Operation, error) {
 		if err != nil {
 			return nil, fmt.Errorf("ONBUILD trigger %d environment: %w", index+1, err)
 		}
-		lex := shell.NewLex('\\')
-		rawLex := shell.NewLex('\\')
-		rawLex.SkipProcessQuotes = true
-		instructions, err := parseOnBuildTriggerWithExpanders(trigger, func(word string) (string, error) {
-			result, _, err := lex.ProcessWord(word, shell.EnvsFromSlice(environment))
-			return result, err
-		}, func(word string) (string, error) {
-			result, _, err := rawLex.ProcessWord(word, shell.EnvsFromSlice(environment))
-			return result, err
-		})
+		instructions, err := onbuildparse.ParseExpandedEnvironment(trigger, environment)
 		if err != nil {
 			return nil, fmt.Errorf("ONBUILD trigger %d: %w", index+1, err)
 		}

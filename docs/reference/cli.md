@@ -79,7 +79,7 @@ The first command uses the definition's parent directory as context; the second 
 | `--secret`, `--ssh`, `--allow` | Supply credentials or authorize elevated RUN behavior; see [security](../guides/security.md). |
 | `--mount SPEC` | Add a comma-separated RUN mount specification to every RUN, after its authored mounts. Repeatable; stage sources create graph dependencies. |
 | `--stdin` | Pass command stdin to RUN; cannot also read the definition or context from stdin. |
-| `--source-date-epoch`, `--timestamp`, `--rewrite-timestamp` | Set creation time, force new-layer file times, or clamp newer times. Timestamp conflicts with the other two. |
+| `--source-date-epoch`, `--timestamp`, `--rewrite-timestamp` | Set creation time, force new-layer file times, or clamp newer times. Timestamp and a nonempty source date epoch are mutually exclusive. |
 | `--metadata-file` | Write result/platform/destination metadata. |
 | `--quiet`, `--logfile`, `--logsplit` | Suppress progress, redirect output to a file, or use one logfile per platform. See [build output](#build-output). |
 
@@ -99,7 +99,7 @@ These options apply to image builds. Component artifacts retain their component 
 | `--sbom[=PRESET]` | Scan with `syft` (bare flag), `syft-cyclonedx`, `syft-spdx`, `trivy`, `trivy-cyclonedx`, or `trivy-spdx`. |
 | `--sbom-scanner-image`, `--sbom-scanner-command`, `--sbom-merge-strategy` | Configure a scanner image, repeatable commands using `{ROOTFS}`, `{CONTEXT}`, `{OUTPUT}`, and result merging. |
 | `--sbom-output`, `--sbom-image-output`, `--sbom-purl-output`, `--sbom-image-purl-output` | Write SBOM/package-URL data to host files or paths inside the image. |
-| `--sign-by`, `--sign-by-sigstore-private-key`, `--sign-passphrase-file` | Sign local/registry images with GPG, or registry images with a Sigstore private key. |
+| `--sign-by`, `--sign-by-sigstore`, `--sign-by-sigstore-private-key`, `--sign-passphrase-file` | Sign images with GPG or Sigstore; native push transports validate signature support. Bare local tags support GPG signing. |
 | `--cw` | Convert output for a confidential workload using native conversion options. |
 | `--disable-compression` | Control native new-layer compression; default true. Explicit export compression options are described below. |
 
@@ -111,7 +111,7 @@ Image-layer compression controls are `--compression-format gzip|zstd|zstd:chunke
 
 ### Named inputs
 
-`--build-context NAME=VALUE` accepts local directories, `docker-image://REFERENCE`, selected `oci-layout://PATH:TAG`, public HTTP(S) tar archives, and HTTP(S)/Git/SSH/SCP-style Git repositories.
+`--build-context NAME=VALUE` accepts local directories, image references with `docker-image://`, `container-image://` or `docker://`, selected `oci-layout://PATH:TAG`, public HTTP(S) tar archives, and HTTP(S)/Git/SSH/SCP-style Git repositories.
 
 Git query options are `branch`, `tag`, or `ref`; optional `subdir` and `checksum`/`commit`; `submodules=false`; `keep-git-dir=true`; `mtime=commit`; and `fetch-by-commit=true`. The last requires a full lowercase commit SHA in `checksum`. Nested submodules fetch by default. Legacy `#ref:subdir` remains accepted. These query controls belong to named contexts; ADD retains its instruction-level Git options.
 
@@ -141,13 +141,15 @@ Tagging adds a local name; pushing performs the transfer. Authenticate with `coo
 
 Image and manifest push destinations use the upstream image transports. A transport must support the requested manifest format, index, compression, and signatures; unsupported combinations report the native error. Push sources come from local storage; use `pull` or `load` to import an image first.
 
-Whole stored-index pushes to `dir:`, `oci:`, `docker-archive:`, and `containers-storage:` use native signature handling. Destinations that support signatures retain them; other destinations return the upstream error. Use `--remove-signatures` to discard them explicitly.
+Whole stored-index pushes to `dir:`, `oci:`, `docker-archive:`, and `containers-storage:` use native signature handling. Coopr rejects artifact-index exports before copying when the native source cannot expose every stored index-root signature. Destinations that cannot store signatures also reject signed exports. Use `--remove-signatures` to discard signatures from the output while leaving the stored source unchanged.
 
 `component rm NAME...` removes local names; it does not remove artifacts by digest.
 
 Pull sources default to a registry. Image pull accepts native image transports, including `docker-daemon:NAME` for a Docker Engine image; component pull accepts a registry name or `docker://` reference. Use `load` for saved component archives.
 
-Bare digests select immutable local artifacts. Component names use ordinary `NAME[:TAG]` syntax and default to `latest`. Invocation checks the component store first and resolves a missing name from a registry. Local component source files use an explicit path prefix, such as `./components/settings.coopr`, with an optional `#target`; see [local components](../tutorials/local-components.md).
+Image pull selects one platform with `--platform OS/ARCH[/VARIANT]`, defaulting to Linux and the host architecture. Use `--os`, `--arch`, and `--variant` instead to override individual fields; none can be combined with an explicit `--platform`. These selectors also apply to `--all-tags`.
+
+Use a digest to select immutable content for a build or export. Image `tag` adds names to the existing native record. Component names use ordinary `NAME[:TAG]` syntax and default to `latest`. Invocation checks the component store first and resolves a missing name from a registry. Local component source files use an explicit path prefix, such as `./components/settings.coopr`, with an optional `#target`; see [local components](../tutorials/local-components.md).
 
 See [storage](../guides/storage.md) for platform selection and digest preservation. A failed post-build push reports the retained result; retry with `coopr push` or `coopr component push`.
 
@@ -182,6 +184,34 @@ Manifest members accept ordinary image names and explicit image transports, incl
 
 Create accepts repeatable `--annotation KEY=VALUE` for index annotations; `--amend` adds to an existing local list. Add and annotate accept instance annotations and `--os`, `--arch`, `--variant`, `--os-version`, `--os-features`, and `--features`. Annotate selects a member by image name or digest; `--index` applies annotations to the index, and `--subject` sets its subject.
 
+`manifest add --artifact LIST FILE...` inserts the files together as one OCI artifact manifest. `--artifact-type`, `--artifact-config FILE`, `--artifact-config-type`, `--artifact-layer-type`, `--artifact-subject`, `--artifact-exclude-titles`, and repeatable `--artifact-annotation KEY=VALUE` control the artifact; ordinary `--annotation` controls its index entry. Export the complete artifact list with `manifest push --format oci LIST oci:/path/to/layout:tag` or `oci-archive:/path/to/archive:tag`. Config files retain their exact bytes, including zero-byte content.
+
+```sh
+coopr manifest create app-artifacts
+coopr manifest add --artifact --artifact-type application/vnd.example.report.v1 \
+  --artifact-layer-type text/plain --artifact-annotation report=summary \
+  --annotation role=report app-artifacts report.txt
+coopr manifest push --format oci app-artifacts oci:./app-artifacts:latest
+```
+
+The input file must exist. `--artifact-annotation` sets manifest metadata; `--annotation` sets the member’s index metadata. Artifact-specific flags require `--artifact`. Layer title annotations use filenames unless `--artifact-exclude-titles` is set. An explicit `--artifact-type=` suppresses the artifact type.
+
+Image and manifest publication support GPG signing with `--sign-by` and Sigstore signing with `--sign-by-sigstore-private-key` or `--sign-by-sigstore PARAMETER_FILE`. Native push transports validate signature support and signing identity; named `containers-storage` destinations support signatures, while unnamed directory and OCI destinations cannot supply a Docker signing identity. Bare local tags retain the existing GPG-only signing behavior.
+
+Parameter files use the native containers/image Sigstore format for private keys, Fulcio/OIDC and Rekor settings. A parameter-file passphrase file takes precedence over the fallback `--sign-passphrase-file` or `COSIGN_PASSWORD`. Multiple signing modes can be combined; an explicit `--sign-passphrase-file` can select at most one of `--sign-by`, `--sign-by-sq-fingerprint` and `--sign-by-sigstore-private-key`. The Sigstore environment password does not supply a GPG passphrase. Quiet mode retains required authentication instructions and interactive input.
+
+Sequoia-PGP signing automatically discovers the optional `coopr-sequoia-signing` package beside Coopr, under `libexec/coopr`, or on `PATH`. Install that package to use `--sign-by-sq-fingerprint`; the static Coopr package keeps its existing host-GPG and Sigstore support. The optional helper owns the complete native transfer, including manifest transformations and signatures. Missing or incompatible helpers fail Sequoia requests without publishing unsigned output. Key fingerprints use the user-managed Sequoia key store; credentials and password bytes cross the helper boundary only through private temporary files.
+
+```sh
+nix profile install github:strio-dev/coopr#coopr-sequoia-signing
+# From a local Coopr source checkout:
+nix profile install path:.#coopr-sequoia-signing
+```
+
+Manage keys with `sq` in your Sequoia key store, then pass the signing key fingerprint to `--sign-by-sq-fingerprint`. Sequoia signing and native `signedBy` policy verification during these helper-routed transfers use the optional backend. Verification in other static Coopr operations continues to use the existing GPG backend.
+
+The optional backend currently pins `podman-sequoia` 0.4.0. Passphrase-protected keys support single-image signing, but reusing one during a multi-image transfer can fail on the second signature with `Device is already unlocked`. Coopr preserves this upstream error; protected multi-image signing is a known limitation.
+
 `manifest inspect` checks the local list before fetching a registry manifest, with registry authentication and TLS options. `manifest rm --ignore` tolerates missing lists; `manifest push --rm` removes the local list only after a successful push. Registry options use the same authentication, TLS configuration, and retry settings as builds, pull, and push.
 
 ## Image reports
@@ -192,7 +222,7 @@ coopr inspect --format json app:dev
 coopr history app:dev
 ```
 
-`images [IMAGE]` accepts a name selector. Options include `--quiet`, `--digests`, `--no-trunc`, `--noheading`, `--all`, `--sort created|id|repository|size|tag`, and repeatable native `--filter KEY=VALUE`. `--all` includes intermediate images; Coopr's private cache names remain hidden. `--format json` returns structured data; Go templates select fields.
+`images [IMAGE]` accepts a name selector. Options include `--quiet`, `--digests`, `--history`, `--no-trunc`, `--noheading`, `--all`, `--sort created|id|repository|size|tag`, and repeatable native `--filter KEY=VALUE`. `--all` includes intermediate images; Coopr's private cache names remain hidden. `--history` adds image name history to the default table, excluding the first entry when it matches the row’s current name; empty history displays `<none>`. `--format json` returns structured data with raw name history; Go templates select fields.
 
 Image inspection accepts multiple names and `--format` (`-f`) with JSON or a Go template. Successful inspections are printed even if another operand fails. Default output is a JSON array, including for one image. Inspecting an index selects the host platform and returns that image's metadata; use `manifest inspect` for the raw index and its members. A foreign single-platform image can still be inspected.
 
@@ -226,7 +256,9 @@ Global `--log-level` controls diagnostic stderr logs: `trace`, `debug`, `info`, 
 
 `pull --all-tags REPOSITORY` pulls every repository tag. When given several images, image pull attempts each and reports failures after successful results.
 
-Image push accepts `--format oci|v2s2|v2s1`; manifest push accepts `oci|v2s2`. Both support compression format/level/force options and `--remove-signatures`; manifest push also accepts `--add-compression` for additional compressed variants. Image push supports repeatable `--encryption-key` and `--encrypt-layer`, whose negative indexes count from the last layer. Specifying compression format defaults force-compression to true; explicit `--force-compression=false` permits compatible blob reuse.
+Image push accepts `--format oci|v2s2|v2s1`; manifest push accepts `oci|v2s2`. Both support compression format/level/force options and `--remove-signatures`; manifest push also accepts `--add-compression` for additional compressed variants. Image push supports repeatable `--encryption-key` and `--encrypt-layer`, whose negative indexes count from the last layer. Specifying compression format defaults force-compression to true; explicit `--force-compression=false` permits compatible blob reuse. Omitted format/level options use native `containers.conf` defaults.
+
+Image push `--compress` compresses layers for `dir:` destinations. It does not select a compression algorithm or force recompression of an existing variant. Coopr does not expose Buildah’s optional blob-cache compression selector. Build `--disable-compression` has a separate [new-layer meaning](#image-output-controls).
 
 ### Exit status
 

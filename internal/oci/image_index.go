@@ -38,7 +38,7 @@ func AssembleImageIndex(ctx context.Context, outputPath string, variants []Image
 	if err != nil {
 		return v1.Descriptor{}, nil, err
 	}
-	if err := RestoreImageIndex(ctx, outputPath, root, indexData, variants); err != nil {
+	if err := restoreImageIndex(ctx, outputPath, root, indexData, variants, validateImageVariant); err != nil {
 		return v1.Descriptor{}, nil, err
 	}
 	return root, indexData, nil
@@ -96,6 +96,10 @@ func assembleIndexDescriptor(variants []ImageVariant, mediaType string, preserve
 // independently stored child image graphs. It never re-marshals indexData, so
 // the returned layout preserves root's digest exactly.
 func RestoreImageIndex(ctx context.Context, outputPath string, root v1.Descriptor, indexData []byte, variants []ImageVariant) (retErr error) {
+	return restoreImageIndex(ctx, outputPath, root, indexData, variants, validateRetainedImageVariant)
+}
+
+func restoreImageIndex(ctx context.Context, outputPath string, root v1.Descriptor, indexData []byte, variants []ImageVariant, validate func(context.Context, ImageVariant) (*orasoci.Store, error)) error {
 	normalized, err := normalizeImageVariants(variants, true)
 	if err != nil {
 		return err
@@ -103,7 +107,7 @@ func RestoreImageIndex(ctx context.Context, outputPath string, root v1.Descripto
 	if err := validateImageIndex(root, indexData, normalized); err != nil {
 		return err
 	}
-	return restoreIndexGraph(ctx, outputPath, root, indexData, normalized, "image", validateImageVariant)
+	return restoreIndexGraph(ctx, outputPath, root, indexData, normalized, "image", validate)
 }
 
 func restoreIndexGraph(ctx context.Context, outputPath string, root v1.Descriptor, indexData []byte, variants []ImageVariant, kind string, validate func(context.Context, ImageVariant) (*orasoci.Store, error)) (retErr error) {
@@ -282,64 +286,78 @@ func descriptorJSONEqual(a, b v1.Descriptor) bool {
 }
 
 func validateImageVariant(ctx context.Context, variant ImageVariant) (*orasoci.Store, error) {
+	source, actual, err := readImageVariant(ctx, variant)
+	if err != nil {
+		return nil, err
+	}
+	if !platformEqual(actual, variant.Platform) {
+		return nil, fmt.Errorf("image config platform %s differs from requested %s", platformKey(actual), platformKey(variant.Platform))
+	}
+	return source, nil
+}
+
+// CopyAllImages preserves descriptor/config platform differences; transporting
+// an existing graph does not impose generated-output platform assertions.
+func validateRetainedImageVariant(ctx context.Context, variant ImageVariant) (*orasoci.Store, error) {
+	source, _, err := readImageVariant(ctx, variant)
+	return source, err
+}
+
+func readImageVariant(ctx context.Context, variant ImageVariant) (*orasoci.Store, v1.Platform, error) {
 	if variant.Layout == "" {
-		return nil, errors.New("empty OCI layout path")
+		return nil, v1.Platform{}, errors.New("empty OCI layout path")
 	}
 	if variant.Manifest.MediaType != v1.MediaTypeImageManifest && variant.Manifest.MediaType != dockerManifestType {
-		return nil, fmt.Errorf("unsupported image manifest media type %q", variant.Manifest.MediaType)
+		return nil, v1.Platform{}, fmt.Errorf("unsupported image manifest media type %q", variant.Manifest.MediaType)
 	}
 	if err := checkDescriptor(variant.Manifest); err != nil {
-		return nil, fmt.Errorf("invalid image manifest descriptor: %w", err)
+		return nil, v1.Platform{}, fmt.Errorf("invalid image manifest descriptor: %w", err)
 	}
 	_, layoutDescriptor, err := layoutRoot(variant.Layout)
 	if err != nil {
-		return nil, fmt.Errorf("read OCI layout root: %w", err)
+		return nil, v1.Platform{}, fmt.Errorf("read OCI layout root: %w", err)
 	}
 	if !content.Equal(layoutDescriptor, variant.Manifest) {
-		return nil, errors.New("OCI layout root differs from image manifest descriptor")
+		return nil, v1.Platform{}, errors.New("OCI layout root differs from image manifest descriptor")
 	}
 	source, err := orasoci.NewWithContext(ctx, variant.Layout)
 	if err != nil {
-		return nil, fmt.Errorf("open OCI layout: %w", err)
+		return nil, v1.Platform{}, fmt.Errorf("open OCI layout: %w", err)
 	}
 	resolved, err := source.Resolve(ctx, variant.Manifest.Digest.String())
 	if err != nil || !content.Equal(resolved, variant.Manifest) {
-		return nil, fmt.Errorf("resolve image manifest: %v", err)
+		return nil, v1.Platform{}, fmt.Errorf("resolve image manifest: %v", err)
 	}
 	if err := verifyArchiveGraph(ctx, source, variant.Manifest); err != nil {
-		return nil, fmt.Errorf("invalid image graph: %w", err)
+		return nil, v1.Platform{}, fmt.Errorf("invalid image graph: %w", err)
 	}
 	manifestData, err := readLayerMetadata(ctx, source, variant.Manifest)
 	if err != nil {
-		return nil, fmt.Errorf("read image manifest: %w", err)
+		return nil, v1.Platform{}, fmt.Errorf("read image manifest: %w", err)
 	}
 	var manifest v1.Manifest
 	if err := json.Unmarshal(manifestData, &manifest); err != nil {
-		return nil, fmt.Errorf("decode image manifest: %w", err)
+		return nil, v1.Platform{}, fmt.Errorf("decode image manifest: %w", err)
 	}
 	if manifest.SchemaVersion != 2 || manifest.MediaType != "" && manifest.MediaType != variant.Manifest.MediaType {
-		return nil, errors.New("image manifest schema or media type differs from descriptor")
+		return nil, v1.Platform{}, errors.New("image manifest schema or media type differs from descriptor")
 	}
 	wantConfigType := v1.MediaTypeImageConfig
 	if variant.Manifest.MediaType == dockerManifestType {
 		wantConfigType = dockerConfigType
 	}
 	if manifest.Config.MediaType != wantConfigType {
-		return nil, fmt.Errorf("image config has media type %q, want %q", manifest.Config.MediaType, wantConfigType)
+		return nil, v1.Platform{}, fmt.Errorf("image config has media type %q, want %q", manifest.Config.MediaType, wantConfigType)
 	}
 	configData, err := readLayerMetadata(ctx, source, manifest.Config)
 	if err != nil {
-		return nil, fmt.Errorf("read image config: %w", err)
+		return nil, v1.Platform{}, fmt.Errorf("read image config: %w", err)
 	}
 	var image v1.Image
 	if err := json.Unmarshal(configData, &image); err != nil {
-		return nil, fmt.Errorf("decode image config: %w", err)
+		return nil, v1.Platform{}, fmt.Errorf("decode image config: %w", err)
 	}
-	actual := normalizeImagePlatform(image.Platform)
-	if !platformEqual(actual, variant.Platform) {
-		return nil, fmt.Errorf("image config platform %s differs from requested %s", platformKey(actual), platformKey(variant.Platform))
-	}
-	return source, nil
+	return source, normalizeImagePlatform(image.Platform), nil
 }
 
 // Rewrite only member identities; retain index metadata and ordered duplicate

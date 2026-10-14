@@ -12,7 +12,7 @@ import (
 
 func TestAddInlineDataRejectsUnsafeSourcePath(t *testing.T) {
 	for _, path := range []string{"../escape", "/absolute", "."} {
-		err := addInlineData(&recordingBuilder{}, "/target", definition.InlineFile{Path: path, Data: "payload"}, upstream.AddAndCopyOptions{})
+		err := addInlineData(&recordingBuilder{}, "/target", []definition.InlineFile{{Path: path, Data: "payload"}}, upstream.AddAndCopyOptions{})
 		if err == nil || !strings.Contains(err.Error(), "is not local") {
 			t.Fatalf("addInlineData path %q error = %v", path, err)
 		}

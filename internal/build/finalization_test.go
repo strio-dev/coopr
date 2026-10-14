@@ -18,7 +18,7 @@ func TestFinalizationValidatesPlatformsAndSigning(t *testing.T) {
 		platforms []string
 		want      string
 	}{
-		{"local signing", Options{Signing: transfer.SigningOptions{SigstorePrivateKeyFile: "key"}}, []string{"linux/amd64"}, "registry destination"},
+		{"local signing", Options{Signing: transfer.SigningOptions{SigstorePrivateKeyFile: "key"}}, []string{"linux/amd64"}, "native push destination"},
 		{"password without key", Options{Signing: transfer.SigningOptions{PassphraseFile: "pass"}}, []string{"linux/amd64"}, "requires"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -76,5 +76,20 @@ func TestFinalizationRejectsOutputOverlaps(t *testing.T) {
 		if err := preflightFilesystemOutput(buildah.FilesystemOutput{Type: "local", Path: output}, definition, store); err == nil {
 			t.Fatalf("store overlap %s accepted", output)
 		}
+	}
+}
+
+func TestFinalizationUsesNativeSigningDestinations(t *testing.T) {
+	for _, destination := range []transfer.Destination{{Transport: "registry", Name: "registry.test/app:latest"}, {Transport: "containers-storage", Name: "localhost/app:latest"}, {Transport: "dir", Name: "/tmp/image"}} {
+		for _, signing := range []transfer.SigningOptions{{SigstoreParameterFile: "parameters.yaml"}, {SignBy: "gpg", SigstorePrivateKeyFile: "key"}} {
+			opts := Options{Signing: signing}
+			if err := validateFinalization(&opts, []string{"linux/amd64"}, []transfer.Destination{destination}); err != nil {
+				t.Fatalf("destination=%+v signing=%+v: %v", destination, signing, err)
+			}
+		}
+	}
+	opts := Options{Signing: transfer.SigningOptions{SignBy: "gpg", SigstorePrivateKeyFile: "key", PassphraseFile: "password"}}
+	if err := validateFinalization(&opts, []string{"linux/amd64"}, []transfer.Destination{{Transport: "registry", Name: "registry.test/app:latest"}}); err == nil || !strings.Contains(err.Error(), "only one") {
+		t.Fatalf("shared legacy passphrase conflict = %v", err)
 	}
 }

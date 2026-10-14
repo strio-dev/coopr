@@ -142,3 +142,26 @@ func validatePropertyEnum(properties map[string]string, name string, resolved bo
 	}
 	return nil
 }
+
+// NativeMountField names a value-bearing mount field for Buildah's RUN parser.
+// Relabeling a cache uses its native bare token instead of a value-bearing flag.
+func NativeMountField(kind, name, value string) (string, string) {
+	switch name {
+	case "size":
+		return "tmpfs-size", value
+	case "mode":
+		if kind == "tmpfs" {
+			return "tmpfs-mode", value
+		}
+	case "relabel":
+		if kind == "cache" {
+			if value == "private" {
+				return "Z", ""
+			}
+			if value == "shared" {
+				return "z", ""
+			}
+		}
+	}
+	return name, value
+}

@@ -27,6 +27,7 @@ func (f *pushTransferFlags) addTo(cmd *cobra.Command, manifestList bool) {
 	flags.IntVar(&f.level, "compression-level", 0, "layer compression level")
 	flags.BoolVar(&f.options.ForceCompression, "force-compression", false, "force the requested layer compression")
 	if !manifestList {
+		flags.BoolVar(&f.options.Compress, "compress", false, "compress layers when pushing to the dir transport")
 		flags.StringArrayVar(&f.options.EncryptionKeys, "encryption-key", nil, "key for encrypting image layers (repeatable)")
 		flags.IntSliceVar(&f.options.EncryptLayers, "encrypt-layer", nil, "layer indexes to encrypt (negative indexes count from the end)")
 	}
@@ -39,8 +40,11 @@ func (f *pushTransferFlags) apply(cmd *cobra.Command, options *transfer.Options)
 	if cmd.Flags().Changed("compression-level") {
 		f.options.CompressionLevel = &f.level
 	}
-	if cmd.Flags().Changed("compression-format") && !cmd.Flags().Changed("force-compression") {
-		f.options.ForceCompression = true
+	f.options.ForceCompressionSet = cmd.Flags().Changed("force-compression")
+	var err error
+	f.options, err = f.options.WithDefaults()
+	if err != nil {
+		return err
 	}
 	if cmd.Flags().Changed("encrypt-layer") && len(f.options.EncryptionKeys) == 0 {
 		return errors.New("--encrypt-layer requires --encryption-key")

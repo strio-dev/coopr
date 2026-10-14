@@ -207,6 +207,9 @@ func TestManifestNativeLifecycleAndCooprMutationVisibility(t *testing.T) {
 }
 
 func TestManifestPushFetchesRemoteMembersAndCopiesAllByDefault(t *testing.T) {
+	if testing.Short() {
+		t.Skip("supervised native manifest push requires a rootless user namespace")
+	}
 	ctx := context.Background()
 	options := maintenanceStoreOptions(t.TempDir())
 	handler := registry.New()

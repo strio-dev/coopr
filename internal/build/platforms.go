@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"go/types"
 	"slices"
-	"strings"
 
 	"coopr/internal/buildah"
 	"coopr/internal/buildcontext"
@@ -85,7 +84,6 @@ func discoverBuildPlatforms(ctx context.Context, def *definition.Definition, pla
 
 func availableImagePlatforms(ctx context.Context, resolver *oci.Resolver, store buildah.StoreOptions, reference string) ([]v1.Platform, error) {
 	var err error
-	pinned := strings.Contains(reference, "@")
 	var local []v1.Platform
 	err = buildah.WithStore(store, func(backend storage.Store) error {
 		_, _, selections, nativeErr := oci.StoredImageSelections(ctx, backend, reference)
@@ -107,7 +105,7 @@ func availableImagePlatforms(ctx context.Context, resolver *oci.Resolver, store 
 	if err != nil {
 		return nil, err
 	}
-	if len(local) > 0 && (pinned || resolver.PullPolicy() == oci.PullMissing || resolver.PullPolicy() == oci.PullNever) {
+	if len(local) > 0 && (resolver.PullPolicy() == oci.PullMissing || resolver.PullPolicy() == oci.PullNever) {
 		return local, nil
 	}
 	if resolver.PullPolicy() == oci.PullNever {

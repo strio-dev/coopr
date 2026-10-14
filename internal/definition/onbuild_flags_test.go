@@ -24,13 +24,8 @@ func TestOnBuildFlagsRequireLiteralsWhenDockerfileCannotExpandThem(t *testing.T)
 
 func TestOnBuildMetadataRejectsFlagsThatFailDockerfileParsing(t *testing.T) {
 	for _, child := range []string{
-		`copy "src" "/dst" link="${linked}"`,
-		`copy "src" "/dst" parents="${parents}"`,
-		`add "src" "/dst" keep-git-dir="${keep}"`,
-		`add "src" "/dst" unpack="${unpack}"`,
-		`run "true" network="${network}"`,
 		`run "true" security="${security}"`,
-		`healthcheck "true" interval="1ns"`,
+		`healthcheck "true" interval="0s"`,
 		`healthcheck "true" retries="bad"`,
 	} {
 		if _, err := parseFragment(strings.NewReader(`onbuild { ` + child + ` }`)); err == nil {
@@ -100,16 +95,102 @@ func TestOnBuildMetadataDefersMountTypeAndSharing(t *testing.T) {
 	}
 }
 
-func TestOnBuildMetadataRejectsNativeOnlyMountOptions(t *testing.T) {
+func TestOnBuildMetadataPreservesNativeMountOptions(t *testing.T) {
 	for _, child := range []string{
 		`mount "bind" target="/source" bind-nonrecursive=#true`,
 		`mount "cache" target="${target}" U=#true`,
 		`mount "bind" target="/source" Z=#true`,
-		`mount "secret" target="/token" source="/host/token" id="token"`,
+		`mount "secret" target="/token" source="token"`,
 	} {
 		_, err := parseFragment(strings.NewReader(`onbuild { run "true" { ` + child + ` } }`))
-		if err == nil || !strings.Contains(err.Error(), "Dockerfile metadata") {
-			t.Errorf("%s: error = %v, want Dockerfile metadata boundary", child, err)
+		if err != nil {
+			t.Errorf("%s: error = %v", child, err)
 		}
+	}
+}
+
+func TestOnBuildNativeMountEncodingRoundTrip(t *testing.T) {
+	for _, child := range []string{
+		`mount "tmpfs" target="/tmp" mode="0755" size="1m"`,
+		`mount "cache" target="/cache" relabel="private"`,
+	} {
+		parsed, err := parseFragment(strings.NewReader(`onbuild {run "true" {` + child + `}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw := parsed.Instructions[0].Arguments[0]
+		if strings.Contains(child, `"tmpfs"`) && (!strings.Contains(raw, "tmpfs-mode=0755") || !strings.Contains(raw, "tmpfs-size=1m")) {
+			t.Errorf("native tmpfs metadata: %s", raw)
+		}
+		if strings.Contains(child, `"cache"`) && !strings.Contains(raw, ",Z") {
+			t.Errorf("native cache relabel metadata: %s", raw)
+		}
+		if _, err := onbuildparse.ParseExpanded(raw, func(word string) (string, error) { return word, nil }); err != nil {
+			t.Fatalf("consume %s: %v", raw, err)
+		}
+	}
+}
+
+func TestOnBuildUnresolvedMountTypeRejectsAmbiguousNativeFields(t *testing.T) {
+	for _, option := range []string{`relabel="private"`} {
+		_, err := parseFragment(strings.NewReader(`onbuild {run "true" {mount "${kind:-cache}" target="/target" ` + option + `}}`))
+		if err == nil || !strings.Contains(err.Error(), "literal mount type") {
+			t.Errorf("%s: %v", option, err)
+		}
+	}
+}
+
+func TestOnBuildDynamicMountTypeKeepsRepresentableNativeFields(t *testing.T) {
+	for _, test := range []struct{ kind, field, native string }{
+		{"bind", `source="payload"`, "source=payload"},
+		{"cache", `source="payload"`, "source=payload"},
+		{"bind", `readonly=#true`, ",ro"},
+		{"cache", `readonly=#true`, ",ro"},
+		{"tmpfs", `readonly=#true`, ",ro"},
+		{"cache", `mode="0700"`, "mode=0700"},
+		{"secret", `mode="0400"`, "mode=0400"},
+		{"ssh", `mode="0600"`, "mode=0600"},
+	} {
+		parsed, err := parseFragment(strings.NewReader(`onbuild {run "true" {mount "${kind}" target="/target" ` + test.field + `}}`))
+		if err != nil {
+			t.Errorf("%s %s: %v", test.kind, test.field, err)
+			continue
+		}
+		raw := parsed.Instructions[0].Arguments[0]
+		if !strings.Contains(raw, test.native) {
+			t.Errorf("native spelling lost: %s", raw)
+		}
+		if _, err := onbuildparse.ParseDeferred(raw); err != nil {
+			t.Fatal(err)
+		}
+		got, err := onbuildparse.ParseExpanded(raw, func(word string) (string, error) { return strings.ReplaceAll(word, "${kind}", test.kind), nil })
+		if err != nil {
+			t.Errorf("%s: %v", raw, err)
+			continue
+		}
+		if got[0].Children[0].Arguments[0] != test.kind {
+			t.Fatalf("child type: %#v", got)
+		}
+	}
+}
+
+func TestOnBuildMaintainerCannotBeAuthored(t *testing.T) {
+	if _, err := parseFragment(strings.NewReader(`onbuild {maintainer "person"}`)); err == nil || !strings.Contains(err.Error(), "MAINTAINER") {
+		t.Fatalf("authoring: %v", err)
+	}
+}
+
+func TestOnBuildDynamicMountModeDoesNotGuessTmpfsConversion(t *testing.T) {
+	parsed, err := parseFragment(strings.NewReader(`onbuild {run "true" {mount "${kind}" target="/target" mode="0700"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := parsed.Instructions[0].Arguments[0]
+	if strings.Contains(raw, "tmpfs-mode=") {
+		t.Fatalf("guessed dynamic tmpfs conversion: %s", raw)
+	}
+	_, err = onbuildparse.ParseExpanded(raw, func(word string) (string, error) { return strings.ReplaceAll(word, "${kind}", "tmpfs"), nil })
+	if err == nil {
+		t.Fatal("accepted mode as native tmpfs-mode after dynamic resolution")
 	}
 }

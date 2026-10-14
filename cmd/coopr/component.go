@@ -43,7 +43,7 @@ func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
 	var network, pullPolicy string
 	var osName, arch, variant string
 	platform := runtime.GOOS + "/" + runtime.GOARCH
-	var push, pull bool
+	var push bool
 	var platforms []string
 	var allow []string
 	var addHosts []string
@@ -122,7 +122,7 @@ func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
 				executionStdin = cmd.InOrStdin()
 			}
 			ref, err := build.BuildComponent(cmd.Context(), build.ComponentOptions{
-				File: files[0], Files: files, Context: resolvedContext, DefinitionsInContext: definitionsInContext, SourcePolicyFile: native.SourcePolicyFile, TransientRunMounts: transientRunMounts, From: native.From, IgnoreFile: native.IgnoreFile, Tags: native.Tag, MetadataFile: native.MetadataFile, Push: push, Pull: pull, PullPolicy: pullPolicy, NoCache: native.NoCache, Network: network, AddHosts: addHosts,
+				File: files[0], Files: files, Context: resolvedContext, DefinitionsInContext: definitionsInContext, SourcePolicyFile: native.SourcePolicyFile, TransientRunMounts: transientRunMounts, From: native.From, IgnoreFile: native.IgnoreFile, Tags: native.Tag, MetadataFile: native.MetadataFile, Push: push, PullPolicy: pullPolicy, NoCache: native.NoCache, Network: network, AddHosts: addHosts,
 				Lifecycle: controls.lifecycle(), Quiet: native.Quiet, LogFile: native.Logfile, LogSplit: native.LogSplitByPlatform, LogRusage: native.LogRusage && !native.Quiet, RusageLogFile: native.RusageLogFile,
 				BuildStore:  store,
 				RunControls: runControls, Jobs: controls.Jobs,
@@ -133,7 +133,7 @@ func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
 				Allow:         allow,
 				BuildContexts: contexts,
 				CacheFrom:     cacheSources, CacheTo: cacheDestinations,
-				AuthFile: registry.authFile, CertDir: registry.certDir, TLSVerify: registry.tlsPolicy(cmd),
+				AuthFile: registry.authFileOption(cmd), CertDir: registry.certDir, TLSVerify: registry.tlsPolicy(cmd),
 				Credentials: registry.credentials, Retry: registry.retry, RetrySet: cmd.Flags().Changed("retry"), RetryDelay: registry.retryDelay, DecryptionKeys: registry.decryptionKeys, SignaturePolicyPath: commandSignaturePolicy(cmd),
 				Stdin: cmd.InOrStdin(), RunStdin: executionStdin, Stdout: cmd.OutOrStdout(), Stderr: cmd.ErrOrStderr(),
 			})
@@ -163,7 +163,7 @@ func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
 	f.Lookup("cache-to").Usage = "write cached results to a repository or type=local,dest=PATH (repeatable)"
 	f.StringArrayVarP(&definitionFiles, "file", "f", nil, "definition file path (repeatable, combined in order; required with a build context)")
 	f.BoolVar(&push, "push", false, "publish the component to a registry (requires --tag)")
-	addPullFlags(cmd, &pullPolicy, &pull)
+	addPullFlags(cmd, &pullPolicy)
 	f.StringVar(&network, "network", "default", "RUN network mode: default, private, none, host, ns:PATH, pasta[:OPTIONS], or named network")
 	f.StringSliceVar(&addHosts, "add-host", nil, "add HOST:IP to build containers (repeatable)")
 	f.StringSliceVar(&platforms, "platform", nil, "target platform as os/arch (repeatable or comma-separated; default: host platform)")

@@ -25,7 +25,7 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 	var osName, arch, variant string
 	var blobDirectory string
 	platform := runtime.GOOS + "/" + runtime.GOARCH
-	var push, pull bool
+	var push bool
 	var platforms []string
 	var allow []string
 	var addHosts []string
@@ -147,7 +147,6 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 				AllPlatforms: native.AllPlatforms, Manifest: native.Manifest,
 				Tags: native.Tag, MetadataFile: native.MetadataFile, IIDFile: native.Iidfile, IIDFileRaw: native.IidfileRaw,
 				Push:             push,
-				Pull:             pull,
 				PullPolicy:       pullPolicy,
 				NoCache:          native.NoCache,
 				Network:          network,
@@ -156,7 +155,7 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 				Jobs:             controls.Jobs,
 				RewriteTimestamp: native.RewriteTimestamp,
 				Platform:         requestedPlatform, Platforms: platforms, Target: native.Target, Format: native.Format, Args: resolvedArgs,
-				AuthFile: registry.authFile, CertDir: registry.certDir, TLSVerify: registry.tlsPolicy(cmd),
+				AuthFile: registry.authFileOption(cmd), CertDir: registry.certDir, TLSVerify: registry.tlsPolicy(cmd),
 				Credentials: registry.credentials, Retry: registry.retry, RetrySet: cmd.Flags().Changed("retry"), RetryDelay: registry.retryDelay, DecryptionKeys: registry.decryptionKeys, SignaturePolicyPath: commandSignaturePolicy(cmd),
 				CacheFrom: cacheSources, CacheTo: cacheDestinations,
 				Secrets: native.Secrets, SSH: native.SSH,
@@ -208,7 +207,7 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 	signing.addTo(cmd)
 	f.StringVar(&native.IidfileRaw, "raw-iidfile", "", "alias for --iidfile-raw")
 	f.BoolVar(&push, "push", false, "publish the image to the registry named by --tag")
-	addPullFlags(cmd, &pullPolicy, &pull)
+	addPullFlags(cmd, &pullPolicy)
 	f.StringVar(&network, "network", "default", "RUN network mode: default, private, none, host, ns:PATH, pasta[:OPTIONS], or named network")
 	f.StringSliceVar(&addHosts, "add-host", nil, "add HOST:IP to build containers (repeatable)")
 	f.StringSliceVar(&platforms, "platform", nil, "target platform as os/arch (repeatable or comma-separated; default: host platform)")

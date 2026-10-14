@@ -24,3 +24,15 @@ func TestTimestampPolicyDistinguishesForceAndSourceDateEpoch(t *testing.T) {
 		t.Fatal("timestamp and source-date-epoch conflict was accepted")
 	}
 }
+
+func TestTimestampRewriteWithoutEpochMatchesNative(t *testing.T) {
+	timestamp := int64(-1)
+	if err := validateTimestampOptions(&timestamp, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	options := upstream.CommitOptions{}
+	(timestampPolicy{timestamp: &timestamp, rewriteTimestamp: true}).apply(&options)
+	if options.SourceDateEpoch != nil || options.HistoryTimestamp.Unix() != -1 || !options.RewriteTimestamp {
+		t.Fatalf("options = %#v", options)
+	}
+}

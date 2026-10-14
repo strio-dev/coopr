@@ -68,20 +68,6 @@ func TestRewrittenImageIndexPreservesMetadataAndDuplicateMembers(t *testing.T) {
 	}
 }
 
-func TestStoredSelectionRequiresResidentManifestNotOrigin(t *testing.T) {
-	origin := oci.Descriptor(v1.MediaTypeImageManifest, []byte("origin"))
-	emitted := oci.Descriptor(v1.MediaTypeImageManifest, []byte("emitted"))
-	selection := oci.StoredSelection{Manifest: emitted, SourceManifest: &origin}
-	if storedSelectionHasManifest(selection, origin) || !storedSelectionHasManifest(selection, emitted) {
-		t.Fatal("origin must not count as a resident runnable manifest")
-	}
-	mismatched := emitted
-	mismatched.Size++
-	if storedSelectionHasManifest(selection, mismatched) {
-		t.Fatal("accepted mismatched resident descriptor")
-	}
-}
-
 func TestNativeNormalizedIndexCopyRetainsDuplicateMembersAndActualRoot(t *testing.T) {
 	if testing.Short() {
 		t.Skip("native image export uses supervised workers")

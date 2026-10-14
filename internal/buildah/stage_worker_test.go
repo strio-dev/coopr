@@ -19,6 +19,7 @@ import (
 	"coopr/internal/planner"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	commonconfig "go.podman.io/common/pkg/config"
 )
 
 func TestStageWorkerResultPreservesCommittedImageOnCancellation(t *testing.T) {
@@ -43,13 +44,27 @@ func TestStageWorkerResultPreservesCommittedImageOnCancellation(t *testing.T) {
 			t.Error(err)
 		}
 	}()
-	response := stageWorkerResponse{ImageID: seed.ImageID, Config: json.RawMessage(`{"config":{"Env":["proof=committed"]}}`)}
+	response := stageWorkerResponse{ImageID: seed.ImageID, CommandSet: true, Config: json.RawMessage(`{"config":{"Env":["proof=committed"],"Cmd":["hello"]}}`)}
 	for _, workerErr := range []error{nil, context.Canceled, context.DeadlineExceeded, errors.New("worker exit failure")} {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		finished, err := (&graphExecutor{store: lease.store}).completeStageWorkerResponse(ctx, "producer", response, nil, workerErr, false, "")
 		if !errors.Is(err, context.Canceled) || (workerErr != nil && !errors.Is(err, workerErr)) || finished.state.storageImageID != seed.ImageID || finished.state.config == nil {
 			t.Fatalf("lost committed ownership or worker error: %#v, %v", finished.state, err)
+		}
+		if err := finished.state.config.Apply(definition.Instruction{Name: "entrypoint", Arguments: []string{"echo"}}); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := finished.state.config.MarshalJSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var image v1.Image
+		if err := json.Unmarshal(raw, &image); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(image.Config.Cmd, []string{"hello"}) {
+			t.Fatalf("worker result lost CMD authorship: %v", image.Config.Cmd)
 		}
 	}
 	response.ImageID = "invalid"
@@ -99,6 +114,7 @@ func TestStageWorkerMessagePreservesExecutionInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := stageWorkerRequest{
+		CommandSet: true, BaseCommandSet: true,
 		ProgressPrefix:    "[linux/amd64] [2/3] [component shared] ",
 		ExecutableOrigin:  "/opt/coopr/bin/coopr",
 		ProgressReference: "app:latest",
@@ -145,12 +161,12 @@ func TestStageWorkerMessagePreservesExecutionInputs(t *testing.T) {
 	if !reflect.DeepEqual(decoded, request) {
 		t.Fatalf("decoded request differs:\n got: %#v\nwant: %#v", decoded, request)
 	}
-	parsed, err := imageconfig.Parse(decoded.Logical)
+	parsed, err := imageconfig.Restore(decoded.Logical, decoded.CommandSet)
 	if err != nil {
 		t.Fatal(err)
 	}
 	raw, err := parsed.MarshalJSON()
-	if err != nil || len(raw) == 0 || decoded.Images["0"] != "storage-parent" {
+	if err != nil || len(raw) == 0 || !parsed.CommandSet() || decoded.Images["0"] != "storage-parent" {
 		t.Fatalf("round-tripped config = %s, source=%q, error=%v", raw, decoded.Images["0"], err)
 	}
 }
@@ -226,5 +242,56 @@ func TestStageWorkerProtocolPreservesOpaqueSelectedConfig(t *testing.T) {
 	}
 	if len(decoded.ResolvedBases) != 1 || string(decoded.ResolvedBases[0].Source.ConfigData) != string(config) {
 		t.Fatalf("worker transport changed verified config bytes: %+v", decoded.ResolvedBases)
+	}
+}
+
+func TestStageWorkerInstallsModulesBeforeResolver(t *testing.T) {
+	t.Setenv("REGISTRY_AUTH_FILE", "")
+	t.Setenv("DOCKER_CONFIG", "")
+	for _, test := range []struct{ name, baselineDelay, moduleDelay, wantError string }{
+		{"module repairs baseline retry", "invalid-baseline", "13ms", "missing-source-policy.json"},
+		{"module retry validated by resolver", "11ms", "invalid-module", "create stage resolver: parse containers.conf retry_delay"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			baseline := filepath.Join(root, "baseline.conf")
+			module := filepath.Join(root, "module.conf")
+			if err := os.WriteFile(baseline, []byte("[engine]\nretry=1\nretry_delay='"+test.baselineDelay+"'\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(module, []byte("[engine]\nretry=7\nretry_delay='"+test.moduleDelay+"'\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _, _ = commonconfig.New(&commonconfig.Options{SetDefault: true}) })
+			if _, err := commonconfig.New(&commonconfig.Options{Modules: []string{baseline}, SetDefault: true}); err != nil {
+				t.Fatal(err)
+			}
+			request := stageWorkerRequest{
+				Stage:   planner.Stage{ID: "module-order", Platform: "linux/amd64"},
+				Logical: json.RawMessage(`{}`), BaseLogical: json.RawMessage(`{}`),
+				ResolverEnabled: true, ComponentStore: filepath.Join(root, "components"),
+				RunControls:      RunControls{ConfigModules: []string{module}},
+				SourcePolicyFile: filepath.Join(root, "missing-source-policy.json"),
+			}
+			path := filepath.Join(root, "request.json")
+			if err := writeWorkerJSON(path, request); err != nil {
+				t.Fatal(err)
+			}
+			var decoded stageWorkerRequest
+			if err := readWorkerJSON(path, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			_, err := executeStageWorkerRequestControlled(context.Background(), decoded, nil)
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("worker boundary error=%v, want %q", err, test.wantError)
+			}
+			cfg, err := commonconfig.Default()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Engine.Retry != 7 || cfg.Engine.RetryDelay != test.moduleDelay {
+				t.Fatalf("worker selected wrong config: retry=%d delay=%q", cfg.Engine.Retry, cfg.Engine.RetryDelay)
+			}
+		})
 	}
 }

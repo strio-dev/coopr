@@ -160,7 +160,7 @@ type graphExecutor struct {
 func (executor *graphExecutor) nativeBuilder(builder *upstream.Builder, options upstream.BuilderOptions) nativeBuilder {
 	controls := executor.options.RunControls
 	return nativeBuilder{
-		Builder: builder, isolation: options.Isolation,
+		Builder: builder, systemContext: options.SystemContext, isolation: options.Isolation,
 		executableOrigin: executor.options.executableOrigin,
 		runtime:          effectiveRuntime(executor.options.Runtime, controls), runtimeArgs: slices.Clone(controls.RuntimeFlags),
 		secretSpecs: executor.options.Secrets, sshSpecs: executor.options.SSH,
@@ -903,7 +903,7 @@ func (executor *graphExecutor) prepareGraphStage(ctx context.Context, plan *plan
 		prepared.baseManifest = bindings.caller.manifestDigest
 		prepared.baseRoot = bindings.caller.root
 		prepared.retainsCaller = true
-		prepared.logical = bindings.caller.config.Clone()
+		prepared.logical = bindings.caller.config.Continue()
 	} else if stage.SourceContext != "" {
 		resolved, ok := executor.namedContext(stage.SourceContext, stage.Platform)
 		if !ok {
@@ -965,7 +965,7 @@ func (executor *graphExecutor) prepareGraphStage(ctx context.Context, plan *plan
 			return preparedGraphStage{}, fmt.Errorf("stage %s base config: %w", stage.ID, err)
 		}
 	}
-	prepared.baseLogical = prepared.logical.Clone()
+	prepared.baseLogical = prepared.logical.Continue()
 	if stage.Kind == "from" || stage.Kind == "package" {
 		if err := seedStagePath(prepared.logical); err != nil {
 			return preparedGraphStage{}, fmt.Errorf("stage %s default environment: %w", stage.ID, err)
@@ -1532,13 +1532,11 @@ func (operation copyFromImageOperation) apply(builder operationBuilder, _ string
 	if !ok {
 		return errors.New("COPY --from requires a native Buildah builder")
 	}
+	if err := addInlineData(builder, operation.destination, operation.inlineFiles, inlineCopyOptions(operation.options)); err != nil {
+		return err
+	}
 	if len(operation.sources) != 0 {
 		if err := CopyFromImage(operation.store, operation.imageID, native.Builder, operation.destination, operation.extract, operation.options, operation.sources...); err != nil {
-			return err
-		}
-	}
-	for _, source := range operation.inlineFiles {
-		if err := addInlineData(builder, operation.destination, source, inlineCopyOptions(operation.options)); err != nil {
 			return err
 		}
 	}
@@ -1678,7 +1676,7 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 		}
 		// Entitlements are request authorization, not cache inputs. Check them
 		// before lowering and before any instruction-cache lookup.
-		deviceCache, err := runDeviceCacheForPlannedOperation(plannedOperation)
+		deviceCache, err := runDeviceCacheForPlannedOperation(plannedOperation, options.RunControls)
 		if err != nil {
 			return "", Result{}, nil, fmt.Errorf("operation %d: load CDI devices: %w", index+1, err)
 		}
@@ -1802,6 +1800,13 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 				resolvedInputs = preparedRun.resolved
 				resolvedInputsComplete = preparedRun.complete
 			}
+			deviceIdentity, deviceErr := cacheRunDeviceIdentity(plannedOperation, options.RunControls, executor.allowedEntitlements)
+			if deviceErr != nil {
+				return "", Result{}, nil, deviceErr
+			}
+			if deviceIdentity != "" {
+				resolvedInputs = append(resolvedInputs, instructionCacheResolvedInput{Kind: "devices", Identity: deviceIdentity.String()})
+			}
 			var cacheRoot *PackageRootMetadata
 			if captureRoot {
 				cacheRoot = currentRoot
@@ -1835,7 +1840,7 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 				finalCacheEligible = true
 				finalCacheDirect = index == len(planned)-1
 			}
-			if cacheable && portableInstructionEligible(plannedOperation, operations[0], options.RunControls) {
+			if cacheable && portableInstructionEligible(operations[0]) {
 				portableCacheKey, portableCacheable, err = portableInstructionKey(executor, cacheInput, cacheParent)
 				if err != nil {
 					return "", Result{}, nil, fmt.Errorf("operation %d portable cache key: %w", index+1, err)
@@ -1869,10 +1874,11 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 					executor.instructionPortableCache.record(ctx, executor, portableCacheKey, cachedImageID, cacheEntry.ManifestDigest, cacheEntry.RootMetadata, builderOptions.SystemContext)
 				}
 				uncachedMetadata := cachedMetadataReplacement{
-					OCIBase:     slices.Clone(current.OCIv1.History),
-					DockerBase:  slices.Clone(current.Docker.History),
-					Pending:     slices.Clone(current.PrependedEmptyLayers),
-					Annotations: current.Annotations(),
+					ParentDiffIDs: slices.Clone(current.OCIv1.RootFS.DiffIDs),
+					OCIBase:       slices.Clone(current.OCIv1.History),
+					DockerBase:    slices.Clone(current.Docker.History),
+					Pending:       slices.Clone(current.PrependedEmptyLayers),
+					Annotations:   current.Annotations(),
 				}
 				if builderOptions.Format != define.OCIv1ImageManifest {
 					// Docker schema 2 cannot retain manifest annotations.
@@ -2160,7 +2166,7 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 				if err != nil {
 					return "", Result{}, nil, err
 				}
-				*logical = *baseLogical.Clone()
+				*logical = *baseLogical.Continue()
 				committed, err = executor.finalizeOutput(ctx, committed, originalBaseID, builderOptions, logical)
 				return committed.ImageID, committed, root, err
 			}
@@ -2238,7 +2244,7 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 		return committed.ImageID, committed, root, err
 	}
 	if unchangedBase {
-		*logical = *baseLogical.Clone()
+		*logical = *baseLogical.Continue()
 		return current.FromImageID, Result{ManifestDigest: baseManifest.String()}, root, nil
 	}
 	// Metadata operations may reorder Buildah's incremental ENV updates. Replay
@@ -2494,10 +2500,11 @@ func layoutImageHasNoLayers(layout string) (bool, error) {
 }
 
 type cachedMetadataReplacement struct {
-	OCIBase     []v1.History
-	DockerBase  []buildahdocker.V2S2History
-	Pending     []v1.History
-	Annotations map[string]string
+	ParentDiffIDs []digest.Digest
+	OCIBase       []v1.History
+	DockerBase    []buildahdocker.V2S2History
+	Pending       []v1.History
+	Annotations   map[string]string
 }
 
 // replaceCachedMetadata retains the cached filesystem instruction but
@@ -2512,18 +2519,47 @@ func replaceCachedMetadata(builder *upstream.Builder, replacement cachedMetadata
 	if len(builder.OCIv1.History) == 0 || len(builder.Docker.History) == 0 {
 		return false, errors.New("cached image history is missing its filesystem instruction")
 	}
-	ociOperation := builder.OCIv1.History[len(builder.OCIv1.History)-1]
-	dockerOperation := builder.Docker.History[len(builder.Docker.History)-1]
-	// An instruction such as RUN test may leave the filesystem unchanged.
-	// Validate its identity instead of requiring it to contribute a layer.
-	if createdBy == "" || ociOperation.CreatedBy != createdBy || dockerOperation.CreatedBy != createdBy || ociOperation.EmptyLayer != dockerOperation.EmptyLayer {
-		return false, fmt.Errorf("cached image history does not end with the expected instruction %q", createdBy)
+	if len(builder.OCIv1.History) != len(builder.Docker.History) {
+		return false, errors.New("cached image OCI and Docker histories have different lengths")
 	}
-
+	diffs := builder.OCIv1.RootFS.DiffIDs
+	if len(diffs) < len(replacement.ParentDiffIDs) || !slices.Equal(diffs[:len(replacement.ParentDiffIDs)], replacement.ParentDiffIDs) {
+		return false, errors.New("cached image rootfs does not retain the current parent lineage")
+	}
+	added := len(diffs) - len(replacement.ParentDiffIDs)
+	start := len(builder.OCIv1.History) - 1
+	if added == 0 {
+		if !builder.OCIv1.History[start].EmptyLayer {
+			return false, errors.New("cached instruction has nonempty history without an added filesystem layer")
+		}
+	} else {
+		remaining := added
+		for start >= 0 {
+			if !builder.OCIv1.History[start].EmptyLayer {
+				remaining--
+			}
+			if remaining == 0 {
+				break
+			}
+			start--
+		}
+		if start < 0 {
+			return false, errors.New("cached instruction history has fewer filesystem layers than its rootfs")
+		}
+	}
+	// One linked instruction may create several layers. Retain its complete
+	// suffix, bounded by the actual parent rootfs rather than CreatedBy alone.
+	for index := start; index < len(builder.OCIv1.History); index++ {
+		ociOperation := builder.OCIv1.History[index]
+		dockerOperation := builder.Docker.History[index]
+		if createdBy == "" || ociOperation.CreatedBy != createdBy || dockerOperation.CreatedBy != createdBy || ociOperation.EmptyLayer != dockerOperation.EmptyLayer {
+			return false, fmt.Errorf("cached image history does not end with the expected instruction %q", createdBy)
+		}
+	}
 	wantOCI := append(slices.Clone(replacement.OCIBase), replacement.Pending...)
-	wantOCI = append(wantOCI, ociOperation)
+	wantOCI = append(wantOCI, builder.OCIv1.History[start:]...)
 	wantDocker := append(slices.Clone(replacement.DockerBase), dockerHistory(replacement.Pending)...)
-	wantDocker = append(wantDocker, dockerOperation)
+	wantDocker = append(wantDocker, builder.Docker.History[start:]...)
 	historyChanged := !slices.EqualFunc(builder.OCIv1.History, wantOCI, equalOCIHistory)
 	if builder.Format == define.Dockerv2ImageManifest {
 		// The other format's nil/zero timestamp conversion is not a change
@@ -2626,6 +2662,8 @@ func trackConfigOperation(logical *imageconfig.Config, operation Operation) erro
 	case StopSignal:
 		instruction = definition.Instruction{Name: "stopsignal", Arguments: []string{string(value)}}
 	case Expose:
+		// Expose operations have already passed authored validation or native
+		// imported-token normalization. Preserve their canonical port verbatim.
 		instruction = definition.Instruction{Name: "expose", Arguments: []string{string(value)}}
 	case Volume:
 		instruction = definition.Instruction{Name: "volume", Arguments: []string{string(value)}}

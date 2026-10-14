@@ -10,6 +10,9 @@ import (
 	"coopr/internal/definition"
 )
 
+// OCI image creation times must be representable by encoding/json's RFC3339
+// timestamps. Negative Unix seconds are valid, down to year 0000.
+const minSourceDateEpoch = int64(-62167219200) // 0000-01-01T00:00:00Z
 const maxSourceDateEpoch = int64(253402300799) // 9999-12-31T23:59:59Z
 
 type SourceDateEpochSourceKind string
@@ -38,8 +41,8 @@ func parseNumericSourceDateEpoch(value string) (*int64, string, bool, error) {
 	if err != nil {
 		return nil, "", false, nil
 	}
-	if epoch < 0 || epoch > maxSourceDateEpoch {
-		return nil, "", true, fmt.Errorf("SOURCE_DATE_EPOCH must be empty or a base-10 Unix timestamp from 0 through %d, got %q", maxSourceDateEpoch, value)
+	if epoch < minSourceDateEpoch || epoch > maxSourceDateEpoch {
+		return nil, "", true, fmt.Errorf("SOURCE_DATE_EPOCH must be empty or a base-10 Unix timestamp from %d through %d, got %q", minSourceDateEpoch, maxSourceDateEpoch, value)
 	}
 	canonical := strconv.FormatInt(epoch, 10)
 	return &epoch, canonical, true, nil
@@ -80,8 +83,8 @@ func validateResolvedSourceDateEpoch(epoch *int64, description string) (*int64, 
 	if epoch == nil {
 		return nil, "", nil
 	}
-	if *epoch < 0 || *epoch > maxSourceDateEpoch {
-		return nil, "", fmt.Errorf("%s timestamp must be from 0 through %d, got %d", description, maxSourceDateEpoch, *epoch)
+	if *epoch < minSourceDateEpoch || *epoch > maxSourceDateEpoch {
+		return nil, "", fmt.Errorf("%s timestamp must be from %d through %d, got %d", description, minSourceDateEpoch, maxSourceDateEpoch, *epoch)
 	}
 	value := *epoch
 	return &value, strconv.FormatInt(value, 10), nil

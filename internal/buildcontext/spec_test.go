@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	nativeparse "go.podman.io/buildah/pkg/parse"
 )
 
 func TestParseNormalizesSupportedContexts(t *testing.T) {
@@ -53,8 +55,11 @@ func TestParseRejectsInvalidContexts(t *testing.T) {
 		{"source=ssh://git:password@example.com/repo.git", "must not contain credentials"},
 		{"source=https://user:secret@example.com/context.tar", "must not contain credentials"},
 		{"source=ftp://example.com/context", "unsupported build context scheme"},
-		{"base=docker-image://", "invalid docker-image"},
-		{"base=container-image://", "invalid docker-image"},
+		{"base=docker-image://", "invalid build context"},
+		{"base=container-image://", "invalid build context"},
+		{"base=docker://", "invalid build context"},
+		{"base=docker://registry.example/image with space", "invalid docker-image"},
+		{"base=docker-image://https://registry.example/image", "invalid docker-image"},
 		{"layout=oci-layout://./images/app", "tag or digest"},
 	} {
 		t.Run(test.value, func(t *testing.T) {
@@ -123,5 +128,30 @@ func TestNativeGitClassificationSharedSSHAndHTTPInputs(t *testing.T) {
 		if !IsSSHGitSource(value) {
 			t.Errorf("SSH source %q not recognized", value)
 		}
+	}
+}
+
+func TestParseNativeImageAliases(t *testing.T) {
+	for _, prefix := range []string{"docker://", "docker-image://", "container-image://"} {
+		t.Run(prefix, func(t *testing.T) {
+			source := prefix + "docker.io/library/ubuntu:latest"
+			native, err := nativeparse.GetAdditionalBuildContext(source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			contexts, err := Parse([]string{"base=" + source})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(contexts) != 1 || !native.IsImage || contexts[0].Kind != DockerImage || contexts[0].Reference != native.Value {
+				t.Fatalf("contexts=%+v native=%+v", contexts, native)
+			}
+			if _, err := Parse([]string{"base=" + prefix}); err == nil {
+				t.Fatal("accepted empty image reference")
+			}
+			if _, err := ParsePrimary(source, t.TempDir()); err == nil {
+				t.Fatal("accepted image as primary filesystem context")
+			}
+		})
 	}
 }

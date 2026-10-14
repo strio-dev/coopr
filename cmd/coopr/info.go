@@ -9,6 +9,8 @@ import (
 	"github.com/spf13/cobra"
 	upstream "go.podman.io/buildah"
 	"go.podman.io/buildah/define"
+	"go.podman.io/common/pkg/formats"
+	"go.podman.io/common/pkg/report"
 	"go.podman.io/storage"
 )
 
@@ -17,8 +19,8 @@ func newInfoCommand() *cobra.Command {
 	cmd := imageIOCommand("info", "Show native storage and host information", cobra.NoArgs, func(cmd *cobra.Command, _ []string) error {
 		var tmpl *template.Template
 		var err error
-		if format != "" && format != "json" {
-			tmpl, err = template.New("info").Parse(format)
+		if format != "" && !report.IsJSON(format) {
+			tmpl, err = formats.NewParse("info", format)
 			if err != nil {
 				return err
 			}

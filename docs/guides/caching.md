@@ -51,7 +51,7 @@ Paths are relative to the command’s working directory. Coopr creates the direc
 
 Portable caches store eligible instruction snapshots, component outputs, and package results. Restored components retain their selected image’s layers, configuration, and root metadata. RUN cache-mount contents remain local and are **not uploaded** by `--cache-to` or restored by `--cache-from`.
 
-Some instructions stay in the local cache, including device-backed RUNs and unpinned remote ADD. Other operations can prevent reuse of a whole package or component while individual instructions still hit. See [cache scopes](../reference/execution.md#cache-scopes) for the exact boundaries, including layer groups.
+Portable instruction results include device-backed RUNs and remote ADD. HTTP sources are measured and Git refs resolved before an unpinned ADD can reuse a result. Dynamic bases and nested components still resolve their dependencies while reusing individual instructions. See [cache scopes](../reference/execution.md#cache-scopes) for whole-component, package and layer-group behavior.
 
 Trust cache repositories as you would other build inputs. Intermediate results may contain files removed from the final image.
 
@@ -105,6 +105,6 @@ podman run --rm localhost/tools:cached
 
 DNF installs `jq` into the image while its repository metadata and downloaded RPMs stay in the mount. [`keepcache=True`](https://dnf.readthedocs.io/en/latest/conf_ref.html#keepcache-label) retains those RPMs after installation. A later RUN can reuse this data even with `--no-cache`; a new machine starts with an empty mount.
 
-The explicit `id` shares tool data with other mounts using that ID. Omit it for an automatically scoped name that can change with the definition, platform, or component arguments. `sharing="locked"` serializes access; `shared` permits concurrent access and `private` gives concurrent users separate caches.
+The explicit `id` shares tool data with other mounts using that ID. Omit it for an automatically scoped name that can change with the definition, platform, or component arguments. `sharing="locked"` serializes access; `shared` permits concurrent access. The bundled Buildah backend does not support `sharing="private"`; use distinct cache IDs when callers need separate caches.
 
 Mount data is disposable: the build must work when it is empty. See [mount options](../reference/definition.md#run-mount-options) and [cache cleanup](storage.md#clear-run-cache-mounts).

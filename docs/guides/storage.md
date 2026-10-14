@@ -87,7 +87,7 @@ coopr save --format oci-dir --output app-layout app:dev
 coopr load --input app-layout
 ```
 
-An OCI save includes one image or a complete stored index. A partially stored index exports one selected image, rather than all resident members; use `--platform linux/amd64` to choose explicitly. Native export can change layer compression and manifest/index digests. Docker’s classic Engine store also needs one selected platform for an index; see [transfer contracts](../reference/execution.md#layers-storage-and-copying).
+An OCI save includes one image or a stored manifest list. Exporting a list fails if a required member is missing; use `--platform linux/amd64` to export a resident image explicitly. An ordinary single-platform pull remains one image even when it retains its source index as metadata. Native export can change layer compression and manifest/index digests. Docker's classic Engine store also needs one selected platform for an index; see [transfer contracts](../reference/execution.md#layers-storage-and-copying).
 
 To save several images in one Docker archive, use `--multi-image-archive`:
 
@@ -142,7 +142,7 @@ coopr manifest push app:multi registry.example.com/team/app:dev
 
 Podman reads local indexes directly. `manifest add` can also read remote images and explicit image transports; push fetches their contents when publishing the list. Create/add `--all` includes every member of an input index, and push includes all members by default.
 
-You can also build into a manifest list with `coopr build --manifest NAME`. This updates an existing native list in place: aliases and the native list ID follow the update, while prior index digests still select their original index. An ordinary pulled image is not a native manifest list.
+You can also build into a manifest list with `coopr build --manifest NAME`. This updates an existing native list in place: aliases and the native list ID follow the update, while exports of prior index digests select their original index. Tagging a retained digest adds an alias to the existing native record. An ordinary pulled image is not a native manifest list.
 
 Annotate members or the index without rebuilding their files. `manifest push --rm` removes the local list only after successful publication. See [manifest list options](../reference/cli.md#manifest-lists) for annotations, platform overrides, and removal.
 

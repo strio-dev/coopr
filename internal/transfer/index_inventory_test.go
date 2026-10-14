@@ -53,7 +53,7 @@ func TestStoredIndexNativeCopyPreservesSourceInventory(t *testing.T) {
 					opts.SignaturePolicyPath = policy
 				}
 				destination := Destination{Transport: "dir", Name: filepath.Join(t.TempDir(), "output")}
-				_, err := copyStoredIndex(ctx, store.GraphRoot, root, raw, selections, destination, opts)
+				_, err := copyStoredIndex(ctx, root, raw, selections, destination, opts)
 				if reject && (err == nil || !strings.Contains(err.Error(), "rejected by policy")) {
 					t.Fatalf("copy rejection = %v, want signature-policy rejection", err)
 				}
@@ -129,7 +129,7 @@ func TestHistoricalStoredIndexCopyPreservesSourceIDsAndNames(t *testing.T) {
 				}
 			}
 			var progress bytes.Buffer
-			_, err := copyStoredIndex(ctx, store.GraphRoot, root, raw, selections, destination, Options{BuildStore: store, ProgressWriter: &progress})
+			_, err := copyStoredIndex(ctx, root, raw, selections, destination, Options{BuildStore: store, ProgressWriter: &progress})
 			if failDestination {
 				if err == nil || !strings.Contains(err.Error(), "not a directory") {
 					t.Fatalf("destination failure = %v", err)

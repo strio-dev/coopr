@@ -146,7 +146,7 @@ func (executor *graphExecutor) materializeLocalComponent(ctx context.Context, re
 		Mode: planner.Publish, Target: selectedTarget, Platform: platform, Arguments: maps.Clone(parameters), AwaitComponentReturns: true,
 		BuildContexts: executor.options.BuildContexts, DeferImageSource: deferredPolicySource(executor.sourcePolicy),
 		TransientRunMounts:      TransientMountInstructions(executor.options.TransientRunMounts),
-		SourceDateEpochResolver: sourceDateEpochResolver(ctx, buildCredentialSource{secretSpecs: executor.options.Secrets, sshSpecs: executor.options.SSH}),
+		SourceDateEpochResolver: sourceDateEpochResolver(ctx, buildCredentialSource{secretSpecs: executor.options.Secrets, sshSpecs: executor.options.SSH, systemContext: executor.system}),
 	}, executor.resolveBaseImage, func(ctx context.Context, spec buildcontext.Spec, target v1.Platform) (ResolvedImageSource, error) {
 		return executor.materializeNamedContext(ctx, spec, target)
 	})

@@ -106,12 +106,11 @@ func selectImageSource(ctx context.Context, resolver *oci.Resolver, reference st
 		return ResolvedImageSource{}, err
 	}
 	var cached *ResolvedImageSource
-	pinned := strings.Contains(reference, "@")
-	if resolver.PullPolicy() != oci.PullAlways || pinned {
+	if resolver.PullPolicy() != oci.PullAlways {
 		stored, err := oci.ResolveStoredImage(ctx, store, reference, platform)
 		if err == nil {
 			selected := ResolvedImageSource{ImageID: stored.StorageImageID, Root: stored.Root, Selected: stored.Selected, SourceManifest: stored.SourceManifest, ConfigData: append(json.RawMessage(nil), stored.ConfigData...), Reference: canonical.String()}
-			if resolver.PullPolicy() != oci.PullNewer || pinned {
+			if resolver.PullPolicy() != oci.PullNewer {
 				return selected, nil
 			}
 			cached = &selected

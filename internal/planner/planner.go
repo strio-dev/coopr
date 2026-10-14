@@ -17,6 +17,7 @@ import (
 	"coopr/internal/onbuildparse"
 	"github.com/containerd/platforms"
 	"github.com/moby/buildkit/util/system"
+	"github.com/openshift/imagebuilder"
 )
 
 type Mode string
@@ -1427,6 +1428,36 @@ func (g *graph) declare(inst definition.Instruction, values scope, expansion sco
 		return false, fmt.Errorf("invalid argument name %q", name)
 	}
 	g.declared[name] = true
+	if _, automatic := g.automatic[name]; inst.ProcessQuotes && automatic && name != "TARGETSTAGE" && name != "TARGETOSVERSION" && name != "BUILDOSVERSION" {
+		user := maps.Clone(g.opts.PublishedArguments)
+		if user == nil {
+			user = map[string]string{}
+		}
+		maps.Copy(user, g.opts.Arguments)
+		native := imagebuilder.NewBuilder(user)
+		native.Env = dockerEnvironment(expansion)
+		native.BuiltinArgDefaults = map[string]string{}
+		for key, value := range g.automatic {
+			native.BuiltinArgDefaults[key] = value.value
+		}
+		raw := "ARG " + name
+		if len(inst.Arguments) == 2 {
+			raw += "=" + inst.Arguments[1]
+		}
+		node, err := imagebuilder.ParseDockerfile(strings.NewReader(raw))
+		if err != nil {
+			return false, err
+		}
+		step := native.Step()
+		if err = step.Resolve(node.Children[0]); err == nil {
+			err = native.Run(step, imagebuilder.NoopExecutor, true)
+		}
+		if err != nil {
+			return false, err
+		}
+		values[name] = binding{value: native.Args[name], present: true}
+		return true, nil
+	}
 	value := values[name]
 	supplied := false
 	if v, ok := g.opts.Arguments[name]; ok {
@@ -1884,7 +1915,11 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 	dynamicConfig := deferredConfig
 	packageFixed := map[string]bool{}
 	g.collectArgumentReferences(raw.head, g.globals, packageFixed)
+	var nativeSnapshot scope
 	for instructionIndex, inst := range instructions {
+		if !inst.NativeContinuation {
+			nativeSnapshot = g.instructionScope(values, environment, shadows)
+		}
 		var transient definition.Instruction
 		if inst.Name == "run" && len(g.opts.TransientRunMounts) != 0 && (g.opts.Mode != Publish || packagePhase) {
 			transient.Children = g.opts.TransientRunMounts
@@ -1906,6 +1941,9 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 				packageFixed[inst.Arguments[0]] = true
 			}
 			expansion := g.instructionScope(g.expansionScope(values), environment, shadows)
+			if inst.ProcessQuotes {
+				expansion = nativeSnapshot
+			}
 			_, err := g.declare(inst, values, expansion)
 			if err != nil {
 				return fmt.Errorf("stage %s: %w", stage.ID, err)
@@ -1931,7 +1969,15 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 			continue
 		}
 		expansionValues := g.instructionScope(values, environment, shadows)
-		normalized, err := normalize(inst, expansionValues)
+		if inst.ProcessQuotes && inst.Name == "env" {
+			expansionValues = nativeSnapshot
+		}
+		structuralValues := expansionValues
+		if inst.DeferredOnBuild != "" && (inst.Name == "copy" || inst.Name == "add") {
+			structuralValues = maps.Clone(g.globals)
+			maps.Copy(structuralValues, expansionValues)
+		}
+		normalized, err := normalizeWithStructuralScope(inst, expansionValues, structuralValues)
 		if err != nil {
 			return fmt.Errorf("stage %s %s: %w", stage.ID, inst.Name, err)
 		}
@@ -2332,23 +2378,32 @@ func cloneContextSpec(spec buildcontext.Spec) *buildcontext.Spec {
 }
 
 func normalize(inst definition.Instruction, values scope) (definition.Instruction, error) {
+	return normalizeWithStructuralScope(inst, values, values)
+}
+
+func normalizeWithStructuralScope(inst definition.Instruction, values, structural scope) (definition.Instruction, error) {
 	if inst.DeferredOnBuild != "" {
-		if inst.Name != "run" {
-			return definition.Instruction{}, fmt.Errorf("deferred ONBUILD metadata requires a RUN instruction")
+		if inst.Name != "run" && inst.Name != "copy" && inst.Name != "add" {
+			return definition.Instruction{}, fmt.Errorf("deferred ONBUILD metadata requires a RUN, COPY, or ADD instruction")
 		}
-		parsed, err := onbuildparse.ParseExpandedRaw(inst.DeferredOnBuild, func(word string) (string, error) {
+		parsed, err := onbuildparse.ParseExpandedRawWithFlags(inst.DeferredOnBuild, func(word string) (string, error) {
 			return expandDockerWord(word, values)
 		}, func(word string) (string, error) {
 			return expandHeredoc(word, values)
+		}, func(flag string) (string, error) {
+			if inst.Name != "run" && strings.HasPrefix(flag, "--from=") {
+				return expandDockerWord(flag, structural)
+			}
+			return expandDockerWord(flag, values)
 		})
 		if err != nil {
 			return definition.Instruction{}, err
 		}
-		if len(parsed) != 1 || parsed[0].Name != "run" {
-			return definition.Instruction{}, fmt.Errorf("deferred ONBUILD metadata must contain exactly one RUN")
+		if len(parsed) != 1 || parsed[0].Name != inst.Name {
+			return definition.Instruction{}, fmt.Errorf("deferred ONBUILD metadata must contain exactly one %s", strings.ToUpper(inst.Name))
 		}
 		out := parsed[0]
-		if _, explicit := out.Properties["network"]; !explicit {
+		if _, explicit := out.Properties["network"]; out.Name == "run" && !explicit {
 			if out.Properties == nil {
 				out.Properties = make(map[string]string)
 			}
@@ -2356,7 +2411,7 @@ func normalize(inst definition.Instruction, values scope) (definition.Instructio
 		}
 		return out, nil
 	}
-	out := definition.Instruction{Name: inst.Name, Form: inst.Form, LayerBoundary: inst.LayerBoundary, Commands: cloneCommands(inst.Commands), Properties: map[string]string{}}
+	out := definition.Instruction{Name: inst.Name, Form: inst.Form, LayerBoundary: inst.LayerBoundary, PropertyOrder: slices.Clone(inst.PropertyOrder), Commands: cloneCommands(inst.Commands), Properties: map[string]string{}}
 	for _, file := range inst.InlineFiles {
 		data := file.Data
 		if file.Expand {
@@ -2369,11 +2424,25 @@ func normalize(inst definition.Instruction, values scope) (definition.Instructio
 		out.InlineFiles = append(out.InlineFiles, definition.InlineFile{Path: file.Path, Data: data})
 	}
 	for index, arg := range inst.Arguments {
+		if inst.Name == "expose" && inst.ProcessQuotes {
+			env := make([]string, 0, len(values))
+			for _, name := range sortedKeys(values) {
+				if values[name].present {
+					env = append(env, name+"="+values[name].value)
+				}
+			}
+			words, err := imagebuilder.ProcessWords(arg, env)
+			if err != nil {
+				return out, err
+			}
+			out.Arguments = append(out.Arguments, words...)
+			continue
+		}
 		value := arg
 		// Runtime commands and inherited triggers retain their payload until
 		// execution. Expanding them here could turn data into shell code or
 		// substitute the parent's values into a future child stage.
-		if (inst.Name != "arg" || index != 0) && inst.Name != "run" && inst.Name != "cmd" && inst.Name != "entrypoint" && inst.Name != "healthcheck" && inst.Name != "onbuild" {
+		if (inst.Name != "arg" || index != 0) && inst.Name != "run" && inst.Name != "cmd" && inst.Name != "entrypoint" && inst.Name != "healthcheck" && inst.Name != "onbuild" && inst.Name != "shell" && inst.Name != "maintainer" {
 			var err error
 			if inst.ProcessQuotes {
 				value, err = expandDockerWord(arg, values)
@@ -2386,7 +2455,12 @@ func normalize(inst definition.Instruction, values scope) (definition.Instructio
 		}
 		out.Arguments = append(out.Arguments, value)
 	}
-	for _, name := range sortedKeys(inst.Properties) {
+	if out.Name == "expose" {
+		if _, err := onbuildparse.ExposedPorts(out.Arguments); err != nil {
+			return out, err
+		}
+	}
+	for _, name := range definition.OrderedPropertyKeys(inst) {
 		expander := expand
 		if inst.ProcessQuotes {
 			expander = expandDockerWord
@@ -2403,7 +2477,7 @@ func normalize(inst definition.Instruction, values scope) (definition.Instructio
 		}
 	}
 	for _, child := range inst.Children {
-		normalized, err := normalize(child, values)
+		normalized, err := normalizeWithStructuralScope(child, values, structural)
 		if err != nil {
 			return out, err
 		}

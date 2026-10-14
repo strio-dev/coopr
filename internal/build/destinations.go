@@ -138,7 +138,7 @@ type outputReport struct {
 func applyOutputDestinations(ctx context.Context, kind oci.Kind, layout string, root v1.Descriptor, destinations []transfer.Destination, opts transfer.Options) (outputReport, error) {
 	return publishDestinations(ctx, kind, root, destinations, func(ctx context.Context, destination transfer.Destination) (string, error) {
 		copyOptions := opts
-		if destination.Transport != "registry" && (destination.Transport != "local" || opts.Signing.SignBy == "") {
+		if destination.Transport == "local" && opts.Signing.SignBy == "" {
 			copyOptions.Signing = transfer.SigningOptions{}
 		}
 		if kind == oci.Image {

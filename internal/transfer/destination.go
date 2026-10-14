@@ -24,6 +24,10 @@ import (
 // Copy a complete prepared graph through the same native destination and copy
 // options used for individual native-storage images.
 func copyImageDestination(ctx context.Context, layout string, root v1.Descriptor, destination Destination, opts Options, policy *signature.Policy) (_ string, retErr error) {
+	if needsSequoiaHelper(opts) {
+		return transferWithSequoiaHelper(ctx, "copy-destination", layout, root, destination, opts, policy != nil, imagecopy.CopyAllImages)
+	}
+
 	src, err := imagestore.LayoutReference(layout, root)
 	if err != nil {
 		return "", err
@@ -76,7 +80,12 @@ func copyImageDestination(ctx context.Context, layout string, root v1.Descriptor
 	if err != nil {
 		return "", err
 	}
-	options := &imagecopy.Options{SourceCtx: system, DestinationCtx: system, ReportWriter: opts.ProgressWriter, ImageListSelection: imagecopy.CopyAllImages, SignBy: opts.Signing.SignBy, SignPassphrase: gpg, SignBySigstorePrivateKeyFile: opts.Signing.SigstorePrivateKeyFile, SignSigstorePrivateKeyPassphrase: sigstore}
+	signers, cleanupSigners, err := buildah.NativeSigners(opts.Signing.SigstoreParameterFile, opts.Signing.SequoiaFingerprint, sigstore, gpg, opts.signingInteractionOutput())
+	if err != nil {
+		return "", err
+	}
+	defer cleanupSigners()
+	options := &imagecopy.Options{Signers: signers, SourceCtx: system, DestinationCtx: system, ReportWriter: opts.ProgressWriter, ImageListSelection: imagecopy.CopyAllImages, SignBy: opts.Signing.SignBy, SignPassphrase: gpg, SignBySigstorePrivateKeyFile: opts.Signing.SigstorePrivateKeyFile, SignSigstorePrivateKeyPassphrase: sigstore}
 	if err := opts.Push.Apply(options); err != nil {
 		return "", err
 	}

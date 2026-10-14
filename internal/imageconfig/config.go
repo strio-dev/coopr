@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path"
 	"regexp"
 	"slices"
 	"sort"
@@ -18,9 +17,11 @@ import (
 	"time"
 
 	"coopr/internal/definition"
+	"coopr/internal/onbuildparse"
 	dockerspec "github.com/moby/docker-image-spec/specs-go/v1"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"go.podman.io/image/v5/pkg/strslice"
 )
 
 var platformToken = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
@@ -63,7 +64,23 @@ func Parse(data []byte) (*Config, error) {
 	if err := validateTopLevel(root); err != nil {
 		return nil, err
 	}
-	return &Config{root: root}, nil
+	config := &Config{root: root}
+	nested, err := config.nested()
+	if err != nil {
+		return nil, err
+	}
+	if raw, exists := nested["Shell"]; exists {
+		// Docker's inherited Shell accepts a string or vector. Use its public
+		// decoder, then keep normalized runtime/cache config in vector form.
+		var shell strslice.StrSlice
+		if err := json.Unmarshal(raw, &shell); err != nil {
+			return nil, err
+		}
+		if err := config.setNested(nested, "Shell", shell); err != nil {
+			return nil, err
+		}
+	}
+	return config, nil
 }
 
 // New returns an empty configuration for a scratch stage.
@@ -76,6 +93,29 @@ func (c *Config) Clone() *Config {
 		return New()
 	}
 	return &Config{root: cloneObject(c.root)}
+}
+
+// Continue copies the configuration without starting a new FROM stage. Component
+// EXTEND and executor checkpoints remain in the caller's evaluation context.
+func (c *Config) Continue() *Config {
+	copy := c.Clone()
+	copy.cmdSet = c.CommandSet()
+	return copy
+}
+
+// CommandSet reports whether CMD was authored in the current evaluation stage.
+// This is build state, not an OCI image configuration field.
+func (c *Config) CommandSet() bool { return c != nil && c.cmdSet }
+
+// Restore restores an executor snapshot, including stage-local CMD authorship.
+// Ordinary image inheritance must use Parse, which starts a fresh stage.
+func Restore(data []byte, commandSet bool) (*Config, error) {
+	config, err := Parse(data)
+	if err != nil {
+		return nil, err
+	}
+	config.cmdSet = commandSet
+	return config, nil
 }
 
 // MarshalJSON returns the complete OCI image configuration document.
@@ -157,14 +197,9 @@ func (c *Config) Apply(inst definition.Instruction) error {
 		if err := decode(nested, "WorkingDir", &current); err != nil {
 			return err
 		}
-		value := inst.Arguments[0]
-		if !path.IsAbs(value) {
-			if current == "" {
-				current = "/"
-			}
-			value = path.Join(current, value)
-		} else {
-			value = path.Clean(value)
+		value, err := onbuildparse.WorkingDirectory(current, inst.Arguments[0])
+		if err != nil {
+			return err
 		}
 		return c.setNested(nested, "WorkingDir", value)
 	case "user":
@@ -200,11 +235,8 @@ func (c *Config) Apply(inst definition.Instruction) error {
 		}
 		return c.setNested(nested, "StopSignal", inst.Arguments[0])
 	case "expose":
-		if err := plain(inst, 1); err != nil {
+		if err := plain(inst, len(inst.Arguments)); err != nil {
 			return err
-		}
-		if strings.ContainsAny(inst.Arguments[0], " \t\r\n\x00") {
-			return fmt.Errorf("EXPOSE port %q must be one token", inst.Arguments[0])
 		}
 		current := make(map[string]struct{})
 		if err := decode(nested, "ExposedPorts", &current); err != nil {
@@ -213,7 +245,13 @@ func (c *Config) Apply(inst definition.Instruction) error {
 		if current == nil {
 			current = make(map[string]struct{})
 		}
-		current[inst.Arguments[0]] = struct{}{}
+		ports, err := onbuildparse.ExposedPorts(inst.Arguments)
+		if err != nil {
+			return err
+		}
+		for _, port := range ports {
+			current[port] = struct{}{}
+		}
 		return c.setNested(nested, "ExposedPorts", current)
 	case "volume":
 		if err := plain(inst, 1); err != nil {
@@ -340,7 +378,7 @@ func (c *Config) Shell(fallback []string) ([]string, error) {
 		return nil, err
 	}
 	if len(shell) == 0 {
-		return nil, errors.New("config.Shell must contain at least one argument")
+		return slices.Clone(fallback), nil
 	}
 	return slices.Clone(shell), nil
 }
@@ -464,7 +502,7 @@ func validateNested(nested map[string]json.RawMessage) error {
 		{"User", new(string)}, {"ExposedPorts", new(map[string]struct{})}, {"Env", new([]string)},
 		{"Entrypoint", new([]string)}, {"Cmd", new([]string)}, {"Volumes", new(map[string]struct{})},
 		{"WorkingDir", new(string)}, {"Labels", new(map[string]string)}, {"StopSignal", new(string)},
-		{"ArgsEscaped", new(bool)}, {"Shell", new([]string)},
+		{"ArgsEscaped", new(bool)}, {"Shell", new(strslice.StrSlice)},
 		{"OnBuild", new([]string)},
 	}
 	if raw, exists := nested["Healthcheck"]; exists && !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
@@ -475,9 +513,8 @@ func validateNested(nested map[string]json.RawMessage) error {
 		if err := json.Unmarshal(raw, &healthcheck); err != nil {
 			return fmt.Errorf("image configuration config.Healthcheck: %w", err)
 		}
-		if err := validateHealthcheck(healthcheck); err != nil {
-			return fmt.Errorf("image configuration config.Healthcheck: %w", err)
-		}
+		// Inherited Docker metadata is admitted using the native typed shape.
+		// Authored HEALTHCHECK constraints belong to definition.ValidateOperation.
 	}
 	if raw, exists := nested["OnBuild"]; exists && !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		var onBuild []string
@@ -485,8 +522,13 @@ func validateNested(nested map[string]json.RawMessage) error {
 			return fmt.Errorf("image configuration config.OnBuild: %w", err)
 		}
 		for index, trigger := range onBuild {
-			if strings.TrimSpace(trigger) == "" || strings.ContainsRune(trigger, '\x00') {
-				return fmt.Errorf("image configuration config.OnBuild[%d] must be a nonempty Dockerfile instruction without NUL", index)
+			if strings.TrimSpace(trigger) == "" {
+				return fmt.Errorf("image configuration config.OnBuild[%d] must be a nonempty Dockerfile instruction", index)
+			}
+			if strings.ContainsRune(trigger, '\x00') {
+				if err := definition.ValidateOperation(definition.Instruction{Name: "onbuild", Arguments: []string{trigger}}); err != nil {
+					return fmt.Errorf("image configuration config.OnBuild[%d]: %w", index, err)
+				}
 			}
 		}
 	}
@@ -495,54 +537,7 @@ func validateNested(nested map[string]json.RawMessage) error {
 			return fmt.Errorf("image configuration config.%s: %w", check.key, err)
 		}
 	}
-	if raw, exists := nested["Shell"]; exists {
-		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-			return nil
-		}
-		var shell []string
-		if err := json.Unmarshal(raw, &shell); err != nil || len(shell) == 0 {
-			return errors.New("image configuration config.Shell must contain at least one argument")
-		}
-	}
-	return nil
-}
 
-func validateHealthcheck(healthcheck Healthcheck) error {
-	if len(healthcheck.Test) == 0 {
-		return errors.New("test must contain CMD, CMD-SHELL, or NONE")
-	}
-	for _, argument := range healthcheck.Test {
-		if strings.ContainsRune(argument, '\x00') {
-			return errors.New("test cannot contain NUL")
-		}
-	}
-	switch healthcheck.Test[0] {
-	case "NONE":
-		if len(healthcheck.Test) != 1 || healthcheck.Interval != 0 || healthcheck.Timeout != 0 || healthcheck.StartPeriod != 0 || healthcheck.StartInterval != 0 || healthcheck.Retries != 0 {
-			return errors.New("NONE does not accept command arguments or timing fields")
-		}
-	case "CMD":
-		if len(healthcheck.Test) < 2 {
-			return errors.New("CMD requires at least one command argument")
-		}
-	case "CMD-SHELL":
-		if len(healthcheck.Test) != 2 {
-			return errors.New("CMD-SHELL requires exactly one command")
-		}
-	default:
-		return errors.New("test must begin with CMD, CMD-SHELL, or NONE")
-	}
-	for name, duration := range map[string]time.Duration{
-		"Interval": healthcheck.Interval, "Timeout": healthcheck.Timeout,
-		"StartPeriod": healthcheck.StartPeriod, "StartInterval": healthcheck.StartInterval,
-	} {
-		if duration != 0 && duration < time.Millisecond {
-			return fmt.Errorf("%s cannot be less than 1ms", name)
-		}
-	}
-	if healthcheck.Retries < 0 {
-		return errors.New("retries must be nonnegative")
-	}
 	return nil
 }
 
@@ -782,6 +777,9 @@ func properties(inst definition.Instruction) map[string]string {
 }
 
 func propertyKeys(inst definition.Instruction) []string {
+	if len(inst.Properties) != 0 {
+		return definition.OrderedPropertyKeys(inst)
+	}
 	props := properties(inst)
 	keys := make([]string, 0, len(props))
 	for key := range props {

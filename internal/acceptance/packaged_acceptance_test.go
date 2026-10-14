@@ -203,6 +203,20 @@ extend {
 			t.Fatalf("packaged builds did not use fuse-overlayfs: %v", err)
 		}
 	})
+	t.Run("MultipleExecInstallation", func(t *testing.T) {
+		a.t = t
+		a.write("sequence.coopr", "from \""+base+`" {
+    run {
+        exec "/bin/sh" "-c" "printf first >/sequence"
+        exec "/bin/sh" "-c" "printf second >>/sequence"
+    }
+    cmd { exec "/bin/cat" "/sequence" }
+}
+`)
+		a.coopr(false, "none", "build", "/work/sequence.coopr", "--tag", "coopr-release-sequence:acceptance", "--platform", a.platform)
+		a.coopr(false, "none", "save", "--format", "oci-archive", "--output", "/work/sequence.oci.tar", "coopr-release-sequence:acceptance")
+		a.assertImage("sequence.oci.tar", "firstsecond", a.platform)
+	})
 	t.Run("SelfContainedLocalState", func(t *testing.T) {
 		a.t = t
 		a.write("self-component.coopr", `extend {
@@ -545,10 +559,11 @@ func (a packagedAcceptance) conformance() {
 			a.t.Fatalf("conformance runtime=%q, want %q", got, want)
 		}
 	}
+	archives := []string{filepath.Join(dir, "podman.docker.tar"), filepath.Join(dir, "coopr.docker.tar")}
+	a.podman("save", "--format", "docker-archive", "--output", archives[0], tag)
+	a.coopr(false, "none", "save", "--format", "docker-archive", "--platform", a.platform, "--output", "/work/containerfile-conformance/coopr.docker.tar", "coopr-release-conformance:acceptance")
 	configs := make([]map[string]any, 0, 2)
-	for i, image := range []string{tag, built} {
-		archive := filepath.Join(a.workspace, fmt.Sprintf("config-%d.tar", i))
-		a.podman("save", "--format", "docker-archive", "--output", archive, image)
+	for _, archive := range archives {
 		config, err := packagedDockerConfig(archive)
 		if err != nil {
 			a.t.Fatal(err)

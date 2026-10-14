@@ -120,8 +120,8 @@ func TestBuildControlListValuesReachValidation(t *testing.T) {
 		name      string
 		got, want []string
 	}{
-		{"dns", controls.DNSServers, []string{"192.0.2.1", "192.0.2.2"}},
-		{"dns-search", controls.DNSSearch, []string{"one.test", "two.test"}},
+		{"dns", controls.DNSServers, []string{"192.0.2.1", "192.0.2.2", "192.0.2.1"}},
+		{"dns-search", controls.DNSSearch, []string{"One.TEST", "Two.TEST"}},
 		{"dns-option", controls.DNSOptions, []string{"ndots:2", "timeout:3"}},
 		{"ulimit", controls.Ulimits, []string{"nofile=1024:2048", "nproc=512:1024"}},
 	} {

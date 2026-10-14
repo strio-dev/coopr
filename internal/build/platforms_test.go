@@ -77,7 +77,7 @@ func TestAllPlatformsDiscoversPartiallyCachedRegistryIndexOffline(t *testing.T) 
 	if err != nil || !found {
 		t.Fatalf("partial native index: found=%t err=%v", found, err)
 	}
-	if _, _, _, _, err := appendManifest(ctx, reference, "oci", store, resident); err == nil || !strings.Contains(err.Error(), "unavailable instances") {
+	if _, _, _, _, err := appendManifest(ctx, reference, "oci", store, resident); err == nil || !strings.Contains(err.Error(), "not a native manifest list") {
 		t.Fatalf("append incomplete native list: %v", err)
 	}
 	after, afterData, _, found, err := testStoredImageIndex(ctx, store, reference)

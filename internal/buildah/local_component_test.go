@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -416,9 +415,9 @@ from "scratch" {
 }
 `
 			}
-			ctx, cancel := context.WithTimeout(f.ctx, 5*time.Second)
-			defer cancel()
-			_, err := BuildPlan(ctx, testPlan(t, source), options)
+			// Package creation performs real storage I/O before cycle detection.
+			// Use the fixture's bounded context rather than timing that setup.
+			_, err := BuildPlan(f.ctx, testPlan(t, source), options)
 			if err == nil || !strings.Contains(err.Error(), "component invocation cycle at") || errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("changing-parameter cycle error=%v", err)
 			}

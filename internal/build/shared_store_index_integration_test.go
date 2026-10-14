@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +16,7 @@ import (
 	"coopr/internal/oci"
 	"coopr/internal/transfer"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"go.podman.io/image/v5/docker/reference"
 	"go.podman.io/storage"
 )
 
@@ -78,8 +79,8 @@ func TestSharedStoreMultiPlatformLocalIndex(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := transfer.Copy(ctx, oci.Image, root.Digest.String(), transfer.Destination{Transport: "local", Name: "/"}, copyOptions); err == nil || !strings.Contains(err.Error(), "tag stored multi-platform image") {
-					t.Fatalf("expected native tagging failure for invalid destination, got %v", err)
+				if _, err := transfer.Copy(ctx, oci.Image, root.Digest.String(), transfer.Destination{Transport: "local", Name: "/"}, copyOptions); !errors.Is(err, reference.ErrReferenceInvalidFormat) {
+					t.Fatalf("expected native invalid-reference error, got %v", err)
 				}
 				after, err := testNativeNames(storeOptions)
 				if err != nil || !reflect.DeepEqual(before, after) {
@@ -87,6 +88,9 @@ func TestSharedStoreMultiPlatformLocalIndex(t *testing.T) {
 				}
 				if _, _, _, found, err := testStoredImageIndex(ctx, storeOptions, "/"); err == nil || found {
 					t.Fatalf("invalid native reference was accepted: found=%t err=%v", found, err)
+				}
+				if got := inspectSharedIndex(t, ctx, storeOptions, tag, root, data, selections); !reflect.DeepEqual(got, original) {
+					t.Fatalf("failed native tag changed source index: got=%+v want=%+v", got, original)
 				}
 				const alias = "localhost/shared-index-alias:latest"
 				for _, source := range []string{root.Digest.String(), tag, root.Digest.String()} {

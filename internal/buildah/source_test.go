@@ -21,6 +21,9 @@ import (
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"go.podman.io/common/libimage"
+	libconfig "go.podman.io/common/pkg/config"
+	nativemanifest "go.podman.io/image/v5/manifest"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/storage"
 	"oras.land/oras-go/v2"
@@ -117,6 +120,61 @@ func TestResolveImageSourceReusesNativeSelectionFromBuildahStore(t *testing.T) {
 	if err != nil || selection.Root.Digest != root.Digest || selection.Selected.Digest != amdManifest.Digest {
 		t.Fatalf("native selection = %+v, %v", selection, err)
 	}
+
+	t.Run("native-index-selection-does-not-bypass-config-admission", func(t *testing.T) {
+		wanted := amd64
+		wanted.Variant = "v3"
+		list, err := nativemanifest.ListFromBlob(rootData, root.MediaType)
+		if err != nil {
+			t.Fatal(err)
+		}
+		chosen, err := list.ChooseInstance(&types.SystemContext{OSChoice: wanted.OS, ArchitectureChoice: wanted.Architecture, VariantChoice: wanted.Variant})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if chosen != amdManifest.Digest {
+			t.Fatalf("native selected unexpected instance %s", chosen)
+		}
+		native, err := libimage.RuntimeFromStore(privateStore, &libimage.RuntimeOptions{SystemContext: system})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := native.Pull(ctx, canonicalRef, libconfig.PullPolicyNever, &libimage.PullOptions{CopyOptions: libimage.CopyOptions{OS: wanted.OS, Architecture: wanted.Architecture, Variant: wanted.Variant}}); err == nil {
+			t.Fatal("native full admission unexpectedly accepted mismatched cached config")
+		}
+		_, err = oci.ResolveStoredImage(ctx, privateStore, canonicalRef, wanted)
+		if !errors.Is(err, oci.ErrStoredPlatformUnavailable) {
+			t.Fatalf("cached config bypassed native-compatible admission: %v", err)
+		}
+	})
+
+	t.Run("native-defaulted-config-platform", func(t *testing.T) {
+		blank, _ := sourceTestImage(t, ctx, source, v1.Platform{}, "native-defaults")
+		id, err := ImportSelectedImage(ctx, privateStore, system, sourceDir, blank)
+		if err != nil {
+			t.Fatal(err)
+		}
+		name := "localhost/defaulted-platform:latest"
+		if err := privateStore.AddNames(id, []string{name}); err != nil {
+			t.Fatal(err)
+		}
+		native, err := libimage.RuntimeFromStore(privateStore, &libimage.RuntimeOptions{SystemContext: system})
+		if err != nil {
+			t.Fatal(err)
+		}
+		wanted := v1.Platform{OS: runtime.GOOS, Architecture: runtime.GOARCH}
+		if _, err := native.Pull(ctx, name, libconfig.PullPolicyNever, &libimage.PullOptions{CopyOptions: libimage.CopyOptions{OS: wanted.OS, Architecture: wanted.Architecture}}); err != nil {
+			t.Fatalf("native default-platform control: %v", err)
+		}
+		local, err := oci.NewResolver(oci.Options{PullPolicy: "never"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := ResolveImageSource(ctx, local, name, wanted, privateStore, system)
+		if err != nil || got.ImageID != id {
+			t.Fatalf("native-defaulted platform rejected: %+v %v", got, err)
+		}
+	})
 	tampered := amdManifest
 	tampered.Digest = digest.FromString("different-manifest")
 	if err := verifyStoredManifest(ctx, privateStore, system, oci.StoredSelection{Root: root, Manifest: tampered, ImageID: imageID, ConfigData: configData}); err == nil {

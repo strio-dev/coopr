@@ -7,6 +7,7 @@ import (
 
 	"github.com/containerd/platforms"
 	"github.com/moby/buildkit/frontend/dockerfile/shell"
+	"github.com/openshift/imagebuilder"
 )
 
 var predefinedProxyArgumentNames = map[string]bool{
@@ -47,9 +48,18 @@ func sortedTrueKeys(values map[string]bool) []string {
 }
 
 func (g *graph) collectArgumentReferences(inst definition.Instruction, values scope, used map[string]bool) {
-	collect := func(value string, processQuotes bool) {
+	// These configuration values are literal in native Dockerfile semantics.
+	if inst.Name == "shell" || inst.Name == "maintainer" {
+		return
+	}
+	collect := func(value string, processQuotes, heredoc bool) {
 		lex := shell.NewLex('\\')
 		lex.SkipProcessQuotes = !processQuotes
+		if heredoc {
+			lex.SkipProcessQuotes = false
+			lex.RawQuotes = true
+			lex.RawEscapes = true
+		}
 		result, err := lex.ProcessWordWithMatches(value, expansionEnv(values))
 		if err != nil {
 			return
@@ -65,19 +75,19 @@ func (g *graph) collectArgumentReferences(inst definition.Instruction, values sc
 		start = 1
 	}
 	for _, value := range inst.Arguments[start:] {
-		collect(value, inst.ProcessQuotes)
+		collect(value, inst.ProcessQuotes, false)
 	}
 	for _, command := range inst.Commands {
 		for _, value := range command.Arguments {
-			collect(value, inst.ProcessQuotes)
+			collect(value, inst.ProcessQuotes, false)
 		}
 	}
 	for _, value := range inst.Properties {
-		collect(value, inst.ProcessQuotes)
+		collect(value, inst.ProcessQuotes, false)
 	}
 	for _, file := range inst.InlineFiles {
 		if file.Expand {
-			collect(file.Data, false)
+			collect(file.Data, false, true)
 		}
 	}
 	for _, child := range inst.Children {
@@ -111,7 +121,7 @@ func expand(s string, values scope) (string, error) {
 }
 
 func expandDockerWord(s string, values scope) (string, error) {
-	return expandWord(s, values, true)
+	return imagebuilder.ProcessWord(s, dockerEnvironment(values))
 }
 
 func expandWord(s string, values scope, processQuotes bool) (string, error) {
@@ -128,22 +138,31 @@ func expandWord(s string, values scope, processQuotes bool) (string, error) {
 }
 
 func expandHeredoc(s string, values scope) (string, error) {
-	return expand(s, values)
+	lex := shell.NewLex('\\')
+	lex.RawQuotes = true
+	lex.RawEscapes = true
+	result, err := lex.ProcessWordWithMatches(s, expansionEnv(values))
+	if err != nil {
+		return "", err
+	}
+	return result.Result, nil
 }
 
 func automaticPlatformScope(opts Options) scope {
 	targetOS, targetArch, targetVariant := splitPlatform(opts.Platform)
 	build := platforms.DefaultSpec()
+	// Buildah retains imagebuilder's host build defaults for every target platform.
+	buildDefaults := imagebuilder.NewBuilder(nil).BuiltinArgDefaults
 	targetStage := opts.Target
 	if targetStage == "" {
 		targetStage = "default"
 	}
 	values := scope{
-		"BUILDPLATFORM":   {value: platforms.Format(build), present: true},
-		"BUILDOS":         {value: build.OS, present: true},
+		"BUILDPLATFORM":   {value: buildDefaults["BUILDPLATFORM"], present: true},
+		"BUILDOS":         {value: buildDefaults["BUILDOS"], present: true},
 		"BUILDOSVERSION":  {value: build.OSVersion, present: true},
-		"BUILDARCH":       {value: build.Architecture, present: true},
-		"BUILDVARIANT":    {value: build.Variant, present: true},
+		"BUILDARCH":       {value: buildDefaults["BUILDARCH"], present: true},
+		"BUILDVARIANT":    {value: buildDefaults["BUILDVARIANT"], present: true},
 		"TARGETPLATFORM":  {value: opts.Platform, present: true},
 		"TARGETOS":        {value: targetOS, present: true},
 		"TARGETOSVERSION": {value: "", present: true},
@@ -162,4 +181,14 @@ func automaticPlatformScope(opts Options) scope {
 func splitPlatform(platform string) (os, architecture, variant string) {
 	parsed, _ := platforms.Parse(platform) // Planner entry points validate this value.
 	return parsed.OS, parsed.Architecture, parsed.Variant
+}
+
+func dockerEnvironment(values scope) []string {
+	env := make([]string, 0, len(values))
+	for _, name := range sortedKeys(values) {
+		if values[name].present {
+			env = append(env, name+"="+values[name].value)
+		}
+	}
+	return env
 }

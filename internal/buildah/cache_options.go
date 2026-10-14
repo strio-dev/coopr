@@ -7,7 +7,6 @@ import (
 	"reflect"
 	"slices"
 	"strings"
-	"time"
 
 	"go.podman.io/buildah/pkg/parse"
 )
@@ -15,13 +14,6 @@ import (
 type CacheSpec struct {
 	Transport string `json:"transport"`
 	Reference string `json:"reference"`
-}
-
-func validateCacheTTL(ttl *time.Duration) error {
-	if ttl != nil && *ttl < 0 {
-		return errors.New("cache TTL must not be negative")
-	}
-	return nil
 }
 
 func sameCacheStore(a, b any) bool {

@@ -159,7 +159,7 @@ extend { copy "/payload" "/payload" from="derived"; }
 }
 
 func TestStageEntryDefaultsSeparateComponentCacheLowering(t *testing.T) {
-	key, err := new(componentCache).key(&graphExecutor{store: componentCacheKeyStore{}}, validComponentTestKey().Input, &ResolvedComponentPlan{Identity: digest.FromString("component"), Plan: &planner.Plan{}}, nil, v1.Platform{OS: "linux", Architecture: "amd64"})
+	key, err := new(componentCache).key(&graphExecutor{store: componentCacheKeyStore{}}, validComponentTestKey().Input, &ResolvedComponentPlan{Identity: digest.FromString("component"), Plan: &planner.Plan{}}, nil, v1.Platform{OS: "linux", Architecture: "amd64"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}

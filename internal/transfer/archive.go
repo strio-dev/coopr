@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"coopr/internal/buildah"
 	"coopr/internal/imagestore"
 	"coopr/internal/localstore"
 
@@ -88,6 +89,10 @@ func validateComponentArchiveOutput(output string, stores ...string) error {
 }
 
 func copyImageArchive(ctx context.Context, layoutPath string, root v1.Descriptor, destination Destination, opts Options, policy *signature.Policy) (_ string, retErr error) {
+	if needsSequoiaHelper(opts) {
+		return transferWithSequoiaHelper(ctx, "copy-archive", layoutPath, root, destination, opts, policy != nil, imagecopy.CopyAllImages)
+	}
+
 	source, err := imagestore.LayoutReference(layoutPath, root)
 	if err != nil {
 		return "", err
@@ -107,7 +112,7 @@ func copyImageArchive(ctx context.Context, layoutPath string, root v1.Descriptor
 		return "", err
 	}
 	defer func() { retErr = errors.Join(retErr, policyContext.Destroy()) }()
-	if !opts.Push.ChangesManifest() && !opts.Push.RemoveSignatures && (opts.ArchiveUncompressed == nil || *opts.ArchiveUncompressed) {
+	if !opts.Signing.Enabled() && !opts.Push.ChangesManifest() && !opts.Push.RemoveSignatures && (opts.ArchiveUncompressed == nil || *opts.ArchiveUncompressed) {
 		store, err := orasoci.NewWithContext(ctx, layoutPath)
 		if err != nil {
 			return "", err
@@ -149,7 +154,16 @@ func copyImageArchive(ctx context.Context, layoutPath string, root v1.Descriptor
 	if err != nil {
 		return "", err
 	}
-	options := &imagecopy.Options{SourceCtx: system, DestinationCtx: system, PreserveDigests: system.OCIAcceptUncompressedLayers, ImageListSelection: imagecopy.CopyAllImages, ReportWriter: opts.ProgressWriter}
+	sigstorePassphrase, gpgPassphrase, err := opts.Signing.passphrases()
+	if err != nil {
+		return "", err
+	}
+	signers, cleanupSigners, err := buildah.NativeSigners(opts.Signing.SigstoreParameterFile, opts.Signing.SequoiaFingerprint, sigstorePassphrase, gpgPassphrase, opts.signingInteractionOutput())
+	if err != nil {
+		return "", err
+	}
+	defer cleanupSigners()
+	options := &imagecopy.Options{Signers: signers, SignBy: opts.Signing.SignBy, SignPassphrase: gpgPassphrase, SignBySigstorePrivateKeyFile: opts.Signing.SigstorePrivateKeyFile, SignSigstorePrivateKeyPassphrase: sigstorePassphrase, SourceCtx: system, DestinationCtx: system, PreserveDigests: system.OCIAcceptUncompressedLayers, ImageListSelection: imagecopy.CopyAllImages, ReportWriter: opts.ProgressWriter}
 	if err := opts.Push.Apply(options); err != nil {
 		return "", err
 	}

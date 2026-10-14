@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2/content"
@@ -225,5 +226,31 @@ func TestPlatformKeyUsesNativeFeatureSet(t *testing.T) {
 	repeated.OSFeatures = []string{"x", "", "x"}
 	if platformKey(plain) != platformKey(repeated) {
 		t.Fatal("duplicate and empty feature entries must use the native platform identity")
+	}
+}
+
+func TestRestoreImageIndexPreservesOptionalConfigVariant(t *testing.T) {
+	ctx := context.Background()
+	actual := v1.Platform{OS: "linux", Architecture: "amd64"}
+	layout, manifest := imageIndexTestLayout(t, ctx, actual, "optional-variant", false)
+	wanted := actual
+	wanted.Variant = "v3"
+	child := manifest
+	child.Platform = &wanted
+	data := mustJSON(t, v1.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: v1.MediaTypeImageIndex, Manifests: []v1.Descriptor{child}})
+	root := Descriptor(v1.MediaTypeImageIndex, data)
+	variants := []ImageVariant{{Layout: layout, Manifest: child, Platform: wanted}}
+	output := filepath.Join(t.TempDir(), "restored")
+	if err := RestoreImageIndex(ctx, output, root, data, variants); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := os.ReadFile(filepath.Join(output, "blobs", "sha256", root.Digest.Encoded()))
+	if err != nil || !bytes.Equal(restored, data) {
+		t.Fatalf("restored index differs: %s %v", restored, err)
+	}
+	changed := variants[0]
+	changed.Manifest.Digest = digest.FromString("different sibling")
+	if err := RestoreImageIndex(ctx, filepath.Join(t.TempDir(), "wrong-sibling"), root, data, []ImageVariant{changed}); err == nil {
+		t.Fatal("accepted another manifest as the retained child")
 	}
 }

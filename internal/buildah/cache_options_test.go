@@ -25,6 +25,10 @@ func TestCacheRecordFresh(t *testing.T) {
 	if cache.RecordFresh(now, &zero, now) {
 		t.Fatal("zero cache TTL accepted a record")
 	}
+	negative := -time.Hour
+	if cache.RecordFresh(now, &negative, now) {
+		t.Fatal("negative cache TTL accepted a record")
+	}
 	if !cache.RecordFresh(time.Time{}, nil, now) {
 		t.Fatal("unspecified cache TTL rejected legacy record")
 	}

@@ -171,12 +171,13 @@ func TestAddPassesLinkToBuildah(t *testing.T) {
 func TestWorkDirResolvesAgainstBaseAndCreatesAsCurrentUser(t *testing.T) {
 	fake := &recordingBuilder{workDir: "/base", user: "1000:1000"}
 	err := applyOperations(context.Background(), fake, "", []Operation{
-		WorkDir("nested"), WorkDir("../next"), WorkDir("/absolute"),
+		WorkDir(""), WorkDir("nested"), WorkDir("../next"), WorkDir("/absolute"),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
+		"mkdir:/base:1000:1000", "workdir:/base",
 		"mkdir:/base/nested:1000:1000", "workdir:/base/nested",
 		"mkdir:/base/next:1000:1000", "workdir:/base/next",
 		"mkdir:/absolute:1000:1000", "workdir:/absolute",

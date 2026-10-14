@@ -2,50 +2,17 @@ package buildah
 
 import (
 	"archive/tar"
-	"encoding/binary"
+	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"syscall"
 	"testing"
 
 	storagearchive "go.podman.io/storage/pkg/archive"
-	"go.podman.io/storage/pkg/chrootarchive"
 	"go.podman.io/storage/pkg/idtools"
 	"golang.org/x/sys/unix"
 )
-
-func TestNormalizeRootCapabilityIDMatchesStorageArchiveRules(t *testing.T) {
-	value := make([]byte, 24)
-	binary.LittleEndian.PutUint32(value[:4], 0x03000001)
-	uidMap := []idtools.IDMap{{ContainerID: 0, HostID: 100000, Size: 65536}}
-	for _, test := range []struct {
-		name         string
-		rootID       uint32
-		wantSize     int
-		wantRevision uint32
-		wantRootID   uint32
-	}{
-		{"container root", 100000, 20, 0x02000000, 0},
-		{"mapped nonroot", 100001, 24, 0x03000000, 1},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			binary.LittleEndian.PutUint32(value[20:24], test.rootID)
-			got, err := normalizeRootCapabilityID(value, uidMap, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(got) != test.wantSize || binary.LittleEndian.Uint32(got[:4])&0xff000000 != test.wantRevision {
-				t.Fatalf("normalized capability size=%d revision=%#x", len(got), binary.LittleEndian.Uint32(got[:4])&0xff000000)
-			}
-			if len(got) == 24 && binary.LittleEndian.Uint32(got[20:24]) != test.wantRootID {
-				t.Fatalf("normalized capability root ID = %d, want %d", binary.LittleEndian.Uint32(got[20:24]), test.wantRootID)
-			}
-		})
-	}
-	binary.LittleEndian.PutUint32(value[20:24], 200000)
-	if _, err := normalizeRootCapabilityID(value, uidMap, nil); err == nil {
-		t.Fatal("unmappable capability root ID was accepted")
-	}
-}
 
 func TestPackageRootMetadataFromMountMatchesArchiveHeader(t *testing.T) {
 	root := t.TempDir()
@@ -94,33 +61,15 @@ func TestPackageRootMetadataFromMountMatchesArchiveHeader(t *testing.T) {
 	}
 }
 
-func BenchmarkPackageRootMetadataCapture(b *testing.B) {
-	root := b.TempDir()
-	if err := unix.Setxattr(root, "user.coopr", []byte("root-metadata"), 0); err != nil {
-		b.Skipf("user xattrs unavailable: %v", err)
+func TestPackageRootMetadataFromMountRejectsNonDirectory(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(root, nil, 0600); err != nil {
+		t.Fatal(err)
 	}
-	b.Run("direct", func(b *testing.B) {
-		for range b.N {
-			if _, err := packageRootMetadataFromMount(root, nil, nil, "", ""); err != nil {
-				b.Fatal(err)
-			}
-		}
-	})
-	b.Run("archive", func(b *testing.B) {
-		for range b.N {
-			stream, err := chrootarchive.Tar(root, &storagearchive.TarOptions{
-				Compression: storagearchive.Uncompressed, IncludeSourceDir: true,
-			}, root)
-			if err != nil {
-				b.Fatal(err)
-			}
-			if _, err := tar.NewReader(stream).Next(); err != nil {
-				_ = stream.Close()
-				b.Fatal(err)
-			}
-			if err := stream.Close(); err != nil {
-				b.Fatal(err)
-			}
-		}
-	})
+	if _, err := packageRootMetadataFromMount(root, nil, nil, "", ""); err == nil {
+		t.Fatal("non-directory root accepted")
+	}
+	if _, err := packageRootMetadataFromMount(root+"-missing", nil, nil, "", ""); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing root error = %v", err)
+	}
 }

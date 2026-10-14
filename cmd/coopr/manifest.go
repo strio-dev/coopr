@@ -154,9 +154,9 @@ func addManifestMember(cmd *cobra.Command, backend storage.Store, list *libimage
 		return "", err
 	}
 	var added digest.Digest
-	options := &retry.Options{MaxRetry: int(registry.Retry), Delay: registry.RetryDelay}
-	if !registry.RetrySet {
-		options.MaxRetry = 3
+	options, err := oci.RegistryRetryOptions(registry)
+	if err != nil {
+		return "", err
 	}
 	err = retry.IfNecessary(cmd.Context(), func() error {
 		var err error
@@ -213,9 +213,13 @@ func newManifestCreateCommand() *cobra.Command {
 func newManifestAddCommand() *cobra.Command {
 	var registry registryFlags
 	var all bool
+	var artifact manifestArtifactFlags
 	var annotations []string
 	var annotationOptions libimage.ManifestListAnnotateOptions
-	cmd := imageIOCommand("add <list> <image>...", "Add images to a local manifest list", cobra.MinimumNArgs(2), func(cmd *cobra.Command, args []string) error {
+	cmd := imageIOCommand("add <list> <image>...", "Add images or an artifact to a local manifest list", cobra.MinimumNArgs(2), func(cmd *cobra.Command, args []string) error {
+		if err := artifact.prepare(cmd); err != nil {
+			return err
+		}
 		parsed, err := parseManifestAnnotations(annotations)
 		if err != nil {
 			return err
@@ -224,6 +228,23 @@ func newManifestAddCommand() *cobra.Command {
 		return withManifestStore(cmd, registry.resolverOptions(cmd), true, func(backend storage.Store, native *libimage.Runtime) error {
 			list, err := native.LookupManifestList(args[0])
 			if err != nil {
+				return err
+			}
+			if artifact.enabled {
+				if artifact.options.Subject != "" {
+					artifact.options.Subject, err = manifestMemberReference(cmd.Context(), backend, artifact.options.Subject)
+					if err != nil {
+						return err
+					}
+				}
+				added, err := artifact.add(cmd, backend, list.ID(), registry.resolverOptions(cmd), args[1:]...)
+				if err != nil {
+					return err
+				}
+				if err := list.AnnotateInstance(added, &annotationOptions); err != nil {
+					return err
+				}
+				_, err = fmt.Fprintln(cmd.OutOrStdout(), list.ID())
 				return err
 			}
 			for _, name := range args[1:] {
@@ -239,6 +260,7 @@ func newManifestAddCommand() *cobra.Command {
 			return err
 		})
 	})
+	artifact.addTo(cmd)
 	registry.addTo(cmd)
 	cmd.Flags().BoolVar(&all, "all", false, "add every instance from source manifest lists")
 	addManifestAnnotationFlags(cmd, &annotationOptions, &annotations)

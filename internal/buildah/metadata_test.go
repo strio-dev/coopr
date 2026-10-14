@@ -2,7 +2,9 @@ package buildah
 
 import (
 	"context"
+	"github.com/openshift/imagebuilder"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -46,7 +48,7 @@ from "scratch" {
 	}
 }
 
-func TestExposeSplitsExpandedValuesAndNormalizesPorts(t *testing.T) {
+func TestExposePreservesExpandedTokenWithNativeSemantics(t *testing.T) {
 	request, err := RequestFromPlan(testPlan(t, `
 arg "ports" "80 81/UDP 82-83/sCtP"
 from "scratch" {
@@ -57,9 +59,20 @@ from "scratch" {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Operation{
-		Expose("80/tcp"), Expose("81/udp"),
-		Expose("82/sctp"), Expose("83/sctp"), Expose("84/tcp"),
+	native := imagebuilder.NewBuilder(nil)
+	if err := native.Run(&imagebuilder.Step{Command: "expose", Args: []string{"80 81/UDP 82-83/sCtP", "127.0.0.1:9000:84"}}, imagebuilder.NoopExecutor, true); err != nil {
+		t.Fatal(err)
+	}
+	ports := make([]string, 0, len(native.RunConfig.ExposedPorts))
+	for port := range native.RunConfig.ExposedPorts {
+		ports = append(ports, string(port))
+	}
+	slices.Sort(ports)
+	want := make([]Operation, 0, len(ports))
+	wantEvents := make([]string, 0, len(ports))
+	for _, port := range ports {
+		want = append(want, Expose(port))
+		wantEvents = append(wantEvents, "expose:"+port)
 	}
 	if !reflect.DeepEqual(request.Operations, want) {
 		t.Fatalf("operations = %#v, want %#v", request.Operations, want)
@@ -69,32 +82,8 @@ from "scratch" {
 	if err := applyOperations(context.Background(), fake, "", request.Operations); err != nil {
 		t.Fatal(err)
 	}
-	wantEvents := []string{"expose:80/tcp", "expose:81/udp", "expose:82/sctp", "expose:83/sctp", "expose:84/tcp"}
 	if !reflect.DeepEqual(fake.events, wantEvents) {
 		t.Fatalf("events = %#v, want %#v", fake.events, wantEvents)
-	}
-}
-
-func TestExposeRejectsInvalidPortSpecifications(t *testing.T) {
-	tests := []struct {
-		name, port, message string
-	}{
-		{"unknown protocol", "80/http", "invalid proto"},
-		{"missing port", "/tcp", "no port specified"},
-		{"nonnumeric port", "http", "invalid containerPort"},
-		{"port above maximum", "65536", "invalid containerPort"},
-		{"descending range", "90-80", "invalid containerPort"},
-		{"range width mismatch", "8000-8002:80-81", "invalid ranges specified"},
-		{"invalid host IP", "not-an-ip:8000:80", "invalid IP address"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			instruction := definition.Instruction{Name: "expose", Arguments: []string{test.port}}
-			_, _, err := lowerOperation(planner.Operation{Instruction: instruction}, []string{"/bin/sh", "-c"})
-			if err == nil || !strings.Contains(err.Error(), test.message) {
-				t.Fatalf("want %q, got %v", test.message, err)
-			}
-		})
 	}
 }
 

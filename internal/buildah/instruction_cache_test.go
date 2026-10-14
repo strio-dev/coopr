@@ -238,41 +238,31 @@ func TestPortableInstructionEligibilityUsesDeclaredInputs(t *testing.T) {
 	localAdd := Add{Sources: []string{"archive.tar"}}
 	tests := []struct {
 		name    string
-		planned planner.Operation
 		lowered Operation
 		want    bool
 	}{
-		{name: "isolated run", planned: cacheTestOperationWithProperties("run", map[string]string{"network": "none"}), lowered: Run{}, want: true},
-		{name: "default network", planned: cacheTestOperation("run", "true"), lowered: Run{}, want: true},
-		{name: "run mount", planned: cacheTestOperationWithProperties("run", map[string]string{"network": "none"}), lowered: Run{Mounts: []RunMount{{Type: "cache"}}}, want: true},
-		{name: "run device", planned: cacheTestOperationWithProperties("run", map[string]string{"network": "none"}), lowered: Run{Devices: []runDeviceRequest{{Name: "vendor.com/device=all"}}}},
-		{name: "local copy", planned: planner.Operation{Instruction: definition.Instruction{Name: "copy", Arguments: []string{"src", "/dst"}}, InputContext: "build"}, lowered: Copy{}, want: true},
-		{name: "child input", planned: planner.Operation{Instruction: definition.Instruction{Name: "copy", Children: []definition.Instruction{{Name: "source"}}}}, lowered: Copy{}, want: true},
-		{name: "stage source", planned: planner.Operation{Instruction: definition.Instruction{Name: "copy", Properties: map[string]string{"from": "producer"}}}, lowered: copyFromImageOperation{}, want: true},
-		{name: "named context", planned: planner.Operation{Instruction: definition.Instruction{Name: "copy", Properties: map[string]string{"from": "assets"}}, InputContext: "assets"}, lowered: copyFromImageOperation{}, want: true},
-		{name: "local add", planned: cacheTestOperation("add", "archive.tar", "/dst"), lowered: localAdd, want: true},
-		{name: "remote add", planned: cacheTestOperation("add", "https://example.invalid/archive.tar", "/dst"), lowered: Add{Sources: []string{"https://example.invalid/archive.tar"}}},
-		{name: "pinned remote add", planned: cacheTestOperation("add", "https://example.invalid/archive.tar", "/dst"), lowered: Add{Sources: []string{"https://example.invalid/archive.tar"}, Checksum: digest.FromString("archive").String()}, want: true},
-		{name: "remote git add", planned: cacheTestOperation("add", "https://example.invalid/repository.git#main", "/dst"), lowered: Add{Sources: []string{"https://example.invalid/repository.git#main"}}},
-		{name: "pinned remote git add", planned: cacheTestOperation("add", "https://example.invalid/repository.git#main", "/dst"), lowered: Add{Sources: []string{"https://example.invalid/repository.git#main"}, Checksum: "0123456789ab"}, want: true},
-		{name: "workdir", planned: cacheTestOperation("workdir", "/workspace"), lowered: WorkDir("/workspace"), want: true},
+		{name: "isolated run", lowered: Run{}, want: true},
+		{name: "default network", lowered: Run{}, want: true},
+		{name: "run mount", lowered: Run{Mounts: []RunMount{{Type: "cache"}}}, want: true},
+		{name: "run device", lowered: Run{Devices: []runDeviceRequest{{Name: "vendor.com/device=all"}}}, want: true},
+		{name: "local copy", lowered: Copy{}, want: true},
+		{name: "child input", lowered: Copy{}, want: true},
+		{name: "stage source", lowered: copyFromImageOperation{}, want: true},
+		{name: "named context", lowered: copyFromImageOperation{}, want: true},
+		{name: "local add", lowered: localAdd, want: true},
+		{name: "remote add", lowered: Add{Sources: []string{"https://example.invalid/archive.tar"}}, want: true},
+		{name: "pinned remote add", lowered: Add{Sources: []string{"https://example.invalid/archive.tar"}, Checksum: digest.FromString("archive").String()}, want: true},
+		{name: "remote git add", lowered: Add{Sources: []string{"https://example.invalid/repository.git#main"}}, want: true},
+		{name: "pinned remote git add", lowered: Add{Sources: []string{"https://example.invalid/repository.git#main"}, Checksum: "0123456789ab"}, want: true},
+		{name: "workdir", lowered: WorkDir("/workspace"), want: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := portableInstructionEligible(test.planned, test.lowered, RunControls{}); got != test.want {
+			if got := portableInstructionEligible(test.lowered); got != test.want {
 				t.Fatalf("portableInstructionEligible() = %v, want %v", got, test.want)
-			}
-			_, runs := test.lowered.(Run)
-			wantWithDevice := test.want && !runs
-			if got := portableInstructionEligible(test.planned, test.lowered, RunControls{Devices: []string{"/dev/test-device"}}); got != wantWithDevice {
-				t.Fatalf("portableInstructionEligible(global device) = %v, want %v", got, wantWithDevice)
 			}
 		})
 	}
-}
-
-func cacheTestOperationWithProperties(name string, properties map[string]string) planner.Operation {
-	return planner.Operation{Instruction: definition.Instruction{Name: name, Properties: properties}}
 }
 
 func TestInstructionCacheKeyIgnoresOutputOnlyConfig(t *testing.T) {

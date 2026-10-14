@@ -82,6 +82,9 @@ func newComponentSaveCommand() *cobra.Command {
 			_, err := transfer.Copy(cmd.Context(), oci.Component, args[0], destination, transfer.Options{})
 			return err
 		}
+		if streamIsTerminal(cmd.OutOrStdout()) {
+			return errors.New("refusing to save to terminal. Use -o flag or redirect")
+		}
 		dir, err := componentstore.DefaultDir()
 		if err != nil {
 			return err
@@ -114,6 +117,9 @@ func newComponentLoadCommand() *cobra.Command {
 	cmd := &cobra.Command{Use: "load", Short: "Load a component from an OCI archive", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		path := input
 		if path == "" || path == "-" {
+			if streamIsTerminal(cmd.InOrStdin()) {
+				return errors.New("cannot read from terminal, use command-line redirection or the --input flag")
+			}
 			file, err := os.CreateTemp("", "coopr-component-load-*.tar")
 			if err != nil {
 				return err

@@ -39,7 +39,11 @@ type Instruction struct {
 	// The planner processes their Docker quoting and expansion together in the
 	// child stage, then clears this internal marker from the normalized result.
 	ProcessQuotes bool `json:"process_quotes,omitempty"`
-	// DeferredOnBuild retains an imported RUN trigger until child-stage scope
+	// NativeContinuation shares the preceding imported ARG/ENV expansion snapshot.
+	NativeContinuation bool `json:"native_continuation,omitempty"`
+	// PropertyOrder retains authored ENV assignment order through JSON publication.
+	PropertyOrder []string `json:"property_order,omitempty"`
+	// DeferredOnBuild retains an imported RUN/COPY/ADD trigger until child-stage scope
 	// exists. It is consumed by planning, never exposed as authored syntax.
 	DeferredOnBuild string `json:"deferred_onbuild,omitempty"`
 }
@@ -50,7 +54,7 @@ type Command struct {
 	Arguments []string `json:"arguments"`
 }
 
-// InlineFile is a Dockerfile heredoc source retained through planning.
+// InlineFile is an authored file or Dockerfile heredoc source retained through planning.
 type InlineFile struct {
 	Path   string `json:"path"`
 	Data   string `json:"data"`
@@ -265,6 +269,12 @@ func parseNode(node *kdl.Node, source []byte, position string, child bool) (Inst
 		inst.Arguments = append(inst.Arguments, s)
 	}
 	nodeProperties := node.Properties()
+	if inst.Name == "env" && len(nodeProperties) > 1 {
+		inst.PropertyOrder = slices.Sorted(maps.Keys(nodeProperties))
+		slices.SortFunc(inst.PropertyOrder, func(a, b string) int {
+			return int(nodeProperties[a].Location().Offset - nodeProperties[b].Location().Offset)
+		})
+	}
 	for _, name := range slices.Sorted(maps.Keys(nodeProperties)) {
 		value := nodeProperties[name]
 		if command && (name == "shell" || name == "form") {
@@ -325,6 +335,14 @@ func parseNode(node *kdl.Node, source []byte, position string, child bool) (Inst
 		return inst, fmt.Errorf("%s %q: children are only allowed on stage, command, copy, add, component, layer, or onbuild instructions", position, inst.Name)
 	}
 	for i, childNode := range node.Children().Nodes {
+		if childNode.Name() == "file" && (inst.Name == "copy" || inst.Name == "add") {
+			file, err := parseInlineFile(childNode)
+			if err != nil {
+				return inst, fmt.Errorf("%s %q child %d: %w", position, inst.Name, i+1, err)
+			}
+			inst.InlineFiles = append(inst.InlineFiles, file)
+			continue
+		}
 		if childNode.Name() == "exec" || childNode.Name() == "script" {
 			continue
 		}
@@ -347,6 +365,29 @@ func parseNode(node *kdl.Node, source []byte, position string, child bool) (Inst
 		return inst, fmt.Errorf("%s %q: %w", position, inst.Name, err)
 	}
 	return inst, nil
+}
+
+// parseInlineFile retains decoded KDL bytes. Only raw string syntax disables
+// body expansion; the name is literal, like a native heredoc delimiter.
+func parseInlineFile(node *kdl.Node) (InlineFile, error) {
+	if _, annotated := node.TypeAnnotation(); annotated {
+		return InlineFile{}, fmt.Errorf("file annotations are not supported")
+	}
+	_, block := node.ChildrenInline()
+	if len(node.Properties()) != 0 || block || len(node.Arguments()) != 2 {
+		return InlineFile{}, fmt.Errorf("file requires exactly two strings (name and content), without properties or children")
+	}
+	for _, value := range node.Arguments() {
+		if _, annotated := value.TypeAnnotation(); annotated {
+			return InlineFile{}, fmt.Errorf("file argument annotations are not supported")
+		}
+		if value.Kind() != kdl.String {
+			return InlineFile{}, fmt.Errorf("file name and content must be strings")
+		}
+	}
+	body := node.Arguments()[1]
+	literal, _ := body.Literal()
+	return InlineFile{Path: node.Arguments()[0].String(), Data: body.String(), Expand: !strings.HasPrefix(literal, "#")}, nil
 }
 
 func applyCommandDefaults(inst *Instruction, healthcheckDisabled bool) {
@@ -373,7 +414,7 @@ func normalizeScalar(value kdl.Value, permission bool) (string, error) {
 		return "", fmt.Errorf("annotations are not supported")
 	}
 	literal, _ := value.Literal()
-	octalPermission := permission && strings.HasPrefix(literal, "0o")
+	octalPermission := permission && strings.HasPrefix(strings.TrimPrefix(strings.TrimPrefix(literal, "+"), "-"), "0o")
 	switch resolved := value.RawValue().(type) {
 	case nil:
 		return "", fmt.Errorf("null is not supported")
@@ -459,8 +500,11 @@ func validate(inst Instruction, childCount int, child, resolved bool) error {
 		return fmt.Errorf("inline files are only allowed on run, copy, or add")
 	}
 	for _, file := range inst.InlineFiles {
-		if file.Path == "" || !filepath.IsLocal(filepath.FromSlash(file.Path)) || file.Path == "." || strings.ContainsRune(file.Path, '\x00') || strings.ContainsRune(file.Data, '\x00') {
-			return fmt.Errorf("inline file path and data must be nonempty-path, NUL-free strings")
+		if file.Path == "" || !filepath.IsLocal(filepath.FromSlash(file.Path)) || filepath.Clean(filepath.FromSlash(file.Path)) == "." || strings.ContainsRune(file.Path, '\x00') {
+			return fmt.Errorf("inline file path must be a nonempty local path without NUL")
+		}
+		if n == "run" && strings.ContainsRune(file.Data, '\x00') {
+			return fmt.Errorf("RUN inline executable cannot contain NUL")
 		}
 	}
 	if inst.Form != "" && inst.Form != "exec" && inst.Form != "shell" {
@@ -543,8 +587,8 @@ func validate(inst Instruction, childCount int, child, resolved bool) error {
 			}
 		}
 	case "workdir", "user":
-		if a != 1 || len(p) != 0 || strings.TrimSpace(inst.Arguments[0]) == "" {
-			return fmt.Errorf("expected one nonempty argument and no properties")
+		if a != 1 || len(p) != 0 {
+			return fmt.Errorf("expected one argument and no properties")
 		}
 	case "cmd", "entrypoint":
 		if len(p) != 0 || (inst.Form == "shell" && a != 1) {
@@ -555,11 +599,11 @@ func validate(inst Instruction, childCount int, child, resolved bool) error {
 			return err
 		}
 	case "onbuild":
-		if a != 1 || len(p) != 0 || strings.TrimSpace(inst.Arguments[0]) == "" {
+		if a != 1 || strings.TrimSpace(inst.Arguments[0]) == "" || len(p) != 0 {
 			return fmt.Errorf("expected one nonempty Dockerfile instruction and no properties")
 		}
-		if strings.ContainsRune(inst.Arguments[0], '\x00') {
-			return fmt.Errorf("dockerfile instruction cannot contain NUL")
+		if err := validateOnBuildNUL(inst.Arguments[0]); err != nil {
+			return err
 		}
 	case "component":
 		if _, err := inst.ComponentArguments(); err != nil {
@@ -596,7 +640,7 @@ func validate(inst Instruction, childCount int, child, resolved bool) error {
 		}
 	case "stopsignal", "maintainer":
 		if a != 1 || strings.TrimSpace(inst.Arguments[0]) == "" {
-			return fmt.Errorf("expected one nonempty argument and no properties")
+			return fmt.Errorf("expected one argument and no properties")
 		}
 
 	}
@@ -642,14 +686,14 @@ func validateHealthcheck(inst Instruction, resolved bool) error {
 		if err != nil {
 			return fmt.Errorf("%s property must be a duration: %w", name, err)
 		}
-		if duration != 0 && duration < time.Millisecond {
-			return fmt.Errorf("%s property cannot be less than 1ms", name)
+		if duration <= 0 {
+			return fmt.Errorf("%s property must be positive", name)
 		}
 	}
 	if value, exists := inst.Properties["retries"]; exists && (resolved || !strings.Contains(value, "$")) {
 		retries, err := strconv.Atoi(value)
-		if err != nil || retries < 0 {
-			return fmt.Errorf("retries property must be a nonnegative integer")
+		if err != nil || retries < 1 || int64(retries) > 1<<31-1 {
+			return fmt.Errorf("retries property must be a positive integer no greater than 2147483647")
 		}
 	}
 	return nil
@@ -670,4 +714,20 @@ func FlattenLayers(instructions []Instruction) []Instruction {
 		result = append(result, Instruction{Name: "layer", LayerBoundary: "end"})
 	}
 	return result
+}
+
+// OrderedPropertyKeys returns ENV source order, then any remaining map keys.
+func OrderedPropertyKeys(inst Instruction) []string {
+	keys := make([]string, 0, len(inst.Properties))
+	for _, key := range inst.PropertyOrder {
+		if _, ok := inst.Properties[key]; ok && !slices.Contains(keys, key) {
+			keys = append(keys, key)
+		}
+	}
+	for _, key := range slices.Sorted(maps.Keys(inst.Properties)) {
+		if !slices.Contains(keys, key) {
+			keys = append(keys, key)
+		}
+	}
+	return keys
 }

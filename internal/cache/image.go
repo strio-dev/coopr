@@ -76,6 +76,7 @@ func (k ImageKey) Digest() (digest.Digest, error) {
 }
 
 type ImageRecord struct {
+	CommandSet    *bool           `json:"command_set,omitempty"`
 	RetainsCaller *bool           `json:"retains_caller,omitempty"`
 	Version       string          `json:"version"`
 	CreatedAt     time.Time       `json:"created_at"`

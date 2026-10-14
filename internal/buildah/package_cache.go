@@ -26,7 +26,7 @@ import (
 	"go.podman.io/storage"
 )
 
-const packageCacheLoweringVersion = "coopr-buildah-package-v2"
+const packageCacheLoweringVersion = "coopr-buildah-package-v3"
 
 var errPackageCacheDriverUnknown = errors.New("package cache storage driver is unknown")
 var errPackageContextUnselected = errors.New("named context was not selected during planning")
@@ -113,20 +113,18 @@ func (c *packageResultCache) close() error {
 // inputs and deliberately do not invalidate an otherwise identical package
 // result. Local bind/COPY/ADD inputs are represented by the filtered context
 // digest, while stage, image, and named-context inputs are immutable selected
-// descriptors. Host/device execution remains excluded because package lookup
-// happens before executor entitlement and CDI resolution.
-func packageCacheEligibility(stages []planner.Stage, controls RunControls) (needsContext bool, eligible bool) {
+// descriptors. Selected CDI names and declared devices participate; live
+// hardware state remains a session input. Authorization and selection are
+// checked before aggregate lookup, including device and privileged RUNs.
+func packageCacheEligibility(stages []planner.Stage) (needsContext bool, eligible bool) {
 	for _, stage := range stages {
 		for _, operation := range stage.Operations {
 			switch operation.Name {
 			case "run":
-				if network := operation.Properties["network"]; network != "" && network != "default" && network != "none" {
-					return false, false
-				}
-				if len(controls.Devices) != 0 || operation.Properties["security"] == "insecure" || hasRunDeviceOptions(operation) {
-					return false, false
-				}
 				for _, child := range operation.Children {
+					if child.Name == "device" {
+						continue
+					}
 					if child.Name != "mount" || len(child.Arguments) != 1 {
 						return false, false
 					}
@@ -345,9 +343,6 @@ func packageCacheExecutor(options PlanOptions, runtimeIdentity string) (string, 
 }
 
 func packageCacheKeys(ctx context.Context, options PlanOptions, plan *planner.Plan, stages []planner.Stage, outputs map[string]packageOutput, artifacts []string) (map[string]cache.PackageKey, bool, error) {
-	if !buildResultCacheEligible(options.AddHosts) {
-		return nil, false, nil
-	}
 	for _, stage := range stages {
 		if stage.Kind != "from" || stage.InheritedOnBuildPlanned || strings.EqualFold(stage.Source, "scratch") {
 			continue
@@ -374,7 +369,28 @@ func packageCacheKeys(ctx context.Context, options PlanOptions, plan *planner.Pl
 			return nil, false, nil
 		}
 	}
-	needsContext, eligible := packageCacheEligibility(stages, options.RunControls)
+	needsContext, eligible := packageCacheEligibility(stages)
+	var deviceInputs map[string]digest.Digest
+	if eligible {
+		allowed, err := allowedEntitlements(options.Allow)
+		if err != nil {
+			return nil, false, err
+		}
+		deviceInputs, err = cacheGraphDeviceInputs(stages, options.RunControls, allowed)
+		if err != nil {
+			return nil, false, err
+		}
+		for _, stage := range stages {
+			for _, operation := range stage.Operations {
+				if hasRunDeviceOptions(operation) {
+					continue
+				}
+				if err := authorizePlannedOperation(operation, allowed, nil); err != nil {
+					return nil, false, fmt.Errorf("package stage %s: %w", stage.ID, err)
+				}
+			}
+		}
+	}
 	runtimeIdentity, runtimeErr := instructionRuntimeIdentity(effectiveRuntime(options.Runtime, options.RunControls))
 	if !eligible || runtimeErr != nil && packageStagesNeedRuntime(stages) {
 		return nil, false, nil
@@ -407,6 +423,16 @@ func packageCacheKeys(ctx context.Context, options PlanOptions, plan *planner.Pl
 		planDigest, err := packagePlanDigest(plan, closure, options)
 		if err != nil {
 			return nil, false, err
+		}
+		if len(deviceInputs) != 0 {
+			data, err := json.Marshal(struct {
+				Plan    digest.Digest
+				Devices map[string]digest.Digest
+			}{planDigest, deviceInputs})
+			if err != nil {
+				return nil, false, err
+			}
+			planDigest = digest.FromBytes(data)
 		}
 		bases, err := resolvePackageClosureBases(closure, options.ResolvedBases)
 		if err != nil {

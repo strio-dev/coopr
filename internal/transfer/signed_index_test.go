@@ -5,6 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/google/go-containerregistry/pkg/registry"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,7 +21,9 @@ import (
 	"github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"go.podman.io/common/libimage"
 	"go.podman.io/common/libimage/manifests"
+	commonconfig "go.podman.io/common/pkg/config"
 	"go.podman.io/image/v5/transports/alltransports"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/storage"
@@ -341,6 +346,75 @@ func TestStoredIndexPushHonorsNativePolicyAndImmutableRoot(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	t.Run("native-historical-alias", func(t *testing.T) {
+		source := "localhost/index@" + root.Digest.String()
+		var nativeID string
+		if err := buildah.WithStore(store, func(backend storage.Store) error {
+			native, err := libimage.RuntimeFromStore(backend, nil)
+			if err != nil {
+				return err
+			}
+			image, _, err := native.LookupImage(source, &libimage.LookupImageOptions{ManifestList: true})
+			if err != nil {
+				return err
+			}
+			nativeID = image.ID()
+			if nativeID != oldID {
+				t.Fatalf("native historical alias chose %s, want updated existing record %s", nativeID, oldID)
+			}
+			return image.Tag("native-historical-alias:latest")
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg, err := commonconfig.Default()
+		if err != nil {
+			t.Fatal(err)
+		}
+		previousFormat, previousLevel := cfg.Engine.CompressionFormat, cfg.Engine.CompressionLevel
+		defer func() {
+			cfg.Engine.CompressionFormat, cfg.Engine.CompressionLevel = previousFormat, previousLevel
+		}()
+		for _, defaults := range []struct {
+			name, format string
+			level        *int
+		}{
+			{name: "gzip", format: "gzip"},
+			{name: "zstd", format: "zstd"},
+			{name: "compression-level", format: "gzip", level: new(7)},
+		} {
+			t.Run(defaults.name, func(t *testing.T) {
+				cfg.Engine.CompressionFormat, cfg.Engine.CompressionLevel = defaults.format, defaults.level
+				if _, err := Copy(ctx, oci.Image, source, Destination{Transport: "local", Name: "coopr-historical-alias:latest"}, Options{BuildStore: store}); err != nil {
+					t.Fatal(err)
+				}
+				if err := buildah.WithStore(store, func(backend storage.Store) error {
+					alias, err := backend.Image("localhost/coopr-historical-alias:latest")
+					if err == nil && alias.ID != nativeID {
+						t.Fatalf("historical local alias recreated list: got=%s native=%s", alias.ID, nativeID)
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				// A declared manifest transformation must retain the selected-root
+				// path rather than becoming an ordinary alias of the updated record.
+				if _, err := Copy(ctx, oci.Image, source, Destination{Transport: "local", Name: "coopr-format-alias:latest"}, Options{BuildStore: store, Push: PushOptions{Format: "oci"}}); err != nil {
+					t.Fatal(err)
+				}
+				if err := buildah.WithStore(store, func(backend storage.Store) error {
+					selected, _, indexed, err := oci.StoredImageIndex(ctx, backend, "coopr-format-alias:latest")
+					if err == nil && (!indexed || selected.Digest != root.Digest) {
+						t.Fatalf("declared transform bypassed selected root: indexed=%t got=%s want=%s", indexed, selected.Digest, root.Digest)
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
+
+	})
 	for _, remove := range []bool{false, true} {
 		t.Run("immutable-root/"+map[bool]string{false: "preserve", true: "remove"}[remove], func(t *testing.T) {
 			dst := Destination{Transport: "dir", Name: filepath.Join(t.TempDir(), "output")}
@@ -405,4 +479,154 @@ func TestStoredIndexPushHonorsNativePolicyAndImmutableRoot(t *testing.T) {
 			t.Fatalf("native source rejection was bypassed or failed outside policy: %v", err)
 		}
 	})
+	t.Run("remove-historical-root", func(t *testing.T) {
+		// Both the original updated record and the independent current record
+		// can contribute signatures for the same selected digest.
+		var currentIDs []string
+		if err := buildah.WithStore(store, func(backend storage.Store) error {
+			images, err := backend.ImagesByDigest(current.Digest)
+			if err != nil {
+				return err
+			}
+			for _, image := range images {
+				currentIDs = append(currentIDs, image.ID)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		for _, id := range currentIDs {
+			if err := signStoredImage(ctx, id, current.Digest, "localhost/current:latest", Options{BuildStore: store, Signing: SigningOptions{SignBy: fingerprint}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, member := range currentSelections {
+			if err := signStoredImage(ctx, member.ImageID, member.Manifest.Digest, "localhost/current:latest", Options{BuildStore: store, Signing: SigningOptions{SignBy: fingerprint}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		type signedRecord struct {
+			id       string
+			selected digest.Digest
+		}
+		retained := []signedRecord{}
+		for _, id := range currentIDs {
+			retained = append(retained, signedRecord{id, current.Digest})
+		}
+		for _, member := range currentSelections {
+			retained = append(retained, signedRecord{member.ImageID, member.Manifest.Digest})
+		}
+		snapshot := func(record signedRecord) [][]byte {
+			t.Helper()
+			var blobs [][]byte
+			if err := buildah.WithStore(store, func(backend storage.Store) error {
+				raw, err := backend.ImageBigData(record.id, storage.ImageDigestBigDataKey)
+				if err != nil {
+					return err
+				}
+				state, err := oci.CaptureStoredSignatures(backend, record.id)
+				if err != nil {
+					return err
+				}
+				blobs, err = oci.StoredSignatureBlobs(state, record.selected, digest.FromBytes(raw) == record.selected)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			return blobs
+		}
+		before := map[signedRecord][][]byte{}
+		for _, record := range retained {
+			before[record] = snapshot(record)
+			if len(before[record]) == 0 {
+				t.Fatal("current root/member is not signed")
+			}
+			if err := buildah.WithStore(store, func(backend storage.Store) error {
+				raw, err := backend.Metadata(record.id)
+				if err != nil {
+					return err
+				}
+				var fields map[string]json.RawMessage
+				if err := json.Unmarshal([]byte(raw), &fields); err != nil {
+					return err
+				}
+				fields["coopr-historical-removal"] = json.RawMessage(`{"retain":true}`)
+				rawData, err := json.Marshal(fields)
+				if err != nil {
+					return err
+				}
+				return backend.SetMetadata(record.id, string(rawData))
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := Copy(ctx, oci.Image, root.Digest.String(), Destination{Transport: "local", Name: "removed-history:latest"}, Options{BuildStore: store, Push: PushOptions{RemoveSignatures: true}}); err != nil {
+			t.Fatal(err)
+		}
+		output := filepath.Join(t.TempDir(), "removed-dir")
+		if _, err := Copy(ctx, oci.Image, "removed-history:latest", Destination{Transport: "dir", Name: output}, Options{BuildStore: store}); err != nil {
+			t.Fatal(err)
+		}
+		ref, err := alltransports.ParseImageName("dir:" + output)
+		if err != nil {
+			t.Fatal(err)
+		}
+		source, err := ref.NewImageSource(ctx, &types.SystemContext{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		signatures, err := source.GetSignatures(ctx, nil)
+		if closeErr := source.Close(); closeErr != nil {
+			t.Errorf("close native source: %v", closeErr)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		paths, err := filepath.Glob(filepath.Join(output, "signature-*"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(signatures) != 0 || len(paths) != 0 {
+			t.Fatalf("removed historical-root signatures resurrected on export: public=%d allformats=%d", len(signatures), len(paths))
+		}
+		server := httptest.NewServer(registry.New())
+		defer server.Close()
+		destination := strings.TrimPrefix(server.URL, "http://") + "/removed:latest"
+		if _, err := Copy(ctx, oci.Image, "removed-history:latest", Destination{Transport: "registry", Name: destination}, Options{BuildStore: store, TLSVerify: new(false)}); err != nil {
+			t.Fatal(err)
+		}
+		response, err := http.Get(server.URL + "/v2/removed/manifests/sha256-" + root.Digest.Encoded() + ".sig")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := response.Body.Close(); err != nil {
+			t.Fatalf("close registry response: %v", err)
+		}
+		if response.StatusCode != http.StatusNotFound {
+			t.Fatalf("removed historical-root attachment resurrected: HTTP %d", response.StatusCode)
+		}
+		for _, record := range retained {
+			after := snapshot(record)
+			if !reflect.DeepEqual(before[record], after) {
+				t.Fatalf("historical removal changed current-root/member signature bytes for %s", record.id)
+			}
+			if err := buildah.WithStore(store, func(backend storage.Store) error {
+				raw, err := backend.Metadata(record.id)
+				if err != nil {
+					return err
+				}
+				var fields map[string]json.RawMessage
+				if err := json.Unmarshal([]byte(raw), &fields); err != nil {
+					return err
+				}
+				if !bytes.Equal(fields["coopr-historical-removal"], []byte(`{"retain":true}`)) {
+					t.Fatal("historical removal changed unrelated native metadata")
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
+
 }

@@ -14,6 +14,7 @@ import (
 	"coopr/internal/oci"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"go.podman.io/common/libimage/manifests"
 	"go.podman.io/storage"
 	orasoci "oras.land/oras-go/v2/content/oci"
 	"oras.land/oras-go/v2/errdef"
@@ -58,7 +59,20 @@ func retainStoredLayoutLayers(store storage.Store, imageID, layout string, manif
 	if len(layers) != len(manifest.Layers) {
 		return fmt.Errorf("committed image has %d storage layers and %d manifest layers", len(layers), len(manifest.Layers))
 	}
-	retained := make(map[string]string)
+	lock, err := manifests.LockerForImage(store, image.ID)
+	if err != nil {
+		return fmt.Errorf("lock exact stored layer blobs: %w", err)
+	}
+	lock.Lock()
+	defer lock.Unlock()
+	existing, err := retainedLayerIDs(store, image.ID)
+	if err != nil {
+		return fmt.Errorf("read exact stored layer blobs: %w", err)
+	}
+	retained := make(map[string]string, len(existing)+len(manifest.Layers))
+	for blob, layerID := range existing {
+		retained[blob.String()] = layerID
+	}
 	for index, descriptor := range manifest.Layers {
 		if descriptor.Digest == layers[index].UncompressedDigest {
 			continue

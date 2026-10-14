@@ -23,6 +23,7 @@ import (
 	imagestorage "go.podman.io/image/v5/storage"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/storage"
+	"oras.land/oras-go/v2/content"
 )
 
 // StoredIndexSnapshot pins the exact index and resident manifests selected by
@@ -51,6 +52,26 @@ func prepareStoredIndexCopySource(ctx context.Context, store storage.Store, snap
 	}
 	if index.SchemaVersion != 2 || index.MediaType != "" && index.MediaType != root.MediaType {
 		return nil, cleanup, errors.New("invalid stored image index")
+	}
+	// Artifacts are native list members, but deliberately have no runnable
+	// StoredSelection. Let the native list supply their references rather than
+	// reconstructing them from image/platform metadata. Historical roots still
+	// use the snapshot path below unless a current native list matches exactly.
+	var unresolved []digest.Digest
+	transformed := false
+	for _, member := range index.Manifests {
+		selection, found := storedIndexMemberSelection(selections, member)
+		if !found {
+			unresolved = append(unresolved, member.Digest)
+		} else {
+			transformed = transformed || !content.Equal(selection.Manifest, member)
+		}
+	}
+	if !transformed && len(unresolved) != 0 {
+		reference, release, err := currentStoredIndexReference(ctx, store, root, original, system, nil, removeSignatures)
+		if err != nil || reference != nil {
+			return reference, release, err
+		}
 	}
 	temporaryDir, err := os.MkdirTemp("", "coopr-native-index-")
 	if err != nil {
@@ -95,18 +116,58 @@ func prepareStoredIndexCopySource(ctx context.Context, store storage.Store, snap
 		manifest   []byte
 	}
 	emitted := map[digest.Digest]emittedMember{}
+	if transformed && len(unresolved) != 0 {
+		reference, release, err := currentStoredIndexReference(ctx, store, root, original, system, unresolved, removeSignatures)
+		if err != nil {
+			return nil, cleanup, err
+		}
+		if reference != nil {
+			// Native selective copying supplies artifacts and their signatures
+			// without reading unavailable ciphertext blobs of transformed members.
+			nativePath := filepath.Join(temporaryDir, "native-members")
+			nativeDestination, err := directory.NewReference(nativePath)
+			if err != nil {
+				_ = release()
+				return nil, cleanup, err
+			}
+			policy, err := signature.DefaultPolicy(system)
+			if err != nil {
+				_ = release()
+				return nil, cleanup, err
+			}
+			policyContext, err := signature.NewPolicyContext(policy)
+			if err != nil {
+				_ = release()
+				return nil, cleanup, err
+			}
+			_, copyErr := imagecopy.Image(ctx, policyContext, nativeDestination, reference, &imagecopy.Options{SourceCtx: system, DestinationCtx: system, ImageListSelection: imagecopy.CopySpecificImages, Instances: unresolved, RemoveSignatures: removeSignatures, PreserveDigests: true, ReportWriter: writer})
+			if err := errors.Join(copyErr, policyContext.Destroy(), release()); err != nil {
+				return nil, cleanup, err
+			}
+			if err := linkStoredIndexFiles(nativePath, aggregatePath, root.Digest); err != nil {
+				return nil, cleanup, err
+			}
+			source, err := nativeDestination.NewImageSource(ctx, system)
+			if err != nil {
+				return nil, cleanup, err
+			}
+			for _, selected := range unresolved {
+				raw, mediaType, err := source.GetManifest(ctx, &selected)
+				if err != nil {
+					return nil, cleanup, errors.Join(err, source.Close())
+				}
+				emitted[selected] = emittedMember{descriptor: oci.Descriptor(mediaType, raw), manifest: raw}
+			}
+			if err := source.Close(); err != nil {
+				return nil, cleanup, err
+			}
+		}
+	}
 	changed := false
 	for i, member := range index.Manifests {
 		result, exists := emitted[member.Digest]
 		if !exists {
-			var selection oci.StoredSelection
-			found := false
-			for _, candidate := range selections {
-				if candidate.Manifest.Digest == member.Digest && candidate.Manifest.Size == member.Size && candidate.Manifest.MediaType == member.MediaType {
-					selection, found = candidate, true
-					break
-				}
-			}
+			selection, found := storedIndexMemberSelection(selections, member)
 			if !found {
 				return nil, cleanup, fmt.Errorf("stored index lacks manifest %s", member.Digest)
 			}
@@ -153,6 +214,117 @@ func prepareStoredIndexCopySource(ctx context.Context, store storage.Store, snap
 		}
 	}
 	return aggregate, cleanup, nil
+}
+
+func storedIndexMemberSelection(selections map[string]oci.StoredSelection, member v1.Descriptor) (oci.StoredSelection, bool) {
+	for _, selection := range selections {
+		if content.Equal(selection.Manifest, member) {
+			return selection, true
+		}
+	}
+	for _, selection := range selections {
+		if selection.SourceManifest != nil && content.Equal(*selection.SourceManifest, member) {
+			return selection, true
+		}
+	}
+	return oci.StoredSelection{}, false
+}
+
+// currentStoredIndexReference keeps the native list locked until the copy has
+// closed its sources. The native reference reads the image's current manifest,
+// so checking its bytes and holding the lock are both required for exact-root
+// selection. Binding the transport also covers native artifact references.
+func currentStoredIndexReference(ctx context.Context, store storage.Store, root v1.Descriptor, original []byte, system *types.SystemContext, instances []digest.Digest, removeSignatures bool) (types.ImageReference, func() error, error) {
+	noop := func() error { return nil }
+	// Snapshot all exact-root contributors before taking the chosen image lock.
+	// The collector locks records itself, including historical root metadata.
+	var retained [][]byte
+	if instances == nil && !removeSignatures {
+		var err error
+		retained, err = storedIndexSignatureBlobs(store, root.Digest)
+		if err != nil {
+			return nil, noop, err
+		}
+	}
+
+	images, err := store.ImagesByDigest(root.Digest)
+	if err != nil {
+		return nil, noop, err
+	}
+	for _, image := range images {
+		lock, err := manifests.LockerForImage(store, image.ID)
+		if err != nil {
+			return nil, noop, err
+		}
+		lock.Lock()
+		raw, err := store.ImageBigData(image.ID, storage.ImageDigestBigDataKey)
+		if err != nil {
+			lock.Unlock()
+			return nil, noop, err
+		}
+		if !bytes.Equal(raw, original) {
+			lock.Unlock()
+			continue
+		}
+		_, list, err := manifests.LoadFromImage(store, image.ID)
+		if err != nil {
+			lock.Unlock()
+			return nil, noop, err
+		}
+		previous := imagestorage.Transport.GetStoreIfSet()
+		imagestorage.Transport.SetStore(store)
+		release := func() error {
+			imagestorage.Transport.SetStore(previous)
+			lock.Unlock()
+			return nil
+		}
+		selection := imagecopy.CopyAllImages
+		if instances != nil {
+			selection = imagecopy.CopySpecificImages
+		}
+		reference, err := list.Reference(store, selection, instances)
+		if err != nil {
+			_ = release()
+			return nil, noop, err
+		}
+		source, err := reference.NewImageSource(ctx, system)
+		if err == nil {
+			var data []byte
+			data, _, err = source.GetManifest(ctx, nil)
+			if err == nil && !bytes.Equal(data, original) {
+				err = errors.New("native list reference differs from stored index snapshot")
+			}
+			if err == nil && instances == nil && !removeSignatures {
+				// Refresh the chosen record under the lock held through copy:
+				// signatures may have changed since the all-record snapshot.
+				state, readErr := oci.CaptureStoredSignatures(store, image.ID)
+				var stored, visible [][]byte
+				if readErr == nil {
+					stored, readErr = oci.StoredSignatureBlobs(state, root.Digest, true)
+				}
+				if readErr == nil {
+					visible, readErr = source.GetSignatures(ctx, nil)
+				}
+				if readErr == nil {
+					for _, blob := range append(retained, stored...) {
+						if !slices.ContainsFunc(visible, func(value []byte) bool { return bytes.Equal(value, blob) }) {
+							readErr = fmt.Errorf("cannot export stored index %s: native source cannot preserve all root signatures; explicitly remove signatures to continue", root.Digest)
+							break
+						}
+					}
+				}
+				err = readErr
+			}
+
+			err = errors.Join(err, source.Close())
+		}
+		if err != nil {
+			_ = release()
+			return nil, noop, err
+		}
+		return reference, release, nil
+	}
+	return nil, noop, nil
 }
 
 // storedIndexSignatureBlobs collects exact-root signatures from existing

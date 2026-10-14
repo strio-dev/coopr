@@ -22,12 +22,14 @@ artifact_container="coopr-release-artifact-$run_id"
 cli_loaded=false
 artifact_created=false
 container_created=false
+staged_install=''
 cleanup() {
   local status=$?
   trap - EXIT INT TERM
   if $container_created; then podman rm "$artifact_container" >/dev/null 2>&1 || true; fi
   if $artifact_created; then podman rmi "$artifact_image" >/dev/null 2>&1 || true; fi
   if $cli_loaded; then podman rmi "$cli_image" >/dev/null 2>&1 || true; fi
+  if [[ -n $staged_install ]]; then rm -rf -- "$staged_install"; fi
   exit "$status"
 }
 trap cleanup EXIT
@@ -54,15 +56,26 @@ if [[ ${COOPR_ACCEPTANCE_CLI+x} ]]; then
     printf 'COOPR_ACCEPTANCE_CLI must be an absolute executable file\n' >&2
     exit 1
   }
+  cli_prefix=$(dirname "$(realpath "$COOPR_ACCEPTANCE_CLI")")
+  if [[ $(basename "$cli_prefix") == bin ]]; then cli_prefix=$(dirname "$cli_prefix"); fi
+  sequence_helper="$cli_prefix/libexec/coopr/coopr-run-sequence"
+  [[ -f $sequence_helper && -x $sequence_helper ]] || {
+    printf 'COOPR_ACCEPTANCE_CLI requires its installed libexec/coopr/coopr-run-sequence helper\n' >&2
+    exit 1
+  }
+  staged_install=$(mktemp -d)
+  chmod 755 "$staged_install"
+  install -Dm755 "$COOPR_ACCEPTANCE_CLI" "$staged_install/bin/coopr"
+  install -Dm755 "$sequence_helper" "$staged_install/libexec/coopr/coopr-run-sequence"
   podman create --name "$artifact_container" --image-volume=ignore "$cli_image" >/dev/null
   container_created=true
-  podman cp "$COOPR_ACCEPTANCE_CLI" "$artifact_container:/coopr-acceptance-cli"
+  podman cp "$staged_install" "$artifact_container:/coopr-acceptance"
   podman commit "$artifact_container" "$artifact_image" >/dev/null
   artifact_created=true
   podman rm "$artifact_container" >/dev/null
   container_created=false
   export COOPR_ACCEPTANCE_RUN_IMAGE="$artifact_image"
-  export COOPR_ACCEPTANCE_ENTRYPOINT=/coopr-acceptance-cli
+  export COOPR_ACCEPTANCE_ENTRYPOINT=/coopr-acceptance/bin/coopr
 fi
 export COOPR_ACCEPTANCE_REPO_ROOT="$repo_root"
 if [[ ${COOPR_ACCEPTANCE_TEST_BINARY+x} ]]; then

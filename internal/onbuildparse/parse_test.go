@@ -180,8 +180,12 @@ func TestParseRepeatedENVKeyUsesLastValue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := definition.Instruction{Name: "env", Properties: map[string]string{"A": "last", "B": "kept"}}
-	if !reflect.DeepEqual(instructions, []definition.Instruction{want}) {
+	want := []definition.Instruction{
+		{Name: "env", Arguments: []string{"A", "first"}},
+		{Name: "env", Arguments: []string{"A", "last"}, NativeContinuation: true},
+		{Name: "env", Arguments: []string{"B", "kept"}, NativeContinuation: true},
+	}
+	if !reflect.DeepEqual(instructions, want) {
 		t.Fatalf("parsed ENV = %#v, want %#v", instructions, want)
 	}
 }
@@ -257,7 +261,7 @@ func TestParseDeferredMountAliasesPreserveLastAssignment(t *testing.T) {
 		key   string
 	}{
 		{flags: "rw,ro", key: "readonly"},
-		{flags: "ro,rw=${writable}", key: "rw"},
+		{flags: "ro,rw", key: "rw"},
 	} {
 		got, err := ParseDeferred(`RUN --mount=type=bind,from=base,source=/old,src=/source,target=/old,dst=/target,` + test.flags + ` true`)
 		if err != nil {

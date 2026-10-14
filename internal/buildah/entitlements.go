@@ -54,11 +54,11 @@ func hasRunDeviceOptions(operation planner.Operation) bool {
 	return false
 }
 
-func runDeviceCacheForPlannedOperation(operation planner.Operation) (*cdi.Cache, error) {
+func runDeviceCacheForPlannedOperation(operation planner.Operation, controls RunControls) (*cdi.Cache, error) {
 	if !hasRunDeviceOptions(operation) {
 		return nil, nil
 	}
-	return newRunDeviceCache("")
+	return newRunDeviceCacheWithDirs("", controls.CDISpecDirs)
 }
 
 func authorizeOperations(operations []Operation, allow []string) error {

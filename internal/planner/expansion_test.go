@@ -3,7 +3,7 @@ package planner
 import (
 	"testing"
 
-	"github.com/containerd/platforms"
+	"github.com/openshift/imagebuilder"
 )
 
 func TestDockerfileVariableExpansion(t *testing.T) {
@@ -85,7 +85,7 @@ from "scratch" {
 	if env.Properties["TARGET"] != "linux/arm64/v8" {
 		t.Fatalf("target platform expansion = %q", env.Properties["TARGET"])
 	}
-	if env.Properties["BUILD"] != platforms.Format(platforms.DefaultSpec()) {
+	if env.Properties["BUILD"] != imagebuilder.NewBuilder(nil).BuiltinArgDefaults["BUILDPLATFORM"] {
 		t.Fatalf("build platform expansion = %q", env.Properties["BUILD"])
 	}
 	run := plan.Stages[0].Operations[1]

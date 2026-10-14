@@ -150,9 +150,6 @@ func normalizePlanOptions(options PlanOptions) (PlanOptions, error) {
 	if options.Lifecycle.NoLayers {
 		options.NoCache = true
 	}
-	if err := validateCacheTTL(options.CacheTTL); err != nil {
-		return PlanOptions{}, err
-	}
 	if options.CacheTTL != nil && *options.CacheTTL == 0 {
 		options.NoCache = true
 	}
@@ -282,15 +279,6 @@ func buildAddHostsDigest(addHosts []string) (digest.Digest, error) {
 		return "", err
 	}
 	return digest.FromBytes(data), nil
-}
-
-func buildResultCacheEligible(addHosts []string) bool {
-	for _, entry := range addHosts {
-		if strings.HasSuffix(entry, ":host-gateway") {
-			return false
-		}
-	}
-	return true
 }
 
 func cloneStringMap(source map[string]string) map[string]string {

@@ -354,18 +354,15 @@ func (operation Add) applyWithPolicy(ctx context.Context, builder operationBuild
 			return err
 		}
 	}
+	if err := addInlineData(builder, operation.Destination, operation.InlineFiles, upstream.AddAndCopyOptions{
+		Chown: operation.Chown, Chmod: operation.Chmod, Link: operation.Link,
+	}); err != nil {
+		return err
+	}
 	if len(operation.Sources) != 0 {
 		if err := applyAddSources(ctx, builder, policy, operation, upstream.AddAndCopyOptions{
 			Chown: operation.Chown, Chmod: operation.Chmod,
 			Checksum: operation.Checksum, Link: operation.Link, Parents: operation.Parents,
-			Excludes: append([]string(nil), operation.Excludes...),
-		}); err != nil {
-			return err
-		}
-	}
-	for _, source := range operation.InlineFiles {
-		if err := addInlineData(builder, operation.Destination, source, upstream.AddAndCopyOptions{
-			Chown: operation.Chown, Chmod: operation.Chmod, Link: operation.Link,
 			Excludes: append([]string(nil), operation.Excludes...),
 		}); err != nil {
 			return err
@@ -383,6 +380,11 @@ func (operation Copy) applyWithPolicy(builder operationBuilder, policy contextPo
 			return err
 		}
 	}
+	if err := addInlineData(builder, operation.Destination, operation.InlineFiles, upstream.AddAndCopyOptions{
+		Chown: operation.Chown, Chmod: operation.Chmod, Link: operation.Link,
+	}); err != nil {
+		return err
+	}
 	if len(operation.Sources) != 0 {
 		if err := requireLocalCopySources(operation.Sources); err != nil {
 			return err
@@ -395,14 +397,6 @@ func (operation Copy) applyWithPolicy(builder operationBuilder, policy contextPo
 			return err
 		}
 		if err := builder.add(operation.Destination, false, options, sources...); err != nil {
-			return err
-		}
-	}
-	for _, source := range operation.InlineFiles {
-		if err := addInlineData(builder, operation.Destination, source, upstream.AddAndCopyOptions{
-			Chown: operation.Chown, Chmod: operation.Chmod, Link: operation.Link,
-			Excludes: append([]string(nil), operation.Excludes...),
-		}); err != nil {
 			return err
 		}
 	}
@@ -492,19 +486,10 @@ func (operation Label) apply(builder operationBuilder, _ string) error {
 type WorkDir string
 
 func (operation WorkDir) apply(builder operationBuilder, _ string) error {
-	requested := string(operation)
-	if requested == "" {
-		return errors.New("WORKDIR path is empty")
+	resolved, err := onbuildparse.WorkingDirectory(builder.WorkDir(), string(operation))
+	if err != nil {
+		return err
 	}
-	resolved := requested
-	if !path.IsAbs(resolved) {
-		current := builder.WorkDir()
-		if current == "" {
-			current = "/"
-		}
-		resolved = path.Join(current, resolved)
-	}
-	resolved = path.Clean(resolved)
 	if err := builder.EnsureContainerPathAs(resolved, builder.User(), nil); err != nil {
 		return fmt.Errorf("create WORKDIR %q: %w", resolved, err)
 	}
@@ -604,8 +589,8 @@ type OnBuild string
 
 func (operation OnBuild) apply(builder operationBuilder, _ string) error {
 	trigger := string(operation)
-	if strings.TrimSpace(trigger) == "" || strings.ContainsRune(trigger, '\x00') {
-		return errors.New("ONBUILD trigger must be one nonempty Dockerfile instruction without NUL")
+	if strings.TrimSpace(trigger) == "" {
+		return errors.New("ONBUILD trigger must be one nonempty Dockerfile instruction")
 	}
 	if _, err := onbuildparse.ParseDeferred(trigger); err != nil {
 		return fmt.Errorf("validate ONBUILD trigger: %w", err)

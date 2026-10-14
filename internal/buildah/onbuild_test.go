@@ -28,7 +28,7 @@ func TestStageBindFromImageConfigPreservesRawTriggersAndEnvironment(t *testing.T
 	want := planner.StageBind{
 		Inherited: []definition.Instruction{
 			{Name: "arg", Arguments: []string{"SOURCE", "$PARENT"}, ProcessQuotes: true},
-			{Name: "copy", Arguments: []string{"/payload", "/installed"}, Properties: map[string]string{"from": "$SOURCE"}, ProcessQuotes: true},
+			{Name: "copy", Arguments: []string{"/payload", "/installed"}, Properties: map[string]string{"from": "$SOURCE"}, ProcessQuotes: true, DeferredOnBuild: "COPY --from=$SOURCE /payload /installed"},
 		},
 		BaseEnvironment: map[string]string{"PARENT": "last=part", "KEEP": "value"},
 	}
@@ -60,7 +60,7 @@ func TestStageBindFromImageConfigRejectsInvalidTriggerWithoutMutation(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := stageBindFromImageConfig(logical); err == nil || !strings.Contains(err.Error(), "ONBUILD trigger 1") {
+	if _, err := stageBindFromImageConfig(logical); err == nil || !strings.Contains(err.Error(), "ONBUILD ingestion") {
 		t.Fatalf("expected invalid trigger error, got %v", err)
 	}
 	after, err := logical.MarshalJSON()
@@ -214,7 +214,7 @@ func TestConsumeOnBuildHandlesMultiValueConfigTriggers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(operations) != 4 || operations[0].Name != "expose" || operations[1].Name != "expose" || operations[2].Name != "volume" || operations[3].Name != "volume" {
+	if len(operations) != 3 || operations[0].Name != "expose" || operations[1].Name != "volume" || operations[2].Name != "volume" {
 		t.Fatalf("multi-value ONBUILD config operations = %#v", operations)
 	}
 }
@@ -228,8 +228,8 @@ func TestConsumeOnBuildExpandsMultiValueENVAgainstPriorEnvironment(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]string{"A": "one", "B": "base"}
-	if len(operations) != 1 || !reflect.DeepEqual(operations[0].Properties, want) {
+	want := [][]string{{"A", "one"}, {"B", "base"}}
+	if len(operations) != 2 || !reflect.DeepEqual([][]string{operations[0].Arguments, operations[1].Arguments}, want) {
 		t.Fatalf("multi-value ONBUILD ENV = %#v, want %#v", operations, want)
 	}
 }
@@ -260,20 +260,19 @@ func TestParseOnBuildTriggerUsesDockerInstructionSyntax(t *testing.T) {
 		},
 		{
 			trigger: `ENV A=first B=second`,
-			want:    []definition.Instruction{{Name: "env", Properties: map[string]string{"A": "first", "B": "second"}, ProcessQuotes: true}},
+			want:    []definition.Instruction{{Name: "env", Arguments: []string{"A", "first"}, ProcessQuotes: true}, {Name: "env", Arguments: []string{"B", "second"}, ProcessQuotes: true, NativeContinuation: true}},
 		},
 		{
 			trigger: `ARG SOURCE=$PARENT EMPTY`,
 			want: []definition.Instruction{
 				{Name: "arg", Arguments: []string{"SOURCE", "$PARENT"}, ProcessQuotes: true},
-				{Name: "arg", Arguments: []string{"EMPTY"}, ProcessQuotes: true},
+				{Name: "arg", Arguments: []string{"EMPTY"}, ProcessQuotes: true, NativeContinuation: true},
 			},
 		},
 		{
 			trigger: `EXPOSE 80 443`,
 			want: []definition.Instruction{
-				{Name: "expose", Arguments: []string{"443"}, ProcessQuotes: true},
-				{Name: "expose", Arguments: []string{"80"}, ProcessQuotes: true},
+				{Name: "expose", Arguments: []string{"80", "443"}, ProcessQuotes: true},
 			},
 		},
 		{
@@ -336,7 +335,7 @@ func TestParseOnBuildHeredocUsesRawContentExpansion(t *testing.T) {
 
 func TestParseOnBuildTriggerRejectsUnsafeOrUnsupportedSyntax(t *testing.T) {
 	for _, trigger := range []string{
-		`FROM scratch`, `ONBUILD RUN echo nested`, `MAINTAINER someone`,
+		`FROM scratch`, `ONBUILD RUN echo nested`,
 		"RUN true\nRUN false",
 		`RUN <<EOF`, `DOESNOTEXIST hello`,
 	} {
@@ -370,5 +369,34 @@ func TestImageEnvironmentDoesNotConsumeOrValidateCallerOnBuild(t *testing.T) {
 	}
 	if !reflect.DeepEqual(before, after) {
 		t.Fatal("image environment extraction changed caller configuration")
+	}
+}
+
+func TestConsumeOnBuildNativeNormalization(t *testing.T) {
+	for _, raw := range []string{`EXPOSE $MISSING 80`, `EXPOSE $MISSING`, `ENV $KEY=value SECOND=two`, `ENV A=${MISSING-default}`, `LABEL A=${X?bad}`} {
+		t.Run(raw, func(t *testing.T) {
+			data, err := json.Marshal(map[string]any{"config": map[string]any{"Env": []string{"KEY=EXPANDED", "X=set"}, "OnBuild": []string{raw}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			logical, err := imageconfig.Parse(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			operations, err := consumeOnBuild(logical)
+			invalid := raw == `EXPOSE $MISSING` || strings.Contains(raw, "${")
+			if (err != nil) != invalid {
+				t.Fatalf("operations=%+v; error=%v, want rejection=%v", operations, err, invalid)
+			}
+			if invalid {
+				return
+			}
+			if strings.HasPrefix(raw, "ENV") && !reflect.DeepEqual(operations[0].Arguments, []string{"EXPANDED", "value"}) {
+				t.Fatalf("ENV key=%v", operations[0].Arguments)
+			}
+			if strings.HasPrefix(raw, "EXPOSE") && (!reflect.DeepEqual(operations[0].Arguments, []string{"80"})) {
+				t.Fatalf("EXPOSE=%+v", operations[0])
+			}
+		})
 	}
 }

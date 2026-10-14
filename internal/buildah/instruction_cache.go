@@ -26,17 +26,17 @@ import (
 )
 
 const (
-	instructionCacheSchema     = "coopr.buildah.instruction-cache.v10"
-	instructionCacheBigData    = "coopr-instruction-cache-v10"
-	instructionCacheNamePrefix = "coopr.internal/instruction-cache/v10/"
+	instructionCacheSchema     = "coopr.buildah.instruction-cache.v11"
+	instructionCacheBigData    = "coopr-instruction-cache-v11"
+	instructionCacheNamePrefix = "coopr.internal/instruction-cache/v11/"
 )
 
-// instructionCacheResolvedInput identifies one resolved RUN mount input. The
-// entries must be supplied in child/mount order, with exactly one non-empty
-// entry per operation child. Identity is executor-owned: stage mounts use the
-// source image's OCI rootfs chain ID, context mounts use a content digest,
-// and cache mounts use their fully resolved cache ID. Their mutable contents
-// deliberately do not invalidate a RUN cache, as in ordinary container builds.
+// instructionCacheResolvedInput identifies a resolved RUN input. Mount entries
+// follow mount order; device requests use one additional selection entry.
+// Identity is executor-owned: stage mounts use the source image's OCI rootfs
+// chain ID, context mounts use a content digest, cache mounts use their resolved
+// ID, and devices use their selected names. Mutable cache/device contents do not
+// invalidate a RUN cache, as in ordinary container builds.
 type instructionCacheResolvedInput struct {
 	Kind     string `json:"kind"`
 	Identity string `json:"identity"`
@@ -104,6 +104,7 @@ type instructionCacheRecord struct {
 }
 
 type instructionCacheEntry struct {
+	CommandSet     *bool
 	LogicalConfig  json.RawMessage
 	BaseImageID    string
 	RetainsCaller  *bool
@@ -286,24 +287,11 @@ func (c *portableInstructionCache) acceptRelayedCandidates(relays []portableInst
 	return nil
 }
 
-func portableInstructionEligible(_ planner.Operation, lowered Operation, controls RunControls) bool {
-	switch operation := lowered.(type) {
-	case Run:
-		// Network responses, credential contents, and cache-mount contents are
-		// deliberately session inputs rather than cache-key inputs, matching
-		// conventional container build caching. prepareRunInput supplies stable
-		// identities for bind sources and the authored cache-mount scope. CDI
-		// devices remain excluded because their resolved host identity and state
-		// are not represented by the instruction key.
-		return len(operation.Devices) == 0 && len(controls.Devices) == 0
-	case WorkDir, Copy, copyFromImageOperation:
-		return true
-	case Add:
-		for _, source := range operation.Sources {
-			if (isHTTPAddSource(source) || isGitAddSource(source)) && operation.Checksum == "" {
-				return false
-			}
-		}
+func portableInstructionEligible(lowered Operation) bool {
+	switch lowered.(type) {
+	case Run, WorkDir, Copy, copyFromImageOperation, Add:
+		// Complete mount/device selections and exact consumed COPY/ADD inputs are
+		// required by instructionCacheKey before portable lookup.
 		return true
 	default:
 		return false
@@ -424,7 +412,7 @@ func (c *portableInstructionCache) lookupValidated(ctx context.Context, executor
 				continue
 			}
 		}
-		entry := instructionCacheEntry{ImageID: imageID, ManifestDigest: record.Image.Digest, RootMetadata: root, LogicalConfig: record.LogicalConfig, BaseImageID: baseImageID, RetainsCaller: record.RetainsCaller}
+		entry := instructionCacheEntry{ImageID: imageID, ManifestDigest: record.Image.Digest, RootMetadata: root, LogicalConfig: record.LogicalConfig, BaseImageID: baseImageID, RetainsCaller: record.RetainsCaller, CommandSet: record.CommandSet}
 		if validateHit != nil {
 			if err := validateHit(ctx, executor, record, entry, system); err != nil {
 				if ctx.Err() != nil {
@@ -472,10 +460,10 @@ func (c *portableInstructionCache) lookupValidated(ctx context.Context, executor
 }
 
 func (c *portableInstructionCache) record(ctx context.Context, executor *graphExecutor, key cache.ImageKey, imageID string, manifest digest.Digest, root *PackageRootMetadata, system *types.SystemContext) {
-	c.recordImage(ctx, executor, key, imageID, manifest, root, system, nil, "", nil)
+	c.recordImage(ctx, executor, key, imageID, manifest, root, system, nil, "", nil, nil)
 }
 
-func (c *portableInstructionCache) recordImage(ctx context.Context, executor *graphExecutor, key cache.ImageKey, imageID string, manifest digest.Digest, root *PackageRootMetadata, system *types.SystemContext, logical json.RawMessage, baseImageID string, retainsCaller *bool) {
+func (c *portableInstructionCache) recordImage(ctx context.Context, executor *graphExecutor, key cache.ImageKey, imageID string, manifest digest.Digest, root *PackageRootMetadata, system *types.SystemContext, logical json.RawMessage, baseImageID string, retainsCaller *bool, commandSet *bool) {
 	if c == nil || len(c.writeStores) == 0 {
 		return
 	}
@@ -548,7 +536,7 @@ func (c *portableInstructionCache) recordImage(ctx context.Context, executor *gr
 		}
 		baseImage = &descriptor
 	}
-	c.candidates = append(c.candidates, portableInstructionCandidate{key: key, record: cache.ImageRecord{Version: cache.ImageRecordVersion, CreatedAt: time.Now().UTC(), Key: key, Image: descriptor, RootMetadata: metadata, LogicalConfig: logical, BaseImage: baseImage, RetainsCaller: retainsCaller}, layout: layout})
+	c.candidates = append(c.candidates, portableInstructionCandidate{key: key, record: cache.ImageRecord{Version: cache.ImageRecordVersion, CreatedAt: time.Now().UTC(), Key: key, Image: descriptor, RootMetadata: metadata, LogicalConfig: logical, BaseImage: baseImage, RetainsCaller: retainsCaller, CommandSet: commandSet}, layout: layout})
 }
 
 func (c *portableInstructionCache) publish(ctx context.Context) error {
@@ -584,9 +572,6 @@ func (c *portableInstructionCache) publish(ctx context.Context) error {
 // execution. Network responses intentionally do not participate in RUN keys,
 // matching normal container build cache semantics.
 func instructionCacheKey(input instructionCacheInput) (digest.Digest, bool, error) {
-	if input.Operation.Name == "run" && !buildResultCacheEligible(input.AddHosts) {
-		return "", false, nil
-	}
 	switch input.Operation.Name {
 	case "run":
 		if len(input.Operation.Children) != 0 && !completeResolvedInstructionInputs(input.Operation, input.ResolvedInputs, input.ResolvedInputsComplete) {
@@ -656,15 +641,32 @@ func instructionExecutionConfig(logical *imageconfig.Config) (instructionCacheEx
 }
 
 func completeResolvedInstructionInputs(operation planner.Operation, inputs []instructionCacheResolvedInput, complete bool) bool {
-	if !complete || len(inputs) != len(operation.Children) {
+	if !complete {
 		return false
 	}
+	mounts, deviceRequest := 0, false
+	for _, child := range operation.Children {
+		switch child.Name {
+		case "mount":
+			mounts++
+		case "device":
+			deviceRequest = true
+		default:
+			return false
+		}
+	}
+	observedMounts, observedDevices := 0, 0
 	for _, input := range inputs {
 		if input.Kind == "" || input.Identity == "" {
 			return false
 		}
+		if input.Kind == "devices" {
+			observedDevices++
+		} else {
+			observedMounts++
+		}
 	}
-	return true
+	return observedMounts == mounts && observedDevices <= 1 && (!deviceRequest || observedDevices == 1)
 }
 
 // instructionRuntimeIdentity captures the exact runtime binary used by

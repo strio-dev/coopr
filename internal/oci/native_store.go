@@ -16,6 +16,7 @@ import (
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/common/libimage"
+	nativeplatform "go.podman.io/common/libimage/platform"
 	dockerreference "go.podman.io/image/v5/docker/reference"
 	"go.podman.io/image/v5/manifest"
 	imagestorage "go.podman.io/image/v5/storage"
@@ -30,6 +31,22 @@ var ErrStoredPlatformUnavailable = errors.New("stored image platform unavailable
 // or adding that name. It supports Podman-created single images and manifest
 // lists and returns the exact selected manifest/config for Coopr planning.
 func ResolveStoredImage(ctx context.Context, backend storage.Store, name string, platform v1.Platform) (*Resolved, error) {
+	resolved, err := resolveStoredImage(ctx, backend, name, platform)
+	if err != nil {
+		return nil, err
+	}
+	// Native cached-name lookup checks the selected config even when a list
+	// chooser accepted its descriptor. Explicit native IDs bypass that check.
+	actual := resolved.Platform
+	if !dockerreference.IsFullIdentifier(name) && !storedPlatformMatches(actual, platform) {
+		return nil, fmt.Errorf("%w: image %q has platform %s/%s/%s, want %s/%s/%s", ErrStoredPlatformUnavailable, name, actual.OS, actual.Architecture, actual.Variant, platform.OS, platform.Architecture, platform.Variant)
+	}
+	return resolved, nil
+}
+
+// resolveStoredImage reads exact verified metadata without imposing FROM's
+// cached-name admission on members of an image being exported as a whole.
+func resolveStoredImage(ctx context.Context, backend storage.Store, name string, platform v1.Platform) (*Resolved, error) {
 	if backend == nil {
 		return nil, errors.New("nil containers/storage store")
 	}
@@ -61,34 +78,18 @@ func ResolveStoredImage(ctx context.Context, backend storage.Store, name string,
 		if err := json.Unmarshal(rootData, &index); err != nil {
 			return nil, fmt.Errorf("decode stored image %q index: %w", name, err)
 		}
-		matches := make([]v1.Descriptor, 0, 1)
+		list, err := manifest.ListFromBlob(rootData, rootType)
+		if err != nil {
+			return nil, err
+		}
+		chosen, err := list.ChooseInstance(system)
+		if err != nil {
+			return nil, fmt.Errorf("%w: image %q: %v", ErrStoredPlatformUnavailable, name, err)
+		}
 		for _, candidate := range index.Manifests {
-			candidatePlatform, runnable, err := storedIndexMemberPlatform(ctx, backend, candidate)
-			if err != nil {
-				return nil, err
-			}
-			if runnable && storedPlatformMatches(candidatePlatform, platform) {
-				matches = append(matches, candidate)
-			}
-		}
-		if len(matches) == 0 {
-			return nil, fmt.Errorf("%w: image %q has no manifest for %s", ErrStoredPlatformUnavailable, name, platforms.Format(platform))
-		}
-		selected = matches[0]
-		if len(matches) > 1 {
-			list, err := manifest.ListFromBlob(rootData, rootType)
-			if err != nil {
-				return nil, err
-			}
-			chosen, err := list.ChooseInstance(system)
-			if err != nil {
-				return nil, err
-			}
-			for _, candidate := range matches {
-				if candidate.Digest == chosen {
-					selected = candidate
-					break
-				}
+			if candidate.Digest == chosen {
+				selected = candidate
+				break
 			}
 		}
 		selectedImages, err := backend.ImagesByDigest(selected.Digest)
@@ -170,9 +171,6 @@ func ResolveStoredImage(ctx context.Context, backend storage.Store, name string,
 		return nil, fmt.Errorf("decode stored image %q config: %w", name, err)
 	}
 	actualPlatform := v1.Platform{OS: config.OS, Architecture: config.Architecture, Variant: config.Variant, OSVersion: config.OSVersion, OSFeatures: config.OSFeatures}
-	if !storedPlatformMatches(actualPlatform, platform) {
-		return nil, fmt.Errorf("%w: image %q has platform %s/%s/%s, want %s/%s/%s", ErrStoredPlatformUnavailable, name, actualPlatform.OS, actualPlatform.Architecture, actualPlatform.Variant, platform.OS, platform.Architecture, platform.Variant)
-	}
 	return &Resolved{
 		Reference: name, Repository: "containers-storage", Kind: Image, Platform: actualPlatform,
 		Root: root, Selected: selected, SourceManifest: sourceManifest, Manifest: manifest, Config: manifest.Config,
@@ -266,8 +264,59 @@ func StoredImageIndex(ctx context.Context, backend storage.Store, name string) (
 	return descriptor, data, true, nil
 }
 
+// LookupStoredNativeImage resolves native record identity without selecting a
+// platform from retained origin metadata. Bare index digests prefer a native
+// list record over a pulled image retaining the same origin index.
+func LookupStoredNativeImage(ctx context.Context, backend storage.Store, name string) (*libimage.Image, error) {
+	var candidates []*storage.Image
+	requested := storedReferenceDigest(name)
+	if requested != nil && digest.Digest(name).Validate() == nil {
+		var err error
+		candidates, err = backend.ImagesByDigest(*requested)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(candidates) == 0 {
+		image, _, err := findStoredImageAndName(backend, name)
+		if err != nil {
+			return nil, err
+		}
+		candidates = []*storage.Image{image}
+	}
+	native, err := libimage.RuntimeFromStore(backend, nil)
+	if err != nil {
+		return nil, err
+	}
+	var first *libimage.Image
+	for _, candidate := range candidates {
+		image, _, err := native.LookupImage(candidate.ID, &libimage.LookupImageOptions{ManifestList: true})
+		if err != nil {
+			return nil, err
+		}
+		if first == nil {
+			first = image
+		}
+		indexed, err := image.IsManifestList(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if indexed {
+			return image, nil
+		}
+	}
+	return first, nil
+}
+
 func storedPlatformMatches(actual, requested v1.Platform) bool {
-	return actual.OS == requested.OS && actual.Architecture == requested.Architecture && normalizeVariant(actual) == normalizeVariant(requested)
+	// Use the same public defaulting, parsing and matcher as libimage's
+	// private matchesPlatform check. Missing config fields default to the host.
+	wanted, err := platforms.Parse(nativeplatform.ToString(requested.OS, requested.Architecture, requested.Variant))
+	if err != nil {
+		return false
+	}
+	fromImage, err := platforms.Parse(nativeplatform.ToString(actual.OS, actual.Architecture, actual.Variant))
+	return err == nil && platforms.NewMatcher(wanted).Match(fromImage)
 }
 
 // StoredImageName returns the concrete native name selected by the same lookup
@@ -400,7 +449,7 @@ func StoredImageSelections(ctx context.Context, backend storage.Store, name stri
 			if !runnable {
 				continue
 			}
-			resolved, err := ResolveStoredImage(ctx, backend, child.Digest.String(), platform)
+			resolved, err := resolveStoredImage(ctx, backend, child.Digest.String(), platform)
 			if errors.Is(err, storage.ErrImageUnknown) || os.IsNotExist(err) {
 				continue
 			}

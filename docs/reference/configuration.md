@@ -32,13 +32,15 @@ Coopr loads effective `storage.conf`, including rootless/user settings. Images b
 coopr info --format json
 ```
 
+The pinned containers/storage 1.64.1 loader can retain root-owned paths from system `storage.conf` during rootless operation. If it selects `/run/containers/storage` or `/var/lib/containers/storage`, configure writable `runroot` and `graphroot` in your user `storage.conf`, or supply both `--runroot` and `--root`. Coopr uses the same loader as Buildah 1.45.1.
+
 Component artifacts use a separate OCI layout at `$XDG_DATA_HOME/coopr/components`, or `~/.local/share/coopr/components` when unset. A nonempty `XDG_DATA_HOME` must be absolute. `--root` does not relocate components. See [storage locations](../guides/storage.md#where-data-lives) for image, component and cache paths.
 
 ## Runtime and trust
 
 | Global option | Purpose |
 | --- | --- |
-| `--module NAME` | Load a native containers configuration module; repeatable. |
+| `--module NAME` | Load a native containers configuration module for the command; repeatable. |
 | `--cgroup-manager` | Select `systemd` or `cgroupfs` for RUN execution. |
 | `--cdi-spec-dir DIR` | Select CDI specification directories; repeatable. |
 | `--network-config-dir DIR` | Select the native network configuration directory. |
@@ -58,9 +60,11 @@ Registry options are command-local. Check that command's help for the options it
 | `--retry N` | Override retries after the first attempt (normally 3). |
 | `--retry-delay DURATION` | Set a fixed delay; otherwise use the effective native retry policy. |
 
-Builds and image/component transfers inherit `[engine] retry` and `retry_delay` from `containers.conf` when `--retry` is omitted. Manifest-member additions default to three retries.
+Builds, image/component transfers and manifest-member additions inherit `[engine] retry` and `retry_delay` from `containers.conf` unless command options override them.
 
-On Linux, `coopr login` normally writes `$XDG_RUNTIME_DIR/containers/auth.json`, which does not survive reboot. Default credential lookup can also read user configuration and Docker credential files or use helpers. An explicit `--authfile` selects that file instead of the usual fallback search. Use the same file on later build or transfer commands; see [registry login](../guides/security.md#log-in-to-a-registry).
+Image and manifest push inherit `[engine] compression_format` and `compression_level`; explicit push options take precedence. Image push `--compress` controls directory output separately from the configured algorithm. See [transfer options](cli.md#transfer-output-and-errors) for compression and signing.
+
+On Linux, `coopr login` normally writes `$XDG_RUNTIME_DIR/containers/auth.json`, which does not survive reboot. `REGISTRY_AUTH_FILE` selects the default credential file across login, builds and transfers; otherwise `DOCKER_CONFIG` selects its `config.json`. Without either override, native lookup can read user configuration and Docker credential files or use helpers. An explicit `--authfile` takes precedence. Username-only `--creds USER` prompts for a password in the CLI before starting workers; a noninteractive command must supply `USER:PASSWORD` or use an auth file. See [registry login](../guides/security.md#log-in-to-a-registry).
 
 Image, component and registry cache transfers use Podman/Buildah's registry transport. Registry routing, mirrors, authentication and certificates follow native configuration. TLS behavior is:
 
@@ -83,7 +87,7 @@ TLS controls connection security; `policy.json` controls image acceptance. The c
 | `BUILDAH_FORMAT` | Default image format when `--format` is omitted; otherwise `oci`. |
 | `BUILDAH_LAYERS` | `false` (case-insensitive) or `0` disables instruction layers by default; other values leave them enabled. Explicit `--layers` wins. |
 | `BUILDAH_ISOLATION` | Native RUN isolation default; `--isolation` overrides it. The published container sets `chroot`. |
-| `SOURCE_DATE_EPOCH` | Nonnegative Unix epoch seconds for creation-time policy. `--source-date-epoch` overrides it; an empty environment value is invalid. |
+| `SOURCE_DATE_EPOCH` | Unix epoch seconds for creation-time policy, including negative values. An empty value is unset; `--source-date-epoch=` clears the environment default. |
 | Host proxy variables | Passed to RUN by default; `--http-proxy=false` disables host forwarding. See [proxy arguments](execution.md#arguments-and-normalization) for explicit build arguments. |
 
-`--timestamp` forces creation/new-layer file times and conflicts with an epoch supplied through `SOURCE_DATE_EPOCH` or `--source-date-epoch`, and with `--rewrite-timestamp`. `--cache-ttl` uses wall-clock publication age independently of image times. See [timestamp rules](execution.md#timestamps-and-cache-age) for authored epoch sources and cache behavior.
+`--timestamp` forces creation/new-layer file times and conflicts with a nonempty epoch supplied through `SOURCE_DATE_EPOCH` or `--source-date-epoch`. `--rewrite-timestamp` needs an epoch to clamp file times; combining it with `--timestamp` does not add that clamping. `--cache-ttl` uses wall-clock publication age independently of image times. See [timestamp rules](execution.md#timestamps-and-cache-age) for authored epoch sources and cache behavior.

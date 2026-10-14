@@ -2,6 +2,7 @@
   lib,
   pkgs,
   coopr,
+  coopr-sequoia-signing,
   coopr-static,
   container,
   docs,
@@ -22,6 +23,7 @@ let
       src = coopr.testSource;
       goModules = coopr.goModules;
       doCheck = true;
+      nativeBuildInputs = coopr.nativeBuildInputs ++ [ pkgs.python3 ];
       nativeCheckInputs = [
         pkgs.gitMinimal
         pkgs.openssh
@@ -63,6 +65,7 @@ let
         lib
         pkgs
         coopr
+        coopr-sequoia-signing
         coopr-static
         container
         ;
@@ -71,6 +74,49 @@ let
 in
 {
   build = coopr;
+  sequoia-helper = pkgs.runCommand "coopr-sequoia-helper-check" { } ''
+    test "$(${coopr-sequoia-signing}/bin/coopr-sequoia-signing --protocol-version)" = coopr-sequoia-signing/1
+    test -s ${coopr-sequoia-signing}/share/licenses/coopr/native/rust/LICENSE-APACHE
+    test -s ${coopr-sequoia-signing}/share/licenses/coopr/native/rust/COPYRIGHT
+    test -s ${coopr-sequoia-signing.sources}/REBUILD.txt
+    test -s ${coopr-sequoia-signing.sources}/coopr/flake.lock
+    test -s ${coopr-sequoia-signing.sources}/build-inputs/rustc-source.tar.gz
+    helper_closure=${pkgs.closureInfo { rootPaths = [ coopr-sequoia-signing ]; }}/store-paths
+    core_closure=${
+      pkgs.closureInfo {
+        rootPaths = [
+          coopr
+          coopr-static
+        ]
+        ++ container.runtimeRoots;
+      }
+    }/store-paths
+    if grep -E 'coopr-sequoia-signing.*sources|rustc.*src' "$helper_closure"; then
+      echo 'Optional helper runtime unexpectedly includes source outputs' >&2
+      exit 1
+    fi
+    if grep -E -- '-(coopr-sequoia-signing|podman-sequoia|sequoia-sq)-' "$core_closure"; then
+      echo 'Core runtime unexpectedly includes optional Sequoia dependencies' >&2
+      exit 1
+    fi
+    grep -E -- '-gpgme-[^/]*$' "$core_closure" >/dev/null
+    sort -u ${
+      pkgs.writeText "coopr-sequoia-attributed-outputs" (
+        lib.concatStringsSep "\n" (
+          coopr-sequoia-signing.nativeAttribution.candidateOutputs
+          ++ [ (builtins.unsafeDiscardStringContext (toString coopr-sequoia-signing)) ]
+        )
+      )
+    } > attributed
+    sort -u "$helper_closure" > shipped
+    comm -23 shipped attributed > missing
+    if [ -s missing ]; then
+      echo 'Optional native outputs missing license/source attribution:' >&2
+      cat missing >&2
+      exit 1
+    fi
+    touch "$out"
+  '';
   go-check = nativeGoCheck;
   test = nativeGoCheck;
   vet = if pkgs.stdenv.hostPlatform.isx86_64 then goChecks else goCheck "vet" "go vet ./..." [ ];

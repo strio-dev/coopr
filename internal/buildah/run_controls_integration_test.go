@@ -185,7 +185,7 @@ func TestBuildDefinitionUsesContainersConfigRuntimeDefaults(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte("[containers]\nshm_size = \"12m\"\ndefault_ulimits = [\"nofile=333:333\"]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("CONTAINERS_CONF", configPath)
+	t.Setenv("CONTAINERS_CONF_OVERRIDE", configPath)
 	controls, err := ParseRunControls(RunControlInput{})
 	if err != nil {
 		t.Fatal(err)

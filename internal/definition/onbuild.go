@@ -4,12 +4,14 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 
 	buildkitinstructions "github.com/moby/buildkit/frontend/dockerfile/instructions"
 	buildkitparser "github.com/moby/buildkit/frontend/dockerfile/parser"
+	"github.com/openshift/imagebuilder"
 )
 
 // formatOnBuild converts one parsed Coopr instruction to the Dockerfile
@@ -20,11 +22,11 @@ func formatOnBuild(inst Instruction) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// Validate the actual metadata dialect at publication, rather than leaving
-	// the consuming build to discover a trigger that Dockerfile cannot parse.
-	parsed, err := buildkitparser.Parse(strings.NewReader(raw))
-	if err == nil && len(parsed.AST.Children) == 1 {
-		_, err = buildkitinstructions.ParseCommand(parsed.AST.Children[0])
+	// ONBUILD is Dockerfile metadata, but Buildah evaluates it with imagebuilder,
+	// whose flag vocabulary includes native mounts absent from BuildKit.
+	parsed, err := imagebuilder.ParseDockerfile(strings.NewReader(raw))
+	if err == nil && len(parsed.Children) == 1 {
+		err = (&imagebuilder.Step{}).Resolve(parsed.Children[0])
 	} else if err == nil {
 		err = fmt.Errorf("expected exactly one instruction")
 	}
@@ -87,6 +89,8 @@ func formatOnBuildInstruction(inst Instruction) (string, error) {
 			}
 			return keyword + " " + value, nil
 		}
+	case "maintainer":
+		return "", fmt.Errorf("MAINTAINER isn't allowed as an ONBUILD trigger")
 	case "expose":
 		if err := validateOnBuildProperties(inst); err != nil {
 			return "", err
@@ -119,8 +123,8 @@ func formatOnBuildRun(inst Instruction) (string, error) {
 	flags := make([]string, 0, len(inst.Children)+2)
 	for _, name := range []string{"network", "security"} {
 		if value, ok := inst.Properties[name]; ok && value != "" {
-			if strings.Contains(value, "$") {
-				return "", fmt.Errorf("ONBUILD RUN %s must be a literal value; Dockerfile ONBUILD does not expand this flag", name)
+			if name == "security" && strings.Contains(value, "$") {
+				return "", fmt.Errorf("ONBUILD RUN security must be a literal value")
 			}
 			flags = append(flags, "--"+name+"="+value)
 		}
@@ -219,9 +223,6 @@ func formatExecutableRunHeredoc(prefix string, inst Instruction) (string, error)
 }
 
 func formatOnBuildCopyOrAdd(inst Instruction) (string, error) {
-	if len(inst.InlineFiles) != 0 {
-		return "", fmt.Errorf("ONBUILD %s inline sources cannot be authored", strings.ToUpper(inst.Name))
-	}
 	allowed := []string{"chown", "chmod", "link", "parents"}
 	if inst.Name == "copy" {
 		allowed = append(allowed, "from")
@@ -238,12 +239,6 @@ func formatOnBuildCopyOrAdd(inst Instruction) (string, error) {
 		if !ok || value == "" {
 			continue
 		}
-		switch name {
-		case "link", "parents", "keep-git-dir", "unpack":
-			if strings.Contains(value, "$") {
-				return "", fmt.Errorf("ONBUILD %s %s must be a literal boolean; Dockerfile ONBUILD does not expand this flag", strings.ToUpper(inst.Name), name)
-			}
-		}
 		flags = append(flags, "--"+name+"="+value)
 	}
 	for _, child := range inst.Children {
@@ -258,6 +253,9 @@ func formatOnBuildCopyOrAdd(inst Instruction) (string, error) {
 			flags = append(flags, "--exclude="+value)
 		}
 	}
+	if len(inst.InlineFiles) != 0 {
+		return formatOnBuildInlineCopyOrAdd(inst, flags)
+	}
 	encoded, err := marshalDockerWordArray(inst.Arguments)
 	if err != nil {
 		return "", err
@@ -269,16 +267,110 @@ func formatOnBuildCopyOrAdd(inst Instruction) (string, error) {
 	return result + " " + encoded, nil
 }
 
+// A native COPY/ADD heredoc uses its delimiter as the filename and always
+// terminates data with LF (even an empty body). Reject payloads that cannot round-trip.
+func formatOnBuildInlineCopyOrAdd(inst Instruction, flags []string) (string, error) {
+	words := append([]string{strings.ToUpper(inst.Name)}, flags...)
+	var sources []string
+	for _, source := range inst.Arguments[:len(inst.Arguments)-1] {
+		word, err := quoteDockerWord(source)
+		if err != nil {
+			return "", err
+		}
+		words = append(words, word)
+		sources = append(sources, word)
+	}
+	var bodies strings.Builder
+	for _, file := range inst.InlineFiles {
+		if file.Data == "" || !strings.HasSuffix(file.Data, "\n") {
+			return "", fmt.Errorf("ONBUILD %s inline file %q requires nonempty LF-terminated content (native empty heredocs produce LF)", strings.ToUpper(inst.Name), file.Path)
+		}
+		if heredocContainsDelimiter(file.Data, file.Path) {
+			return "", fmt.Errorf("ONBUILD %s inline file %q collides with its native heredoc delimiter", strings.ToUpper(inst.Name), file.Path)
+		}
+		delimiter := strings.NewReplacer(`\`, `\\`, `"`, `\"`, `'`, `\'`, " ", `\ `, "\t", "\\t").Replace(file.Path)
+		if strings.HasPrefix(delimiter, "-") {
+			delimiter = `\` + delimiter
+		}
+		if !file.Expand {
+			delimiter = "'" + strings.ReplaceAll(file.Path, "'", `'\''`) + "'"
+		}
+		if strings.ContainsAny(file.Path, "\r\n") {
+			return "", fmt.Errorf("ONBUILD %s inline filename %q cannot contain line breaks", strings.ToUpper(inst.Name), file.Path)
+		}
+		words = append(words, "<<"+delimiter)
+		bodies.WriteByte('\n')
+		bodies.WriteString(file.Data)
+		bodies.WriteString(file.Path)
+	}
+	destination, err := quoteDockerWord(inst.Arguments[len(inst.Arguments)-1])
+	if err != nil {
+		return "", err
+	}
+	words = append(words, destination)
+	raw := strings.Join(words, " ") + bodies.String()
+	decoded, err := buildkitparser.Parse(strings.NewReader(raw))
+	if err != nil || len(decoded.AST.Children) != 1 || len(decoded.AST.Children[0].Heredocs) != len(inst.InlineFiles) {
+		return "", fmt.Errorf("ONBUILD %s inline filenames cannot be represented as Dockerfile heredocs", strings.ToUpper(inst.Name))
+	}
+	// Flags are validated by imagebuilder. Here only check the shared source
+	// conversion. Ordinary paths retain lexical quoting and escapes; heredoc
+	// names and contents are decoded separately.
+	node := decoded.AST.Children[0]
+	node.Flags = nil
+	command, err := buildkitinstructions.ParseInstruction(node)
+	if err != nil {
+		return "", fmt.Errorf("ONBUILD inline sources cannot be represented: %w", err)
+	}
+	var contents []buildkitinstructions.SourceContent
+	var paths []string
+	var target string
+	switch command := command.(type) {
+	case *buildkitinstructions.CopyCommand:
+		contents = command.SourceContents
+		paths = command.SourcePaths
+		target = command.DestPath
+	case *buildkitinstructions.AddCommand:
+		contents = command.SourceContents
+		paths = command.SourcePaths
+		target = command.DestPath
+	}
+	if !slices.Equal(paths, sources) || target != destination {
+		return "", fmt.Errorf("ONBUILD %s ordinary source paths and destination cannot be preserved alongside native heredocs", strings.ToUpper(inst.Name))
+	}
+	if len(contents) != len(inst.InlineFiles) {
+		return "", fmt.Errorf("ONBUILD inline source count cannot be preserved")
+	}
+	for index, file := range inst.InlineFiles {
+		if contents[index].Path != file.Path || contents[index].Data != file.Data || contents[index].Expand != file.Expand {
+			return "", fmt.Errorf("ONBUILD %s inline file %q cannot be preserved by native Dockerfile source conversion", strings.ToUpper(inst.Name), file.Path)
+		}
+	}
+	parsed, err := imagebuilder.ParseDockerfile(strings.NewReader(raw))
+	if err != nil || len(parsed.Children) != 1 || len(parsed.Children[0].Heredocs) != len(inst.InlineFiles) {
+		return "", fmt.Errorf("ONBUILD %s inline filenames cannot be represented as native heredocs", strings.ToUpper(inst.Name))
+	}
+	var nativeWords []string
+	for word := parsed.Children[0].Next; word != nil; word = word.Next {
+		nativeWords = append(nativeWords, word.Value)
+	}
+	if !slices.Equal(nativeWords, words[1+len(flags):]) {
+		return "", fmt.Errorf("ONBUILD %s source paths and destination cannot be preserved by native parsing", strings.ToUpper(inst.Name))
+	}
+	for index, file := range inst.InlineFiles {
+		heredoc := parsed.Children[0].Heredocs[index]
+		if heredoc.Name != file.Path || heredoc.Expand != file.Expand || heredoc.Chomp || strings.TrimPrefix(heredoc.Content, "\n")+"\n" != file.Data {
+			return "", fmt.Errorf("ONBUILD %s inline filename %q cannot be preserved by the native heredoc parser", strings.ToUpper(inst.Name), file.Path)
+		}
+	}
+	return raw, nil
+}
+
 func formatOnBuildMount(inst Instruction) (string, error) {
 	if len(inst.Arguments) != 1 {
 		return "", fmt.Errorf("ONBUILD RUN mount requires one type")
 	}
-	// ONBUILD uses Dockerfile metadata, whose mount vocabulary is narrower
-	// than native Buildah execution. Reject unrepresentable options now, even
-	// when supported fields still contain child-stage expressions.
-	if err := ValidateProperties(inst.Properties, "from", "source", "src", "target", "dst", "destination", "readonly", "ro", "readwrite", "rw", "required", "size", "id", "sharing", "mode", "uid", "gid", "env"); err != nil {
-		return "", fmt.Errorf("ONBUILD RUN mount Dockerfile metadata: %w", err)
-	}
+
 	fields := []string{"type=" + inst.Arguments[0]}
 	keys := make([]string, 0, len(inst.Properties))
 	for key := range inst.Properties {
@@ -286,7 +378,61 @@ func formatOnBuildMount(inst Instruction) (string, error) {
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		value, err := escapeDockerFlagValue(inst.Properties[key])
+		if strings.Contains(inst.Arguments[0], "$") {
+			switch key {
+			case "relabel":
+				return "", fmt.Errorf("ONBUILD RUN mount %s requires a literal mount type to select its native metadata form", key)
+			}
+		}
+		value := inst.Properties[key]
+		if inst.Arguments[0] == "secret" && (key == "source" || key == "src") {
+			if inst.Properties["id"] != "" {
+				return "", fmt.Errorf("ONBUILD RUN secret mount cannot specify both source and id")
+			}
+			key = "id"
+		}
+		switch key {
+		case "bind-nonrecursive", "nosuid", "nodev", "noexec", "shared", "rshared", "private", "rprivate", "slave", "rslave", "u", "U", "z", "Z", "no-dereference", "tmpcopyup":
+			enabled, err := strconv.ParseBool(value)
+			if err != nil {
+				return "", fmt.Errorf("ONBUILD RUN mount %s must be a literal boolean because Buildah accepts this option without a value", key)
+			}
+			if enabled {
+				if key == "u" {
+					key = "U"
+				}
+				fields = append(fields, key)
+			}
+			continue
+		case "readonly", "ro", "rw", "readwrite":
+			enabled, err := strconv.ParseBool(value)
+			if err != nil {
+				return "", fmt.Errorf("ONBUILD RUN mount %s must be a literal boolean because Buildah accepts this option without a value", key)
+			}
+			if key == "rw" || key == "readwrite" {
+				enabled = !enabled
+			}
+			kind := inst.Arguments[0]
+			if kind == "secret" || kind == "ssh" {
+				return "", fmt.Errorf("ONBUILD RUN %s mount does not support %s", kind, key)
+			}
+			if enabled {
+				fields = append(fields, "ro")
+			} else if kind != "tmpfs" {
+				fields = append(fields, "rw")
+			}
+			continue
+		case "relabel":
+			if inst.Arguments[0] == "cache" && value != "private" && value != "shared" {
+				return "", fmt.Errorf("ONBUILD RUN cache mount relabel must be literal private or shared")
+			}
+		}
+		key, value = NativeMountField(inst.Arguments[0], key, value)
+		if value == "" && (key == "Z" || key == "z") {
+			fields = append(fields, key)
+			continue
+		}
+		value, err := escapeDockerFlagValue(value)
 		if err != nil {
 			return "", fmt.Errorf("ONBUILD RUN mount %s: %w", key, err)
 		}
@@ -302,19 +448,6 @@ func formatOnBuildMount(inst Instruction) (string, error) {
 		return "", fmt.Errorf("encode ONBUILD RUN mount: %w", err)
 	}
 	raw := strings.TrimSuffix(encoded.String(), "\n")
-	if !strings.Contains(raw, "$") {
-		parsed, err := buildkitparser.Parse(strings.NewReader("RUN --mount=" + raw + " true"))
-		if err != nil {
-			return "", fmt.Errorf("ONBUILD RUN mount: %w", err)
-		}
-		command, err := buildkitinstructions.ParseCommand(parsed.AST.Children[0])
-		if err == nil {
-			err = command.(*buildkitinstructions.RunCommand).Expand(func(value string) (string, error) { return value, nil })
-		}
-		if err != nil {
-			return "", fmt.Errorf("ONBUILD RUN mount Dockerfile metadata: %w", err)
-		}
-	}
 	return raw, nil
 }
 
@@ -374,25 +507,31 @@ func formatWordList(keyword string, arguments []string) (string, error) {
 }
 
 func formatKeyValues(inst Instruction) ([]string, error) {
+	// Keys are literal names, so escape their backslashes before encoding a native
+	// Dockerfile word. Values retain their authored native expansion semantics.
 	if len(inst.Arguments) == 2 {
 		value, err := quoteDockerWord(inst.Arguments[1])
 		if err != nil {
 			return nil, err
 		}
-		return []string{inst.Arguments[0] + "=" + value}, nil
+		key, err := quoteDockerWord(strings.ReplaceAll(inst.Arguments[0], `\`, `\\`))
+		if err != nil {
+			return nil, err
+		}
+		return []string{key + "=" + value}, nil
 	}
-	keys := make([]string, 0, len(inst.Properties))
-	for key := range inst.Properties {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
+	keys := OrderedPropertyKeys(inst)
 	result := make([]string, 0, len(keys))
 	for _, key := range keys {
 		value, err := quoteDockerWord(inst.Properties[key])
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, key+"="+value)
+		encodedKey, err := quoteDockerWord(strings.ReplaceAll(key, `\`, `\\`))
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, encodedKey+"="+value)
 	}
 	return result, nil
 }
@@ -479,9 +618,11 @@ func dockerShellCommand(command string) string {
 	}
 	var values []string
 	if json.Unmarshal([]byte(trimmed), &values) == nil {
-		// An empty quoted word is a shell no-op but prevents Dockerfile JSON
-		// detection from changing an explicitly shell-form command to exec.
-		return "''" + command
+		// Escape the opening bracket itself to prevent Dockerfile JSON detection.
+		// Prefixing a separate empty word would instead change the executable when
+		// the authored command has leading whitespace.
+		opening := strings.IndexByte(command, '[')
+		return command[:opening] + `\` + command[opening:]
 	}
 	return command
 }
@@ -505,4 +646,32 @@ func heredocContainsDelimiter(contents, delimiter string) bool {
 		}
 	}
 	return false
+}
+
+// Native COPY/ADD heredocs can contain NUL file bytes. Headers and executable
+// instructions cannot; inspect the public native AST only for this rare case.
+func validateOnBuildNUL(raw string) error {
+	if !strings.ContainsRune(raw, '\x00') {
+		return nil
+	}
+	invalid := fmt.Errorf("dockerfile instructions must be without NUL except COPY/ADD inline file content")
+	parsed, err := imagebuilder.ParseDockerfile(strings.NewReader(raw))
+	if err != nil || len(parsed.Children) != 1 {
+		return invalid
+	}
+	node := parsed.Children[0]
+	if node.Value != "copy" && node.Value != "add" || strings.ContainsRune(node.Original, '\x00') {
+		return invalid
+	}
+	hasNULBody := false
+	for _, file := range node.Heredocs {
+		if strings.ContainsRune(file.Name, '\x00') {
+			return invalid
+		}
+		hasNULBody = hasNULBody || strings.ContainsRune(file.Content, '\x00')
+	}
+	if !hasNULBody {
+		return invalid
+	}
+	return nil
 }

@@ -15,6 +15,8 @@ import (
 	"github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/buildah/define"
 	"go.podman.io/buildah/imagebuildah"
+	"go.podman.io/common/libimage"
+	libconfig "go.podman.io/common/pkg/config"
 	"go.podman.io/storage"
 )
 
@@ -30,6 +32,28 @@ func TestNativeImageIDFromMatchesBuildah(t *testing.T) {
 			t.Error(err)
 		}
 	}()
+
+	t.Run("explicit-id-retains-native-platform-admission", func(t *testing.T) {
+		native, err := libimage.RuntimeFromStore(lease.store, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		foreign := v1.Platform{OS: "linux", Architecture: "arm64"}
+		if runtime.GOARCH == "arm64" {
+			foreign.Architecture = "amd64"
+		}
+		if _, err := native.Pull(f.ctx, base.ImageID, libconfig.PullPolicyNever, &libimage.PullOptions{CopyOptions: libimage.CopyOptions{OS: foreign.OS, Architecture: foreign.Architecture}}); err != nil {
+			t.Fatalf("native explicit-ID control: %v", err)
+		}
+		resolver, err := oci.NewResolver(oci.Options{PullPolicy: "never"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := ResolveImageSource(f.ctx, resolver, base.ImageID, foreign, lease.store, f.options.SystemContext)
+		if err != nil || got.ImageID != base.ImageID {
+			t.Fatalf("explicit ID rejected after native admission: %+v %v", got, err)
+		}
+	})
 	for _, reference := range []string{base.ImageID, "sha256:" + base.ImageID} {
 		t.Run(reference[:8], func(t *testing.T) {
 			file := filepath.Join(f.contextDir, "Containerfile")
