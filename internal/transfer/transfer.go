@@ -356,30 +356,9 @@ func copyStoredImage(ctx context.Context, source string, destination Destination
 		if err != nil {
 			return "", fmt.Errorf("resolve %s: %w", source, err)
 		}
-		var index v1.Index
-		copyIndex := len(indexData) != 0 && json.Unmarshal(indexData, &index) == nil && len(index.Manifests) != 0
-		membersResident := copyIndex
-		if copyIndex {
-			for _, child := range index.Manifests {
-				exact, resident := false, false
-				for _, selection := range selections {
-					if storedSelectionHasManifest(selection, child) {
-						exact, resident = true, true
-						break
-					}
-					if selection.SourceManifest != nil && content.Equal(*selection.SourceManifest, child) {
-						resident = true
-					}
-				}
-				copyIndex = copyIndex && exact
-				membersResident = membersResident && resident
-			}
-		}
-		// Decryption retains the source descriptor beside its runnable plaintext
-		// image. Such a member is transformed, not missing; export the selected
-		// plaintext image unless another member of an actual list is absent.
-		// Complete origin data cannot promote a native image into a list.
-		// Local aliases also preserve native list identity after decryption.
+		// Native list identity survives member transformations such as
+		// decryption. Retained origin metadata cannot promote a leaf to a list.
+		copyIndex := false
 		if len(indexData) != 0 {
 			options, err := nativeStoreOptions(opts)
 			if err != nil {
@@ -394,9 +373,7 @@ func copyStoredImage(ctx context.Context, source string, destination Destination
 				if err != nil {
 					return err
 				}
-				if copyIndex || !membersResident || destination.Transport == "local" {
-					copyIndex = nativeList
-				}
+				copyIndex = nativeList
 				if nativeList || digest.Digest(selector).Validate() == nil || strings.Contains(selector, "@") {
 					return nil
 				}
@@ -666,6 +643,9 @@ func copyStoredIndex(ctx context.Context, storeDir string, root v1.Descriptor, i
 				selection = candidate
 				found = true
 				break
+			}
+			if candidate.SourceManifest != nil && content.Equal(*candidate.SourceManifest, manifestInIndex) {
+				selection, found = candidate, true
 			}
 		}
 		if !found {

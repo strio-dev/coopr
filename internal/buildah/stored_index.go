@@ -23,6 +23,7 @@ import (
 	imagestorage "go.podman.io/image/v5/storage"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/storage"
+	"oras.land/oras-go/v2/content"
 )
 
 // StoredIndexSnapshot pins the exact index and resident manifests selected by
@@ -56,20 +57,20 @@ func prepareStoredIndexCopySource(ctx context.Context, store storage.Store, snap
 	// StoredSelection. Let the native list supply their references rather than
 	// reconstructing them from image/platform metadata. Historical roots still
 	// use the snapshot path below unless a current native list matches exactly.
+	var unresolved []digest.Digest
+	transformed := false
 	for _, member := range index.Manifests {
-		resident := false
-		for _, selection := range selections {
-			if selection.Manifest.Digest == member.Digest && selection.Manifest.Size == member.Size && selection.Manifest.MediaType == member.MediaType {
-				resident = true
-				break
-			}
+		selection, found := storedIndexMemberSelection(selections, member)
+		if !found {
+			unresolved = append(unresolved, member.Digest)
+		} else {
+			transformed = transformed || !content.Equal(selection.Manifest, member)
 		}
-		if !resident {
-			reference, release, err := currentStoredIndexReference(ctx, store, root, original, system)
-			if err != nil || reference != nil {
-				return reference, release, err
-			}
-			break
+	}
+	if !transformed && len(unresolved) != 0 {
+		reference, release, err := currentStoredIndexReference(ctx, store, root, original, system, nil)
+		if err != nil || reference != nil {
+			return reference, release, err
 		}
 	}
 	temporaryDir, err := os.MkdirTemp("", "coopr-native-index-")
@@ -115,18 +116,58 @@ func prepareStoredIndexCopySource(ctx context.Context, store storage.Store, snap
 		manifest   []byte
 	}
 	emitted := map[digest.Digest]emittedMember{}
+	if transformed && len(unresolved) != 0 {
+		reference, release, err := currentStoredIndexReference(ctx, store, root, original, system, unresolved)
+		if err != nil {
+			return nil, cleanup, err
+		}
+		if reference != nil {
+			// Native selective copying supplies artifacts and their signatures
+			// without reading unavailable ciphertext blobs of transformed members.
+			nativePath := filepath.Join(temporaryDir, "native-members")
+			nativeDestination, err := directory.NewReference(nativePath)
+			if err != nil {
+				_ = release()
+				return nil, cleanup, err
+			}
+			policy, err := signature.DefaultPolicy(system)
+			if err != nil {
+				_ = release()
+				return nil, cleanup, err
+			}
+			policyContext, err := signature.NewPolicyContext(policy)
+			if err != nil {
+				_ = release()
+				return nil, cleanup, err
+			}
+			_, copyErr := imagecopy.Image(ctx, policyContext, nativeDestination, reference, &imagecopy.Options{SourceCtx: system, DestinationCtx: system, ImageListSelection: imagecopy.CopySpecificImages, Instances: unresolved, RemoveSignatures: removeSignatures, PreserveDigests: true, ReportWriter: writer})
+			if err := errors.Join(copyErr, policyContext.Destroy(), release()); err != nil {
+				return nil, cleanup, err
+			}
+			if err := linkStoredIndexFiles(nativePath, aggregatePath, root.Digest); err != nil {
+				return nil, cleanup, err
+			}
+			source, err := nativeDestination.NewImageSource(ctx, system)
+			if err != nil {
+				return nil, cleanup, err
+			}
+			for _, selected := range unresolved {
+				raw, mediaType, err := source.GetManifest(ctx, &selected)
+				if err != nil {
+					return nil, cleanup, errors.Join(err, source.Close())
+				}
+				emitted[selected] = emittedMember{descriptor: oci.Descriptor(mediaType, raw), manifest: raw}
+			}
+			if err := source.Close(); err != nil {
+				return nil, cleanup, err
+			}
+		}
+	}
 	changed := false
 	for i, member := range index.Manifests {
 		result, exists := emitted[member.Digest]
 		if !exists {
-			var selection oci.StoredSelection
-			found := false
-			for _, candidate := range selections {
-				if candidate.Manifest.Digest == member.Digest && candidate.Manifest.Size == member.Size && candidate.Manifest.MediaType == member.MediaType {
-					selection, found = candidate, true
-					break
-				}
-			}
+			selection, found := storedIndexMemberSelection(selections, member)
 			if !found {
 				return nil, cleanup, fmt.Errorf("stored index lacks manifest %s", member.Digest)
 			}
@@ -175,11 +216,25 @@ func prepareStoredIndexCopySource(ctx context.Context, store storage.Store, snap
 	return aggregate, cleanup, nil
 }
 
+func storedIndexMemberSelection(selections map[string]oci.StoredSelection, member v1.Descriptor) (oci.StoredSelection, bool) {
+	for _, selection := range selections {
+		if content.Equal(selection.Manifest, member) {
+			return selection, true
+		}
+	}
+	for _, selection := range selections {
+		if selection.SourceManifest != nil && content.Equal(*selection.SourceManifest, member) {
+			return selection, true
+		}
+	}
+	return oci.StoredSelection{}, false
+}
+
 // currentStoredIndexReference keeps the native list locked until the copy has
 // closed its sources. The native reference reads the image's current manifest,
 // so checking its bytes and holding the lock are both required for exact-root
 // selection. Binding the transport also covers native artifact references.
-func currentStoredIndexReference(ctx context.Context, store storage.Store, root v1.Descriptor, original []byte, system *types.SystemContext) (types.ImageReference, func() error, error) {
+func currentStoredIndexReference(ctx context.Context, store storage.Store, root v1.Descriptor, original []byte, system *types.SystemContext, instances []digest.Digest) (types.ImageReference, func() error, error) {
 	noop := func() error { return nil }
 	images, err := store.ImagesByDigest(root.Digest)
 	if err != nil {
@@ -212,7 +267,11 @@ func currentStoredIndexReference(ctx context.Context, store storage.Store, root 
 			lock.Unlock()
 			return nil
 		}
-		reference, err := list.Reference(store, imagecopy.CopyAllImages, nil)
+		selection := imagecopy.CopyAllImages
+		if instances != nil {
+			selection = imagecopy.CopySpecificImages
+		}
+		reference, err := list.Reference(store, selection, instances)
 		if err != nil {
 			_ = release()
 			return nil, noop, err
