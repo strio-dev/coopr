@@ -129,3 +129,175 @@ func TestManifestAppendPreservesRepeatedResidentDescriptors(t *testing.T) {
 		t.Fatalf("append complete resident list: %v", err)
 	}
 }
+
+// This synthetic fixture models native storage after decryption: the runnable
+// default and retained encrypted source share an image record. It exercises
+// provenance and list mutation, not encryption or decryption algorithms.
+func TestManifestAppendRetainsEncryptedOrigin(t *testing.T) {
+	for _, mixed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("mixed=%t", mixed), func(t *testing.T) {
+			ctx := context.Background()
+			options := nativeBuildTestStore(t.TempDir())
+			err := buildah.WithStore(options, func(store storage.Store) error {
+				makeSelection := func(arch, marker string) oci.StoredSelection {
+					config, _ := json.Marshal(v1.Image{Platform: v1.Platform{OS: "linux", Architecture: arch}, RootFS: v1.RootFS{Type: "layers"}, History: []v1.History{{CreatedBy: marker, EmptyLayer: true}}})
+					cfg := oci.Descriptor(v1.MediaTypeImageConfig, config)
+					raw, _ := json.Marshal(v1.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: v1.MediaTypeImageManifest, Config: cfg})
+					desc := oci.Descriptor(v1.MediaTypeImageManifest, raw)
+					id := cfg.Digest.Encoded()
+					if _, err := store.CreateImage(id, nil, "", "", &storage.ImageOptions{BigData: []storage.ImageBigDataOption{
+						{Key: cfg.Digest.String(), Data: config, Digest: cfg.Digest},
+						{Key: storage.ImageDigestBigDataKey, Data: raw, Digest: desc.Digest},
+						{Key: storage.ImageDigestManifestBigDataNamePrefix + "-" + desc.Digest.String(), Data: raw, Digest: desc.Digest},
+					}}); err != nil {
+						t.Fatal(err)
+					}
+					return oci.StoredSelection{Root: desc, Manifest: desc, ImageID: id, ConfigData: config}
+				}
+				amd := makeSelection("amd64", "original config history")
+				arm := makeSelection("arm64", "appended")
+				ppc := makeSelection("ppc64le", "repeated append")
+				replacement := makeSelection("amd64", "explicit replacement")
+				encryptedRaw, _ := json.Marshal(v1.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: v1.MediaTypeImageManifest, Config: oci.Descriptor(v1.MediaTypeImageConfig, amd.ConfigData), Layers: []v1.Descriptor{oci.Descriptor(v1.MediaTypeImageLayerGzip+"+encrypted", []byte("synthetic ciphertext"))}})
+				origin := oci.Descriptor(v1.MediaTypeImageManifest, encryptedRaw)
+				if err := store.SetImageBigData(amd.ImageID, storage.ImageDigestManifestBigDataNamePrefix+"-"+origin.Digest.String(), encryptedRaw, func(data []byte) (digest.Digest, error) { return digest.FromBytes(data), nil }); err != nil {
+					return err
+				}
+				members := []v1.Descriptor{origin, origin}
+				if mixed {
+					members[1] = amd.Manifest
+				}
+				for i := range members {
+					members[i].Platform = &v1.Platform{OS: "linux", Architecture: "amd64"}
+					members[i].Annotations = map[string]string{"occurrence": fmt.Sprint(i)}
+				}
+				original := v1.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: v1.MediaTypeImageIndex, Manifests: members, Annotations: map[string]string{"root": "preserved"}, Subject: &origin, ArtifactType: "application/example"}
+				raw, _ := json.Marshal(original)
+				oldRoot := oci.Descriptor(v1.MediaTypeImageIndex, raw)
+				if _, err := imagestore.FromStore(store).WriteStoredIndex(ctx, oldRoot, raw, map[digest.Digest]string{origin.Digest: amd.ImageID, amd.Manifest.Digest: amd.ImageID}, "encrypted-resident"); err != nil {
+					return err
+				}
+				_, _, resident, err := oci.StoredImageSelections(ctx, store, "encrypted-resident")
+				if err != nil {
+					return err
+				}
+				selected := resident["linux/amd64"]
+				if selected.Manifest.Digest != amd.Manifest.Digest || selected.SourceManifest == nil || selected.SourceManifest.Digest != origin.Digest {
+					t.Fatalf("fixture did not expose runnable manifest and encrypted origin: %+v", selected)
+				}
+				if mixed {
+					sibling, ok := resident[amd.Manifest.Digest.String()]
+					if !ok || sibling.SourceManifest != nil || sibling.Manifest.Digest != amd.Manifest.Digest {
+						t.Fatalf("fixture did not expose separate plaintext sibling: %+v", resident)
+					}
+				}
+				for i, added := range []oci.StoredSelection{arm, ppc, replacement} {
+					platform, err := added.Platform()
+					if err != nil {
+						return err
+					}
+					_, appended, result, _, err := appendManifest(ctx, "encrypted-resident", "oci", options, map[string]oci.StoredSelection{platform.OS + "/" + platform.Architecture: added})
+					if err != nil {
+						return err
+					}
+					var actual v1.Index
+					if err := json.Unmarshal(appended, &actual); err != nil {
+						return err
+					}
+					if !reflect.DeepEqual(actual.Annotations, original.Annotations) || !reflect.DeepEqual(actual.Subject, original.Subject) || actual.ArtifactType != original.ArtifactType {
+						t.Fatalf("append %d changed root metadata: %s", i, appended)
+					}
+					if i < 2 {
+						if len(actual.Manifests) != 3+i || !reflect.DeepEqual(actual.Manifests[:2], members) {
+							t.Fatalf("append %d lost origin occurrences: %s", i, appended)
+						}
+						if got := result["linux/amd64"]; got.ImageID != amd.ImageID || got.SourceManifest == nil || got.SourceManifest.Digest != origin.Digest {
+							t.Fatalf("append %d pruned retained origin selection: %+v", i, result)
+						}
+					} else {
+						wantMembers := 3
+						if mixed {
+							wantMembers++
+						}
+						if len(actual.Manifests) != wantMembers {
+							t.Fatalf("replacement lost a distinct sibling or retained old occurrences: %s", appended)
+						}
+						for _, member := range actual.Manifests {
+							if member.Digest == origin.Digest {
+								t.Fatalf("replacement retained encrypted origin: %s", appended)
+							}
+						}
+						for key, selection := range result {
+							if selection.ImageID == amd.ImageID && (!mixed || key != amd.Manifest.Digest.String() || selection.SourceManifest != nil) {
+								t.Fatalf("replacement retained wrong lookup alias %s: %+v", key, selection)
+							}
+						}
+						if mixed {
+							if sibling, ok := result[amd.Manifest.Digest.String()]; !ok || sibling.Manifest.Digest != amd.Manifest.Digest || sibling.ImageID != amd.ImageID || sibling.SourceManifest != nil {
+								t.Fatalf("replacement lost plaintext sibling lookup: %+v", result)
+							}
+							found := false
+							for _, member := range actual.Manifests {
+								found = found || member.Digest == amd.Manifest.Digest
+							}
+							if !found {
+								t.Fatal("replacement lost plaintext sibling descriptor")
+							}
+						}
+					}
+					if _, _, _, err := oci.StoredImageSelections(ctx, store, "encrypted-resident"); err != nil {
+						return err
+					}
+					_, historical, _, err := oci.StoredImageSelections(ctx, store, oldRoot.Digest.String())
+					if err != nil {
+						return err
+					}
+					if !bytes.Equal(historical, raw) {
+						t.Fatal("append changed original root bytes")
+					}
+					config, err := store.ImageBigData(amd.ImageID, digest.FromBytes(amd.ConfigData).String())
+					if err != nil {
+						return err
+					}
+					if !bytes.Equal(config, amd.ConfigData) {
+						t.Fatal("append changed original config/history")
+					}
+				}
+				// The public native Add path is a control for retained source references.
+				if _, err := imagestore.FromStore(store).WriteStoredIndex(ctx, oldRoot, raw, map[digest.Digest]string{origin.Digest: amd.ImageID, amd.Manifest.Digest: amd.ImageID}, "encrypted-native-control"); err != nil {
+					return err
+				}
+				runtime, err := libimage.RuntimeFromStore(store, &libimage.RuntimeOptions{SystemContext: &types.SystemContext{}})
+				if err != nil {
+					return err
+				}
+				handle, err := runtime.LookupManifestList("localhost/encrypted-native-control:latest")
+				if err != nil {
+					return err
+				}
+				ref, err := imagestorage.Transport.NewStoreReference(store, nil, arm.ImageID)
+				if err != nil {
+					return err
+				}
+				if _, err := handle.Add(ctx, transports.ImageName(ref), nil); err != nil {
+					return fmt.Errorf("native Add encrypted-origin control: %w", err)
+				}
+				nativeData, err := store.ImageBigData(handle.ID(), storage.ImageDigestBigDataKey)
+				if err != nil {
+					return err
+				}
+				var nativeIndex v1.Index
+				if err := json.Unmarshal(nativeData, &nativeIndex); err != nil {
+					return err
+				}
+				if len(nativeIndex.Manifests) != 3 || !reflect.DeepEqual(nativeIndex.Manifests[:2], members) {
+					t.Fatalf("native Add lost encrypted-origin occurrences: %s", nativeData)
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("append resident encrypted-origin list: %v", err)
+			}
+		})
+	}
+}

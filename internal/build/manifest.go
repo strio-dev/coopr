@@ -16,6 +16,7 @@ import (
 	"go.podman.io/common/libimage/manifests"
 	"go.podman.io/image/v5/manifest"
 	"go.podman.io/storage"
+	"oras.land/oras-go/v2/content"
 )
 
 // appendManifest reads and publishes lists under native locks. Children already
@@ -83,7 +84,7 @@ func appendManifest(ctx context.Context, name, format string, store buildah.Stor
 			for _, member := range index.Manifests {
 				available := false
 				for _, candidate := range existing {
-					if candidate.Manifest.Digest == member.Digest && candidate.Manifest.Size == member.Size && candidate.Manifest.MediaType == member.MediaType {
+					if manifestSelectionMatches(candidate, member) {
 						available = true
 						break
 					}
@@ -164,11 +165,17 @@ func appendManifest(ctx context.Context, name, format string, store buildah.Stor
 			for _, member := range previousIndex.Manifests {
 				replaced := false
 				for key := range selections {
-					if prior, ok := previous[key]; ok && prior.Manifest.Digest == member.Digest {
-						// Platform keys replace their selected instance. Other
-						// distinct instances of the same platform remain.
-						replaced = true
-						break
+					if prior, ok := previous[key]; ok {
+						selected := prior.Manifest
+						if prior.SourceManifest != nil {
+							selected = *prior.SourceManifest
+						}
+						// Replace the selected index member, preserving distinct runnable
+						// siblings even when they share its resident storage image.
+						if content.Equal(selected, member) {
+							replaced = true
+							break
+						}
 					}
 				}
 				if !replaced {
@@ -189,21 +196,18 @@ func appendManifest(ctx context.Context, name, format string, store buildah.Stor
 		root = oci.Descriptor(mediaType, data)
 		imageIDs := make(map[digest.Digest]string, len(result))
 		for key, selection := range result {
-			// Drop lookup aliases for an instance explicitly replaced above.
-			if previousIndex != nil {
-				retained := false
-				for _, member := range combinedIndex.Manifests {
-					if member.Digest == selection.Manifest.Digest {
-						retained = true
-						break
-					}
-				}
-				if !retained {
-					delete(result, key)
-					continue
+			// Keep both runnable and encrypted-origin identities when their exact
+			// descriptors survive, and pass the retained identity to the native writer.
+			retained := false
+			for _, member := range combinedIndex.Manifests {
+				if manifestSelectionMatches(selection, member) {
+					retained = true
+					imageIDs[member.Digest] = selection.ImageID
 				}
 			}
-			imageIDs[selection.Manifest.Digest] = selection.ImageID
+			if !retained {
+				delete(result, key)
+			}
 		}
 
 		for key, selection := range result {
@@ -218,4 +222,8 @@ func appendManifest(ctx context.Context, name, format string, store buildah.Stor
 		return err
 	})
 	return root, data, result, imageID, err
+}
+
+func manifestSelectionMatches(selection oci.StoredSelection, member v1.Descriptor) bool {
+	return content.Equal(selection.Manifest, member) || selection.SourceManifest != nil && content.Equal(*selection.SourceManifest, member)
 }
