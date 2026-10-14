@@ -15,13 +15,13 @@ This installs the latest stable release. For a specific version or Nix, see [oth
 
 The published image includes Coopr and its build helpers. Use it with Podman to build images without installing Coopr on your host.
 
-[Run Coopr in a container](../guides/container.md){ .md-button .coopr-container-link }
+[Run Coopr in a container](../guides/container.md){ .md-button .strio-container-link }
 
 ## Build your first image
 
 [**Build hello world with a component**
 <span>Create a component that packages a greeting, apply it to an image, and run the result.</span>
-<span class="coopr-tutorial__action">Start tutorial</span>](../tutorials/first-image.md){ .coopr-path .coopr-tutorial }
+<span class="strio-tutorial__action">Start tutorial</span>](../tutorials/first-image.md){ .strio-path .strio-tutorial }
 
 ## Set up your host
 

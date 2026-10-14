@@ -1,27 +1,24 @@
 {
-  runCommand,
-  zensical,
-  chroma,
-  python3,
+  lib,
+  strio-theme,
+  system,
 }:
-runCommand "coopr-docs"
-  {
-    nativeBuildInputs = [
-      zensical
-      chroma
-      (python3.withPackages (ps: [ ps.pymdown-extensions ]))
-    ];
-  }
-  ''
-    mkdir source
-    cp -r ${../docs} source/docs
-    cp ${../zensical.toml} source/zensical.toml
-    chmod -R u+w source
-    cd source
-    export HOME="$TMPDIR"
-    python3 -B -m unittest discover -s docs/.overrides -p 'test_*.py'
-    zensical build --clean --strict
-    test ! -e site/.overrides
-    cmp docs/install.sh site/install.sh
-    mv site "$out"
-  ''
+let
+  site = strio-theme.lib.mkZensicalSite {
+    inherit system;
+    name = "coopr-docs";
+    src = lib.fileset.toSource {
+      root = ../.;
+      fileset = lib.fileset.unions [
+        ../docs
+        ../zensical.toml
+      ];
+    };
+  };
+in
+site.overrideAttrs (old: {
+  buildCommand = old.buildCommand + ''
+    test ! -e "$out/.overrides"
+    cmp ${../docs/install.sh} "$out/install.sh"
+  '';
+})

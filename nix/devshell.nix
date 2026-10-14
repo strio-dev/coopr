@@ -44,9 +44,8 @@ pkgs.mkShell {
       delve
       nixfmt
       shellcheck
-      chroma
       zensical
-      (python3.withPackages (ps: [ ps.pymdown-extensions ]))
+      python3
     ];
   inherit (coopr) CGO_ENABLED;
   GOFLAGS = "-tags=${lib.concatStringsSep "," (coopr.tags ++ testTags)}";

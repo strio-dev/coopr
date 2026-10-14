@@ -73,6 +73,7 @@ let
         "flake-parts"
         "nix-github-actions"
         "nix2container"
+        "strio-theme"
       ]
   );
 in

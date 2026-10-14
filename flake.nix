@@ -9,6 +9,9 @@
     nix-github-actions.inputs.nixpkgs.follows = "nixpkgs";
     nix2container.url = "github:nlewo/nix2container/76be9608a7f4d6c985d28b0e7be903ae2547df3e";
     nix2container.inputs.nixpkgs.follows = "nixpkgs";
+    strio-theme.url = "github:strio-dev/strio-zensical-theme";
+    strio-theme.inputs.nixpkgs.follows = "nixpkgs";
+    strio-theme.inputs.flake-parts.follows = "flake-parts";
   };
 
   outputs =
@@ -22,7 +25,12 @@
         "aarch64-linux"
       ];
       perSystem =
-        { config, pkgs, ... }:
+        {
+          config,
+          pkgs,
+          system,
+          ...
+        }:
         let
           version =
             if builtins.pathExists ./nix/release-version then
@@ -58,8 +66,11 @@
               sourceUrl
               ;
           };
-          zensical = pkgs.callPackage ./nix/zensical.nix { };
-          docs = pkgs.callPackage ./nix/docs.nix { inherit zensical; };
+          zensical = inputs.strio-theme.packages.${system}.zensical;
+          docs = pkgs.callPackage ./nix/docs.nix {
+            inherit system;
+            inherit (inputs) strio-theme;
+          };
           container = pkgs.callPackage ./nix/container.nix {
             inherit coopr nix2container sourceUrl;
           };
@@ -84,6 +95,13 @@
           };
           apps = {
             default = config.apps.coopr;
+            docs-preview = inputs.strio-theme.lib.mkPreview {
+              inherit system;
+              sourcePaths = [
+                "docs"
+                "zensical.toml"
+              ];
+            };
             coopr = {
               type = "app";
               program = "${coopr}/bin/coopr";
