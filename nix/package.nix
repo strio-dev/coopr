@@ -45,7 +45,13 @@ in
   };
   passthru.testSource = testSource;
   # Vendor test imports too, preserving the complete pinned dependency tree.
-  overrideModAttrs = _: _: { src = testSource; };
+  overrideModAttrs = _: old: {
+    src = testSource;
+    env = (old.env or { }) // {
+      # Fall back to source repositories when the module proxy fails.
+      GOPROXY = "https://proxy.golang.org|direct";
+    };
+  };
   vendorHash = "sha256-tUtpsFcAxdmAXx6ZfBqnVLhXpV8Q/tFLp645NV0hSCk=";
   subPackages = [ "./cmd/coopr" ];
   ldflags = [ "-X main.version=${version}" ];
