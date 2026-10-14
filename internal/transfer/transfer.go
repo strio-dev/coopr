@@ -425,13 +425,13 @@ func copyStoredImage(ctx context.Context, source string, destination Destination
 	if destination.Transport == "registry" {
 		return publishStoredImage(ctx, selection.ImageID, selection.Manifest, destination.Name, opts)
 	}
-	if (destination.Transport == "oci-dir" || destination.Transport == "oci-archive") && !opts.Push.RemoveSignatures {
+	if destination.Transport == "oci-dir" {
+		destination.Transport = "oci"
+	}
+	if (destination.Transport == "oci" || destination.Transport == "oci-archive") && !opts.Push.RemoveSignatures {
 		if err := rejectStoredArchiveSignatures(ctx, storeOptions, selection.Manifest, map[string]oci.StoredSelection{"selected": selection}, destination.Transport); err != nil {
 			return "", err
 		}
-	}
-	if destination.Transport == "oci-dir" {
-		destination.Transport = "oci"
 	}
 	transferOptions, cleanup, err := storedTransferOptions(selection.ImageID, selection.Manifest.Digest, opts)
 	if err != nil {
@@ -585,15 +585,15 @@ func copyStoredIndex(ctx context.Context, root v1.Descriptor, indexData []byte, 
 		return destination.Name, nil
 	}
 
-	if (destination.Transport == "oci-dir" || destination.Transport == "oci-archive") && !opts.Push.RemoveSignatures {
+	if destination.Transport == "oci-dir" {
+		destination.Transport = "oci"
+	}
+	if (destination.Transport == "oci" || destination.Transport == "oci-archive") && !opts.Push.RemoveSignatures {
 		if err := rejectStoredArchiveSignatures(ctx, storeOptions, root, selections, destination.Transport); err != nil {
 			return "", err
 		}
 	}
 
-	if destination.Transport == "oci-dir" {
-		destination.Transport = "oci"
-	}
 	transferOptions, cleanup, err := storedTransferOptions("", root.Digest, opts)
 	if err != nil {
 		return "", err

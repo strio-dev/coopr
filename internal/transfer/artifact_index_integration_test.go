@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -22,7 +23,9 @@ import (
 	"go.podman.io/common/libimage"
 	"go.podman.io/common/libimage/manifests"
 	imagecopy "go.podman.io/image/v5/copy"
+	imagereference "go.podman.io/image/v5/docker/reference"
 	"go.podman.io/image/v5/signature"
+	"go.podman.io/image/v5/signature/sigstore"
 	imagestorage "go.podman.io/image/v5/storage"
 	"go.podman.io/image/v5/transports/alltransports"
 	"go.podman.io/image/v5/types"
@@ -389,6 +392,141 @@ func TestCopyNativeArtifactIndex(t *testing.T) {
 				_, err := Copy(ctx, oci.Image, "artifact-list", Destination{Transport: "oci", Name: t.TempDir()}, Options{BuildStore: store, SignaturePolicyPath: policy, PlatformExplicit: true, Platform: v1.Platform{OS: "linux", Architecture: "amd64"}})
 				if err == nil || !strings.Contains(err.Error(), "platform not found") {
 					t.Fatalf("artifact incorrectly selected as runnable platform: %v", err)
+				}
+			})
+			t.Run("signed-root", func(t *testing.T) {
+				passphrase := []byte("artifact-signature-test")
+				keys, err := sigstore.GenerateKeyPair(passphrase)
+				if err != nil {
+					t.Fatal(err)
+				}
+				privateKey := filepath.Join(t.TempDir(), "sigstore.key")
+				if err := os.WriteFile(privateKey, keys.PrivateKey, 0600); err != nil {
+					t.Fatal(err)
+				}
+				var id string
+				nativeCopy := func(output string, options *imagecopy.Options) error {
+					return buildah.WithStore(store, func(backend storage.Store) error {
+						previous := imagestorage.Transport.GetStoreIfSet()
+						imagestorage.Transport.SetStore(backend)
+						defer imagestorage.Transport.SetStore(previous)
+						image, err := backend.Image("localhost/artifact-list:latest")
+						if err != nil {
+							return err
+						}
+						id = image.ID
+						_, list, err := manifests.LoadFromImage(backend, id)
+						if err != nil {
+							return err
+						}
+						source, err := list.Reference(backend, imagecopy.CopyAllImages, nil)
+						if err != nil {
+							return err
+						}
+						destination, err := alltransports.ParseImageName(output)
+						if err != nil {
+							return err
+						}
+						policy, err := signature.NewPolicyContext(&signature.Policy{Default: signature.PolicyRequirements{signature.NewPRInsecureAcceptAnything()}})
+						if err != nil {
+							return err
+						}
+						_, copyErr := imagecopy.Image(ctx, policy, destination, source, options)
+						return errors.Join(copyErr, policy.Destroy())
+					})
+				}
+				signed := filepath.Join(t.TempDir(), "signed")
+				identity, err := imagereference.ParseNormalizedNamed("localhost/artifact-list:latest")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := nativeCopy("dir:"+signed, &imagecopy.Options{ImageListSelection: imagecopy.CopyAllImages, SignBySigstorePrivateKeyFile: privateKey, SignSigstorePrivateKeyPassphrase: passphrase, SignIdentity: identity}); err != nil {
+					t.Fatal(err)
+				}
+				blob, err := os.ReadFile(filepath.Join(signed, "signature-1"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := buildah.WithStore(store, func(backend storage.Store) error {
+					raw, err := backend.ImageBigData(id, storage.ImageDigestBigDataKey)
+					if err != nil {
+						return err
+					}
+					if digest.FromBytes(raw) != root {
+						t.Fatal("signed native root differs from selected root")
+					}
+					state, err := oci.CaptureStoredSignatures(backend, id)
+					if err != nil {
+						return err
+					}
+					return oci.WriteStoredManifestSignatures(backend, id, root, true, [][]byte{blob}, state)
+				}); err != nil {
+					t.Fatal(err)
+				}
+				capture := func() any {
+					t.Helper()
+					var data any
+					if err := buildah.WithStore(store, func(backend storage.Store) error {
+						state, err := oci.CaptureStoredSignatures(backend, id)
+						if err != nil {
+							return err
+						}
+						blobs, err := oci.StoredSignatureBlobs(state, root, true)
+						if err != nil {
+							return err
+						}
+						if len(blobs) == 0 {
+							t.Fatal("artifact index has no signed root")
+						}
+						data = state
+						return nil
+					}); err != nil {
+						t.Fatal(err)
+					}
+					return data
+				}
+				before := capture()
+				// The public list adapter currently drops non-simple signatures.
+				// Native copy therefore silently accepts this Sigstore-signed root.
+				if err := nativeCopy("oci:"+t.TempDir()+":test", &imagecopy.Options{ImageListSelection: imagecopy.CopyAllImages}); err != nil {
+					t.Fatalf("native omitted-signature control: %v", err)
+				}
+				for _, transport := range []string{"oci", "oci-dir", "oci-archive"} {
+					t.Run(transport, func(t *testing.T) {
+						output := filepath.Join(t.TempDir(), "output")
+						destination := Destination{Transport: transport, Name: output, ArchiveReference: "test"}
+						if transport != "oci-dir" {
+							var err error
+							destination, err = ParsePushDestination(transport+":"+output+":test", oci.Image)
+							if err != nil {
+								t.Fatal(err)
+							}
+						}
+						_, err := Copy(ctx, oci.Image, "artifact-list", destination, Options{BuildStore: store, SignaturePolicyPath: policy})
+						if err == nil || !strings.Contains(strings.ToLower(err.Error()), "signature") {
+							t.Errorf("signed artifact root silently lost on %s export: %v", transport, err)
+						}
+						if _, err := os.Stat(output); !os.IsNotExist(err) {
+							t.Errorf("rejected signed export published destination: %v", err)
+						}
+						if _, err := Copy(ctx, oci.Image, "artifact-list", destination, Options{BuildStore: store, SignaturePolicyPath: policy, Push: PushOptions{RemoveSignatures: true}}); err != nil {
+							t.Fatal(err)
+						}
+						if got := artifactOutputBlob(t, destination, root); digest.FromBytes(got) != root {
+							t.Fatal("explicit removal changed artifact index root")
+						}
+						raw := artifactOutputBlob(t, destination, artifact)
+						var manifest v1.Manifest
+						if err := json.Unmarshal(raw, &manifest); err != nil {
+							t.Fatal(err)
+						}
+						if !bytes.Equal(artifactOutputBlob(t, destination, manifest.Config.Digest), config) || !bytes.Equal(artifactOutputBlob(t, destination, manifest.Layers[0].Digest), payload) {
+							t.Fatal("explicit removal changed artifact config/payload")
+						}
+						if !reflect.DeepEqual(before, capture()) {
+							t.Fatal("export changed stored source signatures")
+						}
+					})
 				}
 			})
 		})

@@ -31,7 +31,7 @@ func TestStoredSignatureActionsFollowNativeDestinations(t *testing.T) {
 	t.Setenv("GNUPGHOME", home)
 	t.Cleanup(func() { _ = exec.Command("gpgconf", "--homedir", home, "--kill", "gpg-agent").Run() })
 	fingerprint, _ := generateGPGKey(t, ctx, home, "Stored actions <stored@example.invalid>", "")
-	for _, transport := range []string{"local", "oci-dir", "oci-archive"} {
+	for _, transport := range []string{"local", "oci", "oci-dir", "oci-archive"} {
 		for _, placement := range []string{"single", "index-root", "index-member"} {
 			t.Run(transport+"/"+placement, func(t *testing.T) {
 				st := nativeTestStore(t.TempDir())
