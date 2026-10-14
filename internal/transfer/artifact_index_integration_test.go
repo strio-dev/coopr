@@ -7,11 +7,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/google/go-containerregistry/pkg/registry"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"coopr/internal/buildah"
@@ -24,6 +29,7 @@ import (
 	"go.podman.io/common/libimage/manifests"
 	imagecopy "go.podman.io/image/v5/copy"
 	imagereference "go.podman.io/image/v5/docker/reference"
+	"go.podman.io/image/v5/pkg/blobinfocache/memory"
 	"go.podman.io/image/v5/signature"
 	"go.podman.io/image/v5/signature/sigstore"
 	imagestorage "go.podman.io/image/v5/storage"
@@ -491,6 +497,107 @@ func TestCopyNativeArtifactIndex(t *testing.T) {
 				if err := nativeCopy("oci:"+t.TempDir()+":test", &imagecopy.Options{ImageListSelection: imagecopy.CopyAllImages}); err != nil {
 					t.Fatalf("native omitted-signature control: %v", err)
 				}
+				checkRetentionExports := func(label string) {
+					t.Helper()
+					for _, transport := range []string{"dir", "registry"} {
+						t.Run(label+"/"+transport, func(t *testing.T) {
+							output := filepath.Join(t.TempDir(), "output")
+							destination := Destination{Transport: transport, Name: output}
+							var writes atomic.Int32
+							var server *httptest.Server
+							if transport == "registry" {
+								handler := registry.New()
+								server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+									if r.Method == http.MethodPost || r.Method == http.MethodPatch || r.Method == http.MethodPut || r.Method == http.MethodDelete {
+										writes.Add(1)
+									}
+									handler.ServeHTTP(w, r)
+								}))
+								defer server.Close()
+								destination.Name = strings.TrimPrefix(server.URL, "http://") + "/coopr/artifact:test"
+							}
+							options := Options{BuildStore: store, SignaturePolicyPath: policy, TLSVerify: new(false)}
+							_, err := Copy(ctx, oci.Image, "artifact-list", destination, options)
+							if err == nil || !strings.Contains(err.Error(), "root signatures") {
+								t.Errorf("artifact export did not reject hidden root signatures: %v", err)
+							}
+							if transport == "dir" {
+								if _, err := os.Stat(output); !os.IsNotExist(err) {
+									t.Errorf("rejected export created directory: %v", err)
+								}
+							} else if writes.Load() != 0 {
+								t.Errorf("rejected export made %d registry writes", writes.Load())
+							}
+							options.Push.RemoveSignatures = true
+							if _, err := Copy(ctx, oci.Image, "artifact-list", destination, options); err != nil {
+								t.Fatal(err)
+							}
+							ref, err := alltransports.ParseImageName(destination.String())
+							if err != nil {
+								t.Fatal(err)
+							}
+							source, err := ref.NewImageSource(ctx, &types.SystemContext{DockerInsecureSkipTLSVerify: types.NewOptionalBool(true)})
+							if err != nil {
+								t.Fatal(err)
+							}
+							defer func() {
+								if err := source.Close(); err != nil {
+									t.Error(err)
+								}
+							}()
+							raw, _, err := source.GetManifest(ctx, nil)
+							if err != nil || digest.FromBytes(raw) != root {
+								t.Fatalf("explicit removal changed root: %v", err)
+							}
+							raw, _, err = source.GetManifest(ctx, &artifact)
+							if err != nil || digest.FromBytes(raw) != artifact {
+								t.Fatalf("explicit removal changed artifact: %v", err)
+							}
+							var manifest v1.Manifest
+							if err := json.Unmarshal(raw, &manifest); err != nil {
+								t.Fatal(err)
+							}
+							for _, want := range []struct {
+								descriptor v1.Descriptor
+								data       []byte
+							}{{manifest.Config, config}, {manifest.Layers[0], payload}} {
+								reader, _, err := source.GetBlob(ctx, types.BlobInfo{Digest: want.descriptor.Digest, Size: want.descriptor.Size}, memory.New())
+								if err != nil {
+									t.Fatal(err)
+								}
+								data, readErr := io.ReadAll(reader)
+								if err := errors.Join(readErr, reader.Close()); err != nil {
+									t.Fatal(err)
+								}
+								if !bytes.Equal(data, want.data) {
+									t.Fatal("explicit removal changed artifact configuration/payload")
+								}
+							}
+							if transport == "dir" {
+								files, err := filepath.Glob(filepath.Join(output, "signature-*"))
+								if err != nil || len(files) != 0 {
+									t.Fatalf("removed signatures remain: %v %v", files, err)
+								}
+							} else {
+								response, err := http.Get(server.URL + "/v2/coopr/artifact/manifests/sha256-" + root.Encoded() + ".sig")
+								if err != nil {
+									t.Fatal(err)
+								}
+								if err := response.Body.Close(); err != nil {
+									t.Fatal(err)
+								}
+								if response.StatusCode != http.StatusNotFound {
+									t.Fatalf("removed root Sigstore attachment status=%d", response.StatusCode)
+								}
+							}
+							if !reflect.DeepEqual(before, capture()) {
+								t.Fatal("export changed stored source signatures")
+							}
+						})
+					}
+				}
+				checkRetentionExports("sigstore-only")
+
 				for _, transport := range []string{"oci", "oci-dir", "oci-archive"} {
 					t.Run(transport, func(t *testing.T) {
 						output := filepath.Join(t.TempDir(), "output")
@@ -528,6 +635,96 @@ func TestCopyNativeArtifactIndex(t *testing.T) {
 						}
 					})
 				}
+				home, err := os.MkdirTemp("", "coopr-artifact-gpg-")
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.RemoveAll(home) })
+				t.Setenv("GNUPGHOME", home)
+				t.Cleanup(func() { _ = exec.Command("gpgconf", "--homedir", home, "--kill", "gpg-agent").Run() })
+				fingerprint, _ := generateGPGKey(t, ctx, home, "Artifact GPG <artifact-gpg@example.invalid>", "")
+				rootData, err := os.ReadFile(filepath.Join(control, "blobs", root.Algorithm().String(), root.Encoded()))
+				if err != nil {
+					t.Fatal(err)
+				}
+				mechanism, err := signature.NewGPGSigningMechanism()
+				if err != nil {
+					t.Fatal(err)
+				}
+				gpg, signErr := signature.SignDockerManifest(rootData, "localhost/artifact-list:latest", mechanism, fingerprint)
+				if err := errors.Join(signErr, mechanism.Close()); err != nil {
+					t.Fatal(err)
+				}
+				setRootSignatures := func(signatures [][]byte) {
+					t.Helper()
+					if err := buildah.WithStore(store, func(backend storage.Store) error {
+						state, err := oci.CaptureStoredSignatures(backend, id)
+						if err != nil {
+							return err
+						}
+						return oci.WriteStoredManifestSignatures(backend, id, root, true, signatures, state)
+					}); err != nil {
+						t.Fatal(err)
+					}
+					before = capture()
+				}
+				setRootSignatures([][]byte{gpg, blob})
+				checkRetentionExports("mixed-gpg-sigstore")
+				setRootSignatures([][]byte{gpg})
+				t.Run("supported-gpg", func(t *testing.T) {
+					for _, mode := range []string{"native", "coopr"} {
+						output := filepath.Join(t.TempDir(), mode)
+						if mode == "native" {
+							if err := nativeCopy("dir:"+output, &imagecopy.Options{ImageListSelection: imagecopy.CopyAllImages}); err != nil {
+								t.Fatal(err)
+							}
+						} else if _, err := Copy(ctx, oci.Image, "artifact-list", Destination{Transport: "dir", Name: output}, Options{BuildStore: store, SignaturePolicyPath: policy}); err != nil {
+							t.Fatal(err)
+						}
+						retained, err := os.ReadFile(filepath.Join(output, "signature-1"))
+						if err != nil || !bytes.Equal(retained, gpg) {
+							t.Fatalf("%s changed supported GPG root signature: %v", mode, err)
+						}
+						raw, err := os.ReadFile(filepath.Join(output, "manifest.json"))
+						if err != nil || !bytes.Equal(raw, rootData) {
+							t.Fatalf("%s changed signed root: %v", mode, err)
+						}
+						if !reflect.DeepEqual(before, capture()) {
+							t.Fatal("GPG export changed stored source signatures")
+						}
+					}
+				})
+				// A historical signature contributor must not be lost merely
+				// because the chosen current native list exposes its own GPG root.
+				historical := nativeEmptyImageFixture(t, store, v1.Platform{OS: "linux", Architecture: "amd64"}, "artifact-signature-history")
+				var historicalState any
+				if err := buildah.WithStore(store, func(backend storage.Store) error {
+					if err := backend.SetImageBigData(historical.ImageID, storage.ImageDigestManifestBigDataNamePrefix+"-"+root.String(), rootData, func([]byte) (digest.Digest, error) { return root, nil }); err != nil {
+						return err
+					}
+					state, err := oci.CaptureStoredSignatures(backend, historical.ImageID)
+					if err != nil {
+						return err
+					}
+					if err := oci.WriteStoredManifestSignatures(backend, historical.ImageID, root, false, [][]byte{blob}, state); err != nil {
+						return err
+					}
+					historicalState, err = oci.CaptureStoredSignatures(backend, historical.ImageID)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				checkRetentionExports("historical-root-contributor")
+				if err := buildah.WithStore(store, func(backend storage.Store) error {
+					state, err := oci.CaptureStoredSignatures(backend, historical.ImageID)
+					if err == nil && !reflect.DeepEqual(historicalState, state) {
+						t.Fatal("export changed historical signature contributor")
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+
 			})
 		})
 	}

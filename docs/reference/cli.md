@@ -141,7 +141,7 @@ Tagging adds a local name; pushing performs the transfer. Authenticate with `coo
 
 Image and manifest push destinations use the upstream image transports. A transport must support the requested manifest format, index, compression, and signatures; unsupported combinations report the native error. Push sources come from local storage; use `pull` or `load` to import an image first.
 
-Whole stored-index pushes to `dir:`, `oci:`, `docker-archive:`, and `containers-storage:` use native signature handling. Destinations that support signatures retain them; other destinations return the upstream error. Use `--remove-signatures` to discard them explicitly.
+Whole stored-index pushes to `dir:`, `oci:`, `docker-archive:`, and `containers-storage:` use native signature handling. Coopr rejects artifact-index exports before copying when the native source cannot expose every stored index-root signature. Destinations that cannot store signatures also reject signed exports. Use `--remove-signatures` to discard signatures from the output while leaving the stored source unchanged.
 
 `component rm NAME...` removes local names; it does not remove artifacts by digest.
 

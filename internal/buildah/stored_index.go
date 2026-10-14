@@ -68,7 +68,7 @@ func prepareStoredIndexCopySource(ctx context.Context, store storage.Store, snap
 		}
 	}
 	if !transformed && len(unresolved) != 0 {
-		reference, release, err := currentStoredIndexReference(ctx, store, root, original, system, nil)
+		reference, release, err := currentStoredIndexReference(ctx, store, root, original, system, nil, removeSignatures)
 		if err != nil || reference != nil {
 			return reference, release, err
 		}
@@ -117,7 +117,7 @@ func prepareStoredIndexCopySource(ctx context.Context, store storage.Store, snap
 	}
 	emitted := map[digest.Digest]emittedMember{}
 	if transformed && len(unresolved) != 0 {
-		reference, release, err := currentStoredIndexReference(ctx, store, root, original, system, unresolved)
+		reference, release, err := currentStoredIndexReference(ctx, store, root, original, system, unresolved, removeSignatures)
 		if err != nil {
 			return nil, cleanup, err
 		}
@@ -234,8 +234,19 @@ func storedIndexMemberSelection(selections map[string]oci.StoredSelection, membe
 // closed its sources. The native reference reads the image's current manifest,
 // so checking its bytes and holding the lock are both required for exact-root
 // selection. Binding the transport also covers native artifact references.
-func currentStoredIndexReference(ctx context.Context, store storage.Store, root v1.Descriptor, original []byte, system *types.SystemContext, instances []digest.Digest) (types.ImageReference, func() error, error) {
+func currentStoredIndexReference(ctx context.Context, store storage.Store, root v1.Descriptor, original []byte, system *types.SystemContext, instances []digest.Digest, removeSignatures bool) (types.ImageReference, func() error, error) {
 	noop := func() error { return nil }
+	// Snapshot all exact-root contributors before taking the chosen image lock.
+	// The collector locks records itself, including historical root metadata.
+	var retained [][]byte
+	if instances == nil && !removeSignatures {
+		var err error
+		retained, err = storedIndexSignatureBlobs(store, root.Digest)
+		if err != nil {
+			return nil, noop, err
+		}
+	}
+
 	images, err := store.ImagesByDigest(root.Digest)
 	if err != nil {
 		return nil, noop, err
@@ -283,6 +294,28 @@ func currentStoredIndexReference(ctx context.Context, store storage.Store, root 
 			if err == nil && !bytes.Equal(data, original) {
 				err = errors.New("native list reference differs from stored index snapshot")
 			}
+			if err == nil && instances == nil && !removeSignatures {
+				// Refresh the chosen record under the lock held through copy:
+				// signatures may have changed since the all-record snapshot.
+				state, readErr := oci.CaptureStoredSignatures(store, image.ID)
+				var stored, visible [][]byte
+				if readErr == nil {
+					stored, readErr = oci.StoredSignatureBlobs(state, root.Digest, true)
+				}
+				if readErr == nil {
+					visible, readErr = source.GetSignatures(ctx, nil)
+				}
+				if readErr == nil {
+					for _, blob := range append(retained, stored...) {
+						if !slices.ContainsFunc(visible, func(value []byte) bool { return bytes.Equal(value, blob) }) {
+							readErr = fmt.Errorf("cannot export stored index %s: native source cannot preserve all root signatures; explicitly remove signatures to continue", root.Digest)
+							break
+						}
+					}
+				}
+				err = readErr
+			}
+
 			err = errors.Join(err, source.Close())
 		}
 		if err != nil {
