@@ -96,11 +96,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1792031675,
-        "narHash": "sha256-woI7d1kgHGna8B6S1+qtOShYyvIECcUwMEvoDhCb4N4=",
+        "lastModified": 1792037105,
+        "narHash": "sha256-M7w9ZpiSJIu5CVQfIzxGR2P/hFxRCdPrHituFhlTEtg=",
         "owner": "strio-dev",
         "repo": "strio-zensical-theme",
-        "rev": "ce23a6753bc865e15f4003b7e00aa03b97c52c6f",
+        "rev": "52d7d248ccdde12eed4e0b5744b244324c23facb",
         "type": "github"
       },
       "original": {
