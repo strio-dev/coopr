@@ -1,0 +1,4 @@
+/* Match the lowercase body height of Strio's header wordmark. */
+:root {
+  --strio-header-logo-scale: 1.02;
+}
