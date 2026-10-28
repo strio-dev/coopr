@@ -152,12 +152,16 @@ run "true" { mount "bind" from="`+ref+`" target="/assets" }
 func TestPreparedStageRejectsArtifactPresetAsFrom(t *testing.T) {
 	const reference = "registry.invalid/assets:latest"
 	root := oci.Descriptor(v1.MediaTypeImageManifest, []byte("artifact"))
-	plan := testPlan(t, `from "`+reference+`" {}`)
-	executor := &graphExecutor{resolvedBases: map[ResolvedBaseKey]ResolvedImageSource{
-		{Reference: reference, Platform: "linux/amd64"}: {Artifact: true, Reference: reference, Root: root, Selected: root},
-	}}
-	_, err := executor.prepareGraphStage(context.Background(), plan, plan.Stages[0], nil, nil, nil)
-	if err == nil || !strings.Contains(err.Error(), "artifact") {
-		t.Fatalf("preset artifact was accepted as FROM: %v", err)
+	for _, platform := range []string{"linux/amd64", "linux/arm64"} {
+		t.Run(platform, func(t *testing.T) {
+			plan := testPlan(t, `from "`+reference+`" platform="`+platform+`" {}`)
+			executor := &graphExecutor{resolvedBases: map[ResolvedBaseKey]ResolvedImageSource{
+				{Reference: reference, Platform: plan.Stages[0].Platform}: {Artifact: true, Reference: reference, Root: root, Selected: root},
+			}}
+			_, err := executor.prepareGraphStage(context.Background(), plan, plan.Stages[0], nil, nil, nil)
+			if err == nil || !strings.Contains(err.Error(), "artifact") {
+				t.Fatalf("preset artifact rejection = %v, want an artifact error", err)
+			}
+		})
 	}
 }
