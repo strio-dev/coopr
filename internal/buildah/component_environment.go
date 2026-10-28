@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"coopr/internal/oci"
 	"coopr/internal/planner"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -24,13 +25,14 @@ type componentReturnRequest struct {
 type componentReturnReply struct {
 	// Operations is the complete rebound stage, including ARG history. Its
 	// already-executed prefix must match Executed before the suffix is resumed.
-	Operations       []planner.Operation `json:"operations"`
-	Aliases          map[string]string   `json:"aliases,omitempty"`
-	Images           map[string]string   `json:"images,omitempty"`
-	ResolvedBases    []stageWorkerBase   `json:"resolved_bases,omitempty"`
-	ComponentPins    map[string]string   `json:"component_pins,omitempty"`
-	ComponentSources map[string]string   `json:"component_sources,omitempty"`
-	Revision         uint64              `json:"revision"`
+	Operations          []planner.Operation               `json:"operations"`
+	Aliases             map[string]string                 `json:"aliases,omitempty"`
+	Images              map[string]string                 `json:"images,omitempty"`
+	ResolvedBases       []stageWorkerBase                 `json:"resolved_bases,omitempty"`
+	ComponentSelections map[string]oci.ComponentSelection `json:"component_selections,omitempty"`
+	ComponentPins       map[string]string                 `json:"component_pins,omitempty"`
+	ComponentSources    map[string]string                 `json:"component_sources,omitempty"`
+	Revision            uint64                            `json:"revision"`
 }
 
 type componentReturnHandler func(context.Context, componentReturnRequest) (componentReturnReply, error)
@@ -39,6 +41,7 @@ type componentReturnHandler func(context.Context, componentReturnRequest) (compo
 // discovers a new reference after a return. Caller ENV affects instantiation,
 // while Reference/Parameters/Platform select the immutable artifact.
 type componentSelectionRequest struct {
+	DeliveryScope         *oci.DeliveryScope     `json:"delivery_scope,omitempty"`
 	Reference             string                 `json:"reference"`
 	Parameters            map[string]string      `json:"parameters,omitempty"`
 	Platform              v1.Platform            `json:"platform"`
@@ -49,9 +52,10 @@ type componentSelectionRequest struct {
 }
 
 type componentSelectionReply struct {
-	ComponentPins    map[string]string `json:"component_pins,omitempty"`
-	ComponentSources map[string]string `json:"component_sources,omitempty"`
-	ResolvedBases    []stageWorkerBase `json:"resolved_bases,omitempty"`
+	ComponentSelections map[string]oci.ComponentSelection `json:"component_selections,omitempty"`
+	ComponentPins       map[string]string                 `json:"component_pins,omitempty"`
+	ComponentSources    map[string]string                 `json:"component_sources,omitempty"`
+	ResolvedBases       []stageWorkerBase                 `json:"resolved_bases,omitempty"`
 }
 
 type componentSelectionHandler func(context.Context, componentSelectionRequest) (componentSelectionReply, error)
@@ -109,6 +113,15 @@ func (executor *graphExecutor) adoptComponentContinuation(reply componentReturnR
 			executor.componentPins = make(map[string]string)
 		}
 		executor.componentPins[key] = pin
+	}
+	for key, selection := range reply.ComponentSelections {
+		if previous, exists := executor.componentSelections[key]; exists && previous.Identity() != selection.Identity() {
+			return fmt.Errorf("component return changed frozen selection %q", key)
+		}
+		if executor.componentSelections == nil {
+			executor.componentSelections = make(map[string]oci.ComponentSelection)
+		}
+		executor.componentSelections[key] = selection.Clone()
 	}
 	for key, identity := range reply.ComponentSources {
 		if previous, exists := executor.componentSources[key]; exists && previous != identity {

@@ -1,9 +1,7 @@
 package buildah
 
 import (
-	"encoding/json"
 	"fmt"
-	"strings"
 
 	"coopr/internal/definition"
 	"coopr/internal/imageconfig"
@@ -11,58 +9,12 @@ import (
 	"coopr/internal/planner"
 )
 
-// stageBindFromImageConfig extracts the base-image state that must be known
-// before planning a child FROM stage. Inherited triggers remain unexpanded so
-// ARG defaults and stage references resolve in the child's planning scope.
-// The source configuration is read-only: consuming and clearing OnBuild stays
-// an execution concern until callers are fully moved to pre-execution binding.
 func stageBindFromImageConfig(logical *imageconfig.Config) (planner.StageBind, error) {
-	if logical == nil {
-		return planner.StageBind{}, fmt.Errorf("ONBUILD base configuration is nil")
-	}
-
-	triggers, err := logical.OnBuild()
-	if err != nil {
-		return planner.StageBind{}, err
-	}
-	if err := onbuildparse.ValidateInheritedTriggers(triggers); err != nil {
-		return planner.StageBind{}, fmt.Errorf("ONBUILD ingestion: %w", err)
-	}
-	bind := planner.StageBind{}
-	for index, trigger := range triggers {
-		parsed, err := parseOnBuildTrigger(trigger)
-		if err != nil {
-			return planner.StageBind{}, fmt.Errorf("ONBUILD trigger %d: %w", index+1, err)
-		}
-		bind.Inherited = append(bind.Inherited, parsed...)
-	}
-
-	bind.BaseEnvironment, err = imageEnvironment(logical)
-	if err != nil {
-		return planner.StageBind{}, fmt.Errorf("ONBUILD base environment: %w", err)
-	}
-	return bind, nil
+	return planner.StageBindFromImageConfig(logical)
 }
 
-// imageEnvironment extracts ENV without parsing or consuming ONBUILD. EXTEND
-// invocation uses this boundary because caller triggers belong to a later FROM.
 func imageEnvironment(logical *imageconfig.Config) (map[string]string, error) {
-	environment, err := onBuildEnvironment(logical)
-	if err != nil {
-		return nil, err
-	}
-	var values map[string]string
-	for _, entry := range environment {
-		name, value, found := strings.Cut(entry, "=")
-		if !found || name == "" {
-			return nil, fmt.Errorf("environment entry %q must be NAME=value", entry)
-		}
-		if values == nil {
-			values = make(map[string]string)
-		}
-		values[name] = value
-	}
-	return values, nil
+	return planner.ImageEnvironment(logical)
 }
 
 // consumeOnBuild plans inherited triggers at the start of a FROM stage. A
@@ -130,19 +82,7 @@ func consumeOnBuild(logical *imageconfig.Config) ([]planner.Operation, error) {
 }
 
 func onBuildEnvironment(logical *imageconfig.Config) ([]string, error) {
-	raw, err := logical.MarshalJSON()
-	if err != nil {
-		return nil, err
-	}
-	var document struct {
-		Config struct {
-			Env []string `json:"Env"`
-		} `json:"config"`
-	}
-	if err := json.Unmarshal(raw, &document); err != nil {
-		return nil, err
-	}
-	return document.Config.Env, nil
+	return planner.ImageEnvironmentEntries(logical)
 }
 
 // parseOnBuildTrigger reads authored Dockerfile metadata in memory.

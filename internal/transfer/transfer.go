@@ -267,20 +267,9 @@ func Copy(ctx context.Context, kind oci.Kind, source string, destination Destina
 	if kind == oci.Image {
 		return copyStoredImage(ctx, source, destination, opts)
 	}
-	selector, err := localSelector(source, kind)
-	if err != nil {
-		return "", err
-	}
-	store, err := localstore.Open(ctx, storeDir)
-	if err != nil {
-		return "", err
-	}
-	root, err := store.Resolve(ctx, selector)
+	_, root, _, err := componentstore.Resolve(ctx, storeDir, source)
 	if err != nil {
 		return "", fmt.Errorf("resolve %s: %w", source, err)
-	}
-	if pinned := digest.Digest(selector); pinned.Validate() == nil && pinned != root.Digest {
-		return "", fmt.Errorf("local digest %s resolved to %s", pinned, root.Digest)
 	}
 	return CopyRoot(ctx, kind, storeDir, root, destination, opts)
 }
@@ -683,7 +672,17 @@ func copyRoot(ctx context.Context, kind oci.Kind, storeDir string, root v1.Descr
 	}
 	switch destination.Transport {
 	case "local":
-		if err := localstore.TagExisting(ctx, storeDir, root, destination.Name); err != nil {
+		if kind != oci.Component {
+			if err := localstore.TagExisting(ctx, storeDir, root, destination.Name); err != nil {
+				return "", err
+			}
+			return LocalReference(destination.Name, root), nil
+		}
+		binding, err := componentstore.BindingFromDescriptor(root)
+		if err != nil {
+			return "", err
+		}
+		if err := componentstore.PutWithBinding(ctx, storeDir, store, root, destination.Name, binding); err != nil {
 			return "", err
 		}
 		return LocalReference(destination.Name, root), nil
@@ -709,7 +708,7 @@ func copyRoot(ctx context.Context, kind oci.Kind, storeDir string, root v1.Descr
 		if err := validateComponentArchiveOutput(destination.Name, storeDir, componentStore); err != nil {
 			return "", err
 		}
-		if err := localstore.WriteArchive(ctx, store, root, destination.Name); err != nil {
+		if err := componentstore.WriteArchive(ctx, store, root, destination.Name); err != nil {
 			return "", err
 		}
 		return destination.Name, nil

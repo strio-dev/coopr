@@ -8,13 +8,13 @@ import (
 	"strings"
 
 	"coopr/internal/componentstore"
-	"coopr/internal/localstore"
 	"coopr/internal/oci"
 	"coopr/internal/storeactivity"
 	"coopr/internal/transfer"
 
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/spf13/cobra"
+	"oras.land/oras-go/v2/errdef"
 )
 
 func newComponentPullCommand() *cobra.Command {
@@ -44,7 +44,9 @@ func newComponentPushCommand() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		result, err := transfer.Copy(cmd.Context(), oci.Component, args[0], destination, registry.transferOptions(cmd))
+		options := registry.transferOptions(cmd)
+		options.ProgressWriter = cmd.ErrOrStderr()
+		result, err := transfer.Copy(cmd.Context(), oci.Component, args[0], destination, options)
 		if err != nil {
 			return err
 		}
@@ -94,19 +96,11 @@ func newComponentSaveCommand() *cobra.Command {
 			return err
 		}
 		defer func() { retErr = errors.Join(retErr, activity.Close()) }()
-		store, err := componentstore.Open(cmd.Context(), dir)
+		store, root, _, err := componentstore.Resolve(cmd.Context(), dir, args[0])
 		if err != nil {
 			return err
 		}
-		selector, err := componentstore.LocalSelector(args[0])
-		if err != nil {
-			return err
-		}
-		root, err := store.Resolve(cmd.Context(), selector)
-		if err != nil {
-			return err
-		}
-		return localstore.WriteArchiveTo(cmd.Context(), store, root, cmd.OutOrStdout())
+		return componentstore.WriteArchiveTo(cmd.Context(), store, root, cmd.OutOrStdout())
 	}}
 	cmd.Flags().StringVarP(&output, "output", "o", "", "write the OCI archive to a file (default: stdout)")
 	return cmd
@@ -160,12 +154,12 @@ func newComponentExistsCommand() *cobra.Command {
 		if err != nil {
 			return commandExitError{Code: 125, Err: err}
 		}
-		selector, err := componentstore.LocalSelector(args[0])
-		if err != nil {
-			return commandExitError{Code: 125, Err: errors.Join(err, activity.Close())}
+		_, _, _, lookupErr := componentstore.Resolve(cmd.Context(), dir, args[0])
+		found := lookupErr == nil
+		if errors.Is(lookupErr, errdef.ErrNotFound) {
+			lookupErr = nil
 		}
-		_, found, err := localstore.Inspect(cmd.Context(), dir, selector)
-		if err := errors.Join(err, activity.Close()); err != nil {
+		if err := errors.Join(lookupErr, activity.Close()); err != nil {
 			return commandExitError{Code: 125, Err: err}
 		}
 		if !found {

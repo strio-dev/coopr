@@ -40,6 +40,10 @@ type Options struct {
 	ComponentReturns map[ComponentBoundary]map[string]string `json:"-"`
 	// DeferImageSource identifies external inputs produced during execution.
 	DeferImageSource func(string) (bool, error) `json:"-"`
+	// MapExternalInput replaces an expanded external image or component input.
+	// Stage and named-context references are classified first and never mapped.
+	// The caller retains the immutable mapping across planning and replans.
+	MapExternalInput func(kind, reference string) (string, error) `json:"-"`
 	Mode             Mode
 	Target           string
 	Arguments        map[string]string
@@ -81,6 +85,9 @@ type ComponentBoundary struct {
 
 type Operation struct {
 	ComponentBoundary *ComponentBoundary `json:"component_boundary,omitempty"`
+	// OriginalComponentReference retains an expanded component selector when an
+	// external mapping changes it, so its invocation context stays identifiable.
+	OriginalComponentReference string `json:"original_component_reference,omitempty"`
 	definition.Instruction
 	// NetworkExplicit distinguishes an authored network="default" from the
 	// planner's canonical default so executors can apply a build-wide fallback.
@@ -1736,6 +1743,11 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 			declaredProxy = maps.Clone(g.finalDeclaredProxy[base])
 			stage.Platform = g.stages[base].Platform
 			baseEpoch = g.resolutionEpoch[base]
+		} else if !strings.EqualFold(source, "scratch") {
+			stage.Source, err = g.mapExternalInput("image", source, packagePhase)
+			if err != nil {
+				return fmt.Errorf("stage %s from: %w", stage.ID, err)
+			}
 		}
 	}
 	if p, ok := raw.head.Properties["platform"]; ok {
@@ -2049,6 +2061,17 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 				mountContexts[childIndex] = contextName
 			}
 		}
+		originalComponentReference := ""
+		if normalized.Name == "component" && !definition.IsLocalComponentReference(normalized.Arguments[0]) {
+			mapped, err := g.mapExternalInput("component", normalized.Arguments[0], packagePhase)
+			if err != nil {
+				return fmt.Errorf("stage %s component: %w", stage.ID, err)
+			}
+			if mapped != normalized.Arguments[0] {
+				originalComponentReference = normalized.Arguments[0]
+			}
+			normalized.Arguments[0] = mapped
+		}
 		effective := map[string]string{}
 		for _, k := range sortedKeys(values) {
 			b := values[k]
@@ -2065,6 +2088,7 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 		op := Operation{
 			Instruction: normalized, NetworkExplicit: inst.Name == "run" && hasProperty(inst.Properties, "network"), ArgumentsInScope: effective,
 			DeclaredProxyArguments: sortedTrueKeys(declaredProxy), ShadowedProxyArguments: sortedTrueKeys(shadowedProxy),
+			OriginalComponentReference: originalComponentReference,
 		}
 		if inst.Name == "run" && (g.opts.Mode != Publish || packagePhase) {
 			op.TransientMountCount = len(g.opts.TransientRunMounts)
@@ -2324,6 +2348,11 @@ func (g *graph) reference(i int, platform string, props map[string]string, sourc
 		if _, err := strconv.Atoi(source); err == nil {
 			return "", fmt.Errorf("stage %d references unknown numeric stage %q", i, source)
 		}
+		mapped, err := g.mapExternalInput("image", source, packagePhase)
+		if err != nil {
+			return "", fmt.Errorf("stage %d image source: %w", i, err)
+		}
+		source, props["from"] = mapped, mapped
 		if g.bindResolver != nil && (g.opts.Mode != Publish || packagePhase) {
 			if _, err := g.bindResolver(FromSource{
 				StageID: strconv.Itoa(i), Source: source, Platform: platform, Kind: FromSourceCopyImage,

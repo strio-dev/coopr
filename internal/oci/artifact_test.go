@@ -20,7 +20,6 @@ import (
 
 	"oras.land/oras-go/v2/content"
 
-	"github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 
@@ -62,7 +61,7 @@ func TestArtifactTLSVerifyPolicy(t *testing.T) {
 							t.Fatal(err)
 						}
 					}
-					resolver, err := NewResolver(opts)
+					resolver, err := testResolver(t, opts)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -118,7 +117,7 @@ func TestTLSVerifyOptionalMapping(t *testing.T) {
 		if system.DockerInsecureSkipTLSVerify != item.want {
 			t.Fatalf("mapping: %v", system.DockerInsecureSkipTLSVerify)
 		}
-		resolver, err := NewResolver(Options{TLSVerify: item.input})
+		resolver, err := testResolver(t, Options{TLSVerify: item.input})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -139,7 +138,7 @@ func TestArtifactNativeRegistryConfiguration(t *testing.T) {
 			server := httptest.NewServer(registryserver.New())
 			defer server.Close()
 			host := strings.TrimPrefix(server.URL, "http://")
-			seed, err := NewResolver(Options{TLSVerify: boolOption(false), RetrySet: true})
+			seed, err := testResolver(t, Options{TLSVerify: boolOption(false), RetrySet: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -164,7 +163,7 @@ func TestArtifactNativeRegistryConfiguration(t *testing.T) {
 			if err := os.WriteFile(configPath, []byte(conf), 0600); err != nil {
 				t.Fatal(err)
 			}
-			resolver, err := NewResolver(Options{RetrySet: true})
+			resolver, err := testResolver(t, Options{RetrySet: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -196,7 +195,7 @@ func TestArtifactNativeRegistryConfiguration(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				strict, err := NewResolver(Options{TLSVerify: boolOption(true), RetrySet: true})
+				strict, err := testResolver(t, Options{TLSVerify: boolOption(true), RetrySet: true})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -210,10 +209,19 @@ func TestArtifactNativeRegistryConfiguration(t *testing.T) {
 	}
 }
 
-func TestNativeCacheTargetPreservesRawEnvelope(t *testing.T) {
-	server := httptest.NewServer(registryserver.New())
+func TestCacheTargetPreservesRawEnvelope(t *testing.T) {
+	backend := registryserver.New()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if strings.HasPrefix(request.URL.Path, "/v2/cache/absent/") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"errors":[{"code":"NAME_UNKNOWN","message":"repository absent"}]}`)
+			return
+		}
+		backend.ServeHTTP(w, request)
+	}))
 	defer server.Close()
-	resolver, err := NewResolver(Options{TLSVerify: boolOption(false), RetrySet: true})
+	resolver, err := testResolver(t, Options{TLSVerify: boolOption(false), RetrySet: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,11 +265,12 @@ func TestNativeCacheTargetPreservesRawEnvelope(t *testing.T) {
 		t.Fatalf("index resolve: %+v %v", desc, err)
 	}
 	for _, item := range []struct {
-		desc v1.Descriptor
-		data []byte
-	}{{index, indexData}, {manifest, manifestData}, {config, configData}, {blob, blobData}} {
+		desc   v1.Descriptor
+		data   []byte
+		exists bool
+	}{{index, indexData, false}, {manifest, manifestData, false}, {config, configData, true}, {blob, blobData, true}} {
 		exists, err := target.Exists(context.Background(), item.desc)
-		if err != nil || exists != !isArtifactManifest(item.desc) {
+		if err != nil || exists != item.exists {
 			t.Fatalf("exists %s: %v %v", item.desc.MediaType, exists, err)
 		}
 		stream, err := target.Fetch(context.Background(), item.desc)
@@ -284,6 +293,13 @@ func TestNativeCacheTargetPreservesRawEnvelope(t *testing.T) {
 	if exists, err := target.Exists(context.Background(), missingBlob); err != nil || exists {
 		t.Fatalf("missing blob: %v %v", exists, err)
 	}
+	absent, err := resolver.CacheRepository(strings.TrimPrefix(server.URL, "http://") + "/cache/absent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists, err := absent.Exists(t.Context(), missingBlob); err != nil || exists {
+		t.Fatalf("blob in absent repository: %v %v", exists, err)
+	}
 	if err := target.Push(context.Background(), blob, bytes.NewReader([]byte("corrupt"))); err == nil {
 		t.Fatal("corrupt blob upload accepted")
 	}
@@ -298,7 +314,7 @@ func TestArtifactReadRetriesUseNativeControls(t *testing.T) {
 				var armed atomic.Bool
 				var failures atomic.Int32
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					match := r.Method == http.MethodGet && (fault == "manifest" && strings.HasSuffix(r.URL.Path, "/manifests/stable") || fault == "blob" && strings.Contains(r.URL.Path, "/blobs/"))
+					match := r.Method == http.MethodGet && (fault == "manifest" && strings.Contains(r.URL.Path, "/manifests/") || fault == "blob" && strings.Contains(r.URL.Path, "/blobs/"))
 					if armed.Load() && match && failures.Add(1) == 1 {
 						http.Error(w, "transient", http.StatusServiceUnavailable)
 						return
@@ -306,7 +322,7 @@ func TestArtifactReadRetriesUseNativeControls(t *testing.T) {
 					backend.ServeHTTP(w, r)
 				}))
 				defer server.Close()
-				resolver, err := NewResolver(Options{TLSVerify: boolOption(false), RetrySet: true, Retry: maxRetry, RetryDelay: time.Millisecond})
+				resolver, err := testResolver(t, Options{TLSVerify: boolOption(false), RetrySet: true, Retry: maxRetry, RetryDelay: time.Millisecond})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -344,7 +360,7 @@ func TestPublicationDoesNotUseMirrorPresenceAsDestinationPresence(t *testing.T) 
 	defer mirror.Close()
 	primaryHost := strings.TrimPrefix(primary.URL, "http://")
 	mirrorHost := strings.TrimPrefix(mirror.URL, "http://")
-	resolver, err := NewResolver(Options{TLSVerify: boolOption(false), RetrySet: true})
+	resolver, err := testResolver(t, Options{TLSVerify: boolOption(false), RetrySet: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,6 +373,7 @@ func TestPublicationDoesNotUseMirrorPresenceAsDestinationPresence(t *testing.T) 
 	if _, err = resolver.PublishLayout(ctx, mirrorHost+"/test/component:stable", layout, root); err != nil {
 		t.Fatal(err)
 	}
+	mirrorReads.Store(0)
 	conf := fmt.Sprintf("[[registry]]\nlocation = %q\ninsecure = true\n[[registry.mirror]]\nlocation = %q\ninsecure = true\n", primaryHost, mirrorHost)
 	resolver.system.SystemRegistriesConfPath = writeRegistryConfig(t, conf)
 	resolver.system.SystemRegistriesConfDirPath = t.TempDir()
@@ -367,7 +384,7 @@ func TestPublicationDoesNotUseMirrorPresenceAsDestinationPresence(t *testing.T) 
 		t.Fatalf("publication consulted pull mirrors: %d reads", mirrorReads.Load())
 	}
 	// Read the original endpoint without mirror configuration to prove the complete graph arrived.
-	direct, err := NewResolver(Options{TLSVerify: boolOption(false), RetrySet: true})
+	direct, err := testResolver(t, Options{TLSVerify: boolOption(false), RetrySet: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -402,7 +419,7 @@ func TestConcurrentCacheGraphsKeepOwnMirrorBlobAnchors(t *testing.T) {
 		t.Cleanup(server.Close)
 		host := strings.TrimPrefix(server.URL, "http://")
 		mirrors = append(mirrors, host)
-		seed, err := NewResolver(Options{TLSVerify: boolOption(false), RetrySet: true})
+		seed, err := testResolver(t, Options{TLSVerify: boolOption(false), RetrySet: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -432,7 +449,7 @@ func TestConcurrentCacheGraphsKeepOwnMirrorBlobAnchors(t *testing.T) {
 	primary := httptest.NewServer(registryserver.New())
 	defer primary.Close()
 	host := strings.TrimPrefix(primary.URL, "http://")
-	resolver, err := NewResolver(Options{RetrySet: true})
+	resolver, err := testResolver(t, Options{RetrySet: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -471,9 +488,14 @@ func TestConcurrentCacheGraphsKeepOwnMirrorBlobAnchors(t *testing.T) {
 }
 
 // A destination must reject invalid bytes before opening any registry transport.
-func TestNativeArtifactRejectsInvalidContent(t *testing.T) {
+func TestArtifactRejectsInvalidContent(t *testing.T) {
 	data := []byte(`{"schemaVersion":2}`)
 	valid := Descriptor(v1.MediaTypeImageManifest, data)
+	var requests atomic.Int64
+	_, _, resolver, name := testRepository(t, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		requests.Add(1)
+		http.Error(w, "invalid content reached transport", http.StatusInternalServerError)
+	}))
 	for _, failure := range []string{"digest", "short", "trailing", "negative size"} {
 		t.Run(failure, func(t *testing.T) {
 			desc := valid
@@ -488,12 +510,15 @@ func TestNativeArtifactRejectsInvalidContent(t *testing.T) {
 			case "trailing":
 				payload = append(payload, ' ')
 			}
-			repository := &nativeArtifactRepository{uploaded: map[digest.Digest][]byte{desc.Digest: payload}}
+			repository, err := resolver.CacheRepository(name)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if err := repository.Push(context.Background(), desc, bytes.NewReader(payload)); err == nil {
 				t.Fatal("Push accepted invalid content")
 			}
-			if err := repository.Tag(context.Background(), desc, "latest"); err == nil {
-				t.Fatal("Tag accepted invalid content")
+			if requests.Load() != 0 {
+				t.Fatal("invalid content opened registry transport")
 			}
 		})
 	}

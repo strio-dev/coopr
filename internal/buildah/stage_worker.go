@@ -32,80 +32,82 @@ const (
 )
 
 type stageWorkerRequest struct {
-	ExecutableOrigin      string                 `json:"executable_origin,omitempty"`
-	RetainsCaller         bool                   `json:"retains_caller,omitempty"`
-	BaseRoot              *PackageRootMetadata   `json:"base_root,omitempty"`
-	ProgressReference     string                 `json:"progress_reference,omitempty"`
-	ProgressPrefix        string                 `json:"progress_prefix,omitempty"`
-	Lifecycle             LifecycleControls      `json:"lifecycle,omitempty"`
-	Mode                  planner.Mode           `json:"mode"`
-	Stage                 planner.Stage          `json:"stage"`
-	Base                  string                 `json:"base"`
-	BaseName              string                 `json:"base_name,omitempty"`
-	PreserveBaseImageAnns bool                   `json:"preserve_base_image_annotations,omitempty"`
-	BaseManifest          digest.Digest          `json:"base_manifest,omitempty"`
-	BaseCommandSet        bool                   `json:"base_command_set,omitempty"`
-	CommandSet            bool                   `json:"command_set,omitempty"`
-	BaseLogical           json.RawMessage        `json:"base_logical"`
-	Logical               json.RawMessage        `json:"logical"`
-	Operations            []planner.Operation    `json:"operations,omitempty"`
-	Aliases               map[string]string      `json:"aliases,omitempty"`
-	Images                map[string]string      `json:"images,omitempty"`
-	ResolvedBases         []stageWorkerBase      `json:"resolved_bases,omitempty"`
-	ComponentPins         map[string]string      `json:"component_pins,omitempty"`
-	ComponentSources      map[string]string      `json:"component_sources,omitempty"`
-	ActiveComponents      map[digest.Digest]bool `json:"active_components,omitempty"`
-	ActiveLocalComponents map[string]bool        `json:"active_local_components,omitempty"`
-	CacheScope            *CacheMountScope       `json:"cache_scope,omitempty"`
-	Jobs                  int                    `json:"jobs,omitempty"`
-	LogRusage             bool                   `json:"log_rusage,omitempty"`
-	RusageLogFile         string                 `json:"rusage_log_file,omitempty"`
-	Output                bool                   `json:"output,omitempty"`
-	CaptureRoot           bool                   `json:"capture_root,omitempty"`
-	Store                 StoreOptions           `json:"store"`
-	ContextPrepared       bool                   `json:"context_prepared,omitempty"`
-	BuildContexts         []buildcontext.Spec    `json:"build_contexts,omitempty"`
-	TransientRunMounts    []RunMount             `json:"transient_run_mounts,omitempty"`
-	ContextDir            string                 `json:"context_dir,omitempty"`
-	SourcePolicyFile      string                 `json:"source_policy_file,omitempty"`
-	SourcePolicy          *sourcepolicy.Policy   `json:"source_policy,omitempty"`
-	IgnoreFile            string                 `json:"ignore_file,omitempty"`
-	ContextArtifacts      []string               `json:"context_artifacts,omitempty"`
-	NoCache               bool                   `json:"no_cache,omitempty"`
-	CacheLocalDir         string                 `json:"cache_local_dir,omitempty"`
-	CacheRepository       string                 `json:"cache_repository,omitempty"`
-	CacheFrom             []CacheSpec            `json:"cache_from,omitempty"`
-	CacheTo               []CacheSpec            `json:"cache_to,omitempty"`
-	ComponentRelay        string                 `json:"component_relay,omitempty"`
-	InstructionRelay      string                 `json:"instruction_relay,omitempty"`
-	Network               string                 `json:"network,omitempty"`
-	AddHosts              []string               `json:"add_hosts,omitempty"`
-	ProxyArgs             map[string]string      `json:"proxy_args,omitempty"`
-	RunControls           RunControls            `json:"run_controls,omitempty"`
-	ImageControls         ImageControls          `json:"image_controls,omitempty"`
-	Timestamp             *int64                 `json:"timestamp,omitempty"`
-	CacheTTL              *time.Duration         `json:"cache_ttl,omitempty"`
-	SourceDateEpoch       *int64                 `json:"source_date_epoch,omitempty"`
-	RewriteTimestamp      bool                   `json:"rewrite_timestamp,omitempty"`
-	Allow                 []string               `json:"allow,omitempty"`
-	Secrets               []string               `json:"secrets,omitempty"`
-	SSH                   []string               `json:"ssh,omitempty"`
-	Isolation             string                 `json:"isolation,omitempty"`
-	Runtime               string                 `json:"runtime,omitempty"`
-	ImageOutput           Output                 `json:"image_output"`
-	JobID                 string                 `json:"job_id,omitempty"`
-	SignaturePolicy       string                 `json:"signature_policy_path,omitempty"`
-	BigFilesTempDir       string                 `json:"big_files_temporary_dir,omitempty"`
-	AuthFile              string                 `json:"auth_file,omitempty"`
-	CertDir               string                 `json:"cert_dir,omitempty"`
-	TLSVerify             *bool                  `json:"tls_verify,omitempty"`
-	RegistryOptions       oci.Options            `json:"registry_options,omitempty"`
-	ResolverEnabled       bool                   `json:"resolver_enabled,omitempty"`
-	ComponentStore        string                 `json:"component_store,omitempty"`
-	Pull                  bool                   `json:"pull,omitempty"`
-	PullPolicy            string                 `json:"pull_policy,omitempty"`
-	ResultPath            string                 `json:"result_path"`
-	Control               bool                   `json:"control,omitempty"`
+	ExecutableOrigin      string                            `json:"executable_origin,omitempty"`
+	RetainsCaller         bool                              `json:"retains_caller,omitempty"`
+	BaseRoot              *PackageRootMetadata              `json:"base_root,omitempty"`
+	ProgressReference     string                            `json:"progress_reference,omitempty"`
+	ProgressPrefix        string                            `json:"progress_prefix,omitempty"`
+	Lifecycle             LifecycleControls                 `json:"lifecycle,omitempty"`
+	Mode                  planner.Mode                      `json:"mode"`
+	Stage                 planner.Stage                     `json:"stage"`
+	Base                  string                            `json:"base"`
+	BaseName              string                            `json:"base_name,omitempty"`
+	PreserveBaseImageAnns bool                              `json:"preserve_base_image_annotations,omitempty"`
+	BaseManifest          digest.Digest                     `json:"base_manifest,omitempty"`
+	BaseCommandSet        bool                              `json:"base_command_set,omitempty"`
+	CommandSet            bool                              `json:"command_set,omitempty"`
+	BaseLogical           json.RawMessage                   `json:"base_logical"`
+	Logical               json.RawMessage                   `json:"logical"`
+	Operations            []planner.Operation               `json:"operations,omitempty"`
+	Aliases               map[string]string                 `json:"aliases,omitempty"`
+	Images                map[string]string                 `json:"images,omitempty"`
+	ResolvedBases         []stageWorkerBase                 `json:"resolved_bases,omitempty"`
+	Delivery              *oci.ComponentDelivery            `json:"delivery,omitempty"`
+	ComponentSelections   map[string]oci.ComponentSelection `json:"component_selections,omitempty"`
+	ComponentPins         map[string]string                 `json:"component_pins,omitempty"`
+	ComponentSources      map[string]string                 `json:"component_sources,omitempty"`
+	ActiveComponents      map[digest.Digest]bool            `json:"active_components,omitempty"`
+	ActiveLocalComponents map[string]bool                   `json:"active_local_components,omitempty"`
+	CacheScope            *CacheMountScope                  `json:"cache_scope,omitempty"`
+	Jobs                  int                               `json:"jobs,omitempty"`
+	LogRusage             bool                              `json:"log_rusage,omitempty"`
+	RusageLogFile         string                            `json:"rusage_log_file,omitempty"`
+	Output                bool                              `json:"output,omitempty"`
+	CaptureRoot           bool                              `json:"capture_root,omitempty"`
+	Store                 StoreOptions                      `json:"store"`
+	ContextPrepared       bool                              `json:"context_prepared,omitempty"`
+	BuildContexts         []buildcontext.Spec               `json:"build_contexts,omitempty"`
+	TransientRunMounts    []RunMount                        `json:"transient_run_mounts,omitempty"`
+	ContextDir            string                            `json:"context_dir,omitempty"`
+	SourcePolicyFile      string                            `json:"source_policy_file,omitempty"`
+	SourcePolicy          *sourcepolicy.Policy              `json:"source_policy,omitempty"`
+	IgnoreFile            string                            `json:"ignore_file,omitempty"`
+	ContextArtifacts      []string                          `json:"context_artifacts,omitempty"`
+	NoCache               bool                              `json:"no_cache,omitempty"`
+	CacheLocalDir         string                            `json:"cache_local_dir,omitempty"`
+	CacheRepository       string                            `json:"cache_repository,omitempty"`
+	CacheFrom             []CacheSpec                       `json:"cache_from,omitempty"`
+	CacheTo               []CacheSpec                       `json:"cache_to,omitempty"`
+	ComponentRelay        string                            `json:"component_relay,omitempty"`
+	InstructionRelay      string                            `json:"instruction_relay,omitempty"`
+	Network               string                            `json:"network,omitempty"`
+	AddHosts              []string                          `json:"add_hosts,omitempty"`
+	ProxyArgs             map[string]string                 `json:"proxy_args,omitempty"`
+	RunControls           RunControls                       `json:"run_controls,omitempty"`
+	ImageControls         ImageControls                     `json:"image_controls,omitempty"`
+	Timestamp             *int64                            `json:"timestamp,omitempty"`
+	CacheTTL              *time.Duration                    `json:"cache_ttl,omitempty"`
+	SourceDateEpoch       *int64                            `json:"source_date_epoch,omitempty"`
+	RewriteTimestamp      bool                              `json:"rewrite_timestamp,omitempty"`
+	Allow                 []string                          `json:"allow,omitempty"`
+	Secrets               []string                          `json:"secrets,omitempty"`
+	SSH                   []string                          `json:"ssh,omitempty"`
+	Isolation             string                            `json:"isolation,omitempty"`
+	Runtime               string                            `json:"runtime,omitempty"`
+	ImageOutput           Output                            `json:"image_output"`
+	JobID                 string                            `json:"job_id,omitempty"`
+	SignaturePolicy       string                            `json:"signature_policy_path,omitempty"`
+	BigFilesTempDir       string                            `json:"big_files_temporary_dir,omitempty"`
+	AuthFile              string                            `json:"auth_file,omitempty"`
+	CertDir               string                            `json:"cert_dir,omitempty"`
+	TLSVerify             *bool                             `json:"tls_verify,omitempty"`
+	RegistryOptions       oci.Options                       `json:"registry_options,omitempty"`
+	ResolverEnabled       bool                              `json:"resolver_enabled,omitempty"`
+	ComponentStore        string                            `json:"component_store,omitempty"`
+	Pull                  bool                              `json:"pull,omitempty"`
+	PullPolicy            string                            `json:"pull_policy,omitempty"`
+	ResultPath            string                            `json:"result_path"`
+	Control               bool                              `json:"control,omitempty"`
 }
 
 type stageWorkerBase struct {
@@ -237,6 +239,8 @@ func (executor *graphExecutor) executeGraphStageIsolated(ctx context.Context, pl
 	}
 	request.ComponentPins = cloneStringMap(prepared.componentPins)
 	request.ComponentSources = cloneStringMap(prepared.componentSources)
+	request.ComponentSelections = cloneComponentSelections(prepared.componentSelections)
+	request.Delivery = prepared.delivery
 	request.ActiveComponents = maps.Clone(prepared.activeComponents)
 	request.ActiveLocalComponents = maps.Clone(prepared.activeLocalComponents)
 	if executor.componentCache != nil {
@@ -533,6 +537,7 @@ func executeStageWorkerRequestControlled(ctx context.Context, request stageWorke
 	}()
 	executor.componentPins = cloneStringMap(request.ComponentPins)
 	executor.componentSources = cloneStringMap(request.ComponentSources)
+	executor.componentSelections = cloneComponentSelections(request.ComponentSelections)
 	executor.activeComponents = maps.Clone(request.ActiveComponents)
 	executor.activeLocalComponents = maps.Clone(request.ActiveLocalComponents)
 	if executor.activeComponents == nil {
@@ -552,7 +557,7 @@ func executeStageWorkerRequestControlled(ctx context.Context, request stageWorke
 	}
 	finished, err := executor.executeGraphStage(ctx, &planner.Plan{Mode: request.Mode}, preparedGraphStage{
 		stage: request.Stage, base: request.Base, baseName: request.BaseName, baseRoot: request.BaseRoot, retainsCaller: request.RetainsCaller, preserveBaseImageAnnotations: request.PreserveBaseImageAnns, baseManifest: request.BaseManifest, logical: logical, baseLogical: baseLogical, operations: request.Operations,
-		cacheMountID: cacheMountID, cacheScope: request.CacheScope, progressPrefix: request.ProgressPrefix,
+		cacheMountID: cacheMountID, cacheScope: request.CacheScope, progressPrefix: request.ProgressPrefix, delivery: request.Delivery,
 	}, request.Aliases, images, outputStageID(request), observedStage(request), true)
 	if err != nil {
 		return response, err

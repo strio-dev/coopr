@@ -48,7 +48,7 @@ func (r *Resolver) RemoteImageManifest(ctx context.Context, reference string) ([
 // resolveNativeImage keeps image inputs on the containers/image Docker
 // transport. That transport applies registries.conf mirrors, remapping,
 // blocking, insecure endpoints, and short-name policy before any metadata is
-// admitted. Component artifacts share this transport through the raw target.
+// admitted. Component artifact reads use ORAS with the same native policy inputs.
 func (r *Resolver) resolveNativeImage(ctx context.Context, reference string, platform v1.Platform) (*Resolved, error) {
 	if ctx == nil {
 		return nil, errors.New("image resolve context is nil")

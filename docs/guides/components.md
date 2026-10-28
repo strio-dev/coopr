@@ -106,6 +106,22 @@ Use that registry reference in a `component` instruction to consume it elsewhere
 
 Pulling retains all packaged platforms. Without `--tag`, pull prints the stored digest, which you can use directly in a component instruction. Pin references by digest when consumers must select fixed content; review the [security guide](security.md) before using third-party components.
 
+### Capture dependencies with Bale
+
+Pushing a component also publishes a [Bale dependency declaration](https://github.com/strio-dev/bale/blob/v0.1.1/docs/dependencies.md) for the registry references retained by its invocation definition. This includes nested component calls and external image inputs. Dependencies used only to produce an embedded package are already captured in that package and are excluded. Built images do not receive links to their build components.
+
+Coopr publishes the attachment through OCI referrers when the registry supports them, or the standard referrers-tag fallback otherwise. The registry credentials need permission to read and write those artifacts.
+
+Component registry authentication keeps [ORAS 2.7’s upstream protections](https://github.com/oras-project/oras-go/releases/tag/v2.7.0). An HTTPS registry must use an HTTPS token service. Token services on a different host cannot resolve to loopback, link-local, or cloud metadata addresses; ordinary private LAN token services are supported.
+
+Dependency tags remain tags when the declaration is published; Coopr does not fetch those dependencies. When Bale captures the parent component, it resolves the declared selectors, follows their declarations recursively, and records immutable digests. Locked transfers use those captured digests; a latest refresh resolves the selectors again.
+
+Discovery includes literal references and references available from the default invocation prefix. Caller arguments, inherited image configuration, or an earlier component's returned environment can select different dependencies. Include those additional artifacts explicitly in the Bale recipe. A registry declaration cannot include a context-local component file or an unnamed local digest.
+
+The declaration is a separate OCI attachment: it does not change the component's manifest or payload. When Bale delivers a component, Coopr reads its destination records and uses the captured destinations for declared dependencies. Nested components use their own records from the same bundle capture. The original registry is no longer needed for those captured inputs.
+
+Component pull, tag, save and load preserve the delivery records. For a fully offline build, also make the referenced components and images available in their local stores. Coopr fixes the selected delivery for the build; workers do not refresh it halfway through execution. If several bundle captures or dependency policies could apply, Coopr reports the ambiguity rather than choosing one automatically.
+
 ## Select outputs and arguments
 
 Use `--target NAME` to select a named output when building the component. For the shared component:

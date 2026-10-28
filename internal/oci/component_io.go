@@ -32,7 +32,11 @@ func (r *Resolver) PullComponent(ctx context.Context, reference, tag string) (ro
 	if err != nil {
 		return root, err
 	}
-	return r.storeComponent(ctx, source, root, tag)
+	binding, err := r.componentBinding(ctx, source, root, ref.Registry+"/"+ref.Repository)
+	if err != nil {
+		return root, err
+	}
+	return r.storeComponentWithBinding(ctx, source, root, tag, binding)
 }
 
 // LoadComponent reads a standard OCI archive through ORAS without extracting
@@ -41,7 +45,15 @@ func (r *Resolver) LoadComponent(ctx context.Context, path, tag string) (v1.Desc
 	if err := componentstore.ValidateTag(tag); err != nil {
 		return v1.Descriptor{}, err
 	}
-	root, err := archiveRoot(path)
+	roots, err := componentstore.ArchiveRoots(path)
+	if err != nil {
+		return v1.Descriptor{}, err
+	}
+	source, err := orasoci.NewFromTar(ctx, path)
+	if err != nil {
+		return v1.Descriptor{}, err
+	}
+	root, _, err := componentstore.ArchiveRoot(ctx, source, roots)
 	if err != nil {
 		return root, err
 	}
@@ -51,14 +63,18 @@ func (r *Resolver) LoadComponent(ctx context.Context, path, tag string) (v1.Desc
 			return root, err
 		}
 	}
-	source, err := orasoci.NewFromTar(ctx, path)
+	binding, err := r.componentBindingFromArchive(ctx, source, root, roots)
 	if err != nil {
 		return root, err
 	}
-	return r.storeComponent(ctx, source, root, tag)
+	return r.storeComponentWithBinding(ctx, source, root, tag, binding)
 }
 
 func (r *Resolver) storeComponent(ctx context.Context, source content.ReadOnlyStorage, root v1.Descriptor, tag string) (_ v1.Descriptor, retErr error) {
+	return r.storeComponentWithBinding(ctx, source, root, tag, nil)
+}
+
+func (r *Resolver) storeComponentWithBinding(ctx context.Context, source content.ReadOnlyStorage, root v1.Descriptor, tag string, binding *componentstore.Binding) (_ v1.Descriptor, retErr error) {
 	activity, err := storeactivity.AcquireShared(ctx, r.componentStoreDir)
 	if err != nil {
 		return root, err
@@ -67,7 +83,7 @@ func (r *Resolver) storeComponent(ctx context.Context, source content.ReadOnlySt
 	if err := r.validateComponentGraph(ctx, source, root); err != nil {
 		return root, err
 	}
-	if err := componentstore.Put(ctx, r.componentStoreDir, source, root, tag); err != nil {
+	if err := componentstore.PutWithBinding(ctx, r.componentStoreDir, source, root, tag, binding); err != nil {
 		return root, err
 	}
 	return root, nil

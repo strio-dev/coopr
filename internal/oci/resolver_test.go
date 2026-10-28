@@ -90,6 +90,18 @@ func assertPackageSnapshot(t *testing.T, snapshot []byte, contents string, confi
 	}
 }
 
+// testResolver isolates native blob locations from the user's persistent cache.
+// Registries use ephemeral ports, so cached locations from other test runs are
+// not part of an individual fixture's inputs.
+func testResolver(t *testing.T, options Options) (*Resolver, error) {
+	t.Helper()
+	resolver, err := NewResolver(options)
+	if err == nil {
+		resolver.system.BlobInfoCacheDir = t.TempDir()
+	}
+	return resolver, err
+}
+
 func testRepository(t *testing.T, handler http.Handler) (*httptest.Server, *remote.Repository, *Resolver, string) {
 	t.Helper()
 	server := httptest.NewServer(handler)
@@ -100,7 +112,7 @@ func testRepository(t *testing.T, handler http.Handler) (*httptest.Server, *remo
 		t.Fatal(err)
 	}
 	repo.PlainHTTP = true
-	resolver, err := NewResolver(Options{TLSVerify: boolOption(false)})
+	resolver, err := testResolver(t, Options{TLSVerify: boolOption(false)})
 	if err != nil {
 		t.Fatal(err)
 	}

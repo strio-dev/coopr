@@ -61,7 +61,7 @@ func TestComponentNamesResolveLocallyBeforeRegistry(t *testing.T) {
 		t.Fatal("local platform mismatch fell back to registry")
 	}
 	// local:foo is the literal image name local with tag foo, never an alias for foo.
-	if _, _, err := resolver.lookupLocalComponent(ctx, "foo:latest"); err == nil {
+	if _, _, _, err := componentstore.Resolve(ctx, resolver.componentStoreDir, "foo:latest"); err == nil {
 		t.Fatal("local:foo was stored as foo")
 	}
 	// Missing blobs in a selected local graph must fail, not fetch registry content.

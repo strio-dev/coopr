@@ -447,6 +447,14 @@ func cacheRunControlsDigest(controls RunControls) (digest.Digest, error) {
 
 func componentCacheInputs(resolved *ResolvedComponentPlan) map[string]digest.Digest {
 	inputs := make(map[string]digest.Digest, len(resolved.PackageInputs)+len(resolved.SelectedBases))
+	if resolved.Artifact != nil {
+		if resolved.Artifact.Root.Digest != "" {
+			inputs["component-root"] = resolved.Artifact.Root.Digest
+		}
+		if resolved.Artifact.Delivery != nil {
+			inputs["component-delivery"] = resolved.Artifact.Delivery.Identity()
+		}
+	}
 	for stageID, pkg := range resolved.PackageInputs {
 		inputs["package-config-"+stageID] = digest.FromBytes(pkg.Config)
 	}

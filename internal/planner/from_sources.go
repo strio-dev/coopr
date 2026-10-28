@@ -155,6 +155,11 @@ func ResolveFromSources(def *definition.Definition, opts Options) ([]FromSource,
 				item.BaseStageID = strconv.Itoa(base)
 			} else if strings.EqualFold(source, "scratch") {
 				item.Kind = FromSourceScratch
+			} else {
+				item.Source, err = g.mapExternalInput("image", source, false)
+				if err != nil {
+					return fmt.Errorf("stage %d from: %w", index, err)
+				}
 			}
 
 			if authored, ok := raw.head.Properties["platform"]; ok {

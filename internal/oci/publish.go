@@ -38,6 +38,13 @@ func (r *Resolver) PublishComponent(ctx context.Context, target string, meta Com
 	if err := checkTargetDigest(ref.Reference, root.Digest); err != nil {
 		return v1.Descriptor{}, err
 	}
+	declaration, incomplete, err := prepareComponentDependencies(ctx, repo, root, ref.Registry+"/"+ref.Repository)
+	if err != nil {
+		return root, fmt.Errorf("prepare component dependencies: %w", err)
+	}
+	if err := r.publishComponentDependencies(ctx, declaration, incomplete); err != nil {
+		return root, err
+	}
 	if err := ctx.Err(); err != nil {
 		return v1.Descriptor{}, err
 	}
@@ -167,12 +174,19 @@ func (r *Resolver) PublishLayout(ctx context.Context, target, layout string, roo
 	if err := verifyArchiveGraph(ctx, source, root); err != nil {
 		return "", fmt.Errorf("invalid OCI graph: %w", err)
 	}
+	declaration, incomplete, err := prepareComponentDependencies(ctx, source, root, ref.Registry+"/"+ref.Repository)
+	if err != nil {
+		return "", fmt.Errorf("prepare component dependencies: %w", err)
+	}
 	repo, err := r.repository(ref)
 	if err != nil {
 		return "", err
 	}
 	if err := oras.CopyGraph(ctx, source, repo, root, oras.CopyGraphOptions{}); err != nil {
 		return "", fmt.Errorf("copy OCI graph: %w", err)
+	}
+	if err := r.publishComponentDependencies(ctx, declaration, incomplete); err != nil {
+		return "", err
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err

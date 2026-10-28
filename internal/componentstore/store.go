@@ -73,11 +73,7 @@ func ValidateTag(tag string) error {
 }
 
 func Put(ctx context.Context, rootDir string, source content.ReadOnlyStorage, root v1.Descriptor, tag string) error {
-	normalized, err := NormalizeTag(tag)
-	if err != nil {
-		return err
-	}
-	return localstore.Put(ctx, rootDir, source, root, normalized)
+	return PutWithBinding(ctx, rootDir, source, root, tag, nil)
 }
 
 func Open(ctx context.Context, rootDir string) (*orasoci.Store, error) {
@@ -85,5 +81,9 @@ func Open(ctx context.Context, rootDir string) (*orasoci.Store, error) {
 }
 
 func WriteArchive(ctx context.Context, source content.ReadOnlyStorage, root v1.Descriptor, output string) error {
-	return localstore.WriteArchive(ctx, source, root, output)
+	root, auxiliary, err := archiveDescriptors(root)
+	if err != nil {
+		return err
+	}
+	return localstore.WriteArchive(ctx, source, root, output, auxiliary...)
 }
