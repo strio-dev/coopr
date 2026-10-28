@@ -93,6 +93,9 @@ func planDefinitionInWorker(ctx context.Context, request planWorkerRequest) (*pl
 			return ResolvedImageSource{}, err
 		}
 		return withStore(func(store storage.Store) (ResolvedImageSource, error) {
+			if request.Mode == "publish" && resolver.PullPolicy() != oci.PullNewer {
+				return selectFileSourceWithPolicy(ctx, resolver, reference, platform, store, platformSystemContext(system, platform), request.ContextDir, sourcePolicy)
+			}
 			return resolveFileSourceWithPolicy(ctx, resolver, reference, platform, store, platformSystemContext(system, platform), request.ContextDir, sourcePolicy)
 		})
 	}, func(ctx context.Context, spec buildcontext.Spec, platform v1.Platform) (ResolvedImageSource, error) {

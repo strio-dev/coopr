@@ -30,6 +30,16 @@ import (
 // artifacts only for file inputs. Artifacts live in Podman's artifact store;
 // they never become tagged, runnable images in containers/storage.
 func resolveFileSource(ctx context.Context, resolver *oci.Resolver, reference string, platform v1.Platform, store storage.Store, system *types.SystemContext) (ResolvedImageSource, error) {
+	return resolveFileSourceSelection(ctx, resolver, reference, platform, store, system, true)
+}
+
+// selectFileSource defers image layer imports until publication needs to
+// execute. Artifact inputs retain their native artifact-store resolution.
+func selectFileSource(ctx context.Context, resolver *oci.Resolver, reference string, platform v1.Platform, store storage.Store, system *types.SystemContext) (ResolvedImageSource, error) {
+	return resolveFileSourceSelection(ctx, resolver, reference, platform, store, system, false)
+}
+
+func resolveFileSourceSelection(ctx context.Context, resolver *oci.Resolver, reference string, platform v1.Platform, store storage.Store, system *types.SystemContext, materialize bool) (ResolvedImageSource, error) {
 	if ctx == nil || resolver == nil || store == nil {
 		return ResolvedImageSource{}, errors.New("file input requires a context, resolver, and native store")
 	}
@@ -37,6 +47,9 @@ func resolveFileSource(ctx context.Context, resolver *oci.Resolver, reference st
 		return ResolvedImageSource{}, err
 	}
 	if strings.HasPrefix(reference, "sha256:") || dockerreference.IsFullIdentifier(reference) {
+		if !materialize {
+			return selectImageSource(ctx, resolver, reference, platform, store)
+		}
 		return ResolveImageSource(ctx, resolver, reference, platform, store, system)
 	}
 	canonical, err := oci.ParseReference(reference)
@@ -52,13 +65,20 @@ func resolveFileSource(ctx context.Context, resolver *oci.Resolver, reference st
 	}
 	configured.OSChoice, configured.ArchitectureChoice, configured.VariantChoice = platform.OS, platform.Architecture, platform.Variant
 
+	selectImage := func(selected ResolvedImageSource) (ResolvedImageSource, error) {
+		if !materialize {
+			return selected, nil
+		}
+		return materializeImageSource(ctx, resolver, reference, platform, store, configured, selected)
+	}
+
 	var cached *ResolvedImageSource
 	if resolver.PullPolicy() != oci.PullAlways {
 		stored, err := oci.ResolveStoredImage(ctx, store, reference, platform)
 		if err == nil {
 			selected := ResolvedImageSource{ImageID: stored.StorageImageID, Root: stored.Root, Selected: stored.Selected, SourceManifest: stored.SourceManifest, ConfigData: stored.ConfigData, Reference: canonical.String()}
 			if resolver.PullPolicy() != oci.PullNewer {
-				return materializeImageSource(ctx, resolver, reference, platform, store, configured, selected)
+				return selectImage(selected)
 			}
 			cached = &selected
 		} else if resolver.PullPolicy() == oci.PullNever && errors.Is(err, oci.ErrStoredPlatformUnavailable) {
@@ -90,7 +110,7 @@ func resolveFileSource(ctx context.Context, resolver *oci.Resolver, reference st
 				previous = *cached.SourceManifest
 			}
 			if previous.Digest == resolved.Selected.Digest {
-				return materializeImageSource(ctx, resolver, reference, platform, store, configured, *cached)
+				return selectImage(*cached)
 			}
 		}
 		selected := ResolvedImageSource{
@@ -98,7 +118,7 @@ func resolveFileSource(ctx context.Context, resolver *oci.Resolver, reference st
 			ConfigData: resolved.ConfigData, Reference: resolved.Reference, Remote: true,
 		}
 		var materialized ResolvedImageSource
-		materialized, err = materializeImageSource(ctx, resolver, reference, platform, store, configured, selected)
+		materialized, err = selectImage(selected)
 		if err == nil {
 			if err := withArtifactInputLock(ctx, store.GraphRoot(), func() error {
 				return forgetArtifactIndexReference(ctx, store.GraphRoot(), resolved.Reference)
@@ -125,7 +145,7 @@ func resolveFileSource(ctx context.Context, resolver *oci.Resolver, reference st
 		if cached.Artifact {
 			return *cached, nil
 		}
-		return materializeImageSource(ctx, resolver, reference, platform, store, configured, *cached)
+		return selectImage(*cached)
 	}
 	return ResolvedImageSource{}, fmt.Errorf("resolve file input %q: %w", reference, err)
 }
