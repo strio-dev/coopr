@@ -15,7 +15,6 @@ import (
 	"coopr/internal/componentstore"
 	"coopr/internal/definition"
 	"coopr/internal/imageconfig"
-	"coopr/internal/localstore"
 	"coopr/internal/planner"
 
 	dockerreference "github.com/distribution/reference"
@@ -29,7 +28,6 @@ import (
 	"go.podman.io/storage"
 	"oras.land/oras-go/v2/content"
 	orasoci "oras.land/oras-go/v2/content/oci"
-	"oras.land/oras-go/v2/errdef"
 	"oras.land/oras-go/v2/registry"
 )
 
@@ -120,6 +118,8 @@ type Resolved struct {
 	Layers         []v1.Descriptor    `json:"layers"`
 	Component      *ComponentMetadata `json:"component,omitempty"`
 	StorageImageID string             `json:"-"`
+	Local          bool               `json:"local,omitempty"`
+	Delivery       *ComponentDelivery `json:"delivery,omitempty"`
 	source         content.ReadOnlyStorage
 }
 
@@ -404,76 +404,12 @@ func ValidateComponentReference(value string) error {
 
 func (r *Resolver) Resolve(ctx context.Context, reference string, platform v1.Platform, kind Kind) (*Resolved, error) {
 	if kind == Component {
-		selector, err := componentstore.LocalSelector(reference)
-		if err != nil {
-			return nil, err
-		}
-		store, root, err := r.lookupLocalComponent(ctx, selector)
-		if err == nil {
-			return r.resolveRoot(ctx, store, reference, "local", root, platform, kind)
-		}
-		if !errors.Is(err, errLocalComponentNotFound) || strings.HasPrefix(reference, "sha256:") {
-			return nil, fmt.Errorf("resolve component %s: %w", reference, err)
-		}
+		return r.ResolveComponent(ctx, reference, platform, nil, nil)
 	}
 	if kind == Image {
 		return r.resolveNativeImage(ctx, reference, platform)
 	}
 	return r.resolveRemote(ctx, reference, platform, kind)
-}
-
-var errLocalComponentNotFound = errors.New("local component not found")
-
-func (r *Resolver) lookupLocalComponent(ctx context.Context, selector string) (*orasoci.ReadOnlyStore, v1.Descriptor, error) {
-	// Do not initialize an absent store merely to attempt a named lookup.
-	if _, err := os.Stat(r.componentStoreDir); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, v1.Descriptor{}, errLocalComponentNotFound
-		}
-		return nil, v1.Descriptor{}, err
-	}
-	var store *orasoci.ReadOnlyStore
-	var root v1.Descriptor
-	err := localstore.WithReadLock(ctx, r.componentStoreDir, func() error {
-		indexBytes, err := os.ReadFile(filepath.Join(r.componentStoreDir, v1.ImageIndexFile))
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				if _, layoutErr := os.Stat(filepath.Join(r.componentStoreDir, v1.ImageLayoutFile)); errors.Is(layoutErr, os.ErrNotExist) {
-					entries, readErr := os.ReadDir(r.componentStoreDir)
-					if readErr != nil {
-						return fmt.Errorf("read component directory: %w", readErr)
-					}
-					for _, entry := range entries {
-						if entry.Type().IsRegular() && (entry.Name() == ".coopr-store.lock" || entry.Name() == ".coopr-activity.lock") {
-							continue
-						}
-						return fmt.Errorf("component store is missing OCI metadata with resident entry %q", entry.Name())
-					}
-					return errLocalComponentNotFound
-				}
-			}
-			return fmt.Errorf("read component index: %w", err)
-		}
-		var index v1.Index
-		if err := json.Unmarshal(indexBytes, &index); err != nil {
-			return fmt.Errorf("read component index: %w", err)
-		}
-		if index.SchemaVersion != 2 || index.MediaType != "" && index.MediaType != v1.MediaTypeImageIndex {
-			return fmt.Errorf("invalid component OCI index")
-		}
-		// ORAS's read-only constructor validates layout metadata and the graph
-		// without silently recreating missing OCI files in an existing store.
-		store, err = orasoci.NewFromFS(ctx, os.DirFS(r.componentStoreDir))
-		if err != nil {
-			return fmt.Errorf("open component store: %w", err)
-		}
-		root, err = store.Resolve(ctx, selector)
-		if errors.Is(err, errdef.ErrNotFound) {
-			return errLocalComponentNotFound
-		}
-		return err
-	})
-	return store, root, err
 }
 
 func (r *Resolver) resolveRoot(ctx context.Context, source content.ReadOnlyStorage, reference, repository string, root v1.Descriptor, platform v1.Platform, kind Kind) (*Resolved, error) {

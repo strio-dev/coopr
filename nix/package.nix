@@ -52,7 +52,7 @@ in
       GOPROXY = "https://proxy.golang.org|direct";
     };
   };
-  vendorHash = "sha256-tUtpsFcAxdmAXx6ZfBqnVLhXpV8Q/tFLp645NV0hSCk=";
+  vendorHash = "sha256-R7OjO566vT25j8IHqJIkzwErydQJ6A1u6Jhk+uYdw4c=";
   subPackages = [ "./cmd/coopr" ];
   ldflags = [ "-X main.version=${version}" ];
   tags = [

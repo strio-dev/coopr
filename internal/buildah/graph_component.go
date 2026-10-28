@@ -49,11 +49,15 @@ func componentSelectionKey(reference string, target v1.Platform) (string, error)
 }
 
 // resolveComponentInvocation memoizes the immutable selection separately from
-// parameterized plans. Repeated identical calls avoid another mutable tag
-// lookup; a tag that changes while resolving a second parameter set aborts the
-// build before two artifact digests can be mixed.
-func (executor *graphExecutor) resolveComponentInvocation(ctx context.Context, reference string, parameters map[string]string, target v1.Platform, progressPrefix string, environment map[string]string) (*ResolvedComponentPlan, error) {
-	selectionKey, err := componentInvocationSelectionKey(reference, parameters, target)
+// parameterized plans. Repeated calls reuse the frozen root, platform and
+// delivery selection; changing caller parameters never reselects mutable
+// destination records.
+func (executor *graphExecutor) resolveComponentInvocation(ctx context.Context, reference string, parameters map[string]string, target v1.Platform, progressPrefix string, environment map[string]string, scopes ...*oci.DeliveryScope) (*ResolvedComponentPlan, error) {
+	var scope *oci.DeliveryScope
+	if len(scopes) != 0 {
+		scope = scopes[0].Clone()
+	}
+	selectionKey, err := scopedComponentSelectionKey(reference, parameters, target, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -83,15 +87,18 @@ func (executor *graphExecutor) resolveComponentInvocation(ctx context.Context, r
 		resolve = ResolveComponentPlan
 	}
 	if executor.componentSelectionHandler != nil {
-		reply, err := executor.componentSelectionHandler(ctx, componentSelectionRequest{Reference: reference, Parameters: maps.Clone(parameters), Platform: target, ProgressPrefix: progressPrefix, CallerEnvironment: maps.Clone(environment), ActiveComponents: maps.Clone(executor.activeComponents), ActiveLocalComponents: maps.Clone(executor.activeLocalComponents)})
+		reply, err := executor.componentSelectionHandler(ctx, componentSelectionRequest{DeliveryScope: scope, Reference: reference, Parameters: maps.Clone(parameters), Platform: target, ProgressPrefix: progressPrefix, CallerEnvironment: maps.Clone(environment), ActiveComponents: maps.Clone(executor.activeComponents), ActiveLocalComponents: maps.Clone(executor.activeLocalComponents)})
 		if err != nil {
 			return nil, fmt.Errorf("select component %q: %w", reference, err)
 		}
-		if err := executor.adoptComponentContinuation(componentReturnReply{ResolvedBases: reply.ResolvedBases, ComponentPins: reply.ComponentPins, ComponentSources: reply.ComponentSources}, nil, nil); err != nil {
+		if err := executor.adoptComponentContinuation(componentReturnReply{ResolvedBases: reply.ResolvedBases, ComponentPins: reply.ComponentPins, ComponentSources: reply.ComponentSources, ComponentSelections: reply.ComponentSelections}, nil, nil); err != nil {
 			return nil, err
 		}
 		if executor.componentPins[selectionKey] == "" {
 			return nil, fmt.Errorf("component %q was not pinned by coordinator", reference)
+		}
+		if _, ok := executor.componentSelections[selectionKey]; !ok {
+			return nil, fmt.Errorf("component %q has no frozen coordinator selection", reference)
 		}
 	}
 	resolveReference := reference
@@ -112,8 +119,13 @@ func (executor *graphExecutor) resolveComponentInvocation(ctx context.Context, r
 	if local && localSource == "" {
 		return nil, fmt.Errorf("local component %q has no frozen source identity", reference)
 	}
+	var selection *oci.ComponentSelection
+	if frozen, ok := executor.componentSelections[selectionKey]; ok {
+		copy := frozen.Clone()
+		selection = &copy
+	}
 	resolved, err := resolve(ctx, ComponentPlanRequest{
-		Resolver: executor.options.Resolver, Reference: resolveReference,
+		Resolver: executor.options.Resolver, Reference: resolveReference, Selection: selection, DeliveryScope: scope,
 		Parameters: maps.Clone(parameters), Platform: target, LocalParameters: local,
 		CallerEnvironment: maps.Clone(environment),
 		DeferImageSource:  deferredPolicySource(executor.sourcePolicy), ResolveBase: executor.resolveBaseImage, TransientRunMounts: executor.options.TransientRunMounts,
@@ -140,6 +152,27 @@ func (executor *graphExecutor) resolveComponentInvocation(ctx context.Context, r
 		executor.componentSources[selectionKey] = localSource
 	}
 	resolved.localSourceIdentity = localSource
+	if resolved.Artifact != nil {
+		frozen := resolved.Artifact.ComponentSelection()
+		if selection != nil && selection.Identity() != frozen.Identity() {
+			return nil, fmt.Errorf("component reference %q changed frozen selection during build", reference)
+		}
+		if executor.componentSelections == nil {
+			executor.componentSelections = make(map[string]oci.ComponentSelection)
+		}
+		executor.componentSelections[selectionKey] = frozen
+		pin, err := pinnedComponentReference(resolved)
+		if err != nil {
+			return nil, err
+		}
+		if previous, ok := executor.componentPins[selectionKey]; ok && previous != pin {
+			return nil, fmt.Errorf("component reference %q changed pinned root during build", reference)
+		}
+		if executor.componentPins == nil {
+			executor.componentPins = make(map[string]string)
+		}
+		executor.componentPins[selectionKey] = pin
+	}
 	if err := executor.retainComponentBases(reference, resolved); err != nil {
 		return nil, err
 	}
@@ -160,13 +193,16 @@ func pinnedComponentReference(resolved *ResolvedComponentPlan) (string, error) {
 	if resolved == nil || resolved.Artifact == nil || resolved.Identity == "" {
 		return "", errors.New("resolved component has no immutable artifact identity")
 	}
-	if resolved.Artifact.Repository == "local" {
-		return resolved.Identity.String(), nil
+	if resolved.Artifact.Root.Digest.Validate() != nil {
+		return "", errors.New("resolved component has no immutable root identity")
+	}
+	if resolved.Artifact.Local || resolved.Artifact.Repository == "local" {
+		return resolved.Artifact.Root.Digest.String(), nil
 	}
 	if resolved.Artifact.Repository == "" {
 		return "", errors.New("resolved component has no repository")
 	}
-	return resolved.Artifact.Repository + "@" + resolved.Identity.String(), nil
+	return resolved.Artifact.Repository + "@" + resolved.Artifact.Root.Digest.String(), nil
 }
 
 // prepareIsolatedStageComponents freezes immediate artifact selections without
@@ -182,6 +218,10 @@ func (executor *graphExecutor) prepareIsolatedStageComponents(ctx context.Contex
 	}
 	pins := maps.Clone(executor.componentPins)
 	sources := maps.Clone(executor.componentSources)
+	selections := cloneComponentSelections(executor.componentSelections)
+	if selections == nil {
+		selections = make(map[string]oci.ComponentSelection)
+	}
 	if sources == nil {
 		sources = make(map[string]string)
 	}
@@ -200,7 +240,11 @@ func (executor *graphExecutor) prepareIsolatedStageComponents(ctx context.Contex
 		if err != nil {
 			return err
 		}
-		key, err := componentInvocationSelectionKey(reference, parameters, target)
+		scope, err := componentOperationDeliveryScope(prepared.delivery, operation)
+		if err != nil {
+			return err
+		}
+		key, err := scopedComponentSelectionKey(reference, parameters, target, scope)
 		if err != nil {
 			return err
 		}
@@ -221,7 +265,7 @@ func (executor *graphExecutor) prepareIsolatedStageComponents(ctx context.Contex
 		if executor.options.Resolver == nil {
 			return errors.New("component selection requires a Coopr component resolver")
 		}
-		artifact, err := executor.options.Resolver.Resolve(ctx, resolveReference, target, oci.Component)
+		artifact, err := executor.options.Resolver.ResolveComponent(ctx, resolveReference, target, nil, scope)
 		if err != nil {
 			return fmt.Errorf("freeze component %q: %w", reference, err)
 		}
@@ -244,12 +288,15 @@ func (executor *graphExecutor) prepareIsolatedStageComponents(ctx context.Contex
 			executor.resolvedComponents[key] = &componentResolutionState{identity: resolved.Identity, variants: make(map[string]*ResolvedComponentPlan)}
 		}
 		pins[key] = pinned
+		selections[key] = artifact.ComponentSelection()
 	}
 	prepared.componentPins = pins
 	prepared.componentSources = sources
+	prepared.componentSelections = selections
 	if executor.componentSelectionHandler == nil {
 		executor.componentPins = maps.Clone(pins)
 		executor.componentSources = maps.Clone(sources)
+		executor.componentSelections = cloneComponentSelections(selections)
 	}
 	return nil
 }
@@ -276,7 +323,15 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 	if err != nil {
 		return nil, fmt.Errorf("component caller environment: %w", err)
 	}
-	resolved, err := executor.resolveComponentInvocation(ctx, operation.Arguments[0], parameters, platform, progress.prefix, environment)
+	var delivery *oci.ComponentDelivery
+	if len(adoption) != 0 {
+		delivery = adoption[0].delivery
+	}
+	scope, err := componentOperationDeliveryScope(delivery, operation)
+	if err != nil {
+		return nil, err
+	}
+	resolved, err := executor.resolveComponentInvocation(ctx, operation.Arguments[0], parameters, platform, progress.prefix, environment, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -542,6 +597,7 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 			stageTotal = definitionStageCount(resolved.Artifact.Component.Component.Definition)
 		}
 		bindings := &graphBindings{
+			delivery: resolved.Artifact.Delivery,
 			observeManifest: func(id string, manifest digest.Digest, baseID string, retainsCaller bool) {
 				if id == outputID {
 					componentManifest = manifest
@@ -795,6 +851,42 @@ func componentInvocationSelectionKey(reference string, parameters map[string]str
 	return string(encoded), err
 }
 
+// Scope is part of selection identity: identical component bytes in different
+// captures may select different nested dependency policies.
+func scopedComponentSelectionKey(reference string, parameters map[string]string, target v1.Platform, scope *oci.DeliveryScope) (string, error) {
+	key, err := componentInvocationSelectionKey(reference, parameters, target)
+	if err != nil || scope == nil {
+		return key, err
+	}
+	data, err := json.Marshal(struct {
+		Selection string             `json:"selection"`
+		Scope     *oci.DeliveryScope `json:"scope"`
+	}{key, scope})
+	return string(data), err
+}
+
+func componentOperationDeliveryScope(delivery *oci.ComponentDelivery, operation planner.Operation) (*oci.DeliveryScope, error) {
+	if delivery == nil {
+		return nil, nil
+	}
+	reference := operation.OriginalComponentReference
+	if reference == "" && len(operation.Arguments) != 0 {
+		reference = operation.Arguments[0]
+	}
+	return delivery.DependencyScope(reference)
+}
+
+func cloneComponentSelections(source map[string]oci.ComponentSelection) map[string]oci.ComponentSelection {
+	if source == nil {
+		return nil
+	}
+	result := make(map[string]oci.ComponentSelection, len(source))
+	for key, selection := range source {
+		result[key] = selection.Clone()
+	}
+	return result
+}
+
 func (executor *graphExecutor) retainComponentBases(reference string, resolved *ResolvedComponentPlan) error {
 	for key, selected := range resolved.SelectedBases {
 		if selected.ImageID == "" {
@@ -844,6 +936,7 @@ func componentOutputExtendsCaller(plan *planner.Plan) bool {
 }
 
 type componentAdoptionContext struct {
+	delivery      *oci.ComponentDelivery
 	lineage       *bool
 	effectiveBase *string
 	grouped       bool

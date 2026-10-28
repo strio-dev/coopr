@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"strconv"
 	"strings"
 
 	"coopr/internal/buildcontext"
@@ -23,9 +22,12 @@ import (
 // ComponentPlanRequest identifies one published component invocation. Resolver
 // performs OCI selection and verification before the planner sees metadata.
 type ComponentPlanRequest struct {
-	Resolver   *oci.Resolver
-	Reference  string
-	Parameters map[string]string
+	Resolver  *oci.Resolver
+	Reference string
+	// Selection freezes the root, platform manifest and delivery context selected by the coordinator.
+	Selection     *oci.ComponentSelection
+	DeliveryScope *oci.DeliveryScope
+	Parameters    map[string]string
 	// CallerEnvironment supplies only the current caller image ENV to EXTEND.
 	CallerEnvironment map[string]string
 	// LocalParameters permits matching publication-time arguments for a local definition.
@@ -76,7 +78,7 @@ func ResolveComponentPlan(ctx context.Context, request ComponentPlanRequest) (*R
 		return nil, err
 	}
 
-	resolved, err := request.Resolver.Resolve(ctx, request.Reference, request.Platform, oci.Component)
+	resolved, err := request.Resolver.ResolveComponent(ctx, request.Reference, request.Platform, request.Selection, request.DeliveryScope)
 	if err != nil {
 		return nil, fmt.Errorf("resolve component %q: %w", request.Reference, err)
 	}
@@ -92,50 +94,16 @@ func ResolveComponentPlan(ctx context.Context, request ComponentPlanRequest) (*R
 		return nil, fmt.Errorf("component %q: %w", request.Reference, err)
 	}
 
-	projection, err := planner.ProjectPublished(&resolved.Component.Component)
+	packageBinds, err := oci.ComponentPackageBinds(*resolved.Component)
 	if err != nil {
-		return nil, fmt.Errorf("inspect component %q invocation graph: %w", request.Reference, err)
-	}
-	packagesByName := make(map[string]oci.Package, len(resolved.Component.Packages))
-	for _, pkg := range resolved.Component.Packages {
-		packagesByName[strings.ToLower(pkg.Stage)] = pkg
-	}
-	packageBinds := make(map[string]planner.StageBind)
-	for _, stage := range projection.Stages {
-		if stage.Kind != "from" {
-			continue
-		}
-		binding := projection.FromBindings[stage.ID]
-		if binding.Kind != "stage" {
-			continue
-		}
-		baseID, err := strconv.Atoi(binding.Stage)
-		if err != nil || baseID < 0 || baseID >= len(projection.Stages) {
-			return nil, fmt.Errorf("component %q has invalid base stage %q", request.Reference, binding.Stage)
-		}
-		base := projection.Stages[baseID]
-		if base.Kind != "package" {
-			continue
-		}
-		pkg, ok := packagesByName[strings.ToLower(base.Name)]
-		if !ok {
-			return nil, fmt.Errorf("component %q has no package for stage %q", request.Reference, base.Name)
-		}
-		config, err := imageconfig.Parse(pkg.Config)
-		if err != nil {
-			return nil, fmt.Errorf("component %q package %q configuration: %w", request.Reference, base.Name, err)
-		}
-		bind, err := stageBindFromImageConfig(config)
-		if err != nil {
-			return nil, fmt.Errorf("component %q package %q inherited instructions: %w", request.Reference, base.Name, err)
-		}
-		packageBinds[stage.ID] = bind
+		return nil, fmt.Errorf("component %q: %w", request.Reference, err)
 	}
 	selectedBases := newSelectedBaseState()
 	resolvedBinds := make(map[ResolvedBaseKey]planner.StageBind)
 	plan, err := planner.InstantiateDemandDriven(&resolved.Component.Component, planner.Options{
 		DeferImageSource: request.DeferImageSource, Mode: planner.Invoke, Arguments: parameters, Platform: platform,
 		CallerEnvironment:     request.CallerEnvironment,
+		MapExternalInput:      resolved.Delivery.MapExternalInput,
 		AwaitComponentReturns: true,
 		TransientRunMounts:    TransientMountInstructions(request.TransientRunMounts),
 		BuildContexts:         request.BuildContexts,

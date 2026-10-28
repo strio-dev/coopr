@@ -145,6 +145,7 @@ type graphExecutor struct {
 	resolvedComponents        map[string]*componentResolutionState
 	componentPins             map[string]string
 	componentSources          map[string]string
+	componentSelections       map[string]oci.ComponentSelection
 	resolveComponent          func(context.Context, ComponentPlanRequest) (*ResolvedComponentPlan, error)
 	zeroLayerBases            map[digest.Digest]stageState
 	instructionRuntime        string
@@ -241,6 +242,7 @@ func newGraphExecutor(ctx context.Context, options PlanOptions) (*graphExecutor,
 		executor.resolvedComponents = parent.resolvedComponents
 		executor.componentPins = parent.componentPins
 		executor.componentSources = parent.componentSources
+		executor.componentSelections = parent.componentSelections
 	}
 	executor.instructionRuntime, executor.instructionRuntimeErr = instructionRuntimeIdentity(effectiveRuntime(options.Runtime, options.RunControls))
 	if options.Resolver != nil {
@@ -318,6 +320,7 @@ func executePlanGraph(ctx context.Context, plan *planner.Plan, options PlanOptio
 }
 
 type graphBindings struct {
+	delivery           *oci.ComponentDelivery
 	observeManifest    func(string, digest.Digest, string, bool)
 	caller             stageState
 	packages           map[string]stageState
@@ -347,6 +350,8 @@ type preparedGraphStage struct {
 	bound                        *stageState
 	componentPins                map[string]string
 	componentSources             map[string]string
+	componentSelections          map[string]oci.ComponentSelection
+	delivery                     *oci.ComponentDelivery
 	activeComponents             map[digest.Digest]bool
 	activeLocalComponents        map[string]bool
 	progressPrefix               string
@@ -539,6 +544,7 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 			// is actually reached, with that invocation's current environment.
 			reply.ComponentPins = maps.Clone(executor.componentPins)
 			reply.ComponentSources = maps.Clone(executor.componentSources)
+			reply.ComponentSelections = cloneComponentSelections(executor.componentSelections)
 			reply.ResolvedBases = executor.componentContinuationBases()
 			delete(paused, stage.ID)
 			activeCount++
@@ -880,6 +886,9 @@ func (executor *graphExecutor) prepareGraphStage(ctx context.Context, plan *plan
 		stageTotal = bindings.progressStageTotal
 	}
 	prepared := preparedGraphStage{stage: stage, base: "scratch", logical: imageconfig.New(), progressPrefix: graphProgressPrefix(stage, parentPrefix, stageTotal)}
+	if bindings != nil {
+		prepared.delivery = bindings.delivery
+	}
 	// Snapshot invocation ancestry before the worker goroutine can race a sibling selection.
 	prepared.activeComponents = maps.Clone(executor.activeComponents)
 	prepared.activeLocalComponents = maps.Clone(executor.activeLocalComponents)
@@ -1149,7 +1158,7 @@ func (executor *graphExecutor) executeGraphStage(ctx context.Context, plan *plan
 	}
 	var effectiveBase string
 	retainsCaller := prepared.retainsCaller
-	imageID, stageResult, rootMetadata, err := executor.executePlanStage(ctx, builder, builderOptions, prepared.operations, aliases, images, stagePlatform, prepared.cacheMountID, prepared.logical, prepared.baseLogical, prepared.baseManifest, rootBaseline, stage.ID == imageOutputID, graphStageNeedsRootMetadata(plan, stage.ID, observed), allowInstructionCache, progress, &effectiveBase, &retainsCaller, prepared.componentReturnHandler)
+	imageID, stageResult, rootMetadata, err := executor.executePlanStage(ctx, builder, builderOptions, prepared.operations, aliases, images, stagePlatform, prepared.cacheMountID, prepared.logical, prepared.baseLogical, prepared.baseManifest, rootBaseline, stage.ID == imageOutputID, graphStageNeedsRootMetadata(plan, stage.ID, observed), allowInstructionCache, progress, &effectiveBase, &retainsCaller, prepared.componentReturnHandler, prepared.delivery)
 	if err != nil {
 		return executedGraphStage{}, fmt.Errorf("stage %s: %w", stage.ID, err)
 	}
@@ -1556,7 +1565,11 @@ func linkedCopyOrAdd(operation Operation) bool {
 	}
 }
 
-func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *upstream.Builder, builderOptions upstream.BuilderOptions, planned []planner.Operation, aliases map[string]string, images map[string]stageState, platform v1.Platform, cacheMountID CacheMountIDResolver, logical, baseLogical *imageconfig.Config, baseManifest digest.Digest, rootBaseline *PackageRootMetadata, output, captureRoot, allowInstructionCache bool, progress stageProgress, effectiveBase *string, retainsCaller *bool, returnEnvironment componentReturnHandler) (imageID string, result Result, root *PackageRootMetadata, retErr error) {
+func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *upstream.Builder, builderOptions upstream.BuilderOptions, planned []planner.Operation, aliases map[string]string, images map[string]stageState, platform v1.Platform, cacheMountID CacheMountIDResolver, logical, baseLogical *imageconfig.Config, baseManifest digest.Digest, rootBaseline *PackageRootMetadata, output, captureRoot, allowInstructionCache bool, progress stageProgress, effectiveBase *string, retainsCaller *bool, returnEnvironment componentReturnHandler, deliveries ...*oci.ComponentDelivery) (imageID string, result Result, root *PackageRootMetadata, retErr error) {
+	var delivery *oci.ComponentDelivery
+	if len(deliveries) != 0 {
+		delivery = deliveries[0]
+	}
 	if returnEnvironment == nil {
 		returnEnvironment = executor.componentReturnHandler
 	}
@@ -1962,7 +1975,7 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 			}
 			if !cacheHit && !inputApplied {
 				if component, ok := operation.(componentGraphOperation); ok {
-					replacement, err := executor.applyComponentOperation(ctx, current, &builderOptions, logical, platform, component.planned, progress, componentAdoptionContext{grouped: groupDepth > 0, manifest: &currentManifest, effectiveBase: &originalBaseID, lineage: retainsCaller})
+					replacement, err := executor.applyComponentOperation(ctx, current, &builderOptions, logical, platform, component.planned, progress, componentAdoptionContext{delivery: delivery, grouped: groupDepth > 0, manifest: &currentManifest, effectiveBase: &originalBaseID, lineage: retainsCaller})
 					if err != nil {
 						return "", Result{}, nil, fmt.Errorf("operation %d: %w", index+1, err)
 					}

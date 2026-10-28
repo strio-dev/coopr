@@ -31,6 +31,79 @@ import (
 
 const lockFilename = ".coopr-store.lock"
 
+// AuxiliaryRootOwner identifies a component's retained attachment graph in the
+// local layout index. These roots are not independently named user artifacts.
+const AuxiliaryRootOwner = "dev.coopr.strio.component.auxiliary-owner"
+
+// Update commits one index change after its caller has written all referenced
+// content. A failure can leave unreferenced blobs, but never a partial name map.
+func Update(ctx context.Context, rootDir string, update func(*orasoci.Store) error) error {
+	if update == nil {
+		return errors.New("nil local OCI store update")
+	}
+	dir, err := prepareRoot(rootDir)
+	if err != nil {
+		return err
+	}
+	lock := flock.New(filepath.Join(dir, lockFilename))
+	locked, err := lock.TryLockContext(ctx, 25*time.Millisecond)
+	if err != nil {
+		return err
+	}
+	if !locked {
+		return errors.Join(errors.New("local OCI store lock not acquired"), ctx.Err())
+	}
+	defer func() { _ = lock.Unlock() }()
+	if _, err := orasoci.NewWithContext(ctx, dir); err != nil {
+		return err
+	}
+	staging, err := os.MkdirTemp(dir, ".coopr-index-*")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.RemoveAll(staging) }()
+	// Only metadata is staged. Public ORAS storage operations write verified
+	// blobs directly into the shared content directory; the private symlink
+	// never becomes part of an exported graph or archive.
+	if err := os.Symlink(filepath.Join(dir, v1.ImageBlobsDir), filepath.Join(staging, v1.ImageBlobsDir)); err != nil {
+		return err
+	}
+	for _, name := range []string{v1.ImageLayoutFile, v1.ImageIndexFile} {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(staging, name), data, 0600); err != nil {
+			return err
+		}
+	}
+	store, err := orasoci.NewWithContext(ctx, staging)
+	if err != nil {
+		return err
+	}
+	store.AutoSaveIndex = false
+	if err := update(store); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := store.SaveIndex(); err != nil {
+		return err
+	}
+	index, err := os.Open(filepath.Join(staging, v1.ImageIndexFile))
+	if err != nil {
+		return err
+	}
+	if err := errors.Join(index.Sync(), index.Close()); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return os.Rename(filepath.Join(staging, v1.ImageIndexFile), filepath.Join(dir, v1.ImageIndexFile))
+}
+
 type Entry struct {
 	Reference  string        `json:"reference,omitempty"`
 	Descriptor v1.Descriptor `json:"descriptor"`
@@ -278,6 +351,9 @@ func List(ctx context.Context, rootDir string) ([]Entry, error) {
 			return fmt.Errorf("decode local OCI index: %w", err)
 		}
 		for _, descriptor := range index.Manifests {
+			if descriptor.Annotations[AuxiliaryRootOwner] != "" {
+				continue
+			}
 			entries = append(entries, Entry{Reference: descriptor.Annotations[v1.AnnotationRefName], Descriptor: descriptor})
 		}
 		return nil
@@ -422,20 +498,61 @@ func PruneUnderActivityLease(ctx context.Context, rootDir string, dryRun bool) (
 		return 0, err
 	}
 	unique := make(map[digest.Digest]v1.Descriptor)
+	auxiliary := make(map[digest.Digest]v1.Descriptor)
+	named := make(map[digest.Digest]bool)
 	for _, descriptor := range index.Manifests {
-		if descriptor.Annotations[v1.AnnotationRefName] == "" {
-			unique[descriptor.Digest] = descriptor
+		if descriptor.Annotations[AuxiliaryRootOwner] == "" && descriptor.Annotations[v1.AnnotationRefName] != "" {
+			named[descriptor.Digest] = true
 		}
-	}
-	if dryRun || len(unique) == 0 {
-		return len(unique), nil
 	}
 	store, err := orasoci.NewWithContext(ctx, dir)
 	if err != nil {
 		return 0, err
 	}
-	store.AutoGC = true
+	var pending []v1.Descriptor
+	for _, descriptor := range index.Manifests {
+		if named[descriptor.Digest] || named[digest.Digest(descriptor.Annotations[AuxiliaryRootOwner])] {
+			pending = append(pending, descriptor)
+		}
+	}
+	protected := make(map[digest.Digest]bool)
+	for len(pending) != 0 {
+		descriptor := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if protected[descriptor.Digest] {
+			continue
+		}
+		protected[descriptor.Digest] = true
+		successors, err := content.Successors(ctx, store, descriptor)
+		if err != nil {
+			return 0, fmt.Errorf("inspect retained OCI graph: %w", err)
+		}
+		pending = append(pending, successors...)
+	}
+	for _, descriptor := range index.Manifests {
+		if owner := descriptor.Annotations[AuxiliaryRootOwner]; owner != "" {
+			if !named[digest.Digest(owner)] && !protected[descriptor.Digest] {
+				auxiliary[descriptor.Digest] = descriptor
+			}
+			continue
+		}
+		if descriptor.Annotations[v1.AnnotationRefName] == "" {
+			if protected[descriptor.Digest] {
+				continue
+			}
+			unique[descriptor.Digest] = descriptor
+		}
+	}
+	if dryRun || len(unique) == 0 && len(auxiliary) == 0 {
+		return len(unique), nil
+	}
+	store.AutoGC = false
 	for _, descriptor := range unique {
+		if err := store.Delete(ctx, descriptor); err != nil && !errors.Is(err, errdef.ErrNotFound) {
+			return 0, err
+		}
+	}
+	for _, descriptor := range auxiliary {
 		if err := store.Delete(ctx, descriptor); err != nil && !errors.Is(err, errdef.ErrNotFound) {
 			return 0, err
 		}
@@ -464,9 +581,9 @@ func prepareRoot(rootDir string) (string, error) {
 	return dir, nil
 }
 
-// WriteArchive serializes exactly one rooted OCI graph and atomically installs
-// the resulting OCI layout tar at output.
-func WriteArchive(ctx context.Context, source content.ReadOnlyStorage, root v1.Descriptor, output string) error {
+// WriteArchive serializes the selected OCI graph and optional auxiliary roots,
+// then atomically installs the resulting OCI layout tar at output.
+func WriteArchive(ctx context.Context, source content.ReadOnlyStorage, root v1.Descriptor, output string, auxiliary ...v1.Descriptor) error {
 	if source == nil || output == "" {
 		return errors.New("OCI graph source and archive output are required")
 	}
@@ -482,7 +599,7 @@ func WriteArchive(ctx context.Context, source content.ReadOnlyStorage, root v1.D
 		return err
 	}
 	defer func() { _ = os.Remove(file.Name()) }()
-	if err := WriteArchiveTo(ctx, source, root, file); err != nil {
+	if err := WriteArchiveTo(ctx, source, root, file, auxiliary...); err != nil {
 		_ = file.Close()
 		return err
 	}
@@ -499,9 +616,9 @@ func WriteArchive(ctx context.Context, source content.ReadOnlyStorage, root v1.D
 	return os.Rename(file.Name(), output)
 }
 
-// CopyGraphLayout copies exactly one verified rooted graph into a caller-owned
-// temporary layout. Persistent stores instead use Put and their store locks.
-func CopyGraphLayout(ctx context.Context, layout string, source content.ReadOnlyStorage, root v1.Descriptor) error {
+// CopyGraphLayout copies the selected graphs into a caller-owned temporary
+// layout. Persistent stores instead use Put and their store locks.
+func CopyGraphLayout(ctx context.Context, layout string, source content.ReadOnlyStorage, root v1.Descriptor, auxiliary ...v1.Descriptor) error {
 	if source == nil {
 		return errors.New("nil OCI graph source")
 	}
@@ -516,10 +633,14 @@ func CopyGraphLayout(ctx context.Context, layout string, source content.ReadOnly
 	if err := oras.CopyGraph(ctx, source, target, root, oras.CopyGraphOptions{}); err != nil {
 		return fmt.Errorf("copy OCI graph: %w", err)
 	}
-	// ORAS indexes every copied child manifest by digest. The archive contract
-	// needs exactly one root descriptor, so write that root after all blobs are
-	// copied rather than saving ORAS's in-memory digest tags.
-	indexData, err := json.Marshal(v1.Index{Versioned: specs.Versioned{SchemaVersion: 2}, Manifests: []v1.Descriptor{root}})
+	for _, attachment := range auxiliary {
+		if err := oras.CopyGraph(ctx, source, target, attachment, oras.CopyGraphOptions{}); err != nil {
+			return fmt.Errorf("copy auxiliary OCI graph: %w", err)
+		}
+	}
+	// ORAS indexes every copied child manifest by digest. Only explicitly
+	// selected roots belong in the archive index, rather than every copied child.
+	indexData, err := json.Marshal(v1.Index{Versioned: specs.Versioned{SchemaVersion: 2}, Manifests: append([]v1.Descriptor{root}, auxiliary...)})
 	if err != nil {
 		return fmt.Errorf("encode OCI archive index: %w", err)
 	}
@@ -529,9 +650,9 @@ func CopyGraphLayout(ctx context.Context, layout string, source content.ReadOnly
 	return nil
 }
 
-// WriteArchiveTo serializes exactly one rooted OCI graph as an OCI layout tar
-// stream. It does not close writer.
-func WriteArchiveTo(ctx context.Context, source content.ReadOnlyStorage, root v1.Descriptor, writer io.Writer) error {
+// WriteArchiveTo serializes the selected graph and optional auxiliary roots as
+// an OCI layout tar stream. It does not close writer.
+func WriteArchiveTo(ctx context.Context, source content.ReadOnlyStorage, root v1.Descriptor, writer io.Writer, auxiliary ...v1.Descriptor) error {
 	if source == nil || writer == nil {
 		return errors.New("OCI graph source and archive writer are required")
 	}
@@ -540,7 +661,7 @@ func WriteArchiveTo(ctx context.Context, source content.ReadOnlyStorage, root v1
 		return err
 	}
 	defer func() { _ = os.RemoveAll(layout) }()
-	if err := CopyGraphLayout(ctx, layout, source, root); err != nil {
+	if err := CopyGraphLayout(ctx, layout, source, root, auxiliary...); err != nil {
 		return err
 	}
 	// These files describe a generated layout, not the image filesystem. ORAS

@@ -313,6 +313,7 @@ func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retEr
 		return "", fmt.Errorf("store local component: %w", err)
 	}
 	report, publicationErr := applyOutputDestinations(ctx, oci.Component, opts.StoreDir, root, destinations, transfer.Options{
+		ProgressWriter:    opts.Stderr,
 		ComponentStoreDir: opts.StoreDir, AuthFile: opts.AuthFile, CertDir: opts.CertDir, TLSVerify: opts.TLSVerify,
 		Credentials: opts.Credentials, Retry: opts.Retry, RetrySet: opts.RetrySet, RetryDelay: opts.RetryDelay, DecryptionKeys: opts.DecryptionKeys, SignaturePolicyPath: opts.SignaturePolicyPath,
 	})

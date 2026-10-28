@@ -97,11 +97,11 @@ func (executor *graphExecutor) selectCoordinatedComponent(ctx context.Context, r
 	}
 	executor.activeLocalComponents = maps.Clone(request.ActiveLocalComponents)
 	defer func() { executor.activeComponents, executor.activeLocalComponents = previousDigests, previousSources }()
-	resolved, err := executor.resolveComponentInvocation(ctx, request.Reference, request.Parameters, request.Platform, request.ProgressPrefix, request.CallerEnvironment)
+	resolved, err := executor.resolveComponentInvocation(ctx, request.Reference, request.Parameters, request.Platform, request.ProgressPrefix, request.CallerEnvironment, request.DeliveryScope)
 	if err != nil {
 		return componentSelectionReply{}, err
 	}
-	key, err := componentInvocationSelectionKey(request.Reference, request.Parameters, request.Platform)
+	key, err := scopedComponentSelectionKey(request.Reference, request.Parameters, request.Platform, request.DeliveryScope)
 	if err != nil {
 		return componentSelectionReply{}, err
 	}
@@ -116,7 +116,7 @@ func (executor *graphExecutor) selectCoordinatedComponent(ctx context.Context, r
 		return componentSelectionReply{}, errors.New("coordinator changed immutable component selection")
 	}
 	executor.componentPins[key] = pinned
-	return componentSelectionReply{ComponentPins: maps.Clone(executor.componentPins), ComponentSources: maps.Clone(executor.componentSources), ResolvedBases: executor.componentContinuationBases()}, nil
+	return componentSelectionReply{ComponentPins: maps.Clone(executor.componentPins), ComponentSources: maps.Clone(executor.componentSources), ComponentSelections: cloneComponentSelections(executor.componentSelections), ResolvedBases: executor.componentContinuationBases()}, nil
 }
 
 func (executor *graphExecutor) componentContinuationBases() []stageWorkerBase {

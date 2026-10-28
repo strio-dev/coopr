@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"coopr/internal/oci"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -233,7 +234,7 @@ func TestPinnedLocalComponentDoesNotReadContext(t *testing.T) {
 	executor := &graphExecutor{
 		componentPins: map[string]string{key: identity.String()},
 		componentSelectionHandler: func(context.Context, componentSelectionRequest) (componentSelectionReply, error) {
-			return componentSelectionReply{ComponentPins: map[string]string{key: identity.String()}, ComponentSources: map[string]string{key: "canonical-path#target"}}, nil
+			return componentSelectionReply{ComponentPins: map[string]string{key: identity.String()}, ComponentSources: map[string]string{key: "canonical-path#target"}, ComponentSelections: map[string]oci.ComponentSelection{key: {Root: v1.Descriptor{Digest: identity}, Selected: v1.Descriptor{Digest: identity}, Local: true}}}, nil
 		},
 		resolveComponent: func(_ context.Context, request ComponentPlanRequest) (*ResolvedComponentPlan, error) {
 			called = true

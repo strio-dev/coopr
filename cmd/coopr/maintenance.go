@@ -622,16 +622,9 @@ func newComponentInspectCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			selector, err := componentstore.LocalSelector(args[0])
+			_, descriptor, _, err := componentstore.Resolve(cmd.Context(), dir, args[0])
 			if err != nil {
 				return err
-			}
-			descriptor, found, err := localstore.Inspect(cmd.Context(), dir, selector)
-			if err != nil {
-				return err
-			}
-			if !found {
-				return fmt.Errorf("local component %q not found", args[0])
 			}
 			return writeJSON(cmd, descriptor)
 		},
