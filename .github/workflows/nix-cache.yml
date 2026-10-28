@@ -1,0 +1,48 @@
+name: Nix cache maintenance
+
+on:
+  schedule:
+    - cron: '23 3 * * *'
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Plan without changing the cache
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hestia-gc
+  cancel-in-progress: false
+
+jobs:
+  gc:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Mic92/hestia@dfed9ced335d28978ba74e513939a10db1f71025 # v3.1.0
+        with:
+          version: v3.1.0
+          upstream-cache-filter: true
+      - name: Reconcile and refresh cached builds
+        run: |
+          args=()
+          if [ "$GC_DRY_RUN" = true ]; then
+            args+=(--dry-run)
+          fi
+          "$HESTIA_BIN" gc "${args[@]}"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GC_DRY_RUN: ${{ inputs.dry-run }}
