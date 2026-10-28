@@ -25,7 +25,7 @@ require (
 	github.com/sirupsen/logrus v1.10.1
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
-	github.com/strio-dev/bale v0.1.2
+	github.com/strio-dev/bale v0.1.3
 	go.podman.io/buildah v1.45.1
 	go.podman.io/common v0.69.2
 	go.podman.io/image/v5 v5.41.2
