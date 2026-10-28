@@ -34,6 +34,7 @@ type FromSource struct {
 	Source      string             `json:"source"`
 	Platform    string             `json:"platform"`
 	Kind        FromSourceKind     `json:"kind"`
+	Role        string             `json:"role,omitempty"`
 	BaseStageID string             `json:"base_stage_id,omitempty"`
 	Context     *buildcontext.Spec `json:"context,omitempty"`
 }

@@ -2,6 +2,7 @@ package build
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/http/httptest"
 	"os"
@@ -18,13 +19,25 @@ import (
 
 	"github.com/google/go-containerregistry/pkg/registry"
 	"github.com/opencontainers/go-digest"
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/strio-dev/bale"
+	"oras.land/oras-go/v2"
+	"oras.land/oras-go/v2/content"
+	"oras.land/oras-go/v2/registry/remote"
 )
 
 func TestBuildConsumesBaleDeliveryWithoutSourceRegistry(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires native build integration")
 	}
+	for _, mode := range []string{"flat", "indexed"} {
+		t.Run(mode, func(t *testing.T) {
+			testBuildConsumesBaleDeliveryWithoutSourceRegistry(t, mode == "indexed")
+		})
+	}
+}
+
+func testBuildConsumesBaleDeliveryWithoutSourceRegistry(t *testing.T, indexed bool) {
 	ctx := t.Context()
 	work := t.TempDir()
 	platform := "linux/" + runtime.GOARCH
@@ -44,8 +57,57 @@ func TestBuildConsumesBaleDeliveryWithoutSourceRegistry(t *testing.T) {
 	t.Cleanup(source.Close)
 	sourceHost := strings.TrimPrefix(source.URL, "http://")
 	imageRef := sourceHost + "/toolchain:stable"
+	artifactRef := sourceHost + "/greeting:stable"
 	childRef := sourceHost + "/child:stable"
 	parentRef := sourceHost + "/parent:stable"
+	artifactRepository, err := remote.NewRepository(sourceHost + "/greeting")
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifactRepository.PlainHTTP = true
+	artifactPayload := []byte("delivered generic OCI artifact\n")
+	artifactBlob := content.NewDescriptorFromBytes("text/plain", artifactPayload)
+	artifactBlob.Annotations = map[string]string{v1.AnnotationTitle: "hello.txt"}
+	if err := artifactRepository.Push(ctx, artifactBlob, bytes.NewReader(artifactPayload)); err != nil {
+		t.Fatal(err)
+	}
+	artifactRoot, err := oras.PackManifest(ctx, artifactRepository, oras.PackManifestVersion1_1, "application/vnd.example.greeting.v1", oras.PackManifestOptions{
+		Layers: []v1.Descriptor{artifactBlob},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if indexed {
+		otherArchitecture := "arm64"
+		if runtime.GOARCH == "arm64" {
+			otherArchitecture = "amd64"
+		}
+		otherPayload := []byte("artifact for the other architecture\n")
+		otherBlob := content.NewDescriptorFromBytes("text/plain", otherPayload)
+		otherBlob.Annotations = map[string]string{v1.AnnotationTitle: "hello.txt"}
+		if err := artifactRepository.Push(ctx, otherBlob, bytes.NewReader(otherPayload)); err != nil {
+			t.Fatal(err)
+		}
+		other, err := oras.PackManifest(ctx, artifactRepository, oras.PackManifestVersion1_1, "application/vnd.example.greeting.v1", oras.PackManifestOptions{Layers: []v1.Descriptor{otherBlob}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		artifactRoot.Platform = &v1.Platform{OS: "linux", Architecture: runtime.GOARCH}
+		other.Platform = &v1.Platform{OS: "linux", Architecture: otherArchitecture}
+		index := v1.Index{MediaType: v1.MediaTypeImageIndex, Manifests: []v1.Descriptor{other, artifactRoot}}
+		index.SchemaVersion = 2
+		data, err := json.Marshal(index)
+		if err != nil {
+			t.Fatal(err)
+		}
+		artifactRoot = content.NewDescriptorFromBytes(v1.MediaTypeImageIndex, data)
+		if err := artifactRepository.Push(ctx, artifactRoot, bytes.NewReader(data)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := artifactRepository.Tag(ctx, artifactRoot, "stable"); err != nil {
+		t.Fatal(err)
+	}
 	write("base-marker", "delivered image payload\n")
 	write("artifact", "delivered component payload\n")
 	busybox, err := exec.LookPath("busybox")
@@ -76,14 +138,15 @@ extend {
     from %q {
         copy "/artifact" "/installed" from="payload"
         copy "/base-marker" "/copied-image" from=%q
+        copy "hello.txt" "/copied-artifact" from=%q
         run network="none" {
             mount "bind" from=%q source="/" target="/delivered-input" readonly=#true
-            exec "/busybox" "sh" "-ec" "/busybox cat /delivered-input/base-marker > /mounted-image"
+            exec "/busybox" "sh" "-ec" "test \"$(/busybox cat /copied-artifact)\" = 'delivered generic OCI artifact'; /busybox cat /delivered-input/base-marker > /mounted-image"
         }
         env CHILD="delivered"
     }
 }
-`, imageRef, imageRef, imageRef))
+`, imageRef, imageRef, artifactRef, imageRef))
 	parentDefinition := write("parent.coopr", fmt.Sprintf(`extend {
     component %q
     env PARENT="delivered"
@@ -108,6 +171,19 @@ extend {
 	if err != nil {
 		t.Fatal(err)
 	}
+	declarations, err := client.InspectDependencies(ctx, childRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	declaredArtifact := false
+	for _, attachment := range declarations {
+		for _, dependency := range attachment.Declaration.Dependencies {
+			declaredArtifact = declaredArtifact || dependency.Ref == artifactRef
+		}
+	}
+	if !declaredArtifact {
+		t.Fatal("published component omitted its generic OCI artifact dependency")
+	}
 	bundle := sourceHost + "/bundle:captured"
 	created, err := client.Create(ctx, bale.Recipe{Include: []bale.Selection{{Ref: parentRef}}}, bundle, bale.CreateOptions{})
 	if err != nil || !created.Published {
@@ -128,6 +204,7 @@ extend {
 		sourceHost + "/parent":    "components/parent",
 		sourceHost + "/child":     "components/child",
 		sourceHost + "/toolchain": "images/toolchain",
+		sourceHost + "/greeting":  "files/greeting",
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -164,14 +241,14 @@ extend {
 	writeConsumer(t, parent)
 	consumerStore := nativeBuildTestStore(filepath.Join(work, "consumer-native"))
 	cache := filepath.Join(work, "consumer-cache")
-	buildAndCheck := func(t *testing.T, name, pullPolicy string) string {
+	buildAndCheck := func(t *testing.T, name, pullPolicy string, noCache bool) string {
 		t.Helper()
 		archive := filepath.Join(work, name+".tar")
 		var output bytes.Buffer
-		if _, err := buildArchive(t, archive, ctx, Options{File: consumer, Platform: platform, TLSVerify: new(false), BuildStore: consumerStore, CacheLocalDir: cache, PullPolicy: pullPolicy, Stderr: &output}); err != nil {
+		if _, err := buildArchive(t, archive, ctx, Options{File: consumer, Platform: platform, TLSVerify: new(false), BuildStore: consumerStore, CacheLocalDir: cache, PullPolicy: pullPolicy, NoCache: noCache, Stderr: &output}); err != nil {
 			t.Fatalf("consume delivered component: %v\n%s", err, &output)
 		}
-		for _, name := range []string{"installed", "base-marker", "copied-image", "mounted-image"} {
+		for _, name := range []string{"installed", "base-marker", "copied-image", "copied-artifact", "mounted-image"} {
 			if !containsName(archiveLayerNames(t, archive), name) {
 				t.Fatalf("delivered component/image payload %q is absent", name)
 			}
@@ -185,8 +262,8 @@ extend {
 		return output.String()
 	}
 	t.Run("remote", func(t *testing.T) {
-		buildAndCheck(t, "remote-first", "")
-		if output := buildAndCheck(t, "remote-cached", ""); !strings.Contains(output, "Using component cache") {
+		buildAndCheck(t, "remote-first", "", false)
+		if output := buildAndCheck(t, "remote-cached", "", false); !strings.Contains(output, "Using component cache") {
 			t.Fatalf("second build did not reuse a delivered component result:\n%s", output)
 		}
 	})
@@ -229,6 +306,6 @@ extend {
 			}
 		}
 		writeConsumer(t, "loaded-parent")
-		buildAndCheck(t, "offline-loaded", "never")
+		buildAndCheck(t, "offline-loaded", "never", true)
 	})
 }

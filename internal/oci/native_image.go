@@ -50,6 +50,17 @@ func (r *Resolver) RemoteImageManifest(ctx context.Context, reference string) ([
 // blocking, insecure endpoints, and short-name policy before any metadata is
 // admitted. Component artifact reads use ORAS with the same native policy inputs.
 func (r *Resolver) resolveNativeImage(ctx context.Context, reference string, platform v1.Platform) (*Resolved, error) {
+	return r.resolveNativeInput(ctx, reference, platform, Image)
+}
+
+// ResolveRemoteFileInput classifies a registry COPY/ADD input without assuming
+// its blobs form a runnable rootfs. Image inputs still require native policy;
+// the artifact store enforces policy when it pulls non-image content.
+func (r *Resolver) ResolveRemoteFileInput(ctx context.Context, reference string, platform v1.Platform) (*Resolved, error) {
+	return r.resolveNativeInput(ctx, reference, platform, fileInput)
+}
+
+func (r *Resolver) resolveNativeInput(ctx context.Context, reference string, platform v1.Platform, kind Kind) (*Resolved, error) {
 	if ctx == nil {
 		return nil, errors.New("image resolve context is nil")
 	}
@@ -63,12 +74,14 @@ func (r *Resolver) resolveNativeImage(ctx context.Context, reference string, pla
 	if err != nil {
 		return nil, err
 	}
-	result, err := r.resolveRoot(ctx, storage, resolvedReference, repository, root, platform, Image)
+	result, err := r.resolveRoot(ctx, storage, resolvedReference, repository, root, platform, kind)
 	if err != nil {
 		return nil, err
 	}
-	if err := enforceNativeImagePolicy(ctx, storage, result.Selected); err != nil {
-		return nil, err
+	if result.Kind == Image {
+		if err := enforceNativeImagePolicy(ctx, storage, result.Selected); err != nil {
+			return nil, err
+		}
 	}
 	return result, nil
 }

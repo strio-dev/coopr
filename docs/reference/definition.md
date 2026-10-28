@@ -201,7 +201,25 @@ Filenames are literal local paths, including any `$` characters; they cannot be 
 
 Inline files run as one native COPY/ADD batch before ordinary sources. Repeated filenames retain their order, and ordinary same-name sources overwrite inline files. Ignore files and `exclude` patterns filter ordinary sources; inline content bypasses them. Ownership, mode, link, destination and source-path handling use the existing native COPY/ADD operations. Inline data and expansion results participate in cache identity. Package-time argument references in expanding bodies become fixed package inputs; EXTEND bodies expand at invocation.
 
-Child options retain their order. COPY reads context files, earlier stages, packages, named contexts, or images. ADD also fetches HTTP/Git sources and extracts archives; COPY rejects remote URLs before connecting. Files cannot escape the selected context through paths or symlinks. See [security](../guides/security.md) for credentials and entitlements.
+Child options retain their order. COPY reads context files, earlier stages, packages, named contexts, images, or OCI artifact files. ADD also fetches HTTP/Git sources and extracts archives; COPY rejects remote URLs before connecting. Files cannot escape the selected context through paths or symlinks. See [security](../guides/security.md) for credentials and entitlements.
+
+### Copy OCI artifact files
+
+Use the same `from` property for an OCI artifact published to a registry:
+
+```kdl
+from "docker.io/redhat/ubi9:latest" {
+    copy "settings.conf" "/etc/app/settings.conf" from="registry.example.com/app/settings:1"
+}
+```
+
+Artifact inputs can reference a single manifest or a platform index. An index selects a child manifest for the stage's platform using native image-list matching. Tags and index digests both work; cached platforms can be reused with `--pull=never`.
+
+The selected manifest exposes its raw blobs as files, following `podman artifact extract`: a blob's `org.opencontainers.image.title` supplies its filename, or an untitled blob uses `sha256-<digest>`. Titles must be filenames without directory separators. Blob files use mode `0600`, matching Podman's artifact tar export; `chmod` overrides it. COPY retains archive files as files; ADD can extract a selected archive using its usual behavior. ORAS directory-unpacking annotations do not change this behavior.
+
+Artifact inputs use Podman's artifact store beside the image store, at `graphroot/artifacts`, with the build's registry credentials, TLS and signature policy. Native local images take precedence over same-named artifacts. The build's pull policy also applies to artifacts, so a previously fetched artifact can be used with `--pull=never`. Artifacts supply files, not a runnable base image or inherited image configuration.
+
+Artifact inputs are selected by immutable digest and verified before use. Concurrent removal or replacement in native artifact storage can make an active build fail.
 
 ## Healthchecks and triggers
 

@@ -2355,7 +2355,7 @@ func (g *graph) reference(i int, platform string, props map[string]string, sourc
 		source, props["from"] = mapped, mapped
 		if g.bindResolver != nil && (g.opts.Mode != Publish || packagePhase) {
 			if _, err := g.bindResolver(FromSource{
-				StageID: strconv.Itoa(i), Source: source, Platform: platform, Kind: FromSourceCopyImage,
+				StageID: strconv.Itoa(i), Source: source, Platform: platform, Kind: FromSourceCopyImage, Role: role,
 			}); err != nil {
 				return "", fmt.Errorf("stage %d resolve image source %q: %w", i, source, err)
 			}

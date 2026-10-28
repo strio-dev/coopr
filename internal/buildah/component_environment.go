@@ -97,7 +97,10 @@ func (executor *graphExecutor) adoptComponentContinuation(reply componentReturnR
 		images[id] = state
 	}
 	for _, base := range reply.ResolvedBases {
-		if previous, exists := executor.resolvedBases[base.Key]; exists && (previous.ImageID != base.Source.ImageID || previous.Selected.Digest != base.Source.Selected.Digest || !bytes.Equal(previous.ConfigData, base.Source.ConfigData)) {
+		if err := validateSelectedInput(base.Source, true); err != nil {
+			return fmt.Errorf("component return input %q: %w", base.Key.Reference, err)
+		}
+		if previous, exists := executor.resolvedBases[base.Key]; exists && (previous.ImageID != base.Source.ImageID || previous.Artifact != base.Source.Artifact || previous.Selected.Digest != base.Source.Selected.Digest || !bytes.Equal(previous.ConfigData, base.Source.ConfigData)) {
 			return fmt.Errorf("component return changed selected base %q", base.Key.Reference)
 		}
 		if executor.resolvedBases == nil {
@@ -141,6 +144,7 @@ func (executor *graphExecutor) adoptComponentContinuation(reply componentReturnR
 type baseSelectionRequest struct {
 	Reference string      `json:"reference"`
 	Platform  v1.Platform `json:"platform"`
+	Files     bool        `json:"files,omitempty"`
 }
 
 type baseSelectionHandler func(context.Context, baseSelectionRequest) (ResolvedImageSource, error)

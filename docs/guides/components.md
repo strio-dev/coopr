@@ -108,7 +108,7 @@ Pulling retains all packaged platforms. Without `--tag`, pull prints the stored 
 
 ### Capture dependencies with Bale
 
-Pushing a component also publishes a [Bale dependency declaration](https://github.com/strio-dev/bale/blob/v0.1.1/docs/dependencies.md) for the registry references retained by its invocation definition. This includes nested component calls and external image inputs. Dependencies used only to produce an embedded package are already captured in that package and are excluded. Built images do not receive links to their build components.
+Pushing a component also publishes a [Bale dependency declaration](https://github.com/strio-dev/bale/blob/v0.1.3/docs/dependencies.md) for the registry references retained by its invocation definition. This includes nested component calls and external image and [artifact file inputs](../reference/definition.md#copy-oci-artifact-files). Dependencies used only to produce an embedded package are already captured in that package and are excluded. Built images do not receive links to their build components.
 
 Coopr publishes the attachment through OCI referrers when the registry supports them, or the standard referrers-tag fallback otherwise. The registry credentials need permission to read and write those artifacts.
 
@@ -120,7 +120,7 @@ Discovery includes literal references and references available from the default 
 
 The declaration is a separate OCI attachment: it does not change the component's manifest or payload. When Bale delivers a component, Coopr reads its destination records and uses the captured destinations for declared dependencies. Nested components use their own records from the same bundle capture. The original registry is no longer needed for those captured inputs.
 
-Component pull, tag, save and load preserve the delivery records. For a fully offline build, also make the referenced components and images available in their local stores. Coopr fixes the selected delivery for the build; workers do not refresh it halfway through execution. If several bundle captures or dependency policies could apply, Coopr reports the ambiguity rather than choosing one automatically.
+Component pull, tag, save and load preserve the delivery records. For a fully offline build, also make the referenced components, images and artifact files available in their local stores. Coopr fixes the selected delivery for the build; workers do not refresh it halfway through execution. If several bundle captures or dependency policies could apply, Coopr reports the ambiguity rather than choosing one automatically.
 
 ## Select outputs and arguments
 

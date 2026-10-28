@@ -13,7 +13,7 @@ import (
 	"go.podman.io/storage"
 )
 
-// CopyFromImage copies paths from an immutable image in Coopr's private
+// CopyFromImage copies paths from an immutable image in the native
 // containers/storage store into destination. An isolated builder mounts the
 // source image for the duration of the copy and is always deleted before the
 // function returns.
@@ -38,15 +38,6 @@ func CopyFromImage(store storage.Store, sourceImageID string, destination *upstr
 	}
 	if len(sources) == 0 {
 		return errors.New("COPY --from requires at least one source")
-	}
-	options.Excludes = copySourceExcludes(options.Excludes, sources)
-	relativeSources := make([]string, 0, len(sources))
-	for _, sourcePath := range sources {
-		relative, err := containerSourcePathForCopy(sourcePath, options.Parents)
-		if err != nil {
-			return err
-		}
-		relativeSources = append(relativeSources, relative)
 	}
 
 	sourceContainer := ""
@@ -79,23 +70,43 @@ func CopyFromImage(store storage.Store, sourceImageID string, destination *upstr
 		}
 	}()
 
-	mountedSources := make([]string, 0, len(relativeSources))
-	for _, relative := range relativeSources {
-		mounted := filepath.Join(mountPoint, filepath.FromSlash(relative))
-		if options.Parents && strings.Contains(filepath.ToSlash(relative), "/./") {
-			mounted = preserveParentsPivot(mountPoint, true, []string{relative})[0]
-		}
-		mountedSources = append(mountedSources, mounted)
-	}
-
-	options.ContextDir = mountPoint
 	options.PreserveOwnership = true
 	options.IDMappingOptions = &sourceBuilder.IDMappingOptions
-	options.Excludes = append([]string(nil), options.Excludes...)
-	if err := destination.Add(destinationPath, extract, options, mountedSources...); err != nil {
+	if err := copyFromDirectory(destination, mountPoint, destinationPath, extract, options, sources...); err != nil {
 		return fmt.Errorf("copy from image %q: %w", sourceImageID, err)
 	}
 	return nil
+}
+
+func (operation copyFromImageOperation) copyFiles(ctx context.Context, destination *upstream.Builder, options upstream.AddAndCopyOptions) (retErr error) {
+	if operation.artifact == nil {
+		return CopyFromImage(operation.store, operation.imageID, destination, operation.destination, operation.extract, options, operation.sources...)
+	}
+	directory, cleanup, err := extractArtifactSource(ctx, operation.store, *operation.artifact)
+	if err != nil {
+		return err
+	}
+	defer func() { retErr = errors.Join(retErr, cleanup()) }()
+	return copyFromDirectory(destination, directory, operation.destination, operation.extract, options, operation.sources...)
+}
+
+func copyFromDirectory(destination *upstream.Builder, root, destinationPath string, extract bool, options upstream.AddAndCopyOptions, sources ...string) error {
+	options.Excludes = copySourceExcludes(options.Excludes, sources)
+	mountedSources := make([]string, 0, len(sources))
+	for _, source := range sources {
+		relative, err := containerSourcePathForCopy(source, options.Parents)
+		if err != nil {
+			return err
+		}
+		mounted := filepath.Join(root, filepath.FromSlash(relative))
+		if options.Parents && strings.Contains(filepath.ToSlash(relative), "/./") {
+			mounted = preserveParentsPivot(root, true, []string{relative})[0]
+		}
+		mountedSources = append(mountedSources, mounted)
+	}
+	options.ContextDir = root
+	options.Excludes = append([]string(nil), options.Excludes...)
+	return destination.Add(destinationPath, extract, options, mountedSources...)
 }
 
 func containerSourcePath(source string) (string, error) {

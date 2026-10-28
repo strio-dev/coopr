@@ -37,6 +37,7 @@ type ComponentPlanRequest struct {
 	// store used by graph execution. The selected image is pinned for this build.
 	DeferImageSource   func(string) (bool, error)
 	ResolveBase        imageBaseResolver
+	ResolveFiles       imageBaseResolver
 	TransientRunMounts []RunMount
 	BuildContexts      []buildcontext.Spec
 	ResolveContext     namedContextResolver
@@ -126,16 +127,18 @@ func ResolveComponentPlan(ctx context.Context, request ComponentPlanRequest) (*R
 					return planner.StageBind{}, fmt.Errorf("named context %q requires a resolver", source.Source)
 				}
 				base, err = request.ResolveContext(ctx, *source.Context, basePlatform)
+			} else if source.Kind == planner.FromSourceCopyImage && source.Role == "copy" && request.ResolveFiles != nil {
+				base, err = request.ResolveFiles(ctx, source.Source, basePlatform)
 			} else {
 				base, err = request.ResolveBase(ctx, source.Source, basePlatform)
 			}
 			if err != nil {
 				return planner.StageBind{}, fmt.Errorf("stage %s image %q: %w", source.StageID, source.Source, err)
 			}
-			if base.ImageID == "" {
-				return planner.StageBind{}, fmt.Errorf("stage %s image %q has no selected image", source.StageID, source.Source)
-			}
 			selectedBases.record(key, base)
+		}
+		if err := validateSelectedInput(base, source.Kind == planner.FromSourceCopyImage && source.Role == "copy"); err != nil {
+			return planner.StageBind{}, fmt.Errorf("stage %s source %q: %w", source.StageID, source.Source, err)
 		}
 		if source.Kind == planner.FromSourceCopyImage {
 			return planner.StageBind{}, nil

@@ -128,7 +128,7 @@ func (executor *graphExecutor) resolveComponentInvocation(ctx context.Context, r
 		Resolver: executor.options.Resolver, Reference: resolveReference, Selection: selection, DeliveryScope: scope,
 		Parameters: maps.Clone(parameters), Platform: target, LocalParameters: local,
 		CallerEnvironment: maps.Clone(environment),
-		DeferImageSource:  deferredPolicySource(executor.sourcePolicy), ResolveBase: executor.resolveBaseImage, TransientRunMounts: executor.options.TransientRunMounts,
+		DeferImageSource:  deferredPolicySource(executor.sourcePolicy), ResolveBase: executor.resolveBaseImage, ResolveFiles: executor.resolveFileInput, TransientRunMounts: executor.options.TransientRunMounts,
 		BuildContexts: executor.options.BuildContexts,
 		ResolveContext: func(ctx context.Context, spec buildcontext.Spec, target v1.Platform) (ResolvedImageSource, error) {
 			platform, err := componentPlatformString(target)
@@ -889,10 +889,10 @@ func cloneComponentSelections(source map[string]oci.ComponentSelection) map[stri
 
 func (executor *graphExecutor) retainComponentBases(reference string, resolved *ResolvedComponentPlan) error {
 	for key, selected := range resolved.SelectedBases {
-		if selected.ImageID == "" {
-			return fmt.Errorf("component reference %q selected an empty image for %q", reference, key.Reference)
+		if err := validateSelectedInput(selected, true); err != nil {
+			return fmt.Errorf("component reference %q input %q: %w", reference, key.Reference, err)
 		}
-		if existing, found := executor.resolvedBases[key]; found && existing.ImageID != selected.ImageID {
+		if existing, found := executor.resolvedBases[key]; found && (existing.ImageID != selected.ImageID || existing.Artifact != selected.Artifact || existing.Selected.Digest != selected.Selected.Digest) {
 			return fmt.Errorf("component image source %q changed selection during build: %s then %s", key.Reference, existing.ImageID, selected.ImageID)
 		}
 		if executor.resolvedBases == nil {

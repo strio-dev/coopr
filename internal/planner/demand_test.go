@@ -94,7 +94,7 @@ from "scratch" as="final" {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := calls, []FromSource{{StageID: "1", Source: source, Platform: "linux/amd64", Kind: FromSourceCopyImage}}; !reflect.DeepEqual(got, want) {
+	if got, want := calls, []FromSource{{StageID: "1", Source: source, Platform: "linux/amd64", Kind: FromSourceCopyImage, Role: "copy"}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("resolver calls = %+v, want %+v", got, want)
 	}
 	if got, want := plan.Inputs, []Input{{Kind: "image", Reference: source}}; !reflect.DeepEqual(got, want) {
@@ -129,7 +129,7 @@ from "registry.example/parent:latest" as="final" {}
 	}
 	if got, want := calls, []FromSource{
 		{StageID: "1", Source: base, Platform: "linux/amd64", Kind: FromSourceImage},
-		{StageID: "1", Source: external, Platform: "linux/amd64", Kind: FromSourceCopyImage},
+		{StageID: "1", Source: external, Platform: "linux/amd64", Kind: FromSourceCopyImage, Role: "copy"},
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("selected image sources = %+v, want %+v", got, want)
 	}
@@ -160,7 +160,7 @@ from "scratch" as="final" {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantCall := FromSource{StageID: "1", Source: source, Platform: "linux/amd64", Kind: FromSourceCopyImage}
+	wantCall := FromSource{StageID: "1", Source: source, Platform: "linux/amd64", Kind: FromSourceCopyImage, Role: "run-mount"}
 	if got, want := calls, []FromSource{wantCall, wantCall}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("resolver calls = %+v, want %+v", got, want)
 	}

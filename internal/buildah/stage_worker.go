@@ -467,8 +467,11 @@ func executeStageWorkerRequestControlled(ctx context.Context, request stageWorke
 	}
 	resolvedBases := make(map[ResolvedBaseKey]ResolvedImageSource, len(request.ResolvedBases))
 	for _, selected := range request.ResolvedBases {
-		if selected.Key.Reference == "" || selected.Key.Platform != request.Stage.Platform || selected.Source.ImageID == "" {
+		if selected.Key.Reference == "" || selected.Key.Platform != request.Stage.Platform {
 			return response, fmt.Errorf("invalid selected image input for stage %s", request.Stage.ID)
+		}
+		if err := validateSelectedInput(selected.Source, true); err != nil {
+			return response, fmt.Errorf("invalid selected input for stage %s: %w", request.Stage.ID, err)
 		}
 		if _, duplicate := resolvedBases[selected.Key]; duplicate {
 			return response, fmt.Errorf("duplicate selected image input %q for stage %s", selected.Key.Reference, request.Stage.ID)
