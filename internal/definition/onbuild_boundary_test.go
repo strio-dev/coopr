@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/onbuildparse"
 	"github.com/openshift/imagebuilder"
+	"github.com/strio-dev/coopr/internal/onbuildparse"
 )
 
 func nativeOnBuildConfig(t *testing.T, raw string) *imagebuilder.Builder {

@@ -1,9 +1,9 @@
 package planner
 
 import (
-	"coopr/internal/definition"
 	"encoding/json"
 	"fmt"
+	"github.com/strio-dev/coopr/internal/definition"
 	"slices"
 	"testing"
 )

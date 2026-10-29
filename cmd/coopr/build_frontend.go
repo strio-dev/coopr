@@ -9,10 +9,10 @@ import (
 	"runtime"
 	"strings"
 
-	"coopr/internal/buildcontext"
 	"github.com/containerd/platforms"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/spf13/cobra"
+	"github.com/strio-dev/coopr/internal/buildcontext"
 	"go.podman.io/storage/pkg/archive"
 )
 

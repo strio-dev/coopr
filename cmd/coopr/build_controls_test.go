@@ -4,8 +4,8 @@ import (
 	"reflect"
 	"testing"
 
-	"coopr/internal/oci"
 	"github.com/spf13/cobra"
+	"github.com/strio-dev/coopr/internal/oci"
 	buildahcli "go.podman.io/buildah/pkg/cli"
 )
 

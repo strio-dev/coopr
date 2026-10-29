@@ -10,8 +10,8 @@ import (
 	"maps"
 	"os"
 
-	"coopr/internal/localstore"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/localstore"
 	"oras.land/oras-go/v2/content"
 )
 

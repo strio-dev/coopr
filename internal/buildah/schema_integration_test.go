@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/planner"
 )
 
 func TestLocalComponentTypedOptionsBuildAndCache(t *testing.T) {

@@ -13,9 +13,9 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/buildah"
-	"coopr/internal/imagestore"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/imagestore"
 	commonconfig "go.podman.io/common/pkg/config"
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"

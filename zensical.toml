@@ -17,6 +17,7 @@ nav = [
   ] },
   { "Guides" = [
     { "Build images" = "guides/builds.md" },
+    { "Use the Go execution library" = "guides/library.md" },
     { "Package components" = "guides/components.md" },
     { "Image and component storage" = "guides/storage.md" },
     { "Caching" = "guides/caching.md" },

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/imageconfig"
 
 	upstream "go.podman.io/buildah"
 	"go.podman.io/buildah/define"

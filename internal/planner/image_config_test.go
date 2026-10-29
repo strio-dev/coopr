@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/imageconfig"
 )
 
 func TestImageEnvironmentEntriesPreserveImageValues(t *testing.T) {

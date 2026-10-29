@@ -6,10 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"coopr/internal/oci"
-	"coopr/internal/planner"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/planner"
 )
 
 // A return request is made while the builder and any open layer group remain

@@ -5,8 +5,8 @@ import (
 	"slices"
 	"testing"
 
-	"coopr/internal/definition"
-	"coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/planner"
 )
 
 func TestMixedRunCommandsUseSelectedShell(t *testing.T) {

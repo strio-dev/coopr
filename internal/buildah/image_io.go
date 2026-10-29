@@ -8,9 +8,9 @@ import (
 	"io"
 	"strings"
 
-	"coopr/internal/imagestore"
-	"coopr/internal/oci"
-	"coopr/internal/storeactivity"
+	"github.com/strio-dev/coopr/internal/imagestore"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/storeactivity"
 
 	"github.com/containerd/platforms"
 	"github.com/opencontainers/go-digest"

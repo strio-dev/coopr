@@ -3,7 +3,7 @@ package build
 import (
 	"testing"
 
-	"coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/definition"
 )
 
 func TestApplyFromOverrideReplacesOnlyFirstFrom(t *testing.T) {

@@ -10,11 +10,11 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"coopr/internal/planner"
-	"coopr/internal/stateidentity"
 	"github.com/containerd/platforms"
 	digest "github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/stateidentity"
 )
 
 const KeyVersion = "coopr.strio.dev/cache-key/v1"

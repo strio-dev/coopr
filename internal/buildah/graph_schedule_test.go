@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/planner"
 )
 
 func TestReadyGraphStagesLaunchDownstreamAsSoonAsDependencyCompletes(t *testing.T) {

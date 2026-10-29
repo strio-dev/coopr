@@ -4,8 +4,8 @@ import (
 	"reflect"
 	"testing"
 
-	"coopr/internal/buildcontext"
-	"coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/definition"
 )
 
 func TestNamedContextReplacesMatchingStageAndSkipsBody(t *testing.T) {

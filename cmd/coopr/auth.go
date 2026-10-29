@@ -1,7 +1,7 @@
 package main
 
 import (
-	"coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/oci"
 
 	"github.com/spf13/cobra"
 	"go.podman.io/common/pkg/auth"

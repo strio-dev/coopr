@@ -2,7 +2,7 @@ package buildah
 
 import (
 	"context"
-	"coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/definition"
 	"os"
 	"path/filepath"
 	"sync/atomic"

@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/oci"
 
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/specs-go"

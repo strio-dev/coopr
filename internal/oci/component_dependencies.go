@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"coopr/internal/imageconfig"
-	"coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/planner"
 
 	digest "github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"

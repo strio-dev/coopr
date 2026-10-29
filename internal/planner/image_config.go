@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"coopr/internal/imageconfig"
-	"coopr/internal/onbuildparse"
+	"github.com/strio-dev/coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/onbuildparse"
 )
 
 // StageBindFromImageConfig extracts base-image state before planning a child

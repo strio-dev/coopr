@@ -8,9 +8,9 @@ import (
 	"slices"
 	"strings"
 
-	"coopr/internal/buildah"
-	"coopr/internal/oci"
-	"coopr/internal/transfer"
+	"github.com/strio-dev/coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/transfer"
 )
 
 func validateFinalization(opts *Options, platforms []string, destinations []transfer.Destination) error {

@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/buildcontext"
-	"coopr/internal/oci"
-	"coopr/internal/planner"
 	buildkitsystem "github.com/moby/buildkit/util/system"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/planner"
 	"go.podman.io/image/v5/types"
 )
 

@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/definition"
 )
 
 // RawGraph preserves authored instructions until executor-independent planning.

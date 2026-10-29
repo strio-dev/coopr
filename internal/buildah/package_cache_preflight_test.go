@@ -9,11 +9,11 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/buildcontext"
-	"coopr/internal/cache"
-	"coopr/internal/oci"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/cache"
+	"github.com/strio-dev/coopr/internal/oci"
 )
 
 type fakePackageStore struct {

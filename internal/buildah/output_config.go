@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"coopr/internal/imageconfig"
-	"coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/oci"
 	"go.podman.io/image/v5/types"
 )
 

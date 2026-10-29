@@ -2,9 +2,9 @@ package buildah
 
 import (
 	"archive/tar"
-	"coopr/internal/buildcontext"
 	"errors"
 	"fmt"
+	"github.com/strio-dev/coopr/internal/buildcontext"
 	"io"
 	"os"
 	"path/filepath"

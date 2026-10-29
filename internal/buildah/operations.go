@@ -12,10 +12,10 @@ import (
 	"strconv"
 	"strings"
 
-	"coopr/internal/definition"
-	"coopr/internal/imageconfig"
-	"coopr/internal/onbuildparse"
 	"github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/onbuildparse"
 	upstream "go.podman.io/buildah"
 	"go.podman.io/buildah/copier"
 	"go.podman.io/buildah/define"

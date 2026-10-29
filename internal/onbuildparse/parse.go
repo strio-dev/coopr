@@ -11,13 +11,13 @@ import (
 	"strings"
 	"time"
 
-	"coopr/internal/definition"
 	docker "github.com/fsouza/go-dockerclient"
 	"github.com/moby/buildkit/frontend/dockerfile/instructions"
 	"github.com/moby/buildkit/frontend/dockerfile/parser"
 	"github.com/moby/buildkit/frontend/dockerfile/shell"
 	dockerspec "github.com/moby/docker-image-spec/specs-go/v1"
 	"github.com/openshift/imagebuilder"
+	"github.com/strio-dev/coopr/internal/definition"
 )
 
 // Expander expands one Dockerfile word while parsing a trigger.

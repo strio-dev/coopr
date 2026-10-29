@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/buildcontext"
-	"coopr/internal/imageconfig"
-	"coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/planner"
 )
 
 func TestComponentReturnSchedulesLateEarlierDependencies(t *testing.T) {

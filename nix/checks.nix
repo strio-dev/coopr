@@ -11,6 +11,7 @@
   sourceUrl,
 }:
 let
+  libraryConsumer = pkgs.callPackage ./library.nix { inherit coopr; };
   testTags = coopr.tags ++ [
     "dockerintegration"
     "cosignintegration"
@@ -42,6 +43,7 @@ let
         cat > "$XDG_CONFIG_HOME/containers/policy.json" <<'EOF'
         {"default":[{"type":"insecureAcceptAnything"}]}
         EOF
+        test -x ${libraryConsumer}/bin/library-consumer
         ${command}
         runHook postCheck
       '';
@@ -68,12 +70,14 @@ let
         coopr-sequoia-signing
         coopr-static
         container
+        libraryConsumer
         ;
     }
   );
 in
 {
   build = coopr;
+  library-consumer = libraryConsumer;
   sequoia-helper = pkgs.runCommand "coopr-sequoia-helper-check" { } ''
     test "$(${coopr-sequoia-signing}/bin/coopr-sequoia-signing --protocol-version)" = coopr-sequoia-signing/1
     test -s ${coopr-sequoia-signing}/share/licenses/coopr/native/rust/LICENSE-APACHE

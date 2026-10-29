@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/planner"
 	"github.com/opencontainers/go-digest"
+	"github.com/strio-dev/coopr/internal/planner"
 )
 
 func TestBuildPlanCachesGeneralLocalCopy(t *testing.T) {

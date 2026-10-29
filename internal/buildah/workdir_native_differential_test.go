@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/definition"
-	"coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/imageconfig"
 	"go.podman.io/buildah/define"
 	"go.podman.io/buildah/imagebuildah"
 )

@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/planner"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/planner"
 )
 
 func controlPair(t *testing.T, handler componentReturnHandler, selection componentSelectionHandler, bases ...baseSelectionHandler) (*stageWorkerControlClient, context.Context) {

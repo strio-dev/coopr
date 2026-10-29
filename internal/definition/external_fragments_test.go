@@ -4,7 +4,7 @@ import (
 	"io"
 	"strings"
 
-	"coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/definition"
 )
 
 func parseFragment(r io.Reader) (*definition.Definition, error) {

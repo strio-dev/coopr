@@ -3,10 +3,10 @@ package buildah
 import (
 	"bytes"
 	"context"
-	"coopr/internal/definition"
-	"coopr/internal/oci"
-	"coopr/internal/planner"
 	"fmt"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/planner"
 	commonconfig "go.podman.io/common/pkg/config"
 	imageoci "go.podman.io/image/v5/oci/layout"
 	"go.podman.io/image/v5/types"

@@ -10,10 +10,10 @@ import (
 	"slices"
 	"strings"
 
-	"coopr/internal/definition"
-	"coopr/internal/planner"
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/planner"
 	"go.podman.io/buildah/define"
 	buildahparse "go.podman.io/buildah/pkg/parse"
 )

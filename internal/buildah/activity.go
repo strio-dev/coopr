@@ -3,7 +3,7 @@ package buildah
 import (
 	"context"
 
-	"coopr/internal/storeactivity"
+	"github.com/strio-dev/coopr/internal/storeactivity"
 )
 
 func acquirePlanActivity(ctx context.Context, options PlanOptions) (*storeactivity.Lease, error) {

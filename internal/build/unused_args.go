@@ -5,8 +5,8 @@ import (
 	"io"
 	"slices"
 
-	"coopr/internal/definition"
-	"coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/planner"
 )
 
 // Buildah treats an ARG declaration anywhere in the definition as consumption,

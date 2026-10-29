@@ -11,7 +11,7 @@ import (
 	"sync"
 	"syscall"
 
-	"coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/planner"
 )
 
 const stageWorkerControlReadFD = 3

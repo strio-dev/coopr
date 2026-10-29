@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/componentstore"
+	"github.com/strio-dev/coopr/internal/componentstore"
 
 	"github.com/google/go-containerregistry/pkg/registry"
 	"github.com/strio-dev/bale"

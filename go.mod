@@ -1,4 +1,4 @@
-module coopr
+module github.com/strio-dev/coopr
 
 go 1.26.8
 

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/cache"
-	"coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/cache"
+	"github.com/strio-dev/coopr/internal/planner"
 )
 
 func TestPackageCacheTTLRejectsStaleRecordsBeforeSeeding(t *testing.T) {

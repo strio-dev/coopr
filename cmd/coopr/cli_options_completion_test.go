@@ -7,11 +7,11 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/buildah"
-	"coopr/internal/imagestore"
-	"coopr/internal/transfer"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/spf13/cobra"
+	"github.com/strio-dev/coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/imagestore"
+	"github.com/strio-dev/coopr/internal/transfer"
 	imagecopy "go.podman.io/image/v5/copy"
 )
 

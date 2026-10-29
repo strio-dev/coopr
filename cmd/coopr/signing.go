@@ -1,8 +1,8 @@
 package main
 
 import (
-	"coopr/internal/transfer"
 	"github.com/spf13/cobra"
+	"github.com/strio-dev/coopr/internal/transfer"
 )
 
 type signingFlags struct {

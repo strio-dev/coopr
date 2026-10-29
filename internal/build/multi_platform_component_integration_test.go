@@ -12,11 +12,11 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/componentstore"
-	"coopr/internal/oci"
-	"coopr/internal/transfer"
 	"github.com/google/go-containerregistry/pkg/registry"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/componentstore"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/transfer"
 	"oras.land/oras-go/v2/content"
 )
 

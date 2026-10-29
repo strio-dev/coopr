@@ -11,8 +11,8 @@ import (
 	"reflect"
 	"testing"
 
-	"coopr/internal/buildah"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/buildah"
 	"go.podman.io/storage"
 )
 

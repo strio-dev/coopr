@@ -12,14 +12,14 @@ import (
 	"sync"
 	"time"
 
-	"coopr/internal/buildah"
-	"coopr/internal/buildcontext"
-	"coopr/internal/componentstore"
-	"coopr/internal/oci"
-	"coopr/internal/planner"
-	"coopr/internal/storeactivity"
-	"coopr/internal/transfer"
 	"github.com/containerd/platforms"
+	"github.com/strio-dev/coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/componentstore"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/storeactivity"
+	"github.com/strio-dev/coopr/internal/transfer"
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
 

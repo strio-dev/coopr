@@ -9,11 +9,11 @@ import (
 	"path/filepath"
 	"time"
 
-	"coopr/internal/localstore"
-	"coopr/internal/oci"
 	"github.com/gofrs/flock"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/localstore"
+	"github.com/strio-dev/coopr/internal/oci"
 	"go.podman.io/common/pkg/libartifact"
 	artifacttypes "go.podman.io/common/pkg/libartifact/types"
 	"go.podman.io/image/v5/manifest"

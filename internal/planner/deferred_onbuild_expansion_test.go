@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"testing"
 
-	"coopr/internal/definition"
-	"coopr/internal/onbuildparse"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/onbuildparse"
 )
 
 func TestAuthoredAndInheritedOnBuildWordExpansionAreEquivalent(t *testing.T) {

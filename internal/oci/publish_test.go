@@ -14,13 +14,13 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/componentstore"
-	"coopr/internal/definition"
-	"coopr/internal/planner"
 	"github.com/google/go-containerregistry/pkg/registry"
 	digest "github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/componentstore"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/planner"
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
 

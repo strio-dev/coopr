@@ -13,10 +13,10 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/buildah"
-	"coopr/internal/oci"
 	"github.com/google/go-containerregistry/pkg/registry"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/oci"
 )
 
 func TestBuildArchiveCommandLive(t *testing.T) {

@@ -14,11 +14,11 @@ import (
 	"strings"
 	"time"
 
-	"coopr/internal/storeactivity"
 	"github.com/gofrs/flock"
 	"github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/storeactivity"
 	"go.podman.io/common/libimage"
 	imagereference "go.podman.io/image/v5/docker/reference"
 	"go.podman.io/storage/pkg/archive"

@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/buildcontext"
-	"coopr/internal/definition"
-	"coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/planner"
 )
 
 func TestParseTransientRunMountsPreservesNativeBindOptions(t *testing.T) {

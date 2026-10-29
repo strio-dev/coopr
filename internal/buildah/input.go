@@ -9,10 +9,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"coopr/internal/imagestore"
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/imagestore"
 	ocilayout "go.podman.io/image/v5/oci/layout"
 	imagestorage "go.podman.io/image/v5/storage"
 	"go.podman.io/image/v5/types"

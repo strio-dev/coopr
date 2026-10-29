@@ -16,16 +16,16 @@ import (
 
 	registryserver "github.com/google/go-containerregistry/pkg/registry"
 
-	"coopr/internal/buildcontext"
-	"coopr/internal/cache"
-	"coopr/internal/definition"
-	"coopr/internal/imageconfig"
-	"coopr/internal/oci"
-	"coopr/internal/planner"
-	"coopr/internal/stateidentity"
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/cache"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/stateidentity"
 	"go.podman.io/storage"
 )
 

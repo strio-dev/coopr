@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/componentstore"
 	"github.com/google/go-containerregistry/pkg/registry"
 	digest "github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/componentstore"
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
 

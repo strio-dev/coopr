@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	"coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/oci"
 
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"

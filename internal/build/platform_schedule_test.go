@@ -3,9 +3,9 @@ package build
 import (
 	"bytes"
 	"context"
-	"coopr/internal/oci"
 	"errors"
 	"fmt"
+	"github.com/strio-dev/coopr/internal/oci"
 	"sync"
 	"testing"
 	"time"

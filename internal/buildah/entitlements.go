@@ -3,8 +3,8 @@ package buildah
 import (
 	"fmt"
 
-	"coopr/internal/planner"
 	"github.com/moby/buildkit/util/entitlements"
+	"github.com/strio-dev/coopr/internal/planner"
 	"tags.cncf.io/container-device-interface/pkg/cdi"
 )
 

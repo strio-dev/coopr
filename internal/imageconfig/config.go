@@ -16,11 +16,11 @@ import (
 	"strings"
 	"time"
 
-	"coopr/internal/definition"
-	"coopr/internal/onbuildparse"
 	dockerspec "github.com/moby/docker-image-spec/specs-go/v1"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/onbuildparse"
 	"go.podman.io/image/v5/pkg/strslice"
 )
 

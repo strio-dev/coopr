@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/cache"
+	"github.com/strio-dev/coopr/internal/cache"
 )
 
 func TestCacheRecordFresh(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/definition"
 )
 
 func TestStageOrderRejectsUnavailableReferences(t *testing.T) {

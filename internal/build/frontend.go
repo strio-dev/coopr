@@ -1,6 +1,6 @@
 package build
 
-import "coopr/internal/definition"
+import "github.com/strio-dev/coopr/internal/definition"
 
 // applyFromOverride implements Buildah's --from behavior: only the image of
 // the first FROM instruction is replaced. Later stages retain their authored

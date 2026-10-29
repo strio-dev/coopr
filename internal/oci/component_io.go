@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 
-	"coopr/internal/componentstore"
-	"coopr/internal/storeactivity"
+	"github.com/strio-dev/coopr/internal/componentstore"
+	"github.com/strio-dev/coopr/internal/storeactivity"
 
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2/content"

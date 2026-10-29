@@ -11,7 +11,7 @@ import (
 	"strings"
 	"syscall"
 
-	"coopr/internal/storeactivity"
+	"github.com/strio-dev/coopr/internal/storeactivity"
 	"go.podman.io/buildah/pkg/volumes"
 	"go.podman.io/common/libimage"
 	"go.podman.io/storage"

@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"coopr/internal/buildcontext"
-	"coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/definition"
 )
 
 // OCI image creation times must be representable by encoding/json's RFC3339

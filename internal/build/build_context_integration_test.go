@@ -4,7 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
-	"coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/buildah"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/buildcontext"
-	"coopr/internal/oci"
-	"coopr/internal/transfer"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/transfer"
 )
 
 func TestBuildUsesRemotePrimaryHTTPContext(t *testing.T) {

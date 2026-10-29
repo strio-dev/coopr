@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"coopr/internal/transfer"
+	"github.com/strio-dev/coopr/internal/transfer"
 )
 
 func normalizeBuildLog(path string, split bool) (string, error) {

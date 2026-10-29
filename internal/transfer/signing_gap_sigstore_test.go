@@ -27,10 +27,10 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/imagestore"
-	"coopr/internal/localstore"
-	"coopr/internal/oci"
 	"github.com/google/go-containerregistry/pkg/registry"
+	"github.com/strio-dev/coopr/internal/imagestore"
+	"github.com/strio-dev/coopr/internal/localstore"
+	"github.com/strio-dev/coopr/internal/oci"
 	imagecopy "go.podman.io/image/v5/copy"
 	"go.podman.io/image/v5/docker"
 	"go.podman.io/image/v5/image"

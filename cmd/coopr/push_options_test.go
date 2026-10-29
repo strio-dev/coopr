@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"coopr/internal/transfer"
+	"github.com/strio-dev/coopr/internal/transfer"
 
 	"github.com/spf13/cobra"
 )

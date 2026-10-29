@@ -12,11 +12,11 @@ import (
 	"strings"
 	"syscall"
 
-	"coopr/internal/planner"
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/identity"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/strio-dev/coopr/internal/planner"
 	upstream "go.podman.io/buildah"
 	"go.podman.io/buildah/copier"
 	"go.podman.io/storage"

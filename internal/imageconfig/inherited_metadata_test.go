@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/definition"
 )
 
 func TestInheritedRuntimeMetadataPreservesNativeShape(t *testing.T) {

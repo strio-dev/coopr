@@ -18,7 +18,7 @@ scan:
 
 # Format Go, Nix, and Justfile sources with pinned tools.
 fmt:
-    nix develop path:. -c gofmt -w cmd internal
+    nix develop path:. -c gofmt -w *.go cmd internal examples/library
     nix develop path:. -c nixfmt flake.nix nix/*.nix nix/tests/*.nix
     nix develop path:. -c just --fmt
 

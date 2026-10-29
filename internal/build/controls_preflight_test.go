@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/buildah"
 )
 
 func TestBuildControlConflictsPrecedeDefinitionReads(t *testing.T) {

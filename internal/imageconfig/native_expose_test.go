@@ -1,8 +1,8 @@
 package imageconfig
 
 import (
-	"coopr/internal/definition"
 	"encoding/json"
+	"github.com/strio-dev/coopr/internal/definition"
 	"testing"
 )
 

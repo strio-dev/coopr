@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"coopr/internal/imagestore"
+	"github.com/strio-dev/coopr/internal/imagestore"
 )
 
 // DefaultStoreOptions loads the effective containers/storage configuration at

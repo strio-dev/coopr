@@ -2,11 +2,11 @@ package buildah
 
 import (
 	"context"
-	"coopr/internal/buildcontext"
-	"coopr/internal/definition"
-	"coopr/internal/planner"
 	"encoding/pem"
 	"fmt"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/planner"
 	"io"
 	"net"
 	"net/http"

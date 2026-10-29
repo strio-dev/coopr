@@ -8,8 +8,8 @@ import (
 	"os"
 	"strings"
 
-	"coopr/internal/buildcontext"
 	"github.com/moby/buildkit/util/gitutil"
+	"github.com/strio-dev/coopr/internal/buildcontext"
 	"go.podman.io/buildah/pkg/sshagent"
 	"go.podman.io/image/v5/types"
 )

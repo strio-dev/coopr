@@ -17,9 +17,9 @@ import (
 	"strings"
 	"time"
 
-	"coopr/internal/buildcontext"
 	"github.com/docker/go-connections/tlsconfig"
 	opencontainersdigest "github.com/opencontainers/go-digest"
+	"github.com/strio-dev/coopr/internal/buildcontext"
 	upstream "go.podman.io/buildah"
 	"go.podman.io/buildah/copier"
 	"go.podman.io/image/v5/pkg/tlsclientconfig"

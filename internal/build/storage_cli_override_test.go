@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"coopr/internal/testutil"
+	"github.com/strio-dev/coopr/internal/testutil"
 )
 
 func TestStorageTestCLIRejectsInvalidExecutable(t *testing.T) {

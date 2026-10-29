@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/definition"
 	"github.com/opencontainers/go-digest"
+	"github.com/strio-dev/coopr/internal/definition"
 )
 
 func instruction(name string, args []string, props map[string]string) definition.Instruction {

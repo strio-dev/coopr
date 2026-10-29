@@ -4,8 +4,8 @@ import (
 	"os"
 	"strings"
 
-	"coopr/internal/buildah"
 	"github.com/spf13/cobra"
+	"github.com/strio-dev/coopr/internal/buildah"
 	buildahcli "go.podman.io/buildah/pkg/cli"
 )
 

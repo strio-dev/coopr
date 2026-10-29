@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"text/template"
 
-	"coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/buildah"
 
 	"github.com/spf13/cobra"
 	upstream "go.podman.io/buildah"

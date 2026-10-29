@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/definition"
-	"coopr/internal/imageconfig"
-	"coopr/internal/onbuildparse"
 	"github.com/openshift/imagebuilder"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/onbuildparse"
 )
 
 // Exercise the native parser/evaluator and the complete planner/config boundary,

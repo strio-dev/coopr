@@ -11,9 +11,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"coopr/internal/buildcontext"
-	"coopr/internal/planner"
 	opencontainersdigest "github.com/opencontainers/go-digest"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/planner"
 	upstream "go.podman.io/buildah"
 	storagearchive "go.podman.io/storage/pkg/archive"
 )

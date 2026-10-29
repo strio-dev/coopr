@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/buildah"
 	"github.com/google/go-containerregistry/pkg/registry"
+	"github.com/strio-dev/coopr/internal/buildah"
 )
 
 func TestCompletedStdoutTarSurvivesLaterPublicationFailure(t *testing.T) {

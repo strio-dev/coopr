@@ -12,12 +12,12 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"coopr/internal/buildcontext"
-	"coopr/internal/definition"
-	"coopr/internal/onbuildparse"
 	"github.com/containerd/platforms"
 	"github.com/moby/buildkit/util/system"
 	"github.com/openshift/imagebuilder"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/onbuildparse"
 )
 
 type Mode string

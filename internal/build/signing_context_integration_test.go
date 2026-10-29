@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/oci"
-	"coopr/internal/transfer"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/transfer"
 )
 
 func TestBuildLocalSigningReusesExclusiveStoreLease(t *testing.T) {

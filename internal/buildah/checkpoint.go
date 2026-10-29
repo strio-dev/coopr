@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"coopr/internal/oci"
 	"github.com/opencontainers/go-digest"
+	"github.com/strio-dev/coopr/internal/oci"
 	upstream "go.podman.io/buildah"
 	"go.podman.io/buildah/define"
 	"go.podman.io/storage"

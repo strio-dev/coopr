@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/storeactivity"
+	"github.com/strio-dev/coopr/internal/storeactivity"
 )
 
 func TestActivityRootsOmitsEmptyRoots(t *testing.T) {

@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/imageconfig"
-	"coopr/internal/oci"
-	"coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/planner"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/storage"
 )

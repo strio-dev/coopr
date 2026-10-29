@@ -8,10 +8,10 @@ import (
 	"os"
 	"strings"
 
-	"coopr/internal/buildah"
-	"coopr/internal/oci"
-	"coopr/internal/storeactivity"
-	"coopr/internal/transfer"
+	"github.com/strio-dev/coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/storeactivity"
+	"github.com/strio-dev/coopr/internal/transfer"
 
 	"github.com/containerd/platforms"
 	"github.com/opencontainers/go-digest"

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/oci"
 	"github.com/google/go-containerregistry/pkg/registry"
+	"github.com/strio-dev/coopr/internal/oci"
 )
 
 func TestRunPullRefreshesBaseTagAndPreservesOfflineDigest(t *testing.T) {

@@ -15,8 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"coopr/internal/buildah"
-	"coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/oci"
 
 	"github.com/google/go-containerregistry/pkg/registry"
 	"github.com/opencontainers/go-digest"

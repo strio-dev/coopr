@@ -10,9 +10,9 @@ import (
 	"slices"
 	"strings"
 
-	"coopr/internal/oci"
-	"coopr/internal/stateidentity"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/stateidentity"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/storage"
 	"go.podman.io/storage/pkg/mount"

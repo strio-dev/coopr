@@ -12,8 +12,8 @@ import (
 	"strconv"
 	"strings"
 
-	"coopr/internal/definition"
-	"coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/planner"
 )
 
 // RunMount is one transient mount for a RUN. Properties retain the authored

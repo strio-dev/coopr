@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/storeactivity"
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/storeactivity"
 	"go.podman.io/common/libimage"
 	"go.podman.io/common/libimage/manifests"
 	imagestorage "go.podman.io/image/v5/storage"

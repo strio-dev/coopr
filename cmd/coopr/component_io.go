@@ -7,10 +7,10 @@ import (
 	"os"
 	"strings"
 
-	"coopr/internal/componentstore"
-	"coopr/internal/oci"
-	"coopr/internal/storeactivity"
-	"coopr/internal/transfer"
+	"github.com/strio-dev/coopr/internal/componentstore"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/storeactivity"
+	"github.com/strio-dev/coopr/internal/transfer"
 
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/spf13/cobra"

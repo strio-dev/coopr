@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/definition"
 )
 
 func parse(t *testing.T, source string) *definition.Definition {

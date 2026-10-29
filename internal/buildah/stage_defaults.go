@@ -3,9 +3,9 @@ package buildah
 import (
 	"encoding/json"
 
-	"coopr/internal/definition"
-	"coopr/internal/imageconfig"
 	"github.com/moby/buildkit/util/system"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/imageconfig"
 )
 
 // seedStagePath runs only when entering FROM or a package root. An explicit

@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	"coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/buildah"
 
 	"go.podman.io/storage/pkg/reexec"
 )

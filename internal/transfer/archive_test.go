@@ -9,11 +9,11 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/localstore"
-	"coopr/internal/oci"
 	"github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/localstore"
+	"github.com/strio-dev/coopr/internal/oci"
 	"go.podman.io/image/v5/manifest"
 	"oras.land/oras-go/v2/content"
 	orasoci "oras.land/oras-go/v2/content/oci"

@@ -3,10 +3,10 @@ package buildah
 import (
 	"fmt"
 
-	"coopr/internal/definition"
-	"coopr/internal/imageconfig"
-	"coopr/internal/onbuildparse"
-	"coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/onbuildparse"
+	"github.com/strio-dev/coopr/internal/planner"
 )
 
 func stageBindFromImageConfig(logical *imageconfig.Config) (planner.StageBind, error) {

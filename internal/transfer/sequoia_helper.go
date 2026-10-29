@@ -10,10 +10,10 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"coopr/internal/buildah"
-	"coopr/internal/imagestore"
-	"coopr/internal/oci"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/imagestore"
+	"github.com/strio-dev/coopr/internal/oci"
 	imagecopy "go.podman.io/image/v5/copy"
 	"go.podman.io/image/v5/signature"
 	"go.podman.io/image/v5/transports/alltransports"

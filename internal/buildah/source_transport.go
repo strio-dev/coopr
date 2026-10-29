@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"coopr/internal/oci"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/oci"
 	"go.podman.io/buildah/pkg/cli"
 	"go.podman.io/buildah/pkg/sourcepolicy"
 	"go.podman.io/common/libimage"

@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/testutil"
+	"github.com/strio-dev/coopr/internal/testutil"
 
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2/content"

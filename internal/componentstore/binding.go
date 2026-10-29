@@ -11,10 +11,10 @@ import (
 	"slices"
 	"strings"
 
-	"coopr/internal/localstore"
 	"github.com/distribution/reference"
 	digest "github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/localstore"
 	"oras.land/oras-go/v2"
 	"oras.land/oras-go/v2/content"
 	orasoci "oras.land/oras-go/v2/content/oci"

@@ -2,9 +2,9 @@
 package main
 
 import (
-	"coopr/internal/buildah"
-	_ "coopr/internal/transfer"
 	"fmt"
+	"github.com/strio-dev/coopr/internal/buildah"
+	_ "github.com/strio-dev/coopr/internal/transfer"
 	"os"
 )
 

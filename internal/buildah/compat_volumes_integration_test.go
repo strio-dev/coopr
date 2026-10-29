@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/definition"
-	"coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/planner"
 	"go.podman.io/buildah/define"
 	"go.podman.io/buildah/imagebuildah"
 	"go.podman.io/image/v5/types"

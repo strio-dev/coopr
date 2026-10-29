@@ -2,11 +2,11 @@ package buildah
 
 import (
 	"bytes"
-	"coopr/internal/definition"
-	"coopr/internal/planner"
 	"encoding/json"
 	"fmt"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/planner"
 	"oras.land/oras-go/v2/content"
 	orasoci "oras.land/oras-go/v2/content/oci"
 	"path/filepath"

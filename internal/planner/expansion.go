@@ -3,7 +3,7 @@ package planner
 import (
 	"slices"
 
-	"coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/definition"
 
 	"github.com/containerd/platforms"
 	"github.com/moby/buildkit/frontend/dockerfile/shell"

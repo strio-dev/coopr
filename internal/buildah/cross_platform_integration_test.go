@@ -14,11 +14,11 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/componentstore"
-	"coopr/internal/definition"
-	"coopr/internal/oci"
-	"coopr/internal/planner"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/componentstore"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/planner"
 	"go.podman.io/image/v5/types"
 	orasoci "oras.land/oras-go/v2/content/oci"
 )

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/onbuildparse"
+	"github.com/strio-dev/coopr/internal/onbuildparse"
 )
 
 func TestOnBuildFlagsRequireLiteralsWhenDockerfileCannotExpandThem(t *testing.T) {

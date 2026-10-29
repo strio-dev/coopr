@@ -13,11 +13,11 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/localstore"
-	"coopr/internal/oci"
 	"github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/localstore"
+	"github.com/strio-dev/coopr/internal/oci"
 	"go.podman.io/image/v5/manifest"
 	"go.podman.io/image/v5/transports/alltransports"
 	"go.podman.io/image/v5/types"
