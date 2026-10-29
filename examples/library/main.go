@@ -295,12 +295,12 @@ func exported(result coopr.Result) error {
 	_, err = os.Stat(filepath.Join(result.OCI, "index.json"))
 	return err
 }
-func copyBinary(source, destination string) error {
+func copyBinary(source, destination string) (retErr error) {
 	input, err := os.Open(source)
 	if err != nil {
 		return err
 	}
-	defer input.Close()
+	defer func() { retErr = errors.Join(retErr, input.Close()) }()
 	output, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0755)
 	if err != nil {
 		return err
