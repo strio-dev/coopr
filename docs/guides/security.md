@@ -14,6 +14,21 @@ Memory and CPU limits need cgroup v2 with the required controllers delegated to 
 
 Run Coopr and Podman as the same user with the same storage settings to share images. See [host setup](../getting-started/index.md#set-up-your-host) for a basic check.
 
+## Embedding in an application
+
+The [Go library](library.md) uses Buildah's same-executable helper dispatch before
+normal application argument checks. Those helpers are reachable independently
+of the application's CLI. A setuid installation, executable file capabilities,
+or a restricted sudo rule can therefore expose more operations than that CLI
+permits. This also applies when a launcher or SELinux domain transition grants
+additional permissions. Coopr does not provide a privilege boundary for such an
+application.
+
+Run the engine under the account whose permissions builds should have, normally
+rootless. Root and sudo builds grant the engine the operator's host authority.
+Authenticate service requests before submitting them to the library; container
+isolation does not replace application access control.
+
 ## Credentials and remote sources
 
 ### Log in to a registry

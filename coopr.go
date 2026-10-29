@@ -150,6 +150,12 @@ var initialized atomic.Bool
 
 // InitReexec dispatches registered same-binary build workers and runtime helpers.
 // Call first in main, and return immediately when it returns true.
+//
+// Dispatch runs before application argument checks, following Buildah's
+// embedding contract. It does not authenticate application requests. Do not
+// expose the executable through setuid, file capabilities or restricted sudo
+// rules that rely on those later checks to limit the caller's operations.
+// Operator-authorized root and sudo builds use the operator's existing authority.
 func InitReexec() bool {
 	if buildah.InitReexec() {
 		return true

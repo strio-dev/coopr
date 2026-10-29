@@ -37,6 +37,9 @@ func executeInsecureRuntime(arguments []string) error {
 		return errors.New("invalid private invocation")
 	}
 	realRuntime := arguments[1]
+	if !filepath.IsAbs(realRuntime) {
+		return errors.New("private invocation requires an absolute OCI runtime executable")
+	}
 	runtimeArguments := slices.Clone(arguments[2:])
 	commandIndex := runtimeCommandIndex(runtimeArguments)
 	if commandIndex < 0 {

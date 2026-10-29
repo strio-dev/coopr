@@ -22,6 +22,17 @@ backend starts workers by reexecuting your application's binary. Those workers
 need this dispatch entry point. A single `Run.Args` invocation does not require
 the separate `coopr-run-sequence` helper or an installed Coopr CLI.
 
+The engine runs with your application's OS authority. Bootstrap dispatches
+helpers before normal argument checks; it does not authenticate requests.
+Installing the application setuid, granting it file capabilities, or exposing
+it through a restricted sudo rule can therefore bypass restrictions implemented
+by its CLI. The same concern applies to a security-domain transition that gives
+the executable additional permissions. The library provides no privilege
+separation for those deployments.
+Run it as the intended execution account, normally rootless. An operator may
+also run builds as root or through sudo with full engine authority. Services
+must authenticate build requests before calling `Execute`.
+
 The following program builds from UBI, runs a shell command, and exports both an
 OCI image layout and a filesystem tree. Choose fresh output paths before running
 it; their parent directory must already exist:

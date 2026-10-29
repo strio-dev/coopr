@@ -85,13 +85,29 @@ func runGitWrapper() {
 		_, _ = fmt.Fprintln(os.Stderr, "coopr Git wrapper has no absolute Git executable")
 		os.Exit(127)
 	}
+	// Launch controls and the private PATH entry are consumed here; Git's
+	// descendants keep the real Git search path and isolated environment.
 	environment := gitWorkerEnvironment(os.Environ())
+	directory := os.Getenv(gitWrapperDirectory)
 	isolated := make([]string, 0, len(environment)+2)
 	for _, entry := range environment {
-		name, _, _ := strings.Cut(entry, "=")
-		if name != "HOME" && name != "XDG_CONFIG_HOME" {
-			isolated = append(isolated, entry)
+		name, value, _ := strings.Cut(entry, "=")
+		switch name {
+		case "HOME", "XDG_CONFIG_HOME", realGitExecutable, gitWrapperDirectory:
+			continue
+		case "PATH":
+			if directory != "" {
+				paths := strings.Split(value, string(os.PathListSeparator))
+				kept := paths[:0]
+				for _, path := range paths {
+					if path != directory {
+						kept = append(kept, path)
+					}
+				}
+				entry = "PATH=" + strings.Join(kept, string(os.PathListSeparator))
+			}
 		}
+		isolated = append(isolated, entry)
 	}
 	environment = append(isolated, "HOME=/dev/null", "XDG_CONFIG_HOME=/dev/null")
 	if err := syscall.Exec(real, append([]string{real}, os.Args[1:]...), environment); err != nil {

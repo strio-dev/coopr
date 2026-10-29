@@ -25,6 +25,27 @@ func TestInsecureRunRejectsChrootIsolation(t *testing.T) {
 	}
 }
 
+func TestInsecureRuntimeRejectsRelativeExecutableBeforeEditingBundle(t *testing.T) {
+	for _, runtime := range []string{"", "runtime", "./runtime", "../runtime"} {
+		t.Run(runtime, func(t *testing.T) {
+			bundle := t.TempDir()
+			configPath := filepath.Join(bundle, "config.json")
+			original := []byte(`{"process":{"noNewPrivileges":true},"linux":{"maskedPaths":["/proc/kcore"],"readonlyPaths":["/proc/sys"],"resources":{}}}`)
+			if err := os.WriteFile(configPath, original, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			err := executeInsecureRuntime([]string{insecureRuntimeMarker, runtime, "create", "--bundle", bundle, "id"})
+			if err == nil || !strings.Contains(err.Error(), "absolute OCI runtime executable") {
+				t.Errorf("relative runtime error = %v", err)
+			}
+			data, err := os.ReadFile(configPath)
+			if err != nil || string(data) != string(original) {
+				t.Fatalf("bundle changed before rejecting runtime: %s, %v", data, err)
+			}
+		})
+	}
+}
+
 func TestResolveInsecureRuntimeFromPATH(t *testing.T) {
 	runtime := filepath.Join(t.TempDir(), "coopr-test-oci-runtime")
 	if err := os.WriteFile(runtime, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
@@ -124,15 +145,19 @@ func TestInsecureRuntimeReexecDispatchesNonCreateCommands(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	command := exec.Command(testWorkerBinary(t), insecureRuntimeMarker, echo, "state", "wrapper-ok")
-	// Dispatch uses the private first argument even with this synthetic argv[0].
-	command.Args[0] = insecureRuntimeExecutable
-	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("runtime wrapper: %v: %s", err, output)
-	}
-	if got := strings.TrimSpace(string(output)); got != "state wrapper-ok" {
-		t.Fatalf("runtime output = %q", got)
+	for _, runtimeCommand := range []string{"state", "start", "kill", "delete"} {
+		t.Run(runtimeCommand, func(t *testing.T) {
+			command := exec.Command(testWorkerBinary(t), insecureRuntimeMarker, echo, "--systemd-cgroup", runtimeCommand, "wrapper-ok")
+			// Dispatch uses the private first argument even with this synthetic argv[0].
+			command.Args[0] = insecureRuntimeExecutable
+			output, err := command.CombinedOutput()
+			if err != nil {
+				t.Fatalf("runtime wrapper: %v: %s", err, output)
+			}
+			if got, want := strings.TrimSpace(string(output)), "--systemd-cgroup "+runtimeCommand+" wrapper-ok"; got != want {
+				t.Fatalf("runtime output = %q, want %q", got, want)
+			}
+		})
 	}
 }
 
