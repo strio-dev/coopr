@@ -60,6 +60,10 @@ func planDefinitionWithExternalBaseState(ctx context.Context, def *definition.De
 // suppliedRecipe admits already validated caller bindings from a supplied Plan.
 // Raw definitions retain the guard against replacing external image metadata.
 func planDefinitionWithInitialBindings(ctx context.Context, def *definition.Definition, opts planner.Options, suppliedRecipe bool, resolve imageBaseResolver, resolveContext ...namedContextResolver) (*planner.Plan, *selectedBaseState, error) {
+	return planDefinitionWithSourceResolvers(ctx, def, opts, suppliedRecipe, resolve, nil, resolveContext...)
+}
+
+func planDefinitionWithSourceResolvers(ctx context.Context, def *definition.Definition, opts planner.Options, suppliedRecipe bool, resolve, resolveFiles imageBaseResolver, resolveContext ...namedContextResolver) (*planner.Plan, *selectedBaseState, error) {
 	if opts.Mode != planner.Build && opts.Mode != planner.Publish {
 		return nil, nil, fmt.Errorf("external base binding requires build or publish mode, got %q", opts.Mode)
 	}
@@ -103,16 +107,18 @@ func planDefinitionWithInitialBindings(ctx context.Context, def *definition.Defi
 					return planner.StageBind{}, fmt.Errorf("stage %s named context %q has no resolver", source.StageID, source.Source)
 				}
 				base, err = resolveContext[0](ctx, *source.Context, platform)
+			} else if source.Kind == planner.FromSourceCopyImage && source.Role == "copy" && resolveFiles != nil {
+				base, err = resolveFiles(ctx, source.Source, platform)
 			} else {
 				base, err = resolve(ctx, source.Source, platform)
 			}
 			if err != nil {
 				return planner.StageBind{}, fmt.Errorf("stage %s image %q: %w", source.StageID, source.Source, err)
 			}
-			if base.ImageID == "" {
-				return planner.StageBind{}, fmt.Errorf("stage %s image %q has no selected image", source.StageID, source.Source)
-			}
 			selected.record(key, base)
+		}
+		if err := validateSelectedInput(base, source.Kind == planner.FromSourceCopyImage && source.Role == "copy"); err != nil {
+			return planner.StageBind{}, fmt.Errorf("stage %s source %q: %w", source.StageID, source.Source, err)
 		}
 		if source.Kind == planner.FromSourceCopyImage {
 			return planner.StageBind{}, nil

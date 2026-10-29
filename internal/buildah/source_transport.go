@@ -312,3 +312,29 @@ func sourceBaseName(store storage.Store, source ResolvedImageSource) (string, er
 	}
 	return name, nil
 }
+
+func resolveFileSourceWithPolicy(ctx context.Context, resolver *oci.Resolver, reference string, platform v1.Platform, store storage.Store, system *types.SystemContext, contextDir string, policy *sourcepolicy.Policy) (ResolvedImageSource, error) {
+	return fileSourceWithPolicy(ctx, resolver, reference, platform, store, system, contextDir, policy, true)
+}
+
+func selectFileSourceWithPolicy(ctx context.Context, resolver *oci.Resolver, reference string, platform v1.Platform, store storage.Store, system *types.SystemContext, contextDir string, policy *sourcepolicy.Policy) (ResolvedImageSource, error) {
+	return fileSourceWithPolicy(ctx, resolver, reference, platform, store, system, contextDir, policy, false)
+}
+
+func fileSourceWithPolicy(ctx context.Context, resolver *oci.Resolver, reference string, platform v1.Platform, store storage.Store, system *types.SystemContext, contextDir string, policy *sourcepolicy.Policy, materialize bool) (ResolvedImageSource, error) {
+	reference, err := policyImageSource(reference, policy)
+	if err != nil {
+		return ResolvedImageSource{}, err
+	}
+	normalized, transport, err := normalizeBaseSource(reference, contextDir)
+	if err != nil {
+		return ResolvedImageSource{}, err
+	}
+	if transport {
+		return resolveBaseSourceWithPolicy(ctx, resolver, reference, platform, store, system, contextDir, nil)
+	}
+	if !materialize {
+		return selectFileSource(ctx, resolver, normalized, platform, store, system)
+	}
+	return resolveFileSource(ctx, resolver, normalized, platform, store, system)
+}

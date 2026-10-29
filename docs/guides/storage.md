@@ -203,11 +203,15 @@ Pruning reports removed names and images, followed by reclaimed space from nativ
 | Data | Typical rootless location |
 | --- | --- |
 | Images and instruction snapshots | `$XDG_DATA_HOME/containers/storage` |
+| OCI artifact files used by COPY/ADD | `<graphroot>/artifacts` |
+| Cached artifact source indexes | `<graphroot>/coopr-artifact-indexes` |
 | RUN cache mounts | `<graphroot>-tmp` |
 | Component artifacts | `$XDG_DATA_HOME/coopr/components` |
 | Native runtime state | `$XDG_RUNTIME_DIR/containers` |
 
 `XDG_DATA_HOME` defaults to `~/.local/share`. The graph root is the image store directory selected by native `storage.conf`, which also controls runtime paths and the storage driver. Component storage follows the data home independently. Rootful native storage normally uses `/var/lib/containers/storage` and `/run/containers/storage`.
+
+Artifact source indexes are cached as OCI metadata so offline builds can select the right platform. Their selected manifests and file blobs stay in the native artifact store, under immutable digest references.
 
 Coopr honors explicit `graphroot` and `runroot` settings even when running rootless. Native defaults apply when the effective configuration omits these keys or leaves them empty. To override system paths for one user, set these keys in `$XDG_CONFIG_HOME/containers/storage.conf` (normally `~/.config/containers/storage.conf`); see the [native storage configuration reference](https://github.com/podman-container-tools/container-libs/blob/6eac452fac5c9d9ad8f86b6fd6109f8f32659f77/storage/docs/containers-storage.conf.5.md).
 

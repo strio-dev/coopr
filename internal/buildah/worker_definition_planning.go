@@ -65,7 +65,7 @@ func planDefinitionInWorker(ctx context.Context, request planWorkerRequest) (*pl
 		selected, resolveErr := resolve(lease.store)
 		return selected, errors.Join(resolveErr, lease.Close())
 	}
-	plan, selected, planErr := planDefinitionWithInitialBindings(ctx, request.Definition, planning, request.ExecutionRecipe, func(ctx context.Context, reference string, platform v1.Platform) (ResolvedImageSource, error) {
+	plan, selected, planErr := planDefinitionWithSourceResolvers(ctx, request.Definition, planning, request.ExecutionRecipe, func(ctx context.Context, reference string, platform v1.Platform) (ResolvedImageSource, error) {
 		if err := ensureResolver(); err != nil {
 			return ResolvedImageSource{}, err
 		}
@@ -87,6 +87,16 @@ func planDefinitionInWorker(ctx context.Context, request planWorkerRequest) (*pl
 				return resolveBaseSourceWithPolicy(ctx, resolver, converted, platform, store, platformSystemContext(system, platform), request.ContextDir, nil)
 			}
 			return resolveBaseSourceWithPolicy(ctx, resolver, reference, platform, store, platformSystemContext(system, platform), request.ContextDir, sourcePolicy)
+		})
+	}, func(ctx context.Context, reference string, platform v1.Platform) (ResolvedImageSource, error) {
+		if err := ensureResolver(); err != nil {
+			return ResolvedImageSource{}, err
+		}
+		return withStore(func(store storage.Store) (ResolvedImageSource, error) {
+			if request.Mode == "publish" && resolver.PullPolicy() != oci.PullNewer {
+				return selectFileSourceWithPolicy(ctx, resolver, reference, platform, store, platformSystemContext(system, platform), request.ContextDir, sourcePolicy)
+			}
+			return resolveFileSourceWithPolicy(ctx, resolver, reference, platform, store, platformSystemContext(system, platform), request.ContextDir, sourcePolicy)
 		})
 	}, func(ctx context.Context, spec buildcontext.Spec, platform v1.Platform) (ResolvedImageSource, error) {
 		if spec.Kind == buildcontext.DockerImage {

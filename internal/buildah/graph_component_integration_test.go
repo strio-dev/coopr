@@ -130,33 +130,52 @@ func TestBuildPlanOverlapsIndependentBranchesInsideComponent(t *testing.T) {
 	root := t.TempDir()
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	base := newLiveBusyBoxStorage(t, ctx, root, store)
-	resolver := localConfigComponentResolver(t, ctx, root, `extend as="left" {
-    run "sleep 10; touch /left" network="none"
+	cacheID := "component-branches-" + digest.FromString(root).Encoded()[:16]
+	// Neither RUN can finish until both start; the finite loop bounds a deadlock.
+	resolver := localConfigComponentResolver(t, ctx, root, fmt.Sprintf(`extend as="left" {
+    run network="none" {
+        mount "cache" target="/rendezvous" id=%q sharing="shared"
+        exec "/bin/busybox" "sh" "-ec" #"touch /rendezvous/left; attempts=0; until test -e /rendezvous/right; do attempts=$((attempts + 1)); test "$attempts" -lt 1200 || exit 1; sleep 0.05; done; touch /left"#
+    }
 }
 extend as="right" {
-    run "sleep 10; touch /right" network="none"
+    run network="none" {
+        mount "cache" target="/rendezvous" id=%q sharing="shared"
+        exec "/bin/busybox" "sh" "-ec" #"touch /rendezvous/right; attempts=0; until test -e /rendezvous/left; do attempts=$((attempts + 1)); test "$attempts" -lt 1200 || exit 1; sleep 0.05; done; touch /right"#
+    }
 }
 extend {
     from "left" {
         copy "/right" "/right" from="right"
     }
 }
-`, false)
+`, cacheID, cacheID), false)
 	policy := writeComponentTestPolicy(t, root)
 	plan := testPlan(t, fmt.Sprintf(`from %q {
     component "config"
 }
 `, base.reference))
-	started := time.Now()
+	layout := filepath.Join(root, "layout")
 	if _, err := BuildPlan(ctx, plan, PlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun", Resolver: resolver, Jobs: 2,
-		Output:        Output{Path: filepath.Join(root, "layout")},
+		NoCache:       true,
+		Output:        Output{Path: layout},
 		SystemContext: &types.SystemContext{SignaturePolicyPath: policy, BigFilesTemporaryDir: root},
 	}); err != nil {
 		t.Fatalf("parallel component branches: %v", err)
 	}
-	if elapsed := time.Since(started); elapsed >= 19*time.Second {
-		t.Fatalf("independent branches inside component ran serially: %s", elapsed)
+	manifest, _ := readPlanImage(t, layout)
+	for _, name := range []string{"left", "right"} {
+		found := false
+		for _, layer := range manifest.Layers {
+			if layerContainsPath(t, filepath.Join(layout, "blobs", "sha256", layer.Digest.Encoded()), name) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("parallel component output is missing %s", name)
+		}
 	}
 }
 

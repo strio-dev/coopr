@@ -77,7 +77,7 @@ func BuildPlan(ctx context.Context, plan *planner.Plan, options PlanOptions) (re
 		}
 		selected := false
 		for key, source := range options.ResolvedBases {
-			if key.Reference == input.Reference && source.ImageID != "" {
+			if key.Reference == input.Reference && (source.ImageID != "" || source.Artifact) {
 				selected = true
 				break
 			}
@@ -715,7 +715,7 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 				continue
 			}
 			if event.base != nil {
-				selected, err := executor.resolveBaseImage(graphCtx, event.base.Reference, event.base.Platform)
+				selected, err := executor.resolveInput(graphCtx, event.base.Reference, event.base.Platform, event.base.Files)
 				event.reply <- componentControlResult{base: selected, err: err}
 				continue
 			}
@@ -856,7 +856,7 @@ func (executor *graphExecutor) adoptReplannedBases(ctx context.Context, takeDelt
 	}
 	for key, selected := range takeDelta() {
 		if existing, found := executor.resolvedBases[key]; found {
-			if existing.ImageID != selected.ImageID || existing.Selected.Digest != selected.Selected.Digest || !bytes.Equal(existing.ConfigData, selected.ConfigData) {
+			if existing.ImageID != selected.ImageID || existing.Artifact != selected.Artifact || existing.Selected.Digest != selected.Selected.Digest || !bytes.Equal(existing.ConfigData, selected.ConfigData) {
 				return fmt.Errorf("replanned base %q changed immutable selection", key.Reference)
 			}
 			continue
@@ -918,6 +918,9 @@ func (executor *graphExecutor) prepareGraphStage(ctx context.Context, plan *plan
 		if !ok {
 			return preparedGraphStage{}, fmt.Errorf("stage %s named context %q was not materialized", stage.ID, stage.SourceContext)
 		}
+		if err := validateSelectedInput(resolved, false); err != nil {
+			return preparedGraphStage{}, fmt.Errorf("stage %s: %w", stage.ID, err)
+		}
 		prepared.base = resolved.ImageID
 		prepared.baseManifest = resolved.Selected.Digest
 		var err error
@@ -962,6 +965,9 @@ func (executor *graphExecutor) prepareGraphStage(ctx context.Context, plan *plan
 				return preparedGraphStage{}, fmt.Errorf("stage %s: %w", stage.ID, err)
 			}
 		}
+		if err := validateSelectedInput(resolved, false); err != nil {
+			return preparedGraphStage{}, fmt.Errorf("stage %s: %w", stage.ID, err)
+		}
 		prepared.base = resolved.ImageID
 		prepared.baseManifest = resolved.Selected.Digest
 		var err error
@@ -1003,7 +1009,11 @@ func (executor *graphExecutor) prepareGraphStage(ctx context.Context, plan *plan
 				continue
 			}
 			key := ResolvedBaseKey{Reference: from, Platform: stage.Platform}
-			if executor.resolvedBases[key].ImageID != "" {
+			files := operation.Name == "copy" || operation.Name == "add"
+			if selected, found := executor.resolvedBases[key]; found {
+				if err := validateSelectedInput(selected, files); err != nil {
+					return preparedGraphStage{}, fmt.Errorf("stage %s operation %d: %w", stage.ID, operationIndex+1, err)
+				}
 				continue
 			}
 			if plan.Mode == planner.Invoke {
@@ -1013,7 +1023,7 @@ func (executor *graphExecutor) prepareGraphStage(ctx context.Context, plan *plan
 			if parseErr != nil {
 				return preparedGraphStage{}, fmt.Errorf("stage %s operation %d platform: %w", stage.ID, operationIndex+1, parseErr)
 			}
-			if _, err := executor.resolveBaseImage(ctx, from, platform); err != nil {
+			if _, err := executor.resolveInput(ctx, from, platform, files); err != nil {
 				return preparedGraphStage{}, fmt.Errorf("stage %s operation %d image source %q: %w", stage.ID, operationIndex+1, from, err)
 			}
 		}
@@ -1065,12 +1075,23 @@ func (executor *graphExecutor) prepareGraphStage(ctx context.Context, plan *plan
 // resolveBaseImage shares the immutable per-build image selection between
 // invocation planning and graph execution.
 func (executor *graphExecutor) resolveBaseImage(ctx context.Context, reference string, platform v1.Platform) (ResolvedImageSource, error) {
+	return executor.resolveInput(ctx, reference, platform, false)
+}
+
+func (executor *graphExecutor) resolveFileInput(ctx context.Context, reference string, platform v1.Platform) (ResolvedImageSource, error) {
+	return executor.resolveInput(ctx, reference, platform, true)
+}
+
+func (executor *graphExecutor) resolveInput(ctx context.Context, reference string, platform v1.Platform, files bool) (ResolvedImageSource, error) {
 	platformString, err := componentPlatformString(platform)
 	if err != nil {
 		return ResolvedImageSource{}, err
 	}
 	key := ResolvedBaseKey{Reference: reference, Platform: platformString}
 	if resolved, found := executor.resolvedBases[key]; found {
+		if err := validateSelectedInput(resolved, files); err != nil {
+			return ResolvedImageSource{}, err
+		}
 		return resolved, nil
 	}
 	var resolved ResolvedImageSource
@@ -1079,13 +1100,18 @@ func (executor *graphExecutor) resolveBaseImage(ctx context.Context, reference s
 		return ResolvedImageSource{}, err
 	}
 	if executor.baseSelectionHandler != nil && !deferred {
-		resolved, err = executor.baseSelectionHandler(ctx, baseSelectionRequest{Reference: reference, Platform: platform})
+		resolved, err = executor.baseSelectionHandler(ctx, baseSelectionRequest{Reference: reference, Platform: platform, Files: files})
 	} else if parent := executor.options.componentParent; parent != nil && !deferred {
-		resolved, err = parent.resolveBaseImage(ctx, reference, platform)
+		resolved, err = parent.resolveInput(ctx, reference, platform, files)
+	} else if files {
+		resolved, err = resolveFileSourceWithPolicy(ctx, executor.options.Resolver, reference, platform, executor.store, platformSystemContext(executor.system, platform), executor.options.ContextDir, executor.sourcePolicy)
 	} else {
 		resolved, err = resolveBaseSourceWithPolicy(ctx, executor.options.Resolver, reference, platform, executor.store, platformSystemContext(executor.system, platform), executor.options.ContextDir, executor.sourcePolicy)
 	}
 	if err != nil {
+		return ResolvedImageSource{}, err
+	}
+	if err := validateSelectedInput(resolved, files); err != nil {
 		return ResolvedImageSource{}, err
 	}
 	if executor.resolvedBases == nil {
@@ -1390,6 +1416,7 @@ func lowerGraphOperationsWithSelectedImages(planned []planner.Operation, aliases
 		if (operation.Name == "copy" || operation.Name == "add") && from != "" {
 			stageID := aliases[strings.ToLower(from)]
 			imageID := ""
+			var artifact *ResolvedImageSource
 			if operation.InputContext != "" {
 				imageID = selectedNamedContextImage(selectedBases, operation.InputContext)
 				if imageID == "" {
@@ -1402,15 +1429,23 @@ func lowerGraphOperationsWithSelectedImages(planned []planner.Operation, aliases
 				} else {
 					for key, selected := range selectedBases {
 						if key.Reference == from {
-							if imageID != "" && imageID != selected.ImageID {
-								return nil, fmt.Errorf("operation %d %s: image source %q has multiple selected platforms", index+1, operation.Name, from)
+							if err := validateSelectedInput(selected, true); err != nil {
+								return nil, fmt.Errorf("operation %d %s: %w", index+1, operation.Name, err)
 							}
-							imageID = selected.ImageID
+							if imageID != "" && (selected.Artifact || imageID != selected.ImageID) || artifact != nil && (!selected.Artifact || artifact.Selected.Digest != selected.Selected.Digest) {
+								return nil, fmt.Errorf("operation %d %s: source %q has multiple selected platforms", index+1, operation.Name, from)
+							}
+							if selected.Artifact {
+								copy := selected
+								artifact = &copy
+							} else {
+								imageID = selected.ImageID
+							}
 						}
 					}
 				}
 			}
-			if imageID == "" {
+			if imageID == "" && artifact == nil {
 				return nil, fmt.Errorf("operation %d %s: source stage or selected image %q is unavailable", index+1, operation.Name, from)
 			}
 			instruction := operation.Instruction
@@ -1423,14 +1458,14 @@ func lowerGraphOperationsWithSelectedImages(planned []planner.Operation, aliases
 			switch copied := lowered[0].(type) {
 			case Copy:
 				result = append(result, copyFromImageOperation{
-					store: store, imageID: imageID, sources: copied.Sources, destination: copied.Destination,
+					store: store, imageID: imageID, artifact: artifact, sources: copied.Sources, destination: copied.Destination,
 					inlineFiles: copied.InlineFiles,
 					options:     upstream.AddAndCopyOptions{Chown: copied.Chown, Chmod: copied.Chmod, Parents: copied.Parents, Excludes: copied.Excludes, Link: copied.Link},
 				})
 			case Add:
 				extract := copied.Unpack == nil || *copied.Unpack
 				result = append(result, copyFromImageOperation{
-					store: store, imageID: imageID, sources: copied.Sources, destination: copied.Destination,
+					store: store, imageID: imageID, artifact: artifact, sources: copied.Sources, destination: copied.Destination,
 					inlineFiles: copied.InlineFiles,
 					extract:     extract, options: upstream.AddAndCopyOptions{Chown: copied.Chown, Chmod: copied.Chmod, Checksum: copied.Checksum, Parents: copied.Parents, Excludes: copied.Excludes, Link: copied.Link},
 				})
@@ -1460,6 +1495,9 @@ func lowerGraphOperationsWithSelectedImages(planned []planner.Operation, aliases
 					} else {
 						for key, selected := range selectedBases {
 							if key.Reference == from {
+								if err := validateSelectedInput(selected, false); err != nil {
+									return nil, err
+								}
 								if imageID != "" && imageID != selected.ImageID {
 									return nil, fmt.Errorf("operation %d RUN mount %d: image source %q has multiple selected platforms", index+1, mountIndex+1, from)
 								}
@@ -1529,6 +1567,7 @@ func (historyOnlyOperation) apply(operationBuilder, string) error { return nil }
 type copyFromImageOperation struct {
 	store       storage.Store
 	imageID     string
+	artifact    *ResolvedImageSource
 	sources     []string
 	inlineFiles []definition.InlineFile
 	destination string
@@ -1545,7 +1584,7 @@ func (operation copyFromImageOperation) apply(builder operationBuilder, _ string
 		return err
 	}
 	if len(operation.sources) != 0 {
-		if err := CopyFromImage(operation.store, operation.imageID, native.Builder, operation.destination, operation.extract, operation.options, operation.sources...); err != nil {
+		if err := operation.copyFiles(context.Background(), native.Builder, operation.options); err != nil {
 			return err
 		}
 	}

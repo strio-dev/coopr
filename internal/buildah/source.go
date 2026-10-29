@@ -26,6 +26,7 @@ import (
 // materialized. Buildah's typed config is not authoritative for unknown fields.
 type ResolvedImageSource struct {
 	ImageID        string
+	Artifact       bool
 	Root           v1.Descriptor
 	Selected       v1.Descriptor
 	SourceManifest *v1.Descriptor
@@ -35,10 +36,10 @@ type ResolvedImageSource struct {
 	cached         *ResolvedImageSource
 }
 
-type nativeImagePullError struct{ err error }
+type nativePullError struct{ err error }
 
-func (e *nativeImagePullError) Error() string { return e.err.Error() }
-func (e *nativeImagePullError) Unwrap() error { return e.err }
+func (e *nativePullError) Error() string { return e.err.Error() }
+func (e *nativePullError) Unwrap() error { return e.err }
 
 // SelectImageSource resolves immutable image metadata without opening
 // containers/storage. Remote selections are imported only if execution is
@@ -163,7 +164,7 @@ func ResolveImageSource(ctx context.Context, resolver *oci.Resolver, reference s
 		return ResolvedImageSource{}, err
 	}
 	materialized, err := materializeImageSource(ctx, resolver, reference, platform, store, system, selected)
-	var pullError *nativeImagePullError
+	var pullError *nativePullError
 	if errors.As(err, &pullError) && selected.cached != nil && resolver.PullPolicy() == oci.PullNewer && ctx.Err() == nil {
 		// Like native PullPolicyNewer, copy failures retain an available local
 		// image. Resolve this before planning binds config, ONBUILD and keys.
@@ -177,6 +178,12 @@ func ResolveImageSource(ctx context.Context, resolver *oci.Resolver, reference s
 }
 
 func materializeImageSource(ctx context.Context, resolver *oci.Resolver, reference string, platform v1.Platform, store storage.Store, system *types.SystemContext, selected ResolvedImageSource) (ResolvedImageSource, error) {
+	if selected.Artifact {
+		if err := validateSelectedInput(selected, true); err != nil {
+			return ResolvedImageSource{}, err
+		}
+		return selected, nil
+	}
 	var missingLocal error
 	if !selected.Remote {
 		stored, err := store.Image(selected.ImageID)
@@ -266,7 +273,7 @@ func materializeImageSource(ctx context.Context, resolver *oci.Resolver, referen
 	}
 	images, err := runtime.Pull(ctx, registryReference, libconfig.PullPolicyAlways, pullOptions)
 	if err != nil {
-		err = &nativeImagePullError{err: err}
+		err = &nativePullError{err: err}
 		if missingLocal != nil {
 			return ResolvedImageSource{}, fmt.Errorf("cached base image %q is missing from the image graph and selected manifest %s could not be restored: %w", reference, selected.Selected.Digest, err)
 		}
@@ -396,6 +403,31 @@ func verifyStoredManifest(ctx context.Context, store storage.Store, system *type
 	}
 	if mediaType != selection.Manifest.MediaType || int64(len(manifest)) != selection.Manifest.Size || digest.FromBytes(manifest) != selection.Manifest.Digest {
 		return fmt.Errorf("stored image manifest differs from selected manifest %s", selection.Manifest.Digest)
+	}
+	return nil
+}
+
+// validateSelectedInput keeps artifact files separate from runnable image inputs.
+func validateSelectedInput(source ResolvedImageSource, allowArtifact bool) error {
+	if !source.Artifact {
+		if source.ImageID == "" {
+			return errors.New("selected image input has no image ID")
+		}
+		return nil
+	}
+	if !allowArtifact {
+		return fmt.Errorf("OCI artifact %q cannot be used as an image or RUN mount", source.Reference)
+	}
+	if source.ImageID != "" || len(source.ConfigData) != 0 || source.SourceManifest != nil || source.Remote || source.Reference == "" {
+		return errors.New("invalid mixed image/artifact input")
+	}
+	if source.Root.Digest != source.Selected.Digest || source.Root.Size != source.Selected.Size {
+		return errors.New("artifact input must select its flat root manifest")
+	}
+	for _, descriptor := range []v1.Descriptor{source.Root, source.Selected} {
+		if descriptor.MediaType != v1.MediaTypeImageManifest || descriptor.Digest.Algorithm() != digest.SHA256 || descriptor.Digest.Validate() != nil || descriptor.Size < 0 {
+			return errors.New("artifact input has an invalid immutable manifest")
+		}
 	}
 	return nil
 }

@@ -497,8 +497,8 @@ func TestDemandDrivenInvocationResolvesExternalOnBuildImageSource(t *testing.T) 
 	}
 	if got, want := resolved, []FromSource{
 		{StageID: "1", Source: "helper", Platform: "linux/amd64", Kind: FromSourceImage},
-		{StageID: "1", Source: "registry.example/assets:latest", Platform: "linux/amd64", Kind: FromSourceCopyImage},
-		{StageID: "1", Source: "registry.example/rootfs:latest", Platform: "linux/amd64", Kind: FromSourceCopyImage},
+		{StageID: "1", Source: "registry.example/assets:latest", Platform: "linux/amd64", Kind: FromSourceCopyImage, Role: "copy"},
+		{StageID: "1", Source: "registry.example/rootfs:latest", Platform: "linux/amd64", Kind: FromSourceCopyImage, Role: "run-mount"},
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("resolved sources = %+v, want %+v", got, want)
 	}

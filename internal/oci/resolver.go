@@ -47,6 +47,8 @@ type Kind string
 const (
 	Image     Kind = "image"
 	Component Kind = "component"
+	Artifact  Kind = "artifact"
+	fileInput Kind = "file-input"
 )
 
 type PullPolicy string
@@ -416,7 +418,7 @@ func (r *Resolver) resolveRoot(ctx context.Context, source content.ReadOnlyStora
 	if err := checkPlatform(platform); err != nil {
 		return nil, err
 	}
-	if kind != Image && kind != Component {
+	if kind != Image && kind != Component && kind != fileInput {
 		return nil, fmt.Errorf("unsupported artifact kind %q", kind)
 	}
 	selected := root
@@ -430,7 +432,7 @@ func (r *Resolver) resolveRoot(ctx context.Context, source content.ReadOnlyStora
 		if err := json.Unmarshal(data, &index); err != nil || index.SchemaVersion != 2 || index.MediaType != "" && index.MediaType != root.MediaType {
 			return nil, fmt.Errorf("invalid OCI index: %v", err)
 		}
-		if kind == Image {
+		if kind != Component {
 			list, err := nativemanifest.ListFromBlob(data, root.MediaType)
 			if err != nil {
 				return nil, fmt.Errorf("parse image index: %w", err)
@@ -493,7 +495,13 @@ func (r *Resolver) resolveRoot(ctx context.Context, source content.ReadOnlyStora
 		return nil, fmt.Errorf("fetch config: %w", err)
 	}
 	resolved.ConfigData = json.RawMessage(configData)
-	switch kind {
+	if kind == fileInput {
+		resolved.Kind = Artifact
+		if manifest.ArtifactType == "" && (manifest.Config.MediaType == v1.MediaTypeImageConfig || manifest.Config.MediaType == dockerConfigType) {
+			resolved.Kind = Image
+		}
+	}
+	switch resolved.Kind {
 	case Image:
 		if manifest.ArtifactType != "" || manifest.Config.MediaType != v1.MediaTypeImageConfig && manifest.Config.MediaType != dockerConfigType {
 			return nil, fmt.Errorf("expected OCI image config, got %q", manifest.Config.MediaType)

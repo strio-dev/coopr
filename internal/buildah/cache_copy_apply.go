@@ -171,7 +171,7 @@ func copyAddWithDigest(ctx context.Context, builder operationBuilder, contextDir
 			return "", err
 		}
 		if len(copied.sources) != 0 {
-			if err := CopyFromImage(copied.store, copied.imageID, native.Builder, copied.destination, copied.extract, options, copied.sources...); err != nil {
+			if err := copied.copyFiles(ctx, native.Builder, options); err != nil {
 				return "", err
 			}
 		}

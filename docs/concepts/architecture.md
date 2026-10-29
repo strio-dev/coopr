@@ -29,6 +29,6 @@ By default, filesystem-changing instructions retain their layers; configuration-
 
 ## Where build state lives
 
-Pulled images, build results, and local instruction-cache snapshots use native container storage. Podman and Buildah can use the same images when they run as the same user with matching storage settings. Packaged components have a separate OCI artifact store. See [image and component storage](../guides/storage.md).
+Pulled images, build results, and local instruction-cache snapshots use native container storage. Podman and Buildah can use the same images when they run as the same user with matching storage settings. COPY/ADD artifact files use Podman's artifact store alongside the images. Packaged components have a separate OCI artifact store. See [image and component storage](../guides/storage.md).
 
 Caches can restore intermediate image state so later instructions can continue from it. Portable caches can share results through a local directory or registry. Cache restoration preserves the selected image's layer chain, configuration, and root metadata together. See [caching](../guides/caching.md) for reuse and refresh rules.
