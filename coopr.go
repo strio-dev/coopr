@@ -200,9 +200,9 @@ func Execute(ctx context.Context, program Program, options Options) (result Resu
 		return Result{}, errors.New("output destinations must not overlap")
 	}
 	out := buildah.Output{Path: options.Output.OCI}
-	var staging string
+	var contextArtifacts []string
 	if options.Output.Filesystem != "" {
-		staging, err = os.MkdirTemp(filepath.Dir(options.Output.Filesystem), ".coopr-export-*")
+		staging, err := os.MkdirTemp(filepath.Dir(options.Output.Filesystem), ".coopr-export-*")
 		if err != nil {
 			return Result{}, err
 		}
@@ -212,10 +212,11 @@ func Execute(ctx context.Context, program Program, options Options) (result Resu
 			}
 		}()
 		out.Filesystem = buildah.FilesystemOutput{Type: "local", Path: filepath.Join(staging, "rootfs")}
+		contextArtifacts = []string{staging}
 	}
 	native, err := buildah.BuildPlanSupervised(ctx, plan, buildah.SupervisedPlanOptions{
 		Store:      buildah.StoreOptions{RunRoot: options.Store.RunRoot, GraphRoot: options.Store.GraphRoot, GraphDriverName: options.Store.Driver, GraphDriverOptions: options.Store.DriverOptions},
-		ContextDir: options.ContextDir, Runtime: options.Runtime, Isolation: options.Isolation, Jobs: options.Jobs, Output: out,
+		ContextDir: options.ContextDir, ContextArtifacts: contextArtifacts, Runtime: options.Runtime, Isolation: options.Isolation, Jobs: options.Jobs, Output: out,
 		CacheLocalDir: options.Cache.LocalDir, NoCache: options.Cache.NoCache,
 		AuthFile: options.Registry.AuthFile, CertDir: options.Registry.CertDir, Credentials: options.Registry.Credentials, TLSVerify: options.Registry.TLSVerify, PullPolicy: options.Registry.PullPolicy, SignaturePolicyPath: options.Registry.SignaturePolicyPath,
 		Stdout: options.Stdout, Stderr: options.Stderr,

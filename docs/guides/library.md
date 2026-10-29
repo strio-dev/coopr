@@ -94,6 +94,9 @@ and absolute, with an existing parent directory. The library never overwrites
 an existing output. Successful outputs are promoted individually; promoting
 both outputs is not one filesystem transaction.
 
+Private export staging is excluded from the build context. Files you leave in
+the context, including successful outputs from earlier builds, remain inputs.
+
 Set `Cache.LocalDir` to an absolute directory to enable portable instruction
 caching. `Result.Cache` reports portable hits, misses, stored entries, skips and
 errors. Native Buildah layer reuse is separate and is not counted there. Reusing
@@ -140,6 +143,10 @@ report is printed only after all assertions pass:
 - A dependent copy joins their files and the exported filesystem contains the
   expected result.
 - A second execution uses a fresh native store and requires portable cache hits.
+- A build copying the whole context exports inside it without copying private
+  staging.
+  After removing its successful outputs, a fresh-store repeat must hit the
+  portable cache with the same caller inputs.
 - A writable bind changes a disposable build context, a subsequent copy sees the
   change, and the original host input remains unchanged. An environment value
   containing `${literal}` also reaches the command unchanged.

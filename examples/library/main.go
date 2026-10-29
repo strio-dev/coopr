@@ -82,6 +82,9 @@ func prove(root, busybox string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
+	if err := inContextExport(ctx, root, options("export-cold"), options("export-warm")); err != nil {
+		return err
+	}
 	coldOptions := options("cold")
 	cold, err := coopr.Execute(ctx, graph(), coldOptions)
 	if err != nil {
@@ -175,6 +178,72 @@ func prove(root, busybox string) error {
 		return err
 	}
 	return json.NewEncoder(os.Stdout).Encode(proof{Cold: cold.Cache, Warm: warm.Cache, Overlap: true, Workers: len(processes), Clean: true, ContextIsolated: true})
+}
+
+func inContextExport(ctx context.Context, root string, cold, warm coopr.Options) error {
+	contextDir := filepath.Join(root, "export-context")
+	if err := os.Mkdir(contextDir, 0700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(contextDir, "source.txt"), []byte("context input\n"), 0600); err != nil {
+		return err
+	}
+	cold.ContextDir = contextDir
+	cold.Output.Filesystem = filepath.Join(contextDir, "export")
+	cold.Cache.LocalDir = filepath.Join(root, "export-cache")
+	warm.ContextDir, warm.Output, warm.Cache = cold.ContextDir, cold.Output, cold.Cache
+	program := coopr.Program{States: []coopr.State{{
+		ID: "copied", From: coopr.Source{Image: "scratch"},
+		Operations: []coopr.Operation{coopr.Copy{Sources: []string{"."}, Destination: "/copied"}},
+	}}, Output: "copied"}
+	for index, options := range []coopr.Options{cold, warm} {
+		result, err := coopr.Execute(ctx, program, options)
+		if err != nil {
+			return fmt.Errorf("in-context export %d: %w", index, err)
+		}
+		copied := filepath.Join(result.Filesystem, "copied")
+		entries, err := os.ReadDir(copied)
+		if err != nil {
+			return err
+		}
+		if len(entries) != 1 || entries[0].Name() != "source.txt" {
+			names := make([]string, len(entries))
+			for i, entry := range entries {
+				names[i] = entry.Name()
+			}
+			return fmt.Errorf("COPY '.' included non-input entries: %v", names)
+		}
+		data, err := os.ReadFile(filepath.Join(copied, "source.txt"))
+		if err != nil {
+			return err
+		}
+		if string(data) != "context input\n" {
+			return fmt.Errorf("unexpected in-context COPY data %q", data)
+		}
+		if result.Cache.Errors != 0 || (index == 0 && result.Cache.Stored == 0) || (index == 1 && result.Cache.Hits == 0) {
+			return fmt.Errorf("in-context export %d cache did not restore cleanly: %+v", index, result.Cache)
+		}
+		if err := clean(root, options); err != nil {
+			return err
+		}
+		if index == 0 {
+			// Successful outputs belong to the caller. Remove our cold outputs so
+			// the next build receives exactly the same context, not an old export.
+			for _, path := range []string{result.OCI, result.Filesystem} {
+				if err := os.RemoveAll(path); err != nil {
+					return err
+				}
+			}
+			entries, err := os.ReadDir(contextDir)
+			if err != nil {
+				return err
+			}
+			if len(entries) != 1 || entries[0].Name() != "source.txt" {
+				return errors.New("in-context export changed its caller-owned input context")
+			}
+		}
+	}
+	return nil
 }
 
 func base() coopr.State {
