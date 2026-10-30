@@ -10,10 +10,10 @@ import (
 	"runtime"
 	"slices"
 
-	"coopr/internal/imageconfig"
-	"coopr/internal/oci"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/oci"
 	upstream "go.podman.io/buildah"
 	"go.podman.io/buildah/define"
 )

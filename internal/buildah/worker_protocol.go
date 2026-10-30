@@ -17,12 +17,12 @@ import (
 	"syscall"
 	"time"
 
-	"coopr/internal/buildcontext"
-	"coopr/internal/definition"
-	"coopr/internal/oci"
-	"coopr/internal/planner"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/planner"
 	"go.podman.io/buildah/pkg/sourcepolicy"
 	imagestorage "go.podman.io/image/v5/storage"
 	"go.podman.io/image/v5/types"
@@ -39,7 +39,6 @@ const (
 )
 
 func init() {
-	reexec.Register("git", runGitWrapper)
 	// unshare uses a modified argv[0] for the second, user-namespaced reexec.
 	for _, name := range []string{planWorkerName, planWorkerName + "-in-a-user-namespace"} {
 		reexec.Register(name, runPlanWorker)
@@ -390,6 +389,14 @@ func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition
 		return planWorkerResponse{}, fmt.Errorf("acquire supervised store activity lease: %w", err)
 	}
 	defer func() { retErr = errors.Join(retErr, activity.Close()) }()
+	authFile, ownedAuthFile, err := oci.MaterializeRegistryAuthFile(options.AuthFile)
+	if err != nil {
+		return planWorkerResponse{}, err
+	}
+	if ownedAuthFile {
+		defer func() { retErr = RemoveWorkerDirectory(authFile, retErr) }()
+	}
+	options.AuthFile = authFile
 	options.AuthFile, options.CertDir, err = oci.NormalizeRegistryPaths(options.AuthFile, options.CertDir)
 	if err != nil {
 		return planWorkerResponse{}, err
@@ -413,7 +420,7 @@ func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition
 	removeJobDir := true
 	defer func() {
 		if removeJobDir {
-			_ = os.RemoveAll(jobDir)
+			retErr = RemoveWorkerDirectory(jobDir, retErr)
 		}
 	}()
 	// Buildah keeps RUN cache mounts below TMPDIR. Give them a stable location
@@ -493,15 +500,17 @@ func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition
 	command.Stdin = options.Stdin
 	command.Stdout = options.Stdout
 	command.Stderr = options.Stderr
-	gitEnvironment, err := prepareGitWorkerEnvironment(os.Environ(), jobDir)
-	if err != nil {
-		return planWorkerResponse{}, err
-	}
-	command.Env = append(withoutSigningPassword(gitEnvironment), "TMPDIR="+workerTempAlias)
+	command.Env = append(withoutSigningPassword(gitWorkerEnvironment(os.Environ())), "TMPDIR="+workerTempAlias)
 	processErr := runWorkerProcess(ctx, command, workerGrace)
+	if errors.Is(processErr, ErrWorkerWaitIncomplete) {
+		return planWorkerResponse{}, processErr
+	}
 	if processErr != nil {
 		cleanupErr := error(nil)
 		response, readErr := readWorkerResponse(request.ResultPath)
+		if errors.Is(response.Failure, ErrWorkerWaitIncomplete) {
+			return planWorkerResponse{}, errors.Join(response.failure(), WorkerSupervisionError(processErr), ctx.Err(), readErr)
+		}
 		if options.Lifecycle.removeBuilder(true, ctx.Err() != nil) || readErr != nil || response.Error == "" {
 			cleanupErr = cleanupWorkerJob(request, jobDir, options.Stderr)
 		}
@@ -509,10 +518,11 @@ func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition
 			removeJobDir = false
 		}
 		if readErr == nil && response.Error != "" {
+			supervisionErr := WorkerSupervisionError(processErr)
 			if ctx.Err() != nil {
-				return planWorkerResponse{}, errors.Join(ctx.Err(), fmt.Errorf("build worker exited after cleanup: %s", response.Error), cleanupErr)
+				return planWorkerResponse{}, errors.Join(ctx.Err(), fmt.Errorf("build worker exited after cleanup: %w", response.failure()), supervisionErr, cleanupErr)
 			}
-			return planWorkerResponse{}, errors.Join(response.failure(), cleanupErr)
+			return planWorkerResponse{}, errors.Join(WorkerFailure(response.failure()), supervisionErr, cleanupErr)
 		}
 		return planWorkerResponse{}, errors.Join(processErr, cleanupErr)
 	}
@@ -610,7 +620,7 @@ func executePlanWorker(requestPath string) error {
 		response := planWorkerResponse{Result: Result{ImageID: imageID, ManifestDigest: request.ManifestDescriptor.Digest.String()}}
 		if importErr != nil {
 			response.Error = importErr.Error()
-			response.Failure = workerFailure(importErr)
+			response.Failure = WorkerFailure(importErr)
 		}
 		if err := writeWorkerJSON(request.ResultPath, response); err != nil {
 			return err
@@ -667,7 +677,7 @@ func executePlanWorker(requestPath string) error {
 		response := planWorkerResponse{Result: result}
 		if exportErr != nil {
 			response.Error = exportErr.Error()
-			response.Failure = workerFailure(exportErr)
+			response.Failure = WorkerFailure(exportErr)
 		}
 		if err := writeWorkerJSON(request.ResultPath, response); err != nil {
 			return err
@@ -687,7 +697,7 @@ func executePlanWorker(requestPath string) error {
 		if err != nil {
 			buildErr := fmt.Errorf("plan raw definition: %w", err)
 			response.Error = buildErr.Error()
-			response.Failure = workerFailure(buildErr)
+			response.Failure = WorkerFailure(buildErr)
 			if writeErr := writeWorkerJSON(request.ResultPath, response); writeErr != nil {
 				return errors.Join(buildErr, writeErr)
 			}
@@ -768,6 +778,7 @@ func executePlanWorker(requestPath string) error {
 		}
 	}
 	planOptions := PlanOptions{
+		registryOptions:  oci.Options{Retry: request.Retry, RetrySet: request.RetrySet, RetryDelay: request.RetryDelay},
 		executableOrigin: request.ExecutableOrigin,
 		Store:            request.Store, ContextDir: request.ContextDir, SourcePolicyFile: request.SourcePolicyFile, SourcePolicy: request.SourcePolicy, IgnoreFile: request.IgnoreFile, ContextArtifacts: request.ContextArtifacts, Isolation: request.Isolation,
 		Runtime: request.Runtime, Output: request.Output, Resolver: resolver, ResolvedBases: resolvedBases, ReplannedBaseDelta: replannedBaseDelta,
@@ -848,7 +859,7 @@ func executePlanWorker(requestPath string) error {
 	}
 	if buildErr != nil {
 		response.Error = buildErr.Error()
-		response.Failure = workerFailure(buildErr)
+		response.Failure = WorkerFailure(buildErr)
 	}
 	if err := writeWorkerJSON(request.ResultPath, response); err != nil {
 		return err

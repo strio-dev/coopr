@@ -5,11 +5,11 @@ import (
 	"runtime"
 	"testing"
 
-	"coopr/internal/definition"
-	"coopr/internal/imageconfig"
-	"coopr/internal/planner"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/planner"
 )
 
 func TestRequestFromPlanInjectsOnlyUndeclaredPredefinedProxyArgs(t *testing.T) {
@@ -58,40 +58,32 @@ func TestRequestFromPlanDoesNotOverrideProxyENV(t *testing.T) {
 	}
 }
 
-func TestUndeclaredProxyValueDoesNotChangeInstructionCacheKey(t *testing.T) {
-	plan := proxyTestPlan(t, map[string]string{"HTTP_PROXY": "http://one"}, false)
-	operation := plan.Stages[0].Operations[0]
-	config := imageconfig.New()
-	input := instructionCacheInput{
-		ParentRootFS: "parent", Logical: config, Operation: operation,
-		Platform:  v1.Platform{OS: "linux", Architecture: runtime.GOARCH},
-		Isolation: "rootless", Runtime: digest.FromString("runtime").String(), Format: "oci",
-	}
-	first, cacheable, err := instructionCacheKey(input)
-	if err != nil || !cacheable {
-		t.Fatalf("first cache key = %s, %v, %v", first, cacheable, err)
-	}
-	second, cacheable, err := instructionCacheKey(input)
-	if err != nil || !cacheable || first != second {
-		t.Fatalf("proxy changed cache key: first=%s second=%s cacheable=%v err=%v", first, second, cacheable, err)
-	}
-}
-
-func TestExplicitProxyARGValueChangesInstructionCacheKey(t *testing.T) {
-	key := func(value string) digest.Digest {
-		plan := proxyTestPlan(t, map[string]string{"HTTP_PROXY": value}, true)
-		cacheKey, cacheable, err := instructionCacheKey(instructionCacheInput{
-			ParentRootFS: "parent", Logical: imageconfig.New(), Operation: plan.Stages[0].Operations[0],
-			Platform:  v1.Platform{OS: "linux", Architecture: runtime.GOARCH},
-			Isolation: "rootless", Runtime: digest.FromString("runtime").String(), Format: "oci",
+func TestProxyARGDeclarationControlsInstructionCacheKey(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		declared bool
+	}{
+		{name: "undeclared"},
+		{name: "declared", declared: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			key := func(value string) digest.Digest {
+				plan := proxyTestPlan(t, map[string]string{"HTTP_PROXY": value}, test.declared)
+				cacheKey, cacheable, err := instructionCacheKey(instructionCacheInput{
+					ParentRootFS: "parent", Logical: imageconfig.New(), Operation: plan.Stages[0].Operations[0],
+					Platform:  v1.Platform{OS: "linux", Architecture: runtime.GOARCH},
+					Isolation: "rootless", Runtime: digest.FromString("runtime").String(), Format: "oci",
+				})
+				if err != nil || !cacheable {
+					t.Fatalf("cache key for %q = %s, %v, %v", value, cacheKey, cacheable, err)
+				}
+				return cacheKey
+			}
+			one, two := key("http://one"), key("http://two")
+			if same := one == two; same != !test.declared {
+				t.Fatalf("proxy ARG declared=%v: keys %s and %s, want equal=%v", test.declared, one, two, !test.declared)
+			}
 		})
-		if err != nil || !cacheable {
-			t.Fatalf("cache key for %q = %s, %v, %v", value, cacheKey, cacheable, err)
-		}
-		return cacheKey
-	}
-	if one, two := key("http://one"), key("http://two"); one == two {
-		t.Fatalf("explicit proxy ARG values produced the same cache key %s", one)
 	}
 }
 

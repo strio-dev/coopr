@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/oci"
 
 	"github.com/spf13/cobra"
 	buildahcli "go.podman.io/buildah/pkg/cli"

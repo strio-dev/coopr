@@ -15,13 +15,13 @@ import (
 	"strings"
 	"time"
 
-	"coopr/internal/cache"
-	"coopr/internal/imageconfig"
-	"coopr/internal/planner"
-	"coopr/internal/stateidentity"
 	"github.com/moby/buildkit/util/entitlements"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/cache"
+	"github.com/strio-dev/coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/stateidentity"
 	"go.podman.io/buildah/define"
 	buildahparse "go.podman.io/buildah/pkg/parse"
 	"go.podman.io/image/v5/types"
@@ -30,6 +30,10 @@ import (
 )
 
 const portableCacheLoweringVersion = "coopr-buildah-component-image-v8"
+
+// Advance when Coopr changes native execution behavior. Both local instruction
+// and portable instruction/component/package caches must miss older results.
+const cooprExecutionRevision = "coopr-buildah-execution-v2"
 
 type componentCache struct {
 	images      *portableInstructionCache
@@ -474,6 +478,7 @@ func componentCacheExecutorSemantics(buildahVersion, modules, isolation, driver 
 		return "", err
 	}
 	semantics, err := json.Marshal(struct {
+		Coopr         string   `json:"coopr_execution"`
 		Buildah       string   `json:"buildah"`
 		Modules       string   `json:"modules"`
 		Isolation     string   `json:"isolation"`
@@ -481,7 +486,7 @@ func componentCacheExecutorSemantics(buildahVersion, modules, isolation, driver 
 		DriverOptions []string `json:"driver_options,omitempty"`
 		Runtime       string   `json:"runtime"`
 		OutputFormat  string   `json:"output_format"`
-	}{buildahVersion, modules, isolation, driver, driverOptions, runtimeIdentity, format})
+	}{cooprExecutionRevision, buildahVersion, modules, isolation, driver, driverOptions, runtimeIdentity, format})
 	if err != nil {
 		return "", err
 	}

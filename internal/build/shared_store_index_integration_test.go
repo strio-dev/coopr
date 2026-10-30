@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/buildah"
-	"coopr/internal/oci"
-	"coopr/internal/transfer"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/transfer"
 	"go.podman.io/image/v5/docker/reference"
 	"go.podman.io/storage"
 )

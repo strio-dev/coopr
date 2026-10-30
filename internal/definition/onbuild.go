@@ -117,17 +117,12 @@ func formatOnBuildRun(inst Instruction) (string, error) {
 	if len(inst.Commands) != 0 {
 		return "", fmt.Errorf("ONBUILD RUN accepts one command because image ONBUILD metadata cannot represent a command sequence; use one script/exec command or separate ONBUILD instructions")
 	}
-	if err := validateOnBuildProperties(inst, "network", "security"); err != nil {
+	if err := validateOnBuildProperties(inst, "network"); err != nil {
 		return "", err
 	}
-	flags := make([]string, 0, len(inst.Children)+2)
-	for _, name := range []string{"network", "security"} {
-		if value, ok := inst.Properties[name]; ok && value != "" {
-			if name == "security" && strings.Contains(value, "$") {
-				return "", fmt.Errorf("ONBUILD RUN security must be a literal value")
-			}
-			flags = append(flags, "--"+name+"="+value)
-		}
+	flags := make([]string, 0, len(inst.Children)+1)
+	if network := inst.Properties["network"]; network != "" {
+		flags = append(flags, "--network="+network)
 	}
 	for _, child := range inst.Children {
 		switch child.Name {

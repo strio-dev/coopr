@@ -11,8 +11,8 @@ import (
 	"runtime"
 	"testing"
 
-	"coopr/internal/localstore"
-	"coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/localstore"
+	"github.com/strio-dev/coopr/internal/oci"
 
 	"github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"

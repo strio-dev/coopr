@@ -11,10 +11,11 @@ import (
 	"path/filepath"
 	"time"
 
-	"coopr/internal/buildcontext"
-	"coopr/internal/planner"
 	opencontainersdigest "github.com/opencontainers/go-digest"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/planner"
 	upstream "go.podman.io/buildah"
+	"go.podman.io/common/pkg/retry"
 	storagearchive "go.podman.io/storage/pkg/archive"
 )
 
@@ -77,7 +78,24 @@ func resolveGitSourceDateEpoch(ctx context.Context, reference, checksum string, 
 	return &epoch, nil
 }
 
-func resolveHTTPSourceDateEpoch(ctx context.Context, reference, checksum string, credentials buildCredentialSource) (_ *int64, retErr error) {
+func resolveHTTPSourceDateEpoch(ctx context.Context, reference, checksum string, credentials buildCredentialSource) (*int64, error) {
+	retries, err := remoteAddRetryPolicy(credentials)
+	if err != nil {
+		return nil, err
+	}
+	var epoch *int64
+	err = retry.IfNecessary(ctx, func() error {
+		var err error
+		epoch, err = resolveHTTPSourceDateEpochOnce(ctx, reference, checksum, credentials)
+		return err
+	}, retries)
+	if err != nil && ctx.Err() != nil {
+		return nil, errors.Join(ctx.Err(), err)
+	}
+	return epoch, err
+}
+
+func resolveHTTPSourceDateEpochOnce(ctx context.Context, reference, checksum string, credentials buildCredentialSource) (_ *int64, retErr error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, reference, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create source metadata request: %w", err)
@@ -94,7 +112,11 @@ func resolveHTTPSourceDateEpoch(ctx context.Context, reference, checksum string,
 	if err != nil {
 		return nil, fmt.Errorf("download source metadata: %w", err)
 	}
-	defer func() { retErr = errors.Join(retErr, response.Body.Close()) }()
+	defer func() {
+		if err := response.Body.Close(); err != nil {
+			retErr = errors.Join(retErr, err)
+		}
+	}()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusBadRequest {
 		return nil, fmt.Errorf("download source metadata: HTTP status %s", response.Status)
 	}
@@ -106,9 +128,13 @@ func resolveHTTPSourceDateEpoch(ctx context.Context, reference, checksum string,
 	fileOpen := true
 	defer func() {
 		if fileOpen {
-			retErr = errors.Join(retErr, file.Close())
+			if err := file.Close(); err != nil {
+				retErr = errors.Join(retErr, err)
+			}
 		}
-		retErr = errors.Join(retErr, os.Remove(file.Name()))
+		if err := os.Remove(file.Name()); err != nil {
+			retErr = errors.Join(retErr, err)
+		}
 	}()
 	var writer io.Writer = file
 	var verifier opencontainersdigest.Digester

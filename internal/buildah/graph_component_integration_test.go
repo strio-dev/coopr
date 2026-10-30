@@ -18,11 +18,11 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/cache"
-	"coopr/internal/componentstore"
-	"coopr/internal/definition"
-	"coopr/internal/oci"
-	"coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/cache"
+	"github.com/strio-dev/coopr/internal/componentstore"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/planner"
 
 	registryserver "github.com/google/go-containerregistry/pkg/registry"
 	buildkitsystem "github.com/moby/buildkit/util/system"

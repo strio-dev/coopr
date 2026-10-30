@@ -230,13 +230,13 @@ healthcheck interval="30s" timeout="3s" retries=3 {
 onbuild { copy "generated" "/generated" }
 ```
 
-Timing properties are `interval`, `timeout`, `start-period`, and `start-interval`. Supplied durations must be positive, including values below a millisecond; `retries` must be an integer from 1 through 2147483647. Omit an option to use the native default. `healthcheck NONE` disables a healthcheck and takes no other options. Quoted `"NONE"` remains a shell command; `exec "NONE"` remains an executable argument.
+Timing properties are `interval`, `timeout`, `start-period`, and `start-interval`. Supplied durations must be positive, including values below a millisecond; `retries` must be an integer from 1 through 2147483647. Omit an option to use the native default. `healthcheck NONE` disables a healthcheck; any timing or retry options are ignored, matching Buildah. Quoted `"NONE"` remains a shell command; `exec "NONE"` remains an executable argument.
 
 ONBUILD wraps one supported image instruction. Stage declarations, `maintainer`, `component`, `layer`, and nested `onbuild` are not supported inside it. Existing external MAINTAINER triggers can be imported and retain their literal text. A child FROM executes inherited triggers before its authored instructions, using the child's context, then clears them. Local stage sources must be available before that child FROM.
 
 Inline COPY/ADD inside ONBUILD must round-trip through native Dockerfile heredocs. Nonempty content must end in LF and contain no complete line equal to its filename (the native delimiter). Embedded CR and NUL bytes are supported; CRLF is rejected because native parsing strips the CR at line endings. Empty bodies are rejected because native Buildah creates one LF byte. Filenames and repeated-name payloads must survive both native and Coopr source parsing exactly; unrepresentable names (including spaces) or conflicting duplicate payloads are rejected. Ordinary source paths and the destination must also survive the native shell-form header; whitespace-containing paths cannot be mixed with heredocs and are rejected. Coopr never appends bytes, renames files, or splits instructions to encode these cases. Ordinary bodies expand in the child stage; raw bodies remain literal.
 
-ONBUILD stores Dockerfile trigger text using Buildah’s native instruction and mount options. RUN `network`, COPY/ADD boolean flags, and mount values can use child-stage arguments, including typed mount options such as `required` and `mode`. Healthcheck timing/retries, RUN `security`, and device `required` must remain literal.
+ONBUILD stores Dockerfile trigger text using Buildah’s native instruction and mount options. RUN `network`, COPY/ADD boolean flags, and mount values can use child-stage arguments, including typed mount options such as `required` and `mode`. Healthcheck timing/retries and device `required` must remain literal.
 
 Mount flags represented without values, including `readonly`/`ro`/`rw`, `nosuid`, `U`, and `Z`, require literal booleans in ONBUILD. Readonly booleans select native read-only or writable access; other toggles emit their flag when true and omit it when false. Cache `relabel` must be literal `private` or `shared`. Secret and SSH mounts cannot specify readonly access flags in ONBUILD.
 
@@ -261,7 +261,7 @@ The fixed properties for stage and execution instructions are:
 | `from` | `as`, `platform`, `after`; required stage body. |
 | `extend` | `as`; required stage body. |
 | `package` | Required `as` name and stage body. |
-| `run` | `network`, `security`; repeatable `script`, `exec`, `mount`, and `device` children. |
+| `run` | `network`; repeatable `script`, `exec`, `mount`, and `device` children. |
 | `copy` | `from`, `chown`, `chmod`, `link`, `parents`; repeatable `exclude` children listing patterns and named `file` children. |
 | `add` | COPY properties plus `checksum`, `keep-git-dir`, `unpack`; `exclude` and named `file` children. |
 | `healthcheck` | `interval`, `timeout`, `start-period`, `start-interval`, `retries`; one `script` or `exec` child instead of positional shell text. |

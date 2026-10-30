@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/imageconfig"
-	"coopr/internal/oci"
-	"coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/planner"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/storage"
 )
@@ -236,6 +236,59 @@ from "scratch" {
 	}
 }
 
+type cancelOnDeleteStore struct {
+	storage.Store
+	cancel context.CancelFunc
+	err    error
+}
+
+func (store cancelOnDeleteStore) DeleteContainer(string) error {
+	store.cancel()
+	return store.err
+}
+
+func TestGraphCancellationPreservesBuilderCleanupError(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping native builder cleanup in short mode")
+	}
+	root := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	plan := testPlan(t, `from "scratch" { env MESSAGE="hello" }`)
+	executor, err := newGraphExecutor(ctx, PlanOptions{
+		Store: cacheTestStore(root), ContextDir: root, Isolation: "rootless", Jobs: 1,
+		Network: "none", Output: Output{Path: filepath.Join(root, "layout")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	native := executor.store
+	defer func() {
+		containers, listErr := native.Containers()
+		if listErr != nil {
+			t.Error(listErr)
+		}
+		for _, container := range containers {
+			if err := native.DeleteContainer(container.ID); err != nil {
+				t.Error(err)
+			}
+		}
+		if err := executor.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	cleanupErr := errors.New("fixture builder deletion failure")
+	executor.store = cancelOnDeleteStore{Store: native, cancel: cancel, err: cleanupErr}
+	stages, output, err := validateStandaloneGraph(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = executor.executePlanGraph(ctx, plan, stages, output, nil, nil, nil)
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, cleanupErr) {
+		t.Fatalf("cancelled graph error = %v, want cancellation and builder cleanup failure", err)
+	}
+}
+
 func TestBuildPlanSupervisedCancelsIndependentStagesAndCleansBuilders(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live parallel stage cancellation in short mode")
@@ -244,6 +297,18 @@ func TestBuildPlanSupervisedCancelsIndependentStagesAndCleansBuilders(t *testing
 	root := t.TempDir()
 	storeOptions := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	base := newLiveBusyBoxStorage(t, context.Background(), root, storeOptions)
+	if err := WithStore(storeOptions, func(store storage.Store) error {
+		containers, err := store.Containers()
+		if err != nil {
+			return err
+		}
+		if len(containers) != 0 {
+			return fmt.Errorf("base fixture left working containers before graph execution: %+v", containers)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	policy := filepath.Join(root, "policy.json")
 	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -264,14 +329,14 @@ from "scratch" {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	started := time.Now()
-	_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
+	_, buildErr := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 		Store: storeOptions, ContextDir: root, Isolation: "rootless", Runtime: "crun", Output: Output{Path: layout},
 		Jobs: 2,
 		Pull: false, SignaturePolicyPath: policy,
 		Stdout: io.Discard, Stderr: io.Discard,
 	})
-	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "build worker exited after cleanup") {
-		t.Fatalf("cancelled parallel graph error = %v", err)
+	if !errors.Is(buildErr, context.DeadlineExceeded) || !strings.Contains(buildErr.Error(), "build worker exited after cleanup") {
+		t.Fatalf("cancelled parallel graph error = %v", buildErr)
 	}
 	if elapsed := time.Since(started); elapsed > 12*time.Second {
 		t.Fatalf("parallel stage cancellation took %s", elapsed)
@@ -295,7 +360,11 @@ from "scratch" {
 		t.Fatal(err)
 	}
 	if len(containers) != 0 {
-		t.Fatalf("cancelled graph left %d working containers", len(containers))
+		for _, container := range containers {
+			mounted, mountErr := store.Mounted(container.LayerID)
+			t.Logf("remaining container id=%s names=%q layer=%s mounts=%d mount_error=%v", container.ID, container.Names, container.LayerID, mounted, mountErr)
+		}
+		t.Fatalf("cancelled graph left %d working containers; build error: %v", len(containers), buildErr)
 	}
 }
 

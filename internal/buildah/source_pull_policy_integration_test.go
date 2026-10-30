@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/oci"
 
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/common/libimage"

@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/definition"
-	"coopr/internal/imageconfig"
-	"coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/planner"
 )
 
 func TestStageBindFromImageConfigPreservesRawTriggersAndEnvironment(t *testing.T) {
@@ -308,13 +308,11 @@ func TestParseOnBuildARGDefersDefaultExpansion(t *testing.T) {
 	}
 }
 
-func TestParseOnBuildInsecureRunPreservesSecurityAndNetwork(t *testing.T) {
-	got, err := parseOnBuildTrigger(`RUN --security=insecure --network=none printf inherited`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 1 || got[0].Name != "run" || got[0].Properties["security"] != "insecure" || got[0].Properties["network"] != "none" {
-		t.Fatalf("inherited RUN = %#v", got)
+func TestParseOnBuildRejectsRetiredRunSecurity(t *testing.T) {
+	for _, mode := range []string{"sandbox", "insecure"} {
+		if _, err := parseOnBuildTrigger("RUN --security=" + mode + " --network=none printf inherited"); err == nil {
+			t.Fatalf("retired inherited RUN security mode %q was accepted", mode)
+		}
 	}
 }
 

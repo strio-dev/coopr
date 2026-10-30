@@ -9,10 +9,10 @@ import (
 	"slices"
 	"strings"
 
-	"coopr/internal/buildcontext"
-	"coopr/internal/imageconfig"
-	"coopr/internal/oci"
-	"coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/planner"
 
 	"github.com/containerd/platforms"
 	"github.com/opencontainers/go-digest"

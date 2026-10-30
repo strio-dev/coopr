@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/componentstore"
-	"coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/componentstore"
+	"github.com/strio-dev/coopr/internal/planner"
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
 

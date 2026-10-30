@@ -14,6 +14,9 @@ let
       ../docs
       ../examples
       ../internal
+      ../coopr.go
+      ../plan.go
+      ../plan_test.go
       ../nix
       ../scripts
       ../CONTRIBUTING.md

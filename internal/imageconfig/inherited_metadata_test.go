@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/definition"
 )
 
 func TestInheritedRuntimeMetadataPreservesNativeShape(t *testing.T) {
@@ -58,7 +58,6 @@ func TestAuthoredRuntimeMetadataStillValidatesInstructions(t *testing.T) {
 	for _, inst := range []definition.Instruction{
 		{Name: "healthcheck", Arguments: []string{"OTHER", "true"}},
 		{Name: "healthcheck", Arguments: []string{"CMD-SHELL", "one", "two"}},
-		{Name: "healthcheck", Arguments: []string{"NONE"}, Properties: map[string]string{"interval": "1s"}},
 		{Name: "healthcheck", Arguments: []string{"CMD", "true"}, Properties: map[string]string{"interval": "-1s"}},
 		{Name: "healthcheck", Arguments: []string{"CMD", "true"}, Properties: map[string]string{"retries": "-1"}},
 		{Name: "shell", Arguments: []string{}},

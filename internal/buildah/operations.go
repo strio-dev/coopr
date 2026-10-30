@@ -12,10 +12,10 @@ import (
 	"strconv"
 	"strings"
 
-	"coopr/internal/definition"
-	"coopr/internal/imageconfig"
-	"coopr/internal/onbuildparse"
 	"github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/onbuildparse"
 	upstream "go.podman.io/buildah"
 	"go.podman.io/buildah/copier"
 	"go.podman.io/buildah/define"
@@ -62,7 +62,6 @@ type Run struct {
 	Commands          [][]string
 	InlineFiles       []definition.InlineFile
 	Network           string
-	Security          string
 	Mounts            []RunMount
 	Devices           []runDeviceRequest
 	SecretSpecs       []string
@@ -88,12 +87,6 @@ func (operation Run) apply(builder operationBuilder, contextDir string) (retErr 
 	network, namespaces, err := runNetworkOptions(operation.Network)
 	if err != nil {
 		return fmt.Errorf("RUN network: %w", err)
-	}
-	switch operation.Security {
-	case "", "sandbox":
-	case "insecure":
-	default:
-		return fmt.Errorf("unsupported RUN security mode %q", operation.Security)
 	}
 	var deviceSpecs []string
 	cdiConfigDir := ""
@@ -224,28 +217,22 @@ func (operation Run) apply(builder operationBuilder, contextDir string) (retErr 
 			if !info.Mode().IsRegular() {
 				return fmt.Errorf("RUN stage bind source %q is neither a directory nor a regular file", mount.Properties["source"])
 			}
-			mountSource := source
 			mountOptions := writableContextBindOptions(mount.Properties)
-			mountOptions[0] = "ro"
-			mountOptions = slices.DeleteFunc(mountOptions, func(option string) bool { return option == "z" && mount.Properties["relabel"] == "" })
+			readonly := true
 			if value := mount.Properties["readonly"]; value != "" {
-				readonly, _ := strconv.ParseBool(value) // serializeRunMounts validated the value.
-				if !readonly {
-					snapshot, cleanup, err := snapshotWritableBindFile(source)
-					if err != nil {
-						return fmt.Errorf("snapshot writable RUN stage bind file %q: %w", mount.Properties["source"], err)
-					}
-					defer func() { retErr = errors.Join(retErr, cleanup()) }()
-					mountSource = snapshot
-					mountOptions = writableContextBindOptions(mount.Properties)
-					if mount.Properties["relabel"] == "" {
-						for index, option := range mountOptions {
-							if option == "z" {
-								mountOptions[index] = "Z"
-							}
-						}
-					}
-				}
+				readonly, _ = strconv.ParseBool(value) // serializeRunMounts validated the value.
+			}
+			if readonly {
+				mountOptions[0] = "ro"
+			}
+			mountOptions = slices.DeleteFunc(mountOptions, func(option string) bool { return option == "z" && mount.Properties["relabel"] == "" })
+			mountSource, cleanup, err := prepareRunBindFile(source, mountOptions)
+			if err != nil {
+				return fmt.Errorf("prepare RUN stage bind file %q: %w", mount.Properties["source"], err)
+			}
+			defer func() { retErr = errors.Join(retErr, cleanup()) }()
+			if mountSource != source && mount.Properties["relabel"] == "" {
+				mountOptions = append(mountOptions, "Z")
 			}
 			target := mount.Properties["target"]
 			if !path.IsAbs(target) {
@@ -268,9 +255,6 @@ func (operation Run) apply(builder operationBuilder, contextDir string) (retErr 
 	}
 	if provider, ok := builder.(interface{ runHostFileControls() (bool, bool) }); ok {
 		runOptions.NoHostname, runOptions.NoHosts = provider.runHostFileControls()
-	}
-	if operation.Security == "insecure" {
-		runOptions.Args = []string{insecureRunRequestedMarker}
 	}
 	lockContext := operation.executionContext
 	if lockContext == nil {

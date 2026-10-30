@@ -18,16 +18,16 @@ import (
 	"sync/atomic"
 	"time"
 
-	"coopr/internal/buildcontext"
-	"coopr/internal/cache"
-	"coopr/internal/definition"
-	"coopr/internal/imageconfig"
-	"coopr/internal/oci"
-	"coopr/internal/planner"
 	"github.com/containerd/platforms"
 	"github.com/moby/buildkit/util/entitlements"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/cache"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/planner"
 
 	upstream "go.podman.io/buildah"
 	"go.podman.io/buildah/define"
@@ -162,6 +162,7 @@ func (executor *graphExecutor) nativeBuilder(builder *upstream.Builder, options 
 	controls := executor.options.RunControls
 	return nativeBuilder{
 		Builder: builder, systemContext: options.SystemContext, isolation: options.Isolation,
+		registryOptions:  executor.options.registrySettings(),
 		executableOrigin: executor.options.executableOrigin,
 		runtime:          effectiveRuntime(executor.options.Runtime, controls), runtimeArgs: slices.Clone(controls.RuntimeFlags),
 		secretSpecs: executor.options.Secrets, sshSpecs: executor.options.SSH,
@@ -291,7 +292,7 @@ func executePlanGraph(ctx context.Context, plan *planner.Plan, options PlanOptio
 	if err != nil {
 		return Result{}, err
 	}
-	defer func() { retErr = errors.Join(retErr, cleanup()) }()
+	defer func() { retErr = cleanup(retErr) }()
 	executor, err := newGraphExecutor(ctx, options)
 	if err != nil {
 		return Result{}, err
@@ -474,20 +475,7 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 				failures[completion.stageID] = errors.Join(failures[completion.stageID], completion.err)
 			}
 		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		for _, stage := range stages {
-			if err := failures[stage.ID]; err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-				return err
-			}
-		}
-		for _, stage := range stages {
-			if err := failures[stage.ID]; err != nil {
-				return err
-			}
-		}
-		return primary
+		return graphDrainError(ctx.Err(), stages, primaryStage, primary, failures)
 	}
 	reportCompleted := func() (Result, bool, error) {
 		for _, stage := range stages {
@@ -717,11 +705,17 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 			if event.base != nil {
 				selected, err := executor.resolveInput(graphCtx, event.base.Reference, event.base.Platform, event.base.Files)
 				event.reply <- componentControlResult{base: selected, err: err}
+				if errors.Is(err, ErrWorkerWaitIncomplete) {
+					return Result{}, drain(event.stageID, err)
+				}
 				continue
 			}
 			if event.selection != nil {
 				selected, err := executor.selectCoordinatedComponent(graphCtx, *event.selection)
 				event.reply <- componentControlResult{selection: selected, err: err}
+				if errors.Is(err, ErrWorkerWaitIncomplete) {
+					return Result{}, drain(event.stageID, err)
+				}
 				continue
 			}
 			request := event.returned
@@ -818,6 +812,42 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 		return Result{}, fmt.Errorf("selected output stage %s was not executed", imageOutputID)
 	}
 	return Result{}, nil
+}
+
+func graphDrainError(ctxErr error, stages []planner.Stage, primaryStage string, primary error, failures map[string]error) error {
+	primaryIndex := -1
+	for index, stage := range stages {
+		cause := failures[stage.ID]
+		if stage.ID == primaryStage && primary != nil {
+			// Draining may have appended this stage's cancelled completion.
+			// Rank its original failure before that shutdown noise was added.
+			cause = primary
+		}
+		if cause != nil {
+			if primaryIndex < 0 {
+				primaryIndex = index
+			}
+			if !errors.Is(cause, context.Canceled) && !errors.Is(cause, context.DeadlineExceeded) {
+				primaryIndex = index
+				break
+			}
+		}
+	}
+	if primaryIndex >= 0 {
+		primaryStage = stages[primaryIndex].ID
+	}
+	// Keep source-order failure precedence without losing a sibling's cleanup
+	// errors or incomplete-wait marker when cancellation began inside the graph.
+	combined := errors.Join(ctxErr, failures[primaryStage])
+	for _, stage := range stages {
+		if stage.ID != primaryStage {
+			combined = errors.Join(combined, failures[stage.ID])
+		}
+	}
+	if primaryStage != "" {
+		combined = errors.Join(combined, failures[""])
+	}
+	return combined
 }
 
 func graphStageAliases(stages []planner.Stage) map[string]map[string]string {

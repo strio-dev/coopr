@@ -7,10 +7,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"coopr/internal/buildcontext"
-	"coopr/internal/oci"
-	"coopr/internal/planner"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/planner"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/storage"
 )
@@ -41,7 +41,7 @@ func planDefinitionInWorker(ctx context.Context, request planWorkerRequest) (*pl
 		DockerCertPath:       request.CertDir,
 	}
 	oci.ApplyTLSVerify(system, request.TLSVerify)
-	planning.SourceDateEpochResolver = sourceDateEpochResolver(ctx, buildCredentialSource{secretSpecs: request.Secrets, sshSpecs: request.SSH, systemContext: system})
+	planning.SourceDateEpochResolver = sourceDateEpochResolver(ctx, buildCredentialSource{secretSpecs: request.Secrets, sshSpecs: request.SSH, systemContext: system, registryOptions: oci.Options{Retry: request.Retry, RetrySet: request.RetrySet, RetryDelay: request.RetryDelay}})
 	ensureResolver := func() error {
 		if resolver == nil {
 			var err error

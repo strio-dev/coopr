@@ -12,12 +12,12 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"coopr/internal/buildcontext"
-	"coopr/internal/definition"
-	"coopr/internal/onbuildparse"
 	"github.com/containerd/platforms"
 	"github.com/moby/buildkit/util/system"
 	"github.com/openshift/imagebuilder"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/onbuildparse"
 )
 
 type Mode string
@@ -2439,6 +2439,9 @@ func normalizeWithStructuralScope(inst definition.Instruction, values, structura
 			out.Properties["network"] = "default"
 		}
 		return out, nil
+	}
+	if inst.Name == "healthcheck" && len(inst.Arguments) == 1 && inst.Arguments[0] == "NONE" {
+		inst.Properties = nil
 	}
 	out := definition.Instruction{Name: inst.Name, Form: inst.Form, LayerBoundary: inst.LayerBoundary, PropertyOrder: slices.Clone(inst.PropertyOrder), Commands: cloneCommands(inst.Commands), Properties: map[string]string{}}
 	for _, file := range inst.InlineFiles {

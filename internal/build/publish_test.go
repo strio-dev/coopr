@@ -2,7 +2,7 @@ package build
 
 import (
 	"context"
-	"coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/buildah"
 	"os"
 	"path/filepath"
 	"strings"

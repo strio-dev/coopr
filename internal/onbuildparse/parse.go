@@ -11,13 +11,13 @@ import (
 	"strings"
 	"time"
 
-	"coopr/internal/definition"
 	docker "github.com/fsouza/go-dockerclient"
 	"github.com/moby/buildkit/frontend/dockerfile/instructions"
 	"github.com/moby/buildkit/frontend/dockerfile/parser"
 	"github.com/moby/buildkit/frontend/dockerfile/shell"
 	dockerspec "github.com/moby/docker-image-spec/specs-go/v1"
 	"github.com/openshift/imagebuilder"
+	"github.com/strio-dev/coopr/internal/definition"
 )
 
 // Expander expands one Dockerfile word while parsing a trigger.
@@ -179,6 +179,9 @@ func parse(raw string, expand, expandRaw, expandFlag Expander, retainExpansion, 
 	case "run":
 		var typedFlags []string
 		for _, flag := range node.Flags {
+			if flag == "--security" || strings.HasPrefix(flag, "--security=") {
+				return nil, fmt.Errorf("ONBUILD RUN flag --security is not supported")
+			}
 			if strings.HasPrefix(flag, "--mount=") || strings.HasPrefix(flag, "--network=") {
 				if !retainExpansion {
 					flag, err = expandFlag(flag)
@@ -334,16 +337,9 @@ func parse(raw string, expand, expandRaw, expandFlag Expander, retainExpansion, 
 			result = append(result, definition.Instruction{Name: "arg", Arguments: arguments, NativeContinuation: index > 0})
 		}
 	case *instructions.RunCommand:
-		security := instructions.GetSecurity(value)
-		if security != instructions.SecuritySandbox && security != instructions.SecurityInsecure {
-			return nil, fmt.Errorf("ONBUILD RUN security mode %q is not supported", security)
-		}
 		inst, err := runInstruction(value)
 		if err != nil {
 			return nil, err
-		}
-		if security == instructions.SecurityInsecure {
-			putProperty(&inst, "security", security)
 		}
 		for _, flag := range runFlags {
 			if network, ok := strings.CutPrefix(flag, "--network="); ok {

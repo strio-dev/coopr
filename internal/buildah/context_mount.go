@@ -9,14 +9,15 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 
-	"coopr/internal/planner"
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/identity"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/strio-dev/coopr/internal/planner"
 	upstream "go.podman.io/buildah"
 	"go.podman.io/buildah/copier"
 	"go.podman.io/storage"
@@ -35,14 +36,14 @@ type preparedRunInput struct {
 	cleanup    func() error
 }
 
-func prepareBuildContext(plan *planner.Plan, options PlanOptions) (PlanOptions, func() error, error) {
+func prepareBuildContext(plan *planner.Plan, options PlanOptions) (PlanOptions, func(error) error, error) {
 	if options.ContextDir == "" || options.ContextPrepared || !planUsesWritableContext(plan, options.TransientRunMounts) {
-		return options, func() error { return nil }, nil
+		return options, func(err error) error { return err }, nil
 	}
 	return snapshotBuildContext(options)
 }
 
-func snapshotBuildContext(options PlanOptions) (PlanOptions, func() error, error) {
+func snapshotBuildContext(options PlanOptions) (PlanOptions, func(error) error, error) {
 	artifacts := append(slices.Clone(options.ContextArtifacts), options.Store.RunRoot, options.Store.GraphRoot, options.Store.ImageStore, options.Output.Path, options.CacheLocalDir)
 	policy, err := prepareContextPolicyWithIgnore(options.ContextDir, artifacts, options.IgnoreFile)
 	if err != nil {
@@ -63,7 +64,7 @@ func snapshotBuildContext(options PlanOptions) (PlanOptions, func() error, error
 		return options, nil, errors.Join(err, cleanup())
 	}
 	options.ContextDir, options.ContextPrepared = snapshot, true
-	return options, cleanup, nil
+	return options, func(err error) error { return RemoveWorkerDirectory(filepath.Dir(snapshot), err) }, nil
 }
 
 func prepareRunInput(ctx context.Context, builder operationBuilder, contextDir string, artifacts []string, operation Run) (_ preparedRunInput, retErr error) {
@@ -380,8 +381,14 @@ func planUsesWritableContext(plan *planner.Plan, mounts []RunMount) bool {
 }
 
 func writableContextBindOptions(properties map[string]string) []string {
+	// Mount admission accepts all native ParseBool spellings. Preserve that
+	// interpretation when translating validated properties into direct mounts.
+	enabled := func(name string) bool {
+		value, _ := strconv.ParseBool(properties[name])
+		return value
+	}
 	options := []string{"rw"}
-	if properties["bind-nonrecursive"] == "true" {
+	if enabled("bind-nonrecursive") {
 		options = append(options, "bind")
 	} else {
 		options = append(options, "rbind")
@@ -392,11 +399,11 @@ func writableContextBindOptions(properties map[string]string) []string {
 	}
 	options = append(options, relabel)
 	for _, name := range []string{"nosuid", "nodev", "noexec", "shared", "rshared", "private", "rprivate", "slave", "rslave", "no-dereference"} {
-		if properties[name] == "true" {
+		if enabled(name) {
 			options = append(options, name)
 		}
 	}
-	if properties["u"] == "true" {
+	if enabled("u") {
 		options = append(options, "U")
 	}
 	if propagation := properties["bind-propagation"]; propagation != "" {

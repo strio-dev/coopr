@@ -1,9 +1,31 @@
 package buildah
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
+
+func TestDirectBindOptionsPreserveNativeBooleanSpellings(t *testing.T) {
+	for _, flag := range []struct{ name, option string }{
+		{"bind-nonrecursive", "bind"}, {"nosuid", "nosuid"}, {"nodev", "nodev"}, {"noexec", "noexec"},
+		{"private", "private"}, {"rprivate", "rprivate"}, {"u", "U"}, {"no-dereference", "no-dereference"},
+	} {
+		for _, value := range []string{"true", "1", "TRUE", "T", "True", "false", "0", "FALSE", "F", "False"} {
+			t.Run(flag.name+"/"+value, func(t *testing.T) {
+				properties := map[string]string{"target": "/input", flag.name: value}
+				if _, err := serializeRunMount(RunMount{Type: "bind", Properties: properties}, "/context"); err != nil {
+					t.Fatalf("native boolean rejected: %v", err)
+				}
+				options := writableContextBindOptions(properties)
+				want := value == "true" || value == "1" || value == "TRUE" || value == "T" || value == "True"
+				if slices.Contains(options, flag.option) != want {
+					t.Fatalf("%s=%s: options %v, want %s present=%t", flag.name, value, options, flag.option, want)
+				}
+			})
+		}
+	}
+}
 
 func TestRunMountAliasesMatchDockerfileSecretAndWritableForms(t *testing.T) {
 	for _, test := range []struct {

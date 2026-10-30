@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/localstore"
 	digest "github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/localstore"
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
 

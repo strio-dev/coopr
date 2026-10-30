@@ -15,6 +15,9 @@ let
     fileset = lib.fileset.unions [
       ../cmd
       ../internal
+      ../coopr.go
+      ../plan.go
+      ../plan_test.go
       ../go.mod
       ../go.sum
       ../LICENSE

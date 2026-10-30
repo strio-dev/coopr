@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"strings"
 
-	"coopr/internal/buildcontext"
-	"coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/definition"
 )
 
 // FromSourceKind describes how an expanded FROM source is resolved by the raw

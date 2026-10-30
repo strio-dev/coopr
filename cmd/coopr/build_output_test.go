@@ -13,10 +13,10 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/buildah"
-	"coopr/internal/oci"
 	"github.com/google/go-containerregistry/pkg/registry"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/oci"
 )
 
 func TestBuildArchiveCommandLive(t *testing.T) {
@@ -180,7 +180,7 @@ func TestBuildOutputFlags(t *testing.T) {
 		{"malformed tag", []string{"--tag", "bad tag"}, "invalid local image"},
 		{"digest as tag", []string{"-t", "localhost/app@sha256:" + strings.Repeat("a", 64)}, "digest"},
 		{"invalid format", []string{"--format", "made-up"}, "unsupported image format"},
-		{"invalid network", []string{"--network", "bad/network"}, "invalid named build network"},
+		{"missing network namespace", []string{"--network", filepath.Join(t.TempDir(), "missing-netns")}, "checking network namespace"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var out, errOut bytes.Buffer
@@ -225,7 +225,7 @@ func TestBuildHelpExplainsOutputModes(t *testing.T) {
 	if status := run([]string{"build", "--help"}, &out, &errOut); status != 0 {
 		t.Fatalf("help failed: %s", errOut.String())
 	}
-	for _, text := range []string{"--tag", "--build-arg", "--format", "--push", "--pull", "--no-cache", "--network", "--add-host", "--allow", "--output", "--squash", "--squash-all", "--sbom", "--sign-by", "--sign-by-sigstore-private-key", "--manifest", "--all-platforms", "--cache-ttl", "--timestamp", "--unsetenv", "network.host", "security.insecure", "save fresh results to the build cache", "base image pull policy", "native container storage", "embedded Buildah"} {
+	for _, text := range []string{"--tag", "--build-arg", "--format", "--push", "--pull", "--no-cache", "--network", "--add-host", "--allow", "--output", "--squash", "--squash-all", "--sbom", "--sign-by", "--sign-by-sigstore-private-key", "--manifest", "--all-platforms", "--cache-ttl", "--timestamp", "--unsetenv", "network.host", "save fresh results to the build cache", "base image pull policy", "native container storage", "embedded Buildah"} {
 		if !strings.Contains(out.String(), text) {
 			t.Errorf("help missing %q", text)
 		}
@@ -235,6 +235,9 @@ func TestBuildHelpExplainsOutputModes(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "(default name[=value])") {
 		t.Fatalf("help shows an invented build argument default: %s", out.String())
+	}
+	if strings.Contains(out.String(), "security.insecure") {
+		t.Fatalf("help advertises the removed insecure execution entitlement: %s", out.String())
 	}
 }
 

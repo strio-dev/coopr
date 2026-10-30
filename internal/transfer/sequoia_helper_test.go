@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/buildah"
-	"coopr/internal/imagestore"
-	"coopr/internal/localstore"
+	"github.com/strio-dev/coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/imagestore"
+	"github.com/strio-dev/coopr/internal/localstore"
 	imagecopy "go.podman.io/image/v5/copy"
 )
 

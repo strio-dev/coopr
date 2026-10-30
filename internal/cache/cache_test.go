@@ -15,8 +15,8 @@ import (
 
 	"oras.land/oras-go/v2/content"
 
-	"coopr/internal/oci"
-	"coopr/internal/stateidentity"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/stateidentity"
 
 	"github.com/gofrs/flock"
 	"github.com/google/go-containerregistry/pkg/registry"

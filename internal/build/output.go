@@ -3,7 +3,7 @@ package build
 import (
 	"fmt"
 
-	"coopr/internal/transfer"
+	"github.com/strio-dev/coopr/internal/transfer"
 )
 
 func archiveOutput(destination transfer.Destination, input string) (string, error) {

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/buildah"
 	"go.podman.io/buildah/define"
 )
 

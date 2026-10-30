@@ -2,7 +2,7 @@ package build
 
 import (
 	"bytes"
-	"coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/definition"
 	"strings"
 	"testing"
 )

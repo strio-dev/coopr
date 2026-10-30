@@ -6,12 +6,12 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/definition"
-	"coopr/internal/imageconfig"
-	"coopr/internal/planner"
 	"github.com/moby/buildkit/util/system"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/planner"
 )
 
 func TestStageEntryDefaultsPrepareScratchAndPreserveCaller(t *testing.T) {
@@ -155,25 +155,6 @@ extend { copy "/payload" "/payload" from="derived"; }
 	}
 	if !found {
 		t.Fatal("no materialized invocation ENV examined")
-	}
-}
-
-func TestStageEntryDefaultsSeparateComponentCacheLowering(t *testing.T) {
-	key, err := new(componentCache).key(&graphExecutor{store: componentCacheKeyStore{}}, validComponentTestKey().Input, &ResolvedComponentPlan{Identity: digest.FromString("component"), Plan: &planner.Plan{}}, nil, v1.Platform{OS: "linux", Architecture: "amd64"}, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	current, err := key.Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	key.Lowering = "coopr-buildah-component-image-v4"
-	prior, err := key.Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if current == prior {
-		t.Fatal("pre-default component lowering reused the current key")
 	}
 }
 

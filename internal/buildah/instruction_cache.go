@@ -11,12 +11,12 @@ import (
 	"slices"
 	"time"
 
-	"coopr/internal/cache"
-	"coopr/internal/imageconfig"
-	"coopr/internal/oci"
-	"coopr/internal/planner"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/cache"
+	"github.com/strio-dev/coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/planner"
 	upstreamdefine "go.podman.io/buildah/define"
 	"go.podman.io/buildah/util"
 	"go.podman.io/image/v5/types"
@@ -63,6 +63,7 @@ type instructionCacheInput struct {
 }
 
 type instructionCacheDocument struct {
+	CooprExecution   string                          `json:"coopr_execution"`
 	Schema           string                          `json:"schema"`
 	BuildahVersion   string                          `json:"buildah_version"`
 	ParentRootFS     string                          `json:"parent_rootfs"`
@@ -611,7 +612,8 @@ func instructionCacheKey(input instructionCacheInput) (digest.Digest, bool, erro
 		}
 	}
 	document, err := json.Marshal(instructionCacheDocument{
-		Schema: instructionCacheSchema, BuildahVersion: upstreamdefine.Version,
+		CooprExecution: cooprExecutionRevision,
+		Schema:         instructionCacheSchema, BuildahVersion: upstreamdefine.Version,
 		ParentRootFS: input.ParentRootFS, ExecutionConfig: config, Operation: input.Operation,
 		Platform: input.Platform, Isolation: input.Isolation, Runtime: input.Runtime, Format: format,
 		InputDigest: input.InputDigest, ResolvedInputs: input.ResolvedInputs,

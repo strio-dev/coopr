@@ -10,8 +10,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"coopr/internal/imageconfig"
-	"coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/oci"
 
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/specs-go"

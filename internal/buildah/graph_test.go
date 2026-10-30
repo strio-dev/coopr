@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/definition"
-	"coopr/internal/oci"
-	"coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/planner"
 
 	buildkitsystem "github.com/moby/buildkit/util/system"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"

@@ -12,9 +12,9 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/buildah"
-	"coopr/internal/imagestore"
-	"coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/imagestore"
+	"github.com/strio-dev/coopr/internal/oci"
 
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"

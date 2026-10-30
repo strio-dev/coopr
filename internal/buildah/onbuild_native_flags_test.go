@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/imageconfig"
-	"coopr/internal/oci"
-	"coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/planner"
 )
 
 func TestOnBuildNativeFlagsExecuteInChildScope(t *testing.T) {

@@ -17,11 +17,13 @@ import (
 	"strings"
 	"time"
 
-	"coopr/internal/buildcontext"
 	"github.com/docker/go-connections/tlsconfig"
 	opencontainersdigest "github.com/opencontainers/go-digest"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/oci"
 	upstream "go.podman.io/buildah"
 	"go.podman.io/buildah/copier"
+	"go.podman.io/common/pkg/retry"
 	"go.podman.io/image/v5/pkg/tlsclientconfig"
 	"go.podman.io/image/v5/types"
 )
@@ -61,6 +63,11 @@ func applyAddSources(ctx context.Context, builder operationBuilder, policy conte
 				return err
 			}
 		case isHTTPAddSource(source):
+			retries, err := remoteAddRetryPolicy(builder)
+			if err != nil {
+				return err
+			}
+			options.MaxRetries, options.RetryDelay = retries.MaxRetry, retries.Delay
 			if err := applyRemoteAddSource(ctx, builder, operation, options, source); err != nil {
 				return err
 			}
@@ -146,7 +153,7 @@ func cloneGitSource(ctx context.Context, builder any, source, repository string,
 	if err != nil {
 		return "", err
 	}
-	executable, err := gitAddExecutable()
+	executable, err := exec.LookPath("git")
 	if err != nil {
 		return "", err
 	}
@@ -258,17 +265,6 @@ func parseGitAddSource(source string) (remote, subdirectory, reference string, e
 	return remote, subdirectory, reference, nil
 }
 
-func gitAddExecutable() (string, error) {
-	if executable := os.Getenv(realGitExecutable); filepath.IsAbs(executable) {
-		return executable, nil
-	}
-	executable, err := exec.LookPath("git")
-	if err != nil {
-		return "", fmt.Errorf("find Git executable for ADD: %w", err)
-	}
-	return executable, nil
-}
-
 func redactGitSource(source string) string {
 	remote, fragment, hasFragment := strings.Cut(source, "#")
 	parsed, err := url.Parse(remote)
@@ -318,12 +314,14 @@ func verifyGitCommit(ctx context.Context, repository, expected string) error {
 }
 
 func resolveGitCommit(ctx context.Context, repository string) (string, error) {
-	executable, err := gitAddExecutable()
+	executable, err := exec.LookPath("git")
 	if err != nil {
 		return "", err
 	}
 	process := gitCommandContext(ctx, executable, "-C", repository, "rev-parse", "--verify", "HEAD")
 	process.Env = gitWorkerEnvironment(os.Environ())
+	process.Env = removeEnvironment(process.Env, "HOME", "XDG_CONFIG_HOME", "SSH_AUTH_SOCK")
+	process.Env = append(process.Env, "HOME=/dev/null", "XDG_CONFIG_HOME=/dev/null")
 	output, err := process.Output()
 	if err != nil {
 		return "", fmt.Errorf("resolve cloned Git HEAD: %w", err)
@@ -349,6 +347,30 @@ func applyRemoteAddSource(ctx context.Context, builder operationBuilder, operati
 	if err != nil {
 		return err
 	}
+	client, err := configuredRemoteAddHTTPClient(builder, options)
+	if err != nil {
+		return err
+	}
+	defer client.CloseIdleConnections()
+	if err := retry.IfNecessary(ctx, func() error {
+		return downloadRemoteAddSource(ctx, client, builder, operation, options, source, filepath.Join(directory, name))
+	}, &retry.Options{MaxRetry: options.MaxRetries, Delay: options.RetryDelay}); err != nil {
+		if ctx.Err() != nil {
+			return errors.Join(ctx.Err(), err)
+		}
+		return err
+	}
+
+	options.Checksum = ""
+	options.ContextDir = directory
+	options.IgnoreFile = ""
+	extract := operation.Unpack != nil && *operation.Unpack
+	return builder.add(operation.Destination, extract, options, name)
+}
+
+// Download attempts own only their staging file; retries never repeat the
+// destination mutation or contribute partial bytes to Buildah's COPY hasher.
+func downloadRemoteAddSource(ctx context.Context, client *http.Client, builder any, operation Add, options upstream.AddAndCopyOptions, source, filename string) (retErr error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
 	if err != nil {
 		return fmt.Errorf("create ADD request %q: %w", source, err)
@@ -356,11 +378,6 @@ func applyRemoteAddSource(ctx context.Context, builder operationBuilder, operati
 	if err := setRemoteAddAuthorization(request, builder); err != nil {
 		return fmt.Errorf("authorize ADD source %q: %w", source, err)
 	}
-	client, err := configuredRemoteAddHTTPClient(builder, options)
-	if err != nil {
-		return err
-	}
-	defer client.CloseIdleConnections()
 	response, err := client.Do(request) //nolint:gosec // ADD explicitly permits authored remote URLs.
 	if err != nil {
 		if errors.Is(err, errRemoteAddRedirectCredentials) {
@@ -377,10 +394,17 @@ func applyRemoteAddSource(ctx context.Context, builder operationBuilder, operati
 		return fmt.Errorf("download ADD source %q: HTTP status %s", source, response.Status)
 	}
 
-	file, err := os.OpenFile(filepath.Join(directory, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	file, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return fmt.Errorf("create downloaded ADD source: %w", err)
 	}
+	defer func() {
+		if retErr != nil {
+			if err := os.Remove(filename); err != nil {
+				retErr = errors.Join(retErr, err)
+			}
+		}
+	}()
 	var writer io.Writer = file
 	var verifier opencontainersdigest.Digester
 	if operation.Checksum != "" {
@@ -422,11 +446,18 @@ func applyRemoteAddSource(ctx context.Context, builder operationBuilder, operati
 		}
 	}
 
-	options.Checksum = ""
-	options.ContextDir = directory
-	options.IgnoreFile = ""
-	extract := operation.Unpack != nil && *operation.Unpack
-	return builder.add(operation.Destination, extract, options, name)
+	return nil
+}
+
+func remoteAddRetryPolicy(builder any) (*retry.Options, error) {
+	var options oci.Options
+	switch source := builder.(type) {
+	case nativeBuilder:
+		options = source.registryOptions
+	case buildCredentialSource:
+		options = source.registryOptions
+	}
+	return oci.RegistryRetryOptions(options)
 }
 
 var errRemoteAddRedirectCredentials = errors.New("ADD redirect URL must not include credentials")

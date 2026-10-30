@@ -8,8 +8,9 @@ import (
 	"os"
 	"strings"
 
-	"coopr/internal/buildcontext"
 	"github.com/moby/buildkit/util/gitutil"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/oci"
 	"go.podman.io/buildah/pkg/sshagent"
 	"go.podman.io/image/v5/types"
 )
@@ -29,10 +30,11 @@ func (b nativeBuilder) addSourceSSH(id string) (string, func() error, bool, erro
 }
 
 type buildCredentialSource struct {
-	systemContext *types.SystemContext
-	secretSpecs   []string
-	sshSpecs      []string
-	processLabel  string
+	systemContext   *types.SystemContext
+	registryOptions oci.Options
+	secretSpecs     []string
+	sshSpecs        []string
+	processLabel    string
 }
 
 func (credentials buildCredentialSource) addSourceSSH(id string) (string, func() error, bool, error) {

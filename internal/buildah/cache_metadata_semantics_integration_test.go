@@ -8,10 +8,10 @@ import (
 	"runtime"
 	"testing"
 
-	"coopr/internal/cache"
-	"coopr/internal/imageconfig"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/cache"
+	"github.com/strio-dev/coopr/internal/imageconfig"
 	"go.podman.io/buildah/define"
 	"go.podman.io/buildah/imagebuildah"
 )

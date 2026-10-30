@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/oci"
 )
 
 func TestBuildPlanUsesPinnedBaseWithoutResolvingTagAgain(t *testing.T) {

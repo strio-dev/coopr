@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/definition"
-	"coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/imageconfig"
 
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"

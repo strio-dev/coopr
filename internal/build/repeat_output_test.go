@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/buildah"
 )
 
 func TestValidateFinalizationAcceptsRepeatableFilesystemOutputs(t *testing.T) {

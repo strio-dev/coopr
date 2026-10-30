@@ -57,6 +57,85 @@ func TestRootFSIdentity(t *testing.T) {
 	}
 }
 
+func TestBuildContextCleanupPreservesIncompleteSnapshot(t *testing.T) {
+	contextDir := filepath.Join(t.TempDir(), "context")
+	if err := os.Mkdir(contextDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(contextDir, "input"), []byte("caller input"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plan := testPlan(t, `from "scratch" { run "true" { mount "bind" target="/src" readonly="false" } }`)
+	operationErr := errors.New("operation failed")
+	for _, test := range []struct {
+		name string
+		err  error
+	}{
+		{"success", nil},
+		{"ordinary failure", operationErr},
+		{"incomplete wait", errors.Join(operationErr, ErrWorkerWaitIncomplete)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			prepared, cleanup, err := prepareBuildContext(plan, PlanOptions{ContextDir: contextDir})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if prepared.ContextDir == contextDir || !prepared.ContextPrepared {
+				t.Fatalf("context was not snapshotted: %+v", prepared)
+			}
+			ownedRoot := filepath.Dir(prepared.ContextDir)
+			t.Cleanup(func() {
+				if err := os.RemoveAll(ownedRoot); err != nil {
+					t.Error(err)
+				}
+			})
+			gotErr := cleanup(test.err)
+			if !errors.Is(gotErr, test.err) {
+				t.Fatalf("cleanup lost original error: %v", gotErr)
+			}
+			if errors.Is(test.err, ErrWorkerWaitIncomplete) {
+				info, err := os.Stat(ownedRoot)
+				if err != nil || info.Mode().Perm() != 0o700 {
+					t.Fatalf("snapshot envelope is not retained privately: info=%v error=%v", info, err)
+				}
+				if !errors.Is(gotErr, ErrWorkerWaitIncomplete) || !strings.Contains(gotErr.Error(), ownedRoot) {
+					t.Fatalf("retained snapshot path or marker missing: %v", gotErr)
+				}
+				if data, err := os.ReadFile(filepath.Join(prepared.ContextDir, "input")); err != nil || string(data) != "caller input" {
+					t.Fatalf("incomplete worker input was removed: %q, %v", data, err)
+				}
+				if info, err := os.Stat(prepared.IgnoreFile); err != nil || info.Mode().Perm() != 0o600 {
+					t.Fatalf("snapshot policy is not retained privately: info=%v error=%v", info, err)
+				}
+			} else if _, err := os.Stat(ownedRoot); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("completed snapshot was not removed: %v", err)
+			}
+			if data, err := os.ReadFile(filepath.Join(contextDir, "input")); err != nil || string(data) != "caller input" {
+				t.Fatalf("caller-owned context changed: %q, %v", data, err)
+			}
+		})
+	}
+}
+
+func TestPreparedBuildContextCleanupDoesNotOwnCallerContext(t *testing.T) {
+	contextDir := t.TempDir()
+	input := filepath.Join(contextDir, "input")
+	if err := os.WriteFile(input, []byte("caller input"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plan := testPlan(t, `from "scratch" { run "true" { mount "bind" target="/src" readonly="false" } }`)
+	prepared, cleanup, err := prepareBuildContext(plan, PlanOptions{ContextDir: contextDir, ContextPrepared: true})
+	if err != nil || prepared.ContextDir != contextDir {
+		t.Fatalf("prepared caller context changed: %+v, %v", prepared, err)
+	}
+	if err := cleanup(ErrWorkerWaitIncomplete); err != ErrWorkerWaitIncomplete {
+		t.Fatalf("unowned context cleanup changed the error: %v", err)
+	}
+	if data, err := os.ReadFile(input); err != nil || string(data) != "caller input" {
+		t.Fatalf("caller-owned context removed: %q, %v", data, err)
+	}
+}
+
 func TestContextBindRunUsesFilteredEphemeralSnapshot(t *testing.T) {
 	contextDir := filepath.Join(t.TempDir(), "context")
 	if err := os.Mkdir(contextDir, 0o750); err != nil {

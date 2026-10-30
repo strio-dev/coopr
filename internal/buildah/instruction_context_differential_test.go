@@ -3,13 +3,13 @@ package buildah
 import (
 	"archive/tar"
 	"context"
-	"coopr/internal/buildcontext"
-	"coopr/internal/definition"
-	"coopr/internal/imageconfig"
 	"encoding/json"
 	"errors"
 	"fmt"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/imageconfig"
 	"go.podman.io/storage/pkg/archive"
 	"io"
 	"os"
@@ -20,10 +20,10 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/onbuildparse"
-	"coopr/internal/planner"
 	docker "github.com/fsouza/go-dockerclient"
 	"github.com/openshift/imagebuilder"
+	"github.com/strio-dev/coopr/internal/onbuildparse"
+	"github.com/strio-dev/coopr/internal/planner"
 	upstream "go.podman.io/buildah"
 	"go.podman.io/buildah/define"
 	"go.podman.io/buildah/imagebuildah"
@@ -529,7 +529,7 @@ func TestInstructionInjectedOnBuildNativeDifferential(t *testing.T) {
 }
 
 func TestInstructionNativeIngestionPolicyAllowedTriggers(t *testing.T) {
-	for _, raw := range []string{`ARG A=value`, `RUN true`, `RUN --device=vendor.example/gpu=all true`, `RUN --security=insecure true`, `COPY payload /proof`, `ADD --unpack=false payload /proof`, `ENV A=value`, `LABEL A=value`, `USER ""`, `WORKDIR ""`, `CMD ["true"]`, `ENTRYPOINT ["true"]`, `SHELL ["/bin/sh","-ec"]`, `EXPOSE 80`, `VOLUME /data`, `STOPSIGNAL SIGTERM`, `HEALTHCHECK NONE`} {
+	for _, raw := range []string{`ARG A=value`, `RUN true`, `RUN --device=vendor.example/gpu=all true`, `COPY payload /proof`, `ADD --unpack=false payload /proof`, `ENV A=value`, `LABEL A=value`, `USER ""`, `WORKDIR ""`, `CMD ["true"]`, `ENTRYPOINT ["true"]`, `SHELL ["/bin/sh","-ec"]`, `EXPOSE 80`, `VOLUME /data`, `STOPSIGNAL SIGTERM`, `HEALTHCHECK NONE`} {
 		t.Run(raw, func(t *testing.T) {
 			node, err := imagebuilder.ParseDockerfile(strings.NewReader("FROM scratch\n"))
 			if err != nil {

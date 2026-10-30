@@ -1,9 +1,9 @@
 package main
 
 import (
-	"coopr/internal/oci"
 	"fmt"
 	"github.com/spf13/cobra"
+	"github.com/strio-dev/coopr/internal/oci"
 	"go.podman.io/buildah/define"
 	buildahparse "go.podman.io/buildah/pkg/parse"
 )

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/oci"
-	"coopr/internal/transfer"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/transfer"
 )
 
 func TestNormalizeBuildLogRequiresFileForSplit(t *testing.T) {

@@ -7,13 +7,13 @@ import (
 	"go/types"
 	"slices"
 
-	"coopr/internal/buildah"
-	"coopr/internal/buildcontext"
-	"coopr/internal/definition"
-	"coopr/internal/oci"
-	"coopr/internal/planner"
 	"github.com/containerd/platforms"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/planner"
 	"go.podman.io/storage"
 )
 

@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"runtime"
 
-	"coopr/internal/build"
-	"coopr/internal/buildah"
-	"coopr/internal/buildcontext"
-	"coopr/internal/oci"
-	"coopr/internal/transfer"
 	"github.com/spf13/cobra"
+	"github.com/strio-dev/coopr/internal/build"
+	"github.com/strio-dev/coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/transfer"
 	"go.podman.io/buildah/define"
 	buildahcli "go.podman.io/buildah/pkg/cli"
 	buildahparse "go.podman.io/buildah/pkg/parse"
@@ -215,7 +215,7 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 	f.StringVar(&arch, "arch", "", "target architecture")
 	f.StringVar(&variant, "variant", "", "target architecture variant")
 	cmd.MarkFlagsMutuallyExclusive("all-platforms", "platform")
-	f.StringArrayVar(&allow, "allow", nil, "allow an elevated build entitlement (repeatable: network.host, security.insecure, device, or device=SELECTOR)")
+	f.StringArrayVar(&allow, "allow", nil, "allow an elevated build entitlement (repeatable: network.host, device, or device=SELECTOR)")
 	times.addTo(cmd)
 	if standalone {
 		addGlobalRunFlags(cmd.Flags())

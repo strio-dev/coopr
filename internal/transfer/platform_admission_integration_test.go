@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"coopr/internal/buildah"
-	"coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/oci"
 
 	specs "github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"

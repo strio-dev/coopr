@@ -6,9 +6,10 @@ import (
 	"os"
 	"strings"
 
-	"coopr/internal/buildah"
-	"coopr/internal/imagestore"
-	"coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/enginecopy"
+	"github.com/strio-dev/coopr/internal/imagestore"
+	"github.com/strio-dev/coopr/internal/oci"
 
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -19,7 +20,46 @@ import (
 	"go.podman.io/image/v5/transports/alltransports"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/storage"
+	orasoci "oras.land/oras-go/v2/content/oci"
 )
+
+// Docker's index loader bypasses native image copying, so evaluate the same
+// per-image policy used for exact OCI graph exports before contacting it.
+func copyImageIndexToDocker(ctx context.Context, layout string, root v1.Descriptor, name string, opts Options, policy *signature.Policy) (_ string, retErr error) {
+	system := &types.SystemContext{SignaturePolicyPath: opts.SignaturePolicyPath, BigFilesTemporaryDir: os.TempDir()}
+	reference, err := imagestore.LayoutReference(layout, root)
+	if err != nil {
+		return "", err
+	}
+	if policy == nil {
+		policy, err = signature.DefaultPolicy(system)
+		if err != nil {
+			return "", err
+		}
+	}
+	policyContext, err := signature.NewPolicyContext(policy)
+	if err != nil {
+		return "", err
+	}
+	defer func() { retErr = errors.Join(retErr, policyContext.Destroy()) }()
+	source, err := reference.NewImageSource(ctx, system)
+	if err != nil {
+		return "", err
+	}
+	defer func() { retErr = errors.Join(retErr, source.Close()) }()
+	graph, err := orasoci.NewWithContext(ctx, layout)
+	if err != nil {
+		return "", err
+	}
+	if err := approveArchiveGraph(ctx, graph, source, root, policyContext); err != nil {
+		return "", err
+	}
+	result, err := enginecopy.CopyIndex(ctx, layout, root, name)
+	if err != nil {
+		return "", err
+	}
+	return result + "@" + root.Digest.String(), nil
+}
 
 // Copy a complete prepared graph through the same native destination and copy
 // options used for individual native-storage images.

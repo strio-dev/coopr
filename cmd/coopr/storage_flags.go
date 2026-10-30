@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"coopr/internal/buildah"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"github.com/strio-dev/coopr/internal/buildah"
 	buildahparse "go.podman.io/buildah/pkg/parse"
 	commonconfig "go.podman.io/common/pkg/config"
 )

@@ -3,10 +3,10 @@ package planner
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 
-	"coopr/internal/imageconfig"
-	"coopr/internal/onbuildparse"
+	"github.com/moby/buildkit/frontend/dockerfile/shell"
+	"github.com/strio-dev/coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/onbuildparse"
 )
 
 // StageBindFromImageConfig extracts base-image state before planning a child
@@ -48,11 +48,9 @@ func ImageEnvironment(logical *imageconfig.Config) (map[string]string, error) {
 		return nil, err
 	}
 	var values map[string]string
-	for _, entry := range environment {
-		name, value, found := strings.Cut(entry, "=")
-		if !found || name == "" {
-			return nil, fmt.Errorf("environment entry %q must be NAME=value", entry)
-		}
+	native := shell.EnvsFromSlice(environment)
+	for _, name := range native.Keys() {
+		value, _ := native.Get(name)
 		if values == nil {
 			values = make(map[string]string)
 		}

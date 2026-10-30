@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/onbuildparse"
+	"github.com/strio-dev/coopr/internal/onbuildparse"
 )
 
 func TestOnBuildFlagsRequireLiteralsWhenDockerfileCannotExpandThem(t *testing.T) {
@@ -24,7 +24,6 @@ func TestOnBuildFlagsRequireLiteralsWhenDockerfileCannotExpandThem(t *testing.T)
 
 func TestOnBuildMetadataRejectsFlagsThatFailDockerfileParsing(t *testing.T) {
 	for _, child := range []string{
-		`run "true" security="${security}"`,
 		`healthcheck "true" interval="0s"`,
 		`healthcheck "true" retries="bad"`,
 	} {

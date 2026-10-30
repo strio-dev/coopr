@@ -8,9 +8,9 @@ import (
 	"go.podman.io/image/v5/types"
 	orasoci "oras.land/oras-go/v2/content/oci"
 
-	"coopr/internal/oci"
-	"coopr/internal/planner"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/planner"
 )
 
 func TestPackageSelectionKeepsExternalSourceBeforeLaterAlias(t *testing.T) {

@@ -12,10 +12,10 @@ import (
 	"slices"
 	"strings"
 
-	"coopr/internal/oci"
 	"github.com/distribution/reference"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/oci"
 	"go.podman.io/common/libimage"
 	"go.podman.io/common/libimage/manifests"
 	imagecopy "go.podman.io/image/v5/copy"

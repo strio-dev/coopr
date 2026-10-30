@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/buildcontext"
-	"coopr/internal/oci"
-	"coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/planner"
 	"go.podman.io/image/v5/types"
 )
 
@@ -25,7 +25,6 @@ func TestCacheGapAggregateRunAuthorizationAndFreshStoreReuse(t *testing.T) {
 	requireLiveInstructionCache(t)
 	for _, test := range []struct{ name, properties, entitlement string }{
 		{"host", `network="host"`, "network.host"},
-		{"insecure", `network="none" security="insecure"`, "security.insecure"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
@@ -155,7 +154,6 @@ func TestCacheGapPackageAuthorizationBeforeFreshStoreReuse(t *testing.T) {
 	requireLiveInstructionCache(t)
 	for _, test := range []struct{ name, properties, entitlement string }{
 		{"host", `network="host"`, "network.host"},
-		{"insecure", `network="none" security="insecure"`, "security.insecure"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)

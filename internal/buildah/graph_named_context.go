@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"coopr/internal/buildcontext"
-	"coopr/internal/planner"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/planner"
 )
 
 const graphNamedContextPrefix = "\x00coopr-named-context:"

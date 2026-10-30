@@ -20,11 +20,11 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/buildcontext"
-	"coopr/internal/oci"
-	"coopr/internal/planner"
 	"github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/planner"
 	upstream "go.podman.io/buildah"
 	"go.podman.io/buildah/define"
 	"go.podman.io/image/v5/types"
@@ -714,8 +714,6 @@ func TestBuildPlanConsumesRemoteNamedContexts(t *testing.T) {
 	t.Setenv("HOME", gitHome)
 	t.Setenv("GIT_CONFIG_GLOBAL", gitConfig)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(gitHome, ".config"))
-	t.Setenv(gitWrapperDirectory, filepath.Join(gitHome, "fake-wrapper"))
-	t.Setenv(realGitExecutable, "/bin/false")
 	for _, test := range []struct {
 		name, proof string
 		spec        buildcontext.Spec

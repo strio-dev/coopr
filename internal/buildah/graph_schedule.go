@@ -5,7 +5,7 @@ import (
 	"maps"
 	"strings"
 
-	"coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/planner"
 )
 
 func graphParallelism(jobs, stages int) int {

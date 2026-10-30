@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/localstore"
-	"coopr/internal/oci"
 	registryserver "github.com/google/go-containerregistry/pkg/registry"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/localstore"
+	"github.com/strio-dev/coopr/internal/oci"
 	imagecopy "go.podman.io/image/v5/copy"
 	imagecli "go.podman.io/image/v5/pkg/cli"
 	"go.podman.io/image/v5/signature/sigstore"

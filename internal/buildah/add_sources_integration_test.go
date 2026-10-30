@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/definition"
 	"github.com/opencontainers/go-digest"
+	"github.com/strio-dev/coopr/internal/definition"
 	storagearchive "go.podman.io/storage/pkg/archive"
 )
 

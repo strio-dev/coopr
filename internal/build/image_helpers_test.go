@@ -3,8 +3,8 @@ package build
 import (
 	"context"
 
-	"coopr/internal/testutil"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/testutil"
 	"testing"
 )
 

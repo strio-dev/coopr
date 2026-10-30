@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/buildcontext"
-	"coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/definition"
 )
 
 func deliveredInput(kind, source string) (string, error) {

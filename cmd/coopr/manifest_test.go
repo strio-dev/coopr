@@ -15,10 +15,10 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"coopr/internal/buildah"
-	"coopr/internal/imagestore"
-	"coopr/internal/oci"
-	"coopr/internal/transfer"
+	"github.com/strio-dev/coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/imagestore"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/transfer"
 
 	"github.com/containerd/platforms"
 	"github.com/google/go-containerregistry/pkg/registry"

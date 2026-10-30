@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/planner"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/planner"
 )
 
 func controlPair(t *testing.T, handler componentReturnHandler, selection componentSelectionHandler, bases ...baseSelectionHandler) (*stageWorkerControlClient, context.Context) {
@@ -94,6 +94,54 @@ func TestStageWorkerControlSelectionAndCoordinatorError(t *testing.T) {
 	_, err = client.componentReturn(ctx, componentReturnRequest{Boundary: planner.ComponentBoundary{StageID: "stage"}})
 	if err == nil || !strings.Contains(err.Error(), "dependency failed") {
 		t.Fatalf("coordinator error = %v", err)
+	}
+}
+
+func TestStageWorkerControlPreservesIncompleteCoordinatorFailure(t *testing.T) {
+	failure := WorkerFailure(errors.Join(errors.New("package RUN failed"), ErrWorkerWaitIncomplete))
+	failure.Code = 42
+	for _, request := range []stageControlRequest{
+		{Return: &componentReturnRequest{Boundary: planner.ComponentBoundary{StageID: "stage"}}},
+		{Selection: &componentSelectionRequest{Reference: "./component.coopr"}},
+		{Base: &baseSelectionRequest{Reference: "scratch"}},
+	} {
+		client, ctx := controlPair(t,
+			func(context.Context, componentReturnRequest) (componentReturnReply, error) {
+				return componentReturnReply{}, failure
+			},
+			func(context.Context, componentSelectionRequest) (componentSelectionReply, error) {
+				return componentSelectionReply{}, failure
+			},
+			func(context.Context, baseSelectionRequest) (ResolvedImageSource, error) {
+				return ResolvedImageSource{}, failure
+			},
+		)
+		_, err := client.exchange(ctx, request)
+		relayed := WorkerFailure(err)
+		if relayed == nil || relayed.ExitCode() != 42 || !errors.Is(relayed, ErrWorkerWaitIncomplete) {
+			t.Errorf("control reply lost coordinator status or incomplete wait: request=%+v error=%v", request, err)
+		}
+	}
+}
+
+func TestStageWorkerControlRetainsIncompleteFailureOnBrokenReply(t *testing.T) {
+	control, err := newStageWorkerControl()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.close()
+	request := stageControlRequest{Selection: &componentSelectionRequest{Reference: "./component.coopr"}}
+	if err := json.NewEncoder(control.childWrite).Encode(request); err != nil {
+		t.Fatal(err)
+	}
+	if err := control.childRead.Close(); err != nil {
+		t.Fatal(err)
+	}
+	err = control.serve(context.Background(), "stage", nil, func(context.Context, componentSelectionRequest) (componentSelectionReply, error) {
+		return componentSelectionReply{}, ErrWorkerWaitIncomplete
+	})
+	if !errors.Is(err, ErrWorkerWaitIncomplete) {
+		t.Fatalf("broken control reply lost incomplete worker: %v", err)
 	}
 }
 
@@ -192,7 +240,7 @@ func TestStageWorkerControlFDHelper(t *testing.T) {
 }
 
 func TestControlledStageWorkerSupervision(t *testing.T) {
-	for _, mode := range []string{"return", "cancel", "malformed", "start-failure"} {
+	for _, mode := range []string{"return", "cancel", "incomplete", "incomplete-status", "malformed", "start-failure"} {
 		t.Run(mode, func(t *testing.T) {
 			control, err := newStageWorkerControl()
 			if err != nil {
@@ -205,16 +253,24 @@ func TestControlledStageWorkerSupervision(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			if mode == "cancel" {
+			if mode == "cancel" || mode == "incomplete" {
 				ctx, cancel = context.WithCancel(ctx)
 				defer cancel()
 			}
 			called := false
 			handler := func(ctx context.Context, request componentReturnRequest) (componentReturnReply, error) {
 				called = true
-				if mode == "cancel" {
+				if mode == "incomplete-status" {
+					failure := WorkerFailure(ErrWorkerWaitIncomplete)
+					failure.Code = 42
+					return componentReturnReply{}, failure
+				}
+				if mode == "cancel" || mode == "incomplete" {
 					cancel()
 					<-ctx.Done()
+					if mode == "incomplete" {
+						return componentReturnReply{}, errors.Join(ctx.Err(), ErrWorkerWaitIncomplete)
+					}
 					return componentReturnReply{}, ctx.Err()
 				}
 				return componentReturnReply{Revision: request.Revision + 1}, nil
@@ -229,6 +285,14 @@ func TestControlledStageWorkerSupervision(t *testing.T) {
 				if !errors.Is(err, context.Canceled) || !called {
 					t.Fatalf("canceled worker = %v, callback=%t", err, called)
 				}
+			case "incomplete":
+				if !errors.Is(err, ErrWorkerWaitIncomplete) || !errors.Is(err, context.Canceled) {
+					t.Fatalf("coordinator lost incomplete failure during cancellation: %v", err)
+				}
+			case "incomplete-status":
+				if !errors.Is(err, ErrWorkerWaitIncomplete) || WorkerFailure(err).ExitCode() != 42 {
+					t.Fatalf("coordinator lost incomplete operation status: %v (status %d)", err, WorkerFailure(err).ExitCode())
+				}
 			case "malformed":
 				if err == nil || !strings.Contains(err.Error(), "read stage control request") {
 					t.Fatalf("malformed request = %v", err)
@@ -238,8 +302,8 @@ func TestControlledStageWorkerSupervision(t *testing.T) {
 					t.Fatalf("start failure = %v", err)
 				}
 			}
-			if !stageWorkerExitConfirmed(command) {
-				t.Fatal("worker was not reaped")
+			if got, want := stageWorkerExitConfirmed(command, err), mode != "incomplete" && mode != "incomplete-status"; got != want {
+				t.Fatalf("worker completion confirmed = %v, want %v", got, want)
 			}
 		})
 	}

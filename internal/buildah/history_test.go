@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/definition"
-	"coopr/internal/planner"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/planner"
 )
 
 func TestPlannedOperationHistoryUsesContainerfileInstructions(t *testing.T) {

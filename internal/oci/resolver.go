@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"coopr/internal/componentstore"
-	"coopr/internal/definition"
-	"coopr/internal/imageconfig"
-	"coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/componentstore"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/planner"
 
 	dockerreference "github.com/distribution/reference"
 	digest "github.com/opencontainers/go-digest"

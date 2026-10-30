@@ -55,7 +55,7 @@ func TestCloneGitAddSourceCancellationKillsGitProcessGroup(t *testing.T) {
 	if err := os.WriteFile(executable, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv(realGitExecutable, executable)
+	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("COOPR_TEST_CHILD_PID", childPID)
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()

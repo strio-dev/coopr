@@ -5,6 +5,7 @@
   coopr-sequoia-signing,
   coopr-static,
   container,
+  libraryConsumer,
 }:
 let
   foreignSystem = "aarch64-linux";
@@ -147,6 +148,16 @@ let
             printf 'Running Buildah group %s: %s tests\n' \
               '${group}' "$(wc -l < "$selected")"
             selector="^($(paste -sd '|' "$selected"))$"
+          ''}
+          ${lib.optionalString (lib.elem "internal/build" testPackages) ''
+            ${libraryConsumer}/bin/library-consumer \
+              -busybox "$(command -v busybox)" -work "$HOME/library-proof" \
+              | tee "$HOME/library-proof.json"
+            ${pkgs.jq}/bin/jq -e '
+              .independent_branches_overlapped and .cleanup_verified and .writable_context_isolated
+              and .warm.Hits > 0 and .cold.Stored > 0
+              and .cancelled_processes_observed > 0
+            ' "$HOME/library-proof.json" >/dev/null
           ''}
           ${lib.optionalString (testPackages != [ ]) ''
             test_packages=(${lib.escapeShellArgs testPackages})
@@ -336,6 +347,7 @@ let
         ''}
         ${lib.optionalString (builtins.elem "internal/build" testPackages) ''
           machine.copy_from_machine("/home/coopr/build.test.json")
+          machine.copy_from_machine("/home/coopr/library-proof.json")
         ''}
         ${lib.optionalString (builtins.elem "internal/buildah" testPackages) ''
           machine.copy_from_machine("/home/coopr/buildah.test.json")

@@ -7,13 +7,15 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/definition"
-	"coopr/internal/planner"
+	"github.com/spf13/pflag"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/planner"
 	"go.podman.io/buildah/define"
+	buildahparse "go.podman.io/buildah/pkg/parse"
 )
 
 func TestNormalizeBuildNetworkOptions(t *testing.T) {
-	for _, mode := range []string{"default", "private", "none", "host", "pasta", "pasta:--map-gw", "slirp4netns", "slirp4netns:allow_host_loopback=true", "buildnet"} {
+	for _, mode := range []string{"default", "private", "container", "ns:", "none", "host", "pasta", "pasta:--map-gw", "slirp4netns", "slirp4netns:allow_host_loopback=true", "buildnet"} {
 		network, hosts, err := NormalizeBuildNetworkOptions(mode, []string{
 			" Example.TEST : 2001:0db8::1 ",
 			"Equal.TEST=[2001:db8::2]",
@@ -29,7 +31,7 @@ func TestNormalizeBuildNetworkOptions(t *testing.T) {
 		network string
 		hosts   []string
 	}{
-		{network: "bad/network"},
+		{network: filepath.Join(t.TempDir(), "missing-netns")},
 		{hosts: []string{"missing-address"}},
 		{hosts: []string{"host:not-an-ip"}},
 		{hosts: []string{"host=[not-an-ip]"}},
@@ -63,12 +65,12 @@ func TestBuildWideHostNetworkAuthorizesRuns(t *testing.T) {
 
 func TestNormalizePlanOptionsHostGrantIsIdempotentAndPreservesCaller(t *testing.T) {
 	allow := make([]string, 1, 2)
-	allow[0] = securityInsecureEntitlement
+	allow[0] = "device"
 	options, err := normalizePlanOptions(PlanOptions{Network: " host ", Allow: allow})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(options.Allow, []string{securityInsecureEntitlement, networkHostEntitlement}) {
+	if !reflect.DeepEqual(options.Allow, []string{"device", networkHostEntitlement}) {
 		t.Fatalf("host network grants = %v", options.Allow)
 	}
 	if allow[:cap(allow)][1] != "" {
@@ -115,6 +117,33 @@ func TestRunNetworkOptionsUseNativeBuildahNamespaceSemantics(t *testing.T) {
 		if policy != test.wantPolicy || network.Host != test.wantHost || network.Path != test.wantPath {
 			t.Fatalf("%s = policy %s namespace %+v", test.mode, policy, network)
 		}
+	}
+}
+
+func TestRunNetworkOptionsAcceptNativeNamespacePathsAndContainerAlias(t *testing.T) {
+	namespacePath := filepath.Join(t.TempDir(), "netns")
+	if err := os.WriteFile(namespacePath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{namespacePath, "container", "ns:"} {
+		t.Run(mode, func(t *testing.T) {
+			flags := pflag.NewFlagSet("native", pflag.ContinueOnError)
+			flags.String("network", "", "")
+			if err := flags.Set("network", mode); err != nil {
+				t.Fatal(err)
+			}
+			wantNamespaces, wantPolicy, err := buildahparse.NamespaceOptionsFromFlagSet(flags, flags.Lookup)
+			if err != nil {
+				t.Fatal(err)
+			}
+			policy, namespaces, err := runNetworkOptions(mode)
+			if err != nil {
+				t.Fatalf("native namespace syntax rejected: %v", err)
+			}
+			if policy != wantPolicy || !reflect.DeepEqual(namespaces, wantNamespaces) {
+				t.Fatalf("network %q = %s %+v, native %s %+v", mode, policy, namespaces, wantPolicy, wantNamespaces)
+			}
+		})
 	}
 }
 

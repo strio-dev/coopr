@@ -14,11 +14,11 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/buildcontext"
-	"coopr/internal/definition"
-	"coopr/internal/oci"
-	"coopr/internal/planner"
 	"github.com/opencontainers/go-digest"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/planner"
 	"go.podman.io/image/v5/types"
 )
 
@@ -357,8 +357,6 @@ func TestPackageCacheEligibilityRejectsUndeclaredInputs(t *testing.T) {
 	}
 	eligible := []planner.Operation{
 		{Instruction: definition.Instruction{Name: "run", Arguments: []string{"true"}, Properties: map[string]string{"network": "host"}}},
-		{Instruction: definition.Instruction{Name: "run", Arguments: []string{"true"}, Properties: map[string]string{"network": "none", "security": "insecure"}}},
-
 		{Instruction: definition.Instruction{Name: "run", Arguments: []string{"true"}, Properties: map[string]string{"network": "default"}}},
 		{Instruction: definition.Instruction{Name: "run", Arguments: []string{"true"}, Properties: map[string]string{"network": "none"}, Children: []definition.Instruction{{Name: "mount", Arguments: []string{"secret"}, Properties: map[string]string{"id": "token"}}}}},
 		{Instruction: definition.Instruction{Name: "run", Arguments: []string{"true"}, Properties: map[string]string{"network": "none"}, Children: []definition.Instruction{{Name: "mount", Arguments: []string{"ssh"}}}}},

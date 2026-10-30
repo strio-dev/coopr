@@ -7,8 +7,8 @@ import (
 	"strings"
 	"unicode"
 
-	"coopr/internal/definition"
-	"coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/planner"
 )
 
 // stageProgress is local to one prepared stage, including nested invocations.

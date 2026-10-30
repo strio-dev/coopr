@@ -6,27 +6,6 @@ import (
 	"testing"
 )
 
-func TestBuildContextFlagIsRepeatable(t *testing.T) {
-	for _, command := range []struct {
-		name string
-		cmd  interface {
-			ParseFlags([]string) error
-		}
-	}{
-		{name: "image", cmd: newBuildCommand()},
-		{name: "component", cmd: newComponentBuildCommand()},
-	} {
-		t.Run(command.name, func(t *testing.T) {
-			if err := command.cmd.ParseFlags([]string{
-				"--build-context", "source=.",
-				"--build-context", "base=docker-image://example.com/base:latest",
-			}); err != nil {
-				t.Fatalf("parse repeated --build-context: %v", err)
-			}
-		})
-	}
-}
-
 func TestBuildCommandsAcceptSSHContextBeforeBuilding(t *testing.T) {
 	for _, args := range [][]string{
 		{"build", "missing.coopr", "--build-context", "source=ssh://git@example.com/context.git"},

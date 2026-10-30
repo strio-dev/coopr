@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/oci"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/oci"
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
 

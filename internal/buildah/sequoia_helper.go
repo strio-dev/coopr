@@ -46,8 +46,11 @@ func FindSequoiaHelper(ctx context.Context) (string, error) {
 		command.Env = withoutSigningPassword(os.Environ())
 		err = runWorkerProcess(probeCtx, command, workerGrace)
 		cancel()
-		if err != nil || output.String() != SequoiaHelperProtocol+"\n" {
-			return "", errors.Join(fmt.Errorf("incompatible Sequoia helper %q (requires %s)", path, SequoiaHelperProtocol), err, output.err)
+		if err != nil {
+			return "", fmt.Errorf("probe Sequoia helper %q: %w", path, err)
+		}
+		if output.String() != SequoiaHelperProtocol+"\n" {
+			return "", errors.Join(fmt.Errorf("incompatible Sequoia helper %q (requires %s)", path, SequoiaHelperProtocol), output.err)
 		}
 		return path, nil
 	}

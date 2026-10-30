@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/oci"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/oci"
 )
 
 func TestOutputFormatValidation(t *testing.T) {

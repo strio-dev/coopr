@@ -5,9 +5,9 @@ import (
 	"runtime"
 	"testing"
 
-	"coopr/internal/oci"
 	"github.com/containerd/platforms"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/oci"
 )
 
 func TestCopySelectsSoleForeignTagWithoutPlatform(t *testing.T) {

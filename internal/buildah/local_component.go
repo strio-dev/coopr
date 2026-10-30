@@ -14,12 +14,12 @@ import (
 	"strconv"
 	"strings"
 
-	"coopr/internal/buildcontext"
-	"coopr/internal/componentstore"
-	"coopr/internal/definition"
-	"coopr/internal/oci"
-	"coopr/internal/planner"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/componentstore"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/planner"
 	upstream "go.podman.io/buildah"
 	"go.podman.io/buildah/copier"
 	orasoci "oras.land/oras-go/v2/content/oci"
@@ -146,7 +146,7 @@ func (executor *graphExecutor) materializeLocalComponent(ctx context.Context, re
 		Mode: planner.Publish, Target: selectedTarget, Platform: platform, Arguments: maps.Clone(parameters), AwaitComponentReturns: true,
 		BuildContexts: executor.options.BuildContexts, DeferImageSource: deferredPolicySource(executor.sourcePolicy),
 		TransientRunMounts:      TransientMountInstructions(executor.options.TransientRunMounts),
-		SourceDateEpochResolver: sourceDateEpochResolver(ctx, buildCredentialSource{secretSpecs: executor.options.Secrets, sshSpecs: executor.options.SSH, systemContext: executor.system}),
+		SourceDateEpochResolver: sourceDateEpochResolver(ctx, buildCredentialSource{secretSpecs: executor.options.Secrets, sshSpecs: executor.options.SSH, systemContext: executor.system, registryOptions: executor.options.registrySettings()}),
 	}, false, executor.resolveBaseImage, executor.resolveFileInput, func(ctx context.Context, spec buildcontext.Spec, target v1.Platform) (ResolvedImageSource, error) {
 		return executor.materializeNamedContext(ctx, spec, target)
 	})
@@ -166,7 +166,7 @@ func (executor *graphExecutor) materializeLocalComponent(ctx context.Context, re
 	if err != nil {
 		return "", "", err
 	}
-	defer func() { retErr = errors.Join(retErr, os.RemoveAll(workspace)) }()
+	defer func() { retErr = RemoveWorkerDirectory(workspace, retErr) }()
 	paths := publicationPackagePaths(plan, workspace)
 	options := executor.options
 	options.ProgressPrefix = progressPrefix + "[package " + progressText(reference) + "] "

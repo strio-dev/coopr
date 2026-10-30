@@ -1,6 +1,7 @@
 package buildah
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -8,13 +9,17 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
 	"go.podman.io/storage/pkg/reexec"
+	"golang.org/x/sys/unix"
 )
 
 const workerProcessHelperMode = "COOPR_TEST_WORKER_PROCESS_MODE"
@@ -42,11 +47,30 @@ func TestWorkerProcessHelper(t *testing.T) {
 		signalIgnoreTermination()
 		signalReady(t, os.Getpid(), syscall.Getpgrp(), 0, 0)
 		select {}
+	case "responsive":
+		signalIgnoreTermination()
+		challenge := make(chan os.Signal, 1)
+		signal.Notify(challenge, syscall.SIGUSR1)
+		defer signal.Stop(challenge)
+		signalReady(t, os.Getpid(), syscall.Getpgrp(), 0, 0)
+		for range challenge {
+			data := fmt.Sprintf("%d %d 0 0", os.Getpid(), syscall.Getpgrp())
+			if err := os.WriteFile(os.Getenv("COOPR_TEST_WORKER_READY")+".alive", []byte(data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
 	case "parent":
 		signalIgnoreTermination()
 		startWorkerProcessGrandchild(t)
+		select {}
 	case "cooperative-parent":
 		startWorkerProcessGrandchild(t)
+		select {}
+	case "exiting-parent", "detached-exiting-parent":
+		startWorkerProcessGrandchild(t)
+	case "failing-parent":
+		startWorkerProcessGrandchild(t)
+		t.Fatal("requested worker failure")
 	default:
 		t.Fatalf("unknown helper mode %q", os.Getenv(workerProcessHelperMode))
 	}
@@ -67,6 +91,11 @@ func testWorkerBinary(t *testing.T) string {
 func startWorkerProcessGrandchild(t *testing.T) {
 	t.Helper()
 	grandchild := exec.Command(testWorkerBinary(t), "-test.run=^TestWorkerProcessHelper$", "-test.short="+strconv.FormatBool(testing.Short()))
+	grandchild.Stdout = os.Stdout
+	grandchild.Stderr = os.Stderr
+	if os.Getenv(workerProcessHelperMode) == "detached-exiting-parent" {
+		grandchild.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	}
 	grandchild.Env = replaceEnv(os.Environ(), workerProcessHelperMode, "grandchild")
 	grandchildReady := os.Getenv("COOPR_TEST_WORKER_READY") + ".grandchild"
 	grandchild.Env = replaceEnv(grandchild.Env, "COOPR_TEST_WORKER_READY", grandchildReady)
@@ -75,7 +104,6 @@ func startWorkerProcessGrandchild(t *testing.T) {
 	}
 	grandPID, grandGroup := waitReady(t, grandchildReady)
 	signalReady(t, os.Getpid(), syscall.Getpgrp(), grandPID, grandGroup)
-	select {}
 }
 
 func TestRunWorkerProcessReturnsSuccessfulExit(t *testing.T) {
@@ -90,6 +118,178 @@ func TestRunWorkerProcessReturnsSuccessfulExit(t *testing.T) {
 	if cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setpgid || cmd.SysProcAttr.Pdeathsig != syscall.SIGKILL {
 		t.Fatalf("worker process attributes = %+v", cmd.SysProcAttr)
 	}
+}
+
+func TestRunWorkerProcessObservesExitOnCreatingThread(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	callerThread := unix.Gettid()
+	cmd := exec.Command(testWorkerBinary(t), "-test.run=^TestWorkerProcessHelper$", "-test.short="+strconv.FormatBool(testing.Short()))
+	cmd.Env = replaceEnv(os.Environ(), workerProcessHelperMode, "success")
+	var waitThread atomic.Int64
+	err := runWorkerProcessControlled(context.Background(), cmd, time.Second, workerProcessControl{
+		signalGroup: syscall.Kill,
+		killProcess: func(process *os.Process) error { return process.Kill() },
+		killWait:    time.Second,
+		waitExit: func(pid int) error {
+			waitThread.Store(int64(unix.Gettid()))
+			var info unix.Siginfo
+			return unix.Waitid(unix.P_PID, pid, &info, unix.WEXITED|unix.WNOWAIT|unix.WNOTHREAD, nil)
+		},
+	})
+	if err != nil {
+		t.Fatalf("exit observation did not own the child: caller thread=%d wait thread=%d error=%v", callerThread, waitThread.Load(), err)
+	}
+	if cmd.ProcessState == nil || !cmd.ProcessState.Success() {
+		t.Fatalf("worker process state = %v", cmd.ProcessState)
+	}
+}
+
+func TestRunWorkerProcessOutlivesExitedCallerThread(t *testing.T) {
+	ready := filepath.Join(t.TempDir(), "worker")
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := exec.Command(testWorkerBinary(t), "-test.run=^TestWorkerProcessHelper$", "-test.short="+strconv.FormatBool(testing.Short()))
+	cmd.Env = replaceEnv(os.Environ(), workerProcessHelperMode, "responsive")
+	cmd.Env = replaceEnv(cmd.Env, "COOPR_TEST_WORKER_READY", ready)
+	observing := make(chan struct{})
+	releaseObservation := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseObservation) }) }
+	var process *os.Process
+	var pid int
+	t.Cleanup(func() {
+		cancel()
+		if process != nil {
+			_ = process.Kill()
+		}
+		release()
+		if pid > 0 {
+			waitProcessGone(t, pid)
+		}
+	})
+	type callerResult struct {
+		thread int
+		err    error
+	}
+	returned := make(chan callerResult, 1)
+	call := func() {
+		thread := unix.Gettid()
+		err := runWorkerProcessControlled(ctx, cmd, time.Second, workerProcessControl{
+			signalGroup: func(int, syscall.Signal) error { return syscall.EPERM },
+			killProcess: func(*os.Process) error { return syscall.EPERM },
+			killWait:    50 * time.Millisecond,
+			waitExit: func(pid int) error {
+				close(observing)
+				<-releaseObservation
+				return waitWorkerExit(pid)
+			},
+		})
+		returned <- callerResult{thread: thread, err: err}
+	}
+	go func() {
+		runtime.LockOSThread()
+		if unix.Gettid() == os.Getpid() {
+			// Go parks its initial thread instead of retiring it. Keep it
+			// occupied so the actual caller owns a thread that can exit.
+			go func() {
+				runtime.LockOSThread()
+				call()
+			}()
+			<-releaseObservation
+			runtime.UnlockOSThread()
+			return
+		}
+		call()
+	}()
+	select {
+	case <-observing:
+		process = cmd.Process
+	case result := <-returned:
+		t.Fatalf("worker returned before observing its child: %v", result.err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker did not start observing its child")
+	}
+	pids := waitReadyValues(ready, 3*time.Second)
+	pid = pids[0]
+	if pid == 0 {
+		t.Fatalf("worker did not become ready: %v", pids)
+	}
+	cancel()
+	var result callerResult
+	select {
+	case result = <-returned:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not bound its incomplete cancellation")
+	}
+	if !errors.Is(result.err, ErrWorkerWaitIncomplete) || !errors.Is(result.err, context.Canceled) {
+		t.Fatalf("incomplete worker result = %v", result.err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		err := unix.Tgkill(os.Getpid(), result.thread, 0)
+		if errors.Is(err, syscall.ESRCH) {
+			break
+		}
+		if err != nil || time.Now().After(deadline) {
+			t.Fatalf("caller thread %d did not exit: %v", result.thread, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := process.Signal(syscall.SIGUSR1); err != nil {
+		t.Fatalf("worker died with its caller thread: %v", err)
+	}
+	if reply := waitReadyValues(ready+".alive", 3*time.Second); reply[0] != pid {
+		t.Fatalf("worker did not answer after caller thread %d exited: %v", result.thread, reply)
+	}
+}
+
+func TestRunWorkerProcessStopsDescendantsWhenLeaderExits(t *testing.T) {
+	for _, mode := range []string{"exiting-parent", "failing-parent"} {
+		for _, captured := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/captured=%t", mode, captured), func(t *testing.T) {
+				testWorkerLeaderExit(t, mode, captured)
+			})
+		}
+	}
+}
+
+func testWorkerLeaderExit(t *testing.T, mode string, captured bool) {
+	t.Helper()
+	ready := filepath.Join(t.TempDir(), "parent")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.Command(testWorkerBinary(t), "-test.run=^TestWorkerProcessHelper$", "-test.short="+strconv.FormatBool(testing.Short()))
+	cmd.Env = replaceEnv(os.Environ(), workerProcessHelperMode, mode)
+	cmd.Env = replaceEnv(cmd.Env, "COOPR_TEST_WORKER_READY", ready)
+	if captured {
+		cmd.Stdout = new(bytes.Buffer)
+		cmd.Stderr = new(bytes.Buffer)
+	}
+	cleaned := false
+	t.Cleanup(func() {
+		if !cleaned && cmd.Process != nil {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+	})
+	err := runWorkerProcess(ctx, cmd, time.Second)
+	if mode == "failing-parent" {
+		var exitError *exec.ExitError
+		if !errors.As(err, &exitError) || exitError.ExitCode() != 1 {
+			t.Fatalf("worker error = %v, want original exit status 1", err)
+		}
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	pids := waitReadyValues(ready, time.Second)
+	if pids[0] == 0 || pids[2] == 0 {
+		t.Fatalf("helper did not become ready: %v", pids)
+	}
+	if pids[0] != pids[1] || pids[1] != pids[3] {
+		t.Fatalf("helper process groups = parent %d/%d grandchild %d/%d", pids[0], pids[1], pids[2], pids[3])
+	}
+	waitProcessGone(t, pids[0])
+	waitProcessGone(t, pids[2])
+	cleaned = true
 }
 
 func TestRunWorkerProcessKillsTermIgnoringGroup(t *testing.T) {
@@ -124,6 +324,257 @@ func TestRunWorkerProcessKillsTermIgnoringGroup(t *testing.T) {
 	}
 	waitProcessGone(t, pids[0])
 	waitProcessGone(t, pids[2])
+}
+
+func TestRunWorkerProcessReportsRemainingGroupCleanupErrors(t *testing.T) {
+	for _, signalErr := range []error{nil, syscall.ESRCH, syscall.EPERM} {
+		t.Run(fmt.Sprint(signalErr), func(t *testing.T) {
+			cmd := exec.Command(testWorkerBinary(t), "-test.run=^TestWorkerProcessHelper$", "-test.short="+strconv.FormatBool(testing.Short()))
+			cmd.Env = replaceEnv(os.Environ(), workerProcessHelperMode, "success")
+			called := false
+			err := runWorkerProcessControlled(context.Background(), cmd, time.Second, workerProcessControl{
+				signalGroup: func(group int, signal syscall.Signal) error {
+					called = true
+					if group != -cmd.Process.Pid || signal != syscall.SIGKILL {
+						t.Errorf("group signal = %d/%v, want %d/SIGKILL", group, signal, -cmd.Process.Pid)
+					}
+					return signalErr
+				},
+				killProcess: func(process *os.Process) error { return process.Kill() },
+				killWait:    time.Second,
+			})
+			if !called {
+				t.Fatal("worker completion did not close its process group")
+			}
+			if errors.Is(signalErr, syscall.EPERM) {
+				if !errors.Is(err, syscall.EPERM) || !errors.Is(err, ErrWorkerWaitIncomplete) || !strings.Contains(err.Error(), "kill remaining build worker group") {
+					t.Fatalf("cleanup error = %v, want group signal failure", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestRunWorkerProcessRetriesInterruptedExitObservation(t *testing.T) {
+	cmd := exec.Command(testWorkerBinary(t), "-test.run=^TestWorkerProcessHelper$", "-test.short="+strconv.FormatBool(testing.Short()))
+	cmd.Env = replaceEnv(os.Environ(), workerProcessHelperMode, "success")
+	var observations atomic.Int32
+	err := runWorkerProcessControlled(context.Background(), cmd, time.Second, workerProcessControl{
+		signalGroup: syscall.Kill,
+		killProcess: func(process *os.Process) error { return process.Kill() },
+		killWait:    time.Second,
+		waitExit: func(pid int) error {
+			if observations.Add(1) == 1 {
+				return syscall.EINTR
+			}
+			return waitWorkerExit(pid)
+		},
+	})
+	if err != nil || observations.Load() != 2 || cmd.ProcessState == nil || !cmd.ProcessState.Success() {
+		t.Fatalf("interrupted observation result = %v, attempts=%d, state=%v", err, observations.Load(), cmd.ProcessState)
+	}
+}
+
+func TestRunWorkerProcessObservationFailureDoesNotSignalGroup(t *testing.T) {
+	for _, observeErr := range []error{syscall.ECHILD, syscall.EPERM} {
+		t.Run(observeErr.Error(), func(t *testing.T) {
+			ready := filepath.Join(t.TempDir(), "worker")
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			cmd := exec.Command(testWorkerBinary(t), "-test.run=^TestWorkerProcessHelper$", "-test.short="+strconv.FormatBool(testing.Short()))
+			mode, wantKills := "grandchild", int32(1)
+			if errors.Is(observeErr, syscall.ECHILD) {
+				mode, wantKills = "success", 0
+			}
+			cmd.Env = replaceEnv(os.Environ(), workerProcessHelperMode, mode)
+			cmd.Env = replaceEnv(cmd.Env, "COOPR_TEST_WORKER_READY", ready)
+			t.Cleanup(func() {
+				if cmd.Process != nil {
+					_ = cmd.Process.Kill()
+				}
+			})
+			var groupSignals, processKills atomic.Int32
+			err := runWorkerProcessControlled(ctx, cmd, time.Second, workerProcessControl{
+				signalGroup: func(int, syscall.Signal) error {
+					groupSignals.Add(1)
+					return syscall.EPERM
+				},
+				killProcess: func(process *os.Process) error {
+					processKills.Add(1)
+					return process.Kill()
+				},
+				killWait: time.Second,
+				waitExit: func(int) error {
+					if errors.Is(observeErr, syscall.ECHILD) {
+						if _, err := cmd.Process.Wait(); err != nil {
+							return err
+						}
+						return syscall.ECHILD
+					}
+					if waitReadyValues(ready, 3*time.Second)[0] == 0 {
+						return errors.New("worker did not become ready")
+					}
+					return observeErr
+				},
+			})
+			if !errors.Is(err, observeErr) || !errors.Is(err, ErrWorkerWaitIncomplete) || errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("observation error = %v, want %v before context deadline", err, observeErr)
+			}
+			if groupSignals.Load() != 0 || processKills.Load() != wantKills {
+				t.Fatalf("unconfirmed exit signals = group %d, process %d", groupSignals.Load(), processKills.Load())
+			}
+			waitProcessGone(t, cmd.Process.Pid)
+		})
+	}
+}
+
+func TestRunWorkerProcessSignalsBeforeReaping(t *testing.T) {
+	cmd := exec.Command(testWorkerBinary(t), "-test.run=^TestWorkerProcessHelper$", "-test.short="+strconv.FormatBool(testing.Short()))
+	cmd.Env = replaceEnv(os.Environ(), workerProcessHelperMode, "success")
+	var signals atomic.Int32
+	err := runWorkerProcessControlled(context.Background(), cmd, time.Second, workerProcessControl{
+		signalGroup: func(group int, signal syscall.Signal) error {
+			var info unix.Siginfo
+			if err := unix.Waitid(unix.P_PID, -group, &info, unix.WEXITED|unix.WNOWAIT|unix.WNOHANG, nil); err != nil {
+				return fmt.Errorf("group leader was reaped before signal: %w", err)
+			}
+			if info.Signo != int32(syscall.SIGCHLD) {
+				return fmt.Errorf("group leader was not observed exited: signal=%d", info.Signo)
+			}
+			signals.Add(1)
+			return syscall.Kill(group, signal)
+		},
+		killProcess: func(process *os.Process) error { return process.Kill() },
+		killWait:    time.Second,
+	})
+	if err != nil || signals.Load() != 1 {
+		t.Fatalf("pre-reap group cleanup = %v, signals=%d", err, signals.Load())
+	}
+}
+
+func TestRunWorkerProcessCancellationAfterObservedExit(t *testing.T) {
+	for _, mode := range []string{"success", "failing-parent"} {
+		t.Run(mode, func(t *testing.T) {
+			ready := filepath.Join(t.TempDir(), "parent")
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			cmd := exec.Command(testWorkerBinary(t), "-test.run=^TestWorkerProcessHelper$", "-test.short="+strconv.FormatBool(testing.Short()))
+			cmd.Env = replaceEnv(os.Environ(), workerProcessHelperMode, mode)
+			cmd.Env = replaceEnv(cmd.Env, "COOPR_TEST_WORKER_READY", ready)
+			cmd.Stdout = new(bytes.Buffer)
+			cmd.Stderr = new(bytes.Buffer)
+			cleaned := false
+			t.Cleanup(func() {
+				if !cleaned && mode == "failing-parent" && cmd.Process != nil {
+					_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+				}
+				if cmd.Process != nil {
+					_ = cmd.Process.Kill()
+				}
+			})
+			err := runWorkerProcessControlled(ctx, cmd, time.Second, workerProcessControl{
+				signalGroup: syscall.Kill,
+				killProcess: func(process *os.Process) error { return process.Kill() },
+				killWait:    time.Second,
+				waitExit: func(pid int) error {
+					err := waitWorkerExit(pid)
+					cancel()
+					return err
+				},
+			})
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("observed-exit cancellation = %v", err)
+			}
+			if mode == "failing-parent" {
+				var status *exec.ExitError
+				if !errors.As(err, &status) || status.ExitCode() != 1 {
+					t.Fatalf("observed-exit failure = %v, want original exit status 1", err)
+				}
+				pids := waitReadyValues(ready, time.Second)
+				if pids[2] == 0 {
+					t.Fatalf("worker child was not ready: %v", pids)
+				}
+				waitProcessGone(t, pids[2])
+			}
+			cleaned = true
+		})
+	}
+}
+
+func TestRunWorkerProcessReapsAfterWaitTimeout(t *testing.T) {
+	ready := filepath.Join(t.TempDir(), "worker")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cmd := exec.Command(testWorkerBinary(t), "-test.run=^TestWorkerProcessHelper$", "-test.short="+strconv.FormatBool(testing.Short()))
+	cmd.Env = replaceEnv(os.Environ(), workerProcessHelperMode, "grandchild")
+	cmd.Env = replaceEnv(cmd.Env, "COOPR_TEST_WORKER_READY", ready)
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	})
+	readyValues := make(chan [4]int, 1)
+	go func() {
+		readyValues <- waitReadyValues(ready, 3*time.Second)
+		cancel()
+	}()
+	err := runWorkerProcessControlled(ctx, cmd, time.Second, workerProcessControl{
+		signalGroup: func(int, syscall.Signal) error { return syscall.EPERM },
+		killProcess: func(*os.Process) error { return syscall.EPERM },
+		killWait:    50 * time.Millisecond,
+	})
+	if !errors.Is(err, ErrWorkerWaitIncomplete) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("incomplete worker result = %v", err)
+	}
+	if stageWorkerExitConfirmed(cmd, err) {
+		t.Fatal("timed-out worker was treated as reaped")
+	}
+	pids := <-readyValues
+	if pids[0] == 0 {
+		t.Fatalf("worker did not become ready: %v", pids)
+	}
+	if killErr := cmd.Process.Kill(); killErr != nil {
+		t.Fatal(killErr)
+	}
+	if stageWorkerExitConfirmed(cmd, err) {
+		t.Fatal("incomplete result changed while the wait pipeline was still finishing")
+	}
+	waitProcessGone(t, pids[0])
+}
+
+func TestRunWorkerProcessBoundsEscapedOutputPipes(t *testing.T) {
+	ready := filepath.Join(t.TempDir(), "parent")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.Command(testWorkerBinary(t), "-test.run=^TestWorkerProcessHelper$", "-test.short="+strconv.FormatBool(testing.Short()))
+	cmd.Env = replaceEnv(os.Environ(), workerProcessHelperMode, "detached-exiting-parent")
+	cmd.Env = replaceEnv(cmd.Env, "COOPR_TEST_WORKER_READY", ready)
+	cmd.Stdout = new(bytes.Buffer)
+	cmd.Stderr = new(bytes.Buffer)
+	cmd.WaitDelay = 50 * time.Millisecond
+	t.Cleanup(func() {
+		pids := waitReadyValues(ready, time.Second)
+		if pids[2] != 0 {
+			if process, err := os.FindProcess(pids[2]); err == nil {
+				_ = process.Kill()
+				_ = process.Release()
+			}
+			waitProcessGone(t, pids[2])
+		}
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	})
+	err := runWorkerProcess(ctx, cmd, time.Second)
+	if !errors.Is(err, exec.ErrWaitDelay) || ctx.Err() != nil {
+		t.Fatalf("escaped output-pipe result = %v, context=%v", err, ctx.Err())
+	}
+	pids := waitReadyValues(ready, time.Second)
+	if pids[0] == 0 || pids[2] == 0 || pids[1] == pids[3] {
+		t.Fatalf("helper did not create an independent session: %v", pids)
+	}
 }
 
 func TestRunWorkerProcessKillsRemainingGroupAfterWorkerExitsOnTerm(t *testing.T) {
@@ -165,13 +616,14 @@ func TestRunWorkerProcessBoundsSignalAndDirectKillFailures(t *testing.T) {
 	cmd.Env = replaceEnv(cmd.Env, "COOPR_TEST_WORKER_READY", ready)
 
 	cancelled := make(chan [4]int, 1)
+	cancelledAt := make(chan time.Time, 1)
 	go func() {
 		pids := waitReadyValues(ready, 3*time.Second)
 		cancelled <- pids
+		cancelledAt <- time.Now()
 		cancel()
 	}()
 	directKillCalled := false
-	started := time.Now()
 	err := runWorkerProcessControlled(ctx, cmd, time.Second, workerProcessControl{
 		signalGroup: func(int, syscall.Signal) error { return syscall.EPERM },
 		killProcess: func(*os.Process) error {
@@ -180,6 +632,23 @@ func TestRunWorkerProcessBoundsSignalAndDirectKillFailures(t *testing.T) {
 		},
 		killWait: 50 * time.Millisecond,
 	})
+	returnedAt := time.Now()
+	pids := <-cancelled
+	started := <-cancelledAt
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+				t.Errorf("clean up helper group: %v", err)
+			}
+			waitProcessGone(t, cmd.Process.Pid)
+		}
+		if pids[2] > 0 {
+			waitProcessGone(t, pids[2])
+		}
+	})
+	if pids[0] == 0 || pids[2] == 0 {
+		t.Fatalf("helper did not become ready: %v", pids)
+	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("worker error = %v, want context cancellation", err)
 	}
@@ -189,19 +658,9 @@ func TestRunWorkerProcessBoundsSignalAndDirectKillFailures(t *testing.T) {
 	if !strings.Contains(err.Error(), "timed out waiting for build worker exit") {
 		t.Fatalf("worker error = %v, want bounded wait error", err)
 	}
-	if elapsed := time.Since(started); elapsed > time.Second {
+	if elapsed := returnedAt.Sub(started); elapsed > time.Second {
 		t.Fatalf("signal failure path took %s", elapsed)
 	}
-
-	pids := <-cancelled
-	if pids[0] == 0 || pids[2] == 0 {
-		t.Fatalf("helper did not become ready: %v", pids)
-	}
-	if err := syscall.Kill(-pids[1], syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-		t.Fatalf("clean up helper group: %v", err)
-	}
-	waitProcessGone(t, pids[0])
-	waitProcessGone(t, pids[2])
 }
 
 func signalIgnoreTermination() {

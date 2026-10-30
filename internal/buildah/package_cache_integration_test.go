@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/oci"
 	"github.com/google/go-containerregistry/pkg/registry"
+	"github.com/strio-dev/coopr/internal/oci"
 	"go.podman.io/image/v5/types"
 )
 

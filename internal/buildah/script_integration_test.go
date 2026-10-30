@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/oci"
 )
 
 func TestRunScriptChildrenShareMountsAndCacheOneInstruction(t *testing.T) {

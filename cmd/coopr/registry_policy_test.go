@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"coopr/internal/oci"
 	"github.com/spf13/cobra"
+	"github.com/strio-dev/coopr/internal/oci"
 	commonconfig "go.podman.io/common/pkg/config"
 )
 

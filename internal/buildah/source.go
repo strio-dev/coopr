@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"strings"
 
-	"coopr/internal/oci"
 	digest "github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/oci"
 	"go.podman.io/buildah/pkg/cli"
 	"go.podman.io/common/libimage"
 	libconfig "go.podman.io/common/pkg/config"

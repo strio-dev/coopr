@@ -15,11 +15,11 @@ import (
 	"syscall"
 	"time"
 
-	"coopr/internal/buildcontext"
-	"coopr/internal/imageconfig"
-	"coopr/internal/oci"
-	"coopr/internal/planner"
 	"github.com/opencontainers/go-digest"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/planner"
 	"go.podman.io/buildah/pkg/sourcepolicy"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/storage"
@@ -182,9 +182,7 @@ func (executor *graphExecutor) executeGraphStageIsolated(ctx context.Context, pl
 	removeJobDir := true
 	defer func() {
 		if removeJobDir {
-			if err := os.RemoveAll(jobDir); err != nil {
-				retErr = errors.Join(retErr, fmt.Errorf("remove stage worker directory: %w", err))
-			}
+			retErr = RemoveWorkerDirectory(jobDir, retErr)
 		}
 	}()
 
@@ -220,6 +218,7 @@ func (executor *graphExecutor) executeGraphStageIsolated(ctx context.Context, pl
 		AddHosts:           append([]string(nil), executor.options.AddHosts...),
 		ProxyArgs:          cloneStringMap(executor.options.ProxyArgs),
 		RunControls:        executor.options.RunControls, Lifecycle: executor.options.Lifecycle,
+		RegistryOptions:  executor.options.registrySettings(),
 		ImageControls:    executor.options.ImageControls,
 		Timestamp:        executor.options.Timestamp,
 		CacheTTL:         executor.options.CacheTTL,
@@ -250,7 +249,6 @@ func (executor *graphExecutor) executeGraphStageIsolated(ctx context.Context, pl
 		request.InstructionRelay = executor.instructionPortableCache.stagingDir
 	}
 	if executor.options.Resolver != nil {
-		request.RegistryOptions = executor.options.Resolver.RegistryOptions()
 		request.ResolverEnabled = true
 		request.ComponentStore = executor.options.Resolver.ComponentStoreDir()
 		request.Pull = executor.options.Resolver.PullImages()
@@ -300,11 +298,14 @@ func (executor *graphExecutor) executeGraphStageIsolated(ctx context.Context, pl
 	} else {
 		processErr = runControlledStageWorker(ctx, command, prepared.stage.ID, control, returns, selections, bases)
 	}
-	if !stageWorkerExitConfirmed(command) {
+	if !stageWorkerExitConfirmed(command, processErr) {
 		removeJobDir = false
-		return executedGraphStage{}, errors.Join(processErr, fmt.Errorf("stage worker files retained at %s because process exit was not confirmed", jobDir))
+		return executedGraphStage{}, errors.Join(ErrWorkerWaitIncomplete, processErr, fmt.Errorf("stage worker files retained at %s because process exit was not confirmed", jobDir))
 	}
 	response, responseErr := readStageWorkerResponse(request.ResultPath)
+	if errors.Is(response.Failure, ErrWorkerWaitIncomplete) {
+		return executedGraphStage{}, errors.Join(response.Failure, WorkerSupervisionError(processErr), responseErr)
+	}
 	return executor.completeStageWorkerResponse(ctx, prepared.stage.ID, response, responseErr, processErr, ownedJobID, jobID)
 }
 
@@ -321,13 +322,12 @@ func (executor *graphExecutor) completeStageWorkerResponse(ctx context.Context, 
 	if response.Error != "" {
 		failure := error(response.Failure)
 		if response.Failure == nil {
-			failure = errors.New(response.Error)
+			failure = WorkerFailure(errors.New(response.Error))
 		}
 		responseErr = errors.Join(responseErr, failure)
-		// The response describes the RUN failure; the worker exit is only its transport.
-		processErr = nil
+		processErr = WorkerSupervisionError(processErr)
 	}
-	if err := errors.Join(processErr, ctx.Err(), responseErr, cleanupErr); err != nil {
+	if err := errors.Join(responseErr, processErr, ctx.Err(), cleanupErr); err != nil {
 		return finished, err
 	}
 	executor.stageRelayMu.Lock()
@@ -379,8 +379,12 @@ func stageWorkerResult(response stageWorkerResponse, stageID string, store stora
 
 // A signaled process is still reaped by Cmd.Wait; ProcessState.Exited reports
 // false for that case on Unix, while a nil ProcessState means Wait did not
-// finish and the request files must be retained.
-func stageWorkerExitConfirmed(command *exec.Cmd) bool {
+// finish and the request files must be retained. An incomplete-wait result must
+// be checked first because its background waiter can still update ProcessState.
+func stageWorkerExitConfirmed(command *exec.Cmd, processErr error) bool {
+	if errors.Is(processErr, ErrWorkerWaitIncomplete) {
+		return false
+	}
 	return command.Process == nil || command.ProcessState != nil
 }
 
@@ -438,7 +442,7 @@ func executeStageWorker(requestPath string) error {
 	response, stageErr := executeStageWorkerRequestControlled(workerCtx, request, control)
 	if stageErr != nil {
 		response.Error = stageErr.Error()
-		response.Failure = workerFailure(stageErr)
+		response.Failure = WorkerFailure(stageErr)
 	}
 	if err := writeWorkerJSON(request.ResultPath, response); err != nil {
 		return err
@@ -495,6 +499,7 @@ func executeStageWorkerRequestControlled(ctx context.Context, request stageWorke
 		}
 	}
 	options := PlanOptions{
+		registryOptions:   request.RegistryOptions,
 		executableOrigin:  request.ExecutableOrigin,
 		ProgressReference: request.ProgressReference,
 		ProgressPrefix:    request.ProgressPrefix,

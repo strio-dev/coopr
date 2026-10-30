@@ -7,9 +7,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/strio-dev/coopr/internal/buildah"
 )
 
-func TestRunMountOnlyDefinitionWithoutProjectLock(t *testing.T) {
+func TestRunCacheMountPersistsAcrossBuilds(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires native build integration")
 	}
@@ -28,25 +30,31 @@ func TestRunMountOnlyDefinitionWithoutProjectLock(t *testing.T) {
 	file := filepath.Join(dir, "app.coopr")
 	source := `from "scratch" {
     copy "busybox" "/bin/sh" chmod="0755"
-    run "echo marker > /out" network="none" { mount "cache" target="/cache" }
+    run "if test -f /cache/proof; then printf hit >/out; else printf miss >/out; fi; printf marker >/cache/proof" network="none" { mount "cache" target="/cache" }
 }
 `
 	if err := os.WriteFile(file, []byte(source), 0600); err != nil {
 		t.Fatal(err)
 	}
-	for i := range 2 {
-		output := filepath.Join(dir, []string{"first.oci.tar", "second.oci.tar"}[i])
-		if _, err := buildArchive(t, output, context.Background(), Options{File: file, Context: dir, Platform: "linux/" + runtime.GOARCH}); err != nil {
+	store := nativeBuildTestStore(filepath.Join(t.TempDir(), "store"))
+	for i, want := range []string{"miss", "hit"} {
+		output := filepath.Join(dir, want+".oci.tar")
+		rootfs := filepath.Join(t.TempDir(), "rootfs")
+		if _, err := buildArchive(t, output, context.Background(), Options{
+			File: file, Context: dir, Platform: "linux/" + runtime.GOARCH,
+			BuildStore: store, NoCache: i > 0,
+			Output: buildah.FilesystemOutput{Type: "local", Path: rootfs},
+		}); err != nil {
 			t.Fatal(err)
 		}
-		if names := archiveLayerNames(t, output); !containsName(names, "out") {
-			t.Fatalf("build %d archive has no RUN marker: %v", i, names)
+		if got, err := os.ReadFile(filepath.Join(rootfs, "out")); err != nil || string(got) != want {
+			t.Fatalf("build %d cache result = %q, %v; want %q", i, got, err, want)
+		}
+		if names := archiveLayerNames(t, output); !containsName(names, "out") || containsName(names, "cache/proof") {
+			t.Fatalf("build %d archive must retain the result without cache contents: %v", i, names)
 		}
 		if config := archiveImageConfig(t, output); config.OS != "linux" || config.Architecture != runtime.GOARCH {
 			t.Fatalf("build %d platform = %s/%s, want linux/%s", i, config.OS, config.Architecture, runtime.GOARCH)
 		}
-	}
-	if _, err := os.Stat(filepath.Join(dir, "coopr.lock")); !os.IsNotExist(err) {
-		t.Fatalf("build created a project lockfile: %v", err)
 	}
 }

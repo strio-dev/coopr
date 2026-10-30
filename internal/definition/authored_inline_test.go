@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/definition"
-	"coopr/internal/onbuildparse"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/onbuildparse"
 )
 
 func TestAuthoredInlineCopyAddExactBytes(t *testing.T) {

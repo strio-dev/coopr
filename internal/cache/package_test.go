@@ -13,7 +13,7 @@ import (
 
 	"oras.land/oras-go/v2/content"
 
-	"coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/oci"
 
 	"github.com/google/go-containerregistry/pkg/registry"
 	"github.com/opencontainers/go-digest"

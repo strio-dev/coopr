@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/imageconfig"
 	upstream "go.podman.io/buildah"
 	"go.podman.io/buildah/define"
 	"go.podman.io/buildah/docker"
@@ -134,37 +134,23 @@ func TestCopyAndAddPassParentsToBuildah(t *testing.T) {
 	}
 }
 
-func TestCopyPassesLinkToBuildah(t *testing.T) {
-	for _, linked := range []bool{true, false} {
-		t.Run(strconv.FormatBool(linked), func(t *testing.T) {
-			fake := &recordingBuilder{}
-			err := applyOperations(context.Background(), fake, t.TempDir(), []Operation{
-				Copy{Sources: []string{"source"}, Destination: "/copy", Link: linked},
+func TestCopyAndAddPassLinkToBuildah(t *testing.T) {
+	for _, kind := range []string{"copy", "add"} {
+		for _, linked := range []bool{true, false} {
+			t.Run(kind+"/"+strconv.FormatBool(linked), func(t *testing.T) {
+				var operation Operation = Copy{Sources: []string{"source"}, Destination: "/copy", Link: linked}
+				if kind == "add" {
+					operation = Add{Sources: []string{"source"}, Destination: "/add", Link: linked}
+				}
+				fake := &recordingBuilder{}
+				if err := applyOperations(context.Background(), fake, t.TempDir(), []Operation{operation}); err != nil {
+					t.Fatal(err)
+				}
+				if len(fake.addOptions) != 1 || fake.addOptions[0].Link != linked {
+					t.Fatalf("Buildah %s options = %#v, want Link=%v", kind, fake.addOptions, linked)
+				}
 			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(fake.addOptions) != 1 || fake.addOptions[0].Link != linked {
-				t.Fatalf("Buildah COPY Link = %v, want %v", fake.addOptions[0].Link, linked)
-			}
-		})
-	}
-}
-
-func TestAddPassesLinkToBuildah(t *testing.T) {
-	for _, linked := range []bool{true, false} {
-		t.Run(strconv.FormatBool(linked), func(t *testing.T) {
-			fake := &recordingBuilder{}
-			err := applyOperations(context.Background(), fake, t.TempDir(), []Operation{
-				Add{Sources: []string{"source"}, Destination: "/add", Link: linked},
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(fake.addOptions) != 1 || fake.addOptions[0].Link != linked {
-				t.Fatalf("Buildah ADD Link = %v, want %v", fake.addOptions[0].Link, linked)
-			}
-		})
+		}
 	}
 }
 
@@ -233,16 +219,13 @@ func TestRunPassesResolvedCDIDevicesToBuildah(t *testing.T) {
 	}
 }
 
-func TestRunSecurityModes(t *testing.T) {
+func TestRunKeepsNativeRuntimeSelection(t *testing.T) {
 	fake := &recordingBuilder{}
-	if err := applyOperations(context.Background(), fake, "", []Operation{Run{Command: []string{"/bin/true"}, Security: "sandbox"}}); err != nil {
-		t.Fatalf("sandbox security mode: %v", err)
+	if err := applyOperations(context.Background(), fake, "", []Operation{Run{Command: []string{"/bin/true"}}}); err != nil {
+		t.Fatal(err)
 	}
-	if err := applyOperations(context.Background(), fake, "", []Operation{Run{Command: []string{"/bin/true"}, Security: "insecure"}}); err != nil {
-		t.Fatalf("insecure security mode: %v", err)
-	}
-	if got := fake.runOptions[1].Args; !reflect.DeepEqual(got, []string{insecureRunRequestedMarker}) {
-		t.Fatalf("insecure runtime marker = %#v", got)
+	if len(fake.runOptions) != 1 || fake.runOptions[0].Runtime != "" || len(fake.runOptions[0].Args) != 0 {
+		t.Fatalf("RUN overrode native runtime selection: %+v", fake.runOptions)
 	}
 }
 

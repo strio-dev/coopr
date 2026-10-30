@@ -2,13 +2,13 @@ package buildah
 
 import (
 	"context"
-	"coopr/internal/definition"
-	"coopr/internal/imageconfig"
-	"coopr/internal/oci"
-	"coopr/internal/onbuildparse"
-	"coopr/internal/planner"
 	"encoding/json"
 	"fmt"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/onbuildparse"
+	"github.com/strio-dev/coopr/internal/planner"
 	"path/filepath"
 	"reflect"
 	"strings"

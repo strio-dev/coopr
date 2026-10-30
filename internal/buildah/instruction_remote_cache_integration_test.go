@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/oci"
 	"github.com/opencontainers/go-digest"
+	"github.com/strio-dev/coopr/internal/oci"
 	"go.podman.io/image/v5/types"
 )
 

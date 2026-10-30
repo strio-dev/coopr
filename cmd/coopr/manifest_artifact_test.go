@@ -2,12 +2,12 @@ package main
 
 import (
 	"bytes"
-	"coopr/internal/buildah"
-	"coopr/internal/oci"
-	"coopr/internal/transfer"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/strio-dev/coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/transfer"
 	"go.podman.io/storage"
 	"net/http/httptest"
 	"os"

@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"coopr/internal/buildah"
-	"coopr/internal/oci"
-	"coopr/internal/transfer"
+	"github.com/strio-dev/coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/transfer"
 
 	"github.com/containerd/platforms"
 	"github.com/docker/go-units"

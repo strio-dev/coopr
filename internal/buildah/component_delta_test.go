@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/oci"
 	"github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/oci"
 	upstream "go.podman.io/buildah"
 	"go.podman.io/buildah/define"
 	"go.podman.io/image/v5/types"

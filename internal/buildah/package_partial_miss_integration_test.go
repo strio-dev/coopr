@@ -13,11 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/oci"
 	registryserver "github.com/google/go-containerregistry/pkg/registry"
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/oci"
 	"go.podman.io/image/v5/types"
 	"oras.land/oras-go/v2/registry/remote"
 )

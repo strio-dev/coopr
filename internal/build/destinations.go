@@ -9,11 +9,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"coopr/internal/oci"
-	"coopr/internal/transfer"
 	"github.com/containerd/platforms"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/transfer"
 	"go.podman.io/storage/pkg/ioutils"
 )
 

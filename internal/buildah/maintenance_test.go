@@ -8,15 +8,16 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"coopr/internal/storeactivity"
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/storeactivity"
 	"go.podman.io/common/libimage"
 	"go.podman.io/common/libimage/manifests"
 	imagestorage "go.podman.io/image/v5/storage"
@@ -512,10 +513,19 @@ func TestMaintenanceWorkerResponsePreservesPartialResultsAndErrors(t *testing.T)
 	if err := writeWorkerJSON(resultPath, partial); err != nil {
 		t.Fatal(err)
 	}
-	processErr := errors.New("worker exited with status 1")
+	processErr := exec.Command("sh", "-c", "exit 1").Run()
+	if processErr == nil {
+		t.Fatal("fixture worker unexpectedly succeeded")
+	}
 	result, err := readMaintenanceResult(context.Background(), resultPath, processErr)
 	if err == nil || err.Error() != partial.Error || result.RemovedImages != 1 || len(result.RemovalReports) != 1 || result.RemovalReports[0].ID != "deleted-image" || result.ReclaimedBytesKnown {
 		t.Fatalf("partial worker response lost: result=%+v err=%v", result, err)
+	}
+	supervisionErr := errors.New("fixture supervision failure")
+	_, joined := readMaintenanceResult(context.Background(), resultPath, errors.Join(processErr, supervisionErr))
+	var status interface{ ExitCode() int }
+	if !errors.Is(joined, supervisionErr) || !strings.Contains(joined.Error(), partial.Error) || !errors.As(joined, &status) || status.ExitCode() != 125 {
+		t.Fatalf("failed maintenance lost supervision evidence or status: %v", joined)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -536,6 +546,28 @@ func TestMaintenanceWorkerResponsePreservesPartialResultsAndErrors(t *testing.T)
 	}
 	if _, err := readMaintenanceResult(context.Background(), resultPath, processErr); !errors.Is(err, processErr) {
 		t.Fatalf("unreported process failure masked: %v", err)
+	}
+}
+
+func TestMaintenanceWorkerDoesNotReadIncompleteResult(t *testing.T) {
+	for _, response := range []string{"missing", "malformed", "partial"} {
+		t.Run(response, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "result.json")
+			switch response {
+			case "malformed":
+				if err := os.WriteFile(path, []byte("unfinished response"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "partial":
+				if err := writeWorkerJSON(path, StoreMaintenanceResult{RemovedImages: 1, Error: "unfinished operation"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			result, err := readMaintenanceResult(context.Background(), path, ErrWorkerWaitIncomplete)
+			if !errors.Is(err, ErrWorkerWaitIncomplete) || errors.Is(err, os.ErrNotExist) || strings.Contains(err.Error(), "decode build worker message") || result.RemovedImages != 0 || result.Error != "" {
+				t.Fatalf("incomplete result was consumed: result=%+v error=%v", result, err)
+			}
+		})
 	}
 }
 

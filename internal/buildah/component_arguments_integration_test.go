@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/definition"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/definition"
 )
 
 func TestComponentArgumentDisplay(t *testing.T) {

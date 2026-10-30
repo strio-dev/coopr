@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/buildcontext"
-	"coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/planner"
 )
 
 func TestDynamicComponentOnbuildMaterializesLateExternalImageAndContext(t *testing.T) {

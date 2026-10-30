@@ -53,14 +53,14 @@ Registry options are command-local. Check that command's help for the options it
 
 | Option | Purpose |
 | --- | --- |
-| `--authfile PATH` | Select a containers-auth.json or Docker config.json credential file. |
+| `--authfile PATH` | Select a containers-auth.json or Docker config.json credential file, including shell process substitution. |
 | `--creds USER[:PASSWORD]` | Supply credentials for the request, overriding the auth file. |
 | `--cert-dir DIR` | Select registry CA and optional client certificates. |
 | `--tls-verify` | Override the registry's TLS/HTTP policy as described below. |
 | `--retry N` | Override retries after the first attempt (normally 3). |
 | `--retry-delay DURATION` | Set a fixed delay; otherwise use the effective native retry policy. |
 
-Builds, image/component transfers and manifest-member additions inherit `[engine] retry` and `retry_delay` from `containers.conf` unless command options override them.
+Image/component transfers, manifest-member additions and build downloads (including HTTP ADD) inherit `[engine] retry` and `retry_delay` from `containers.conf` unless command options override them.
 
 Image and manifest push inherit `[engine] compression_format` and `compression_level`; explicit push options take precedence. Image push `--compress` controls directory output separately from the configured algorithm. See [transfer options](cli.md#transfer-output-and-errors) for compression and signing.
 

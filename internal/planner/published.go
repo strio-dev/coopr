@@ -6,9 +6,9 @@ import (
 	"strconv"
 	"strings"
 
-	"coopr/internal/definition"
-	"coopr/internal/onbuildparse"
 	"github.com/containerd/platforms"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/onbuildparse"
 )
 
 // ValidatePublished checks the graph that can be checked without caller

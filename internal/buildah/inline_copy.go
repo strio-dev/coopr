@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"time"
 
-	"coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/definition"
 	upstream "go.podman.io/buildah"
 )
 

@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"sync"
 
-	"coopr/internal/imageconfig"
-	"coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/oci"
 
 	"github.com/containerd/platforms"
 	"github.com/opencontainers/go-digest"

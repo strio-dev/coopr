@@ -10,10 +10,10 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"coopr/internal/buildah"
-	"coopr/internal/imagestore"
-	"coopr/internal/oci"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/imagestore"
+	"github.com/strio-dev/coopr/internal/oci"
 	imagecopy "go.podman.io/image/v5/copy"
 	"go.podman.io/image/v5/signature"
 	"go.podman.io/image/v5/transports/alltransports"
@@ -60,7 +60,7 @@ func transferWithSequoiaHelper(ctx context.Context, operation, source string, ro
 	if err != nil {
 		return "", err
 	}
-	defer func() { retErr = errors.Join(retErr, os.RemoveAll(jobDir)) }()
+	defer func() { retErr = buildah.RemoveWorkerDirectory(jobDir, retErr) }()
 	request := sequoiaTransferRequest{Protocol: buildah.SequoiaHelperProtocol, Operation: operation, Source: source, Root: root, Destination: destination, Options: opts, PreparedPolicy: prepared, Selection: selection, Progress: opts.ProgressWriter != nil, ResultPath: filepath.Join(jobDir, "result.json")}
 	request.CredentialsFile, err = buildah.StageSigningSecret(jobDir, "credentials", []byte(opts.Credentials))
 	if err != nil {
@@ -77,12 +77,15 @@ func transferWithSequoiaHelper(ctx context.Context, operation, source string, ro
 		return "", err
 	}
 	processErr := buildah.RunSequoiaWorker(ctx, helper, sequoiaTransferWorker, path, jobDir, opts.ProgressWriter)
+	if errors.Is(processErr, buildah.ErrWorkerWaitIncomplete) {
+		return "", processErr
+	}
 	var response sequoiaTransferResponse
 	if err := buildah.ReadSigningWorkerJSON(request.ResultPath, &response); err != nil {
 		return "", errors.Join(processErr, err)
 	}
 	if response.Error != "" {
-		return "", errors.New(response.Error)
+		return "", errors.Join(buildah.WorkerFailure(errors.New(response.Error)), buildah.WorkerSupervisionError(processErr))
 	}
 	return response.Reference, processErr
 }

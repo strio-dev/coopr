@@ -5,9 +5,9 @@ import (
 	"errors"
 	"io"
 
-	"coopr/internal/buildah"
-	"coopr/internal/oci"
-	"coopr/internal/storeactivity"
+	"github.com/strio-dev/coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/storeactivity"
 
 	"github.com/opencontainers/go-digest"
 )

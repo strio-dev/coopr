@@ -14,11 +14,11 @@ import (
 	"syscall"
 	"time"
 
-	"coopr/internal/oci"
 	"github.com/distribution/reference"
 	"github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/oci"
 	"go.podman.io/common/libimage/manifests"
 	"go.podman.io/common/pkg/retry"
 	imagecopy "go.podman.io/image/v5/copy"
@@ -145,6 +145,14 @@ func TransferStoredImageResultSupervised(ctx context.Context, options StoredTran
 		}
 	}
 	var err error
+	authFile, ownedAuthFile, err := oci.MaterializeRegistryAuthFile(options.AuthFile)
+	if err != nil {
+		return StoredTransferResult{}, err
+	}
+	if ownedAuthFile {
+		defer func() { retErr = RemoveWorkerDirectory(authFile, retErr) }()
+	}
+	options.AuthFile = authFile
 	options.AuthFile, options.CertDir, err = oci.NormalizeRegistryPaths(options.AuthFile, options.CertDir)
 	if err != nil {
 		return StoredTransferResult{}, err
@@ -162,7 +170,7 @@ func TransferStoredImageResultSupervised(ctx context.Context, options StoredTran
 	if err != nil {
 		return StoredTransferResult{}, err
 	}
-	defer func() { retErr = errors.Join(retErr, os.RemoveAll(jobDir)) }()
+	defer func() { retErr = RemoveWorkerDirectory(jobDir, retErr) }()
 	helper := ""
 	if options.SequoiaFingerprint != "" && !NativeSequoia {
 		helper, err = FindSequoiaHelper(ctx)
@@ -201,12 +209,15 @@ func TransferStoredImageResultSupervised(ctx context.Context, options StoredTran
 	} else {
 		processErr = runWorkerProcess(ctx, command, workerGrace)
 	}
+	if errors.Is(processErr, ErrWorkerWaitIncomplete) {
+		return StoredTransferResult{}, processErr
+	}
 	var response storedTransferResponse
 	if err := readWorkerJSON(request.ResultPath, &response); err != nil {
 		return StoredTransferResult{}, errors.Join(processErr, err)
 	}
 	if response.Error != "" {
-		return StoredTransferResult{}, errors.New(response.Error)
+		return StoredTransferResult{}, errors.Join(WorkerFailure(errors.New(response.Error)), WorkerSupervisionError(processErr))
 	}
 	if processErr != nil {
 		return StoredTransferResult{}, processErr

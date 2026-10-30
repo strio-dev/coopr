@@ -1,9 +1,9 @@
 package planner
 
 import (
-	"coopr/internal/imageconfig"
-	"coopr/internal/onbuildparse"
 	"github.com/openshift/imagebuilder"
+	"github.com/strio-dev/coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/onbuildparse"
 	"reflect"
 	"slices"
 	"strings"

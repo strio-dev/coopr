@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/definition"
 )
 
 func TestOutputControlsFollowBuildahStageOrdering(t *testing.T) {

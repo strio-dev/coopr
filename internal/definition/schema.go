@@ -18,7 +18,7 @@ func InstructionProperties(name string) ([]string, bool) {
 	case "package":
 		return []string{"as"}, true
 	case "run":
-		return []string{"network", "security"}, true
+		return []string{"network"}, true
 	case "copy":
 		return []string{"from", "chown", "chmod", "link", "parents"}, true
 	case "add":

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"coopr/internal/componentstore"
+	"github.com/strio-dev/coopr/internal/componentstore"
 
 	"github.com/google/go-containerregistry/pkg/registry"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"

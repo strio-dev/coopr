@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"coopr/internal/definition"
-	"coopr/internal/onbuildparse"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/onbuildparse"
 )
 
 // DependencyInspection contains retained literal reference candidates and

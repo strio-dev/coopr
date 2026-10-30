@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"coopr/internal/componentstore"
+	"github.com/strio-dev/coopr/internal/componentstore"
 
 	dockerreference "github.com/distribution/reference"
 	"github.com/opencontainers/go-digest"

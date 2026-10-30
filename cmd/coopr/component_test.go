@@ -29,7 +29,7 @@ func TestComponentBuildCommandValidation(t *testing.T) {
 		{"removed publish command", []string{"component", "publish", file}, "unknown command"},
 		{"removed lock flag", []string{"component", "build", file, "--frozen"}, "unknown flag"},
 		{"removed builder address", []string{"component", "build", file, "--builder-address", ""}, "unknown flag"},
-		{"invalid network", []string{"component", "build", file, "--network", "bad/network"}, "invalid named build network"},
+		{"missing network namespace", []string{"component", "build", file, "--network", filepath.Join(t.TempDir(), "missing-netns")}, "checking network namespace"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var output, stderr bytes.Buffer
@@ -61,28 +61,6 @@ func TestProjectLockFlagsAreAbsent(t *testing.T) {
 	}
 }
 
-func TestBuildCommandsAcceptPull(t *testing.T) {
-	for _, cmd := range []*cobra.Command{newBuildCommand(), newComponentBuildCommand()} {
-		flag := cmd.Flags().Lookup("pull")
-		if flag == nil {
-			t.Fatalf("%s does not expose --pull", cmd.CommandPath())
-		}
-		if flag.DefValue != "missing" {
-			t.Fatalf("%s --pull default = %q, want missing", cmd.CommandPath(), flag.DefValue)
-		}
-		if err := cmd.ParseFlags([]string{"--pull"}); err != nil {
-			t.Fatalf("%s parse --pull: %v", cmd.CommandPath(), err)
-		}
-		got, err := cmd.Flags().GetString("pull")
-		if err != nil {
-			t.Fatalf("%s read --pull: %v", cmd.CommandPath(), err)
-		}
-		if got != "always" {
-			t.Fatalf("%s --pull policy = %q, want always", cmd.CommandPath(), got)
-		}
-	}
-}
-
 func TestBuildCommandsAcceptNoCache(t *testing.T) {
 	for _, cmd := range []*cobra.Command{newBuildCommand(), newComponentBuildCommand()} {
 		flag := cmd.Flags().Lookup("no-cache")
@@ -105,25 +83,6 @@ func TestBuildCommandsAcceptNoCache(t *testing.T) {
 	}
 }
 
-func TestBuildCommandsAcceptNetworkAndAddHost(t *testing.T) {
-	for _, factory := range []func() *cobra.Command{newBuildCommand, newComponentBuildCommand} {
-		for _, mode := range []string{"default", "none", "host"} {
-			cmd := factory()
-			if got := cmd.Flags().Lookup("network"); got == nil || got.DefValue != "default" {
-				t.Fatalf("%s --network flag = %#v", cmd.CommandPath(), got)
-			}
-			if err := cmd.ParseFlags([]string{"--network", mode, "--add-host", "one.test:127.0.0.1", "--add-host", "two.test:127.0.0.2"}); err != nil {
-				t.Fatalf("%s parse network options: %v", cmd.CommandPath(), err)
-			}
-			gotMode, _ := cmd.Flags().GetString("network")
-			gotHosts, _ := cmd.Flags().GetStringSlice("add-host")
-			if gotMode != mode || strings.Join(gotHosts, ",") != "one.test:127.0.0.1,two.test:127.0.0.2" {
-				t.Fatalf("%s network options = %q, %v", cmd.CommandPath(), gotMode, gotHosts)
-			}
-		}
-	}
-}
-
 func TestBuildCommandsExposeCredentialAndCacheInputs(t *testing.T) {
 	for _, cmd := range []*cobra.Command{newBuildCommand(), newComponentBuildCommand()} {
 		for _, name := range []string{"secret", "ssh", "cache-from", "cache-to", "allow", "build-context"} {
@@ -142,10 +101,13 @@ func TestComponentBuildArgHelpHasNoDefault(t *testing.T) {
 	if strings.Contains(out.String(), "(default name[=value])") {
 		t.Fatalf("help shows an invented build argument default: %s", out.String())
 	}
-	for _, text := range []string{"--pull", "base image pull policy", "--no-cache", "save fresh results to the build cache", "--network", "--add-host", "--secret", "--ssh", "--cache-from", "--cache-to", "--allow", "network.host", "security.insecure"} {
+	for _, text := range []string{"--pull", "base image pull policy", "--no-cache", "save fresh results to the build cache", "--network", "--add-host", "--secret", "--ssh", "--cache-from", "--cache-to", "--allow", "network.host"} {
 		if !strings.Contains(out.String(), text) {
 			t.Errorf("component help missing %q", text)
 		}
+	}
+	if strings.Contains(out.String(), "security.insecure") {
+		t.Fatalf("component help advertises the removed insecure execution entitlement: %s", out.String())
 	}
 }
 

@@ -651,7 +651,7 @@ func TestGitAddOptionsRemoveMetadataByDefault(t *testing.T) {
 
 func TestVerifyGitCommitAcceptsPrefixAndRejectsMismatch(t *testing.T) {
 	repository := t.TempDir()
-	executable, err := gitAddExecutable()
+	executable, err := exec.LookPath("git")
 	if err != nil {
 		t.Fatal(err)
 	}

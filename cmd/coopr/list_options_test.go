@@ -40,9 +40,21 @@ func TestBuildListOptionsMatchBuildah(t *testing.T) {
 		{"os-feature", "one,two", "three"},
 		{"tag", "one,two", "three"},
 	}
-	for commandIndex, factory := range []func() *cobra.Command{newBuildCommand, newComponentBuildCommand} {
+	for _, command := range []struct {
+		name string
+		new  func() *cobra.Command
+	}{
+		{"image", newBuildCommand},
+		{"component", newComponentBuildCommand},
+	} {
 		for _, test := range tests {
-			t.Run(factory().Use+"/"+test.name, func(t *testing.T) {
+			if command.name == "component" {
+				switch test.name {
+				case "env", "label", "annotation", "layer-label", "os-feature", "unsetenv", "unsetlabel", "unsetannotation":
+					continue
+				}
+			}
+			t.Run(command.name+"/"+test.name, func(t *testing.T) {
 				var bud buildahcli.BudResults
 				var from buildahcli.FromAndBudResults
 				var userns buildahcli.UserNSResults
@@ -53,13 +65,7 @@ func TestBuildListOptionsMatchBuildah(t *testing.T) {
 					t.Fatal(err)
 				}
 				upstream.AddFlagSet(&shared)
-				cmd := factory()
-				if commandIndex == 1 {
-					switch test.name {
-					case "env", "label", "annotation", "layer-label", "os-feature", "unsetenv", "unsetlabel", "unsetannotation":
-						t.Skip("image configuration controls apply only to image builds")
-					}
-				}
+				cmd := command.new()
 				if cmd.Flags().Lookup(test.name) == nil {
 					t.Fatalf("missing --%s", test.name)
 				}

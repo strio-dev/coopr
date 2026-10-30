@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"coopr/internal/buildah"
-	"coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/definition"
 )
 
 // Context-contained definitions are read after extraction. Explicit local or

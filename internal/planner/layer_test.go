@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/definition"
 )
 
 func TestLayerPlanningSharesArgumentScopeAndDependencyBindings(t *testing.T) {

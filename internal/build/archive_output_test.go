@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"coopr/internal/oci"
-	"coopr/internal/transfer"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/transfer"
 )
 
 // buildArchive exercises the public workflow: build into native storage, then

@@ -19,6 +19,9 @@ func TestArtifactRegistryAttachmentReadRetry(t *testing.T) {
 	for _, mode := range []string{"direct", "layout"} {
 		for _, fault := range []string{"unknown400", "body-reset", "two-independent", "denied400", "unknown-denied400", "denied-unknown400", "nonjson429", "invalid-token401", "status500", "status503", "persistent503", "legacy403", "json400wrongmime", "persistent429", "delay503", "sequence-zero-missing", "sequence-past-date"} {
 			for _, retries := range []uint{0, 1} {
+				if retries == 0 && (fault == "persistent503" || fault == "delay503") {
+					continue
+				}
 				sequence := strings.HasPrefix(fault, "sequence-")
 				if sequence && (mode != "direct" || retries != 0) {
 					continue

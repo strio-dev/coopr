@@ -12,8 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"coopr/internal/definition"
-	"coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/planner"
 
 	registryserver "github.com/google/go-containerregistry/pkg/registry"
 	"github.com/opencontainers/go-digest"

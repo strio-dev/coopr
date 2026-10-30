@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/definition"
-	"coopr/internal/imageconfig"
-	"coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/planner"
 )
 
 func TestRequestFromPlanPreservesInstructionAndCommandForms(t *testing.T) {
@@ -172,26 +172,30 @@ func TestLowerOperationRejectsUnknownInstruction(t *testing.T) {
 	}
 }
 
-func TestRequestFromPlanLowersRunHostNetworkAndSandboxSecurity(t *testing.T) {
+func TestRequestFromPlanLowersRunHostNetwork(t *testing.T) {
 	request, err := RequestFromPlan(testPlan(t, `from "scratch" {
-    run "true" network="host" security="sandbox"
+    run "true" network="host"
 }
 `), PlanOptions{Allow: []string{"network.host"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	run := request.Operations[0].(Run)
-	if run.Network != "host" || run.Security != "sandbox" || !reflect.DeepEqual(request.Allow, []string{"network.host"}) {
+	if run.Network != "host" || !reflect.DeepEqual(request.Allow, []string{"network.host"}) {
 		t.Fatalf("lowered RUN = %#v; allow = %#v", run, request.Allow)
 	}
 }
 
-func TestRequestFromPlanLowersNativeRunNetworkModes(t *testing.T) {
-	for _, network := range []string{"private", "slirp4netns:mtu=1400", "ns:/run/netns/example", "buildnet"} {
+func TestRequestFromPlanLowersNativeBuildWideNetworkModes(t *testing.T) {
+	namespaceFile := filepath.Join(t.TempDir(), "netns")
+	if err := os.WriteFile(namespaceFile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, network := range []string{"private", "slirp4netns:mtu=1400", "ns:" + namespaceFile, "buildnet"} {
 		request, err := RequestFromPlan(testPlan(t, `from "scratch" {
-    run "true" network="`+network+`"
+    run "true"
 }
-`), PlanOptions{})
+`), PlanOptions{Network: network})
 		if err != nil {
 			t.Fatalf("lower %s: %v", network, err)
 		}
@@ -221,17 +225,12 @@ func TestRequestFromPlanValidatesDNSAgainstEffectiveRunNetwork(t *testing.T) {
 	}
 }
 
-func TestRequestFromPlanLowersRunInsecureSecurity(t *testing.T) {
-	request, err := RequestFromPlan(testPlan(t, `from "scratch" {
-    run "true" security="insecure"
-}
-`), PlanOptions{Allow: []string{"security.insecure"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	run := request.Operations[0].(Run)
-	if run.Security != "insecure" || !reflect.DeepEqual(request.Allow, []string{"security.insecure"}) {
-		t.Fatalf("lowered RUN = %#v; allow = %#v", run, request.Allow)
+func TestLowerRunRejectsRetiredSecurityProperty(t *testing.T) {
+	for _, mode := range []string{"sandbox", "insecure"} {
+		instruction := definition.Instruction{Name: "run", Arguments: []string{"true"}, Properties: map[string]string{"security": mode}}
+		if _, _, err := lowerOperation(planner.Operation{Instruction: instruction}, nil); err == nil {
+			t.Fatalf("retired RUN security property %q was lowered", mode)
+		}
 	}
 }
 

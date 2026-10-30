@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/buildah"
-	"coopr/internal/transfer"
+	"github.com/strio-dev/coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/transfer"
 	"go.podman.io/buildah/define"
 )
 

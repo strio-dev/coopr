@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/build"
-	"coopr/internal/oci"
-	"coopr/internal/testutil"
-	"coopr/internal/transfer"
+	"github.com/strio-dev/coopr/internal/build"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/testutil"
+	"github.com/strio-dev/coopr/internal/transfer"
 
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )

@@ -13,11 +13,11 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"coopr/internal/imagestore"
-	"coopr/internal/oci"
 	registryserver "github.com/google/go-containerregistry/pkg/registry"
 	"github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/imagestore"
+	"github.com/strio-dev/coopr/internal/oci"
 	"go.podman.io/buildah/pkg/cli"
 	"go.podman.io/common/libimage"
 	"go.podman.io/image/v5/pkg/compression"
@@ -300,7 +300,7 @@ func TestPulledImageCompressionVariantsExportNativeOffline(t *testing.T) {
 				}
 				offline.Store(false)
 			}
-			transported, err := resolveTransportSource(ctx, resolver, "oci:"+layout+":variants", platform, lease.store, system)
+			transported, err := resolveTransportSource(ctx, resolver, "oci:"+layout+":variants", platform, lease.store, system, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -12,13 +12,13 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/cache"
-	"coopr/internal/definition"
-	"coopr/internal/imageconfig"
-	"coopr/internal/planner"
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/cache"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/planner"
 	"go.podman.io/storage"
 )
 
@@ -124,6 +124,20 @@ func instructionCacheTestInput(operation planner.Operation) instructionCacheInpu
 		Isolation:    "rootless",
 		Runtime:      "crun",
 		Format:       "oci",
+	}
+}
+
+func TestLocalInstructionCacheInvalidatesLegacyExecution(t *testing.T) {
+	input := instructionCacheTestInput(planner.Operation{Instruction: definition.Instruction{Name: "run", Form: "exec", Arguments: []string{"true"}}})
+	key, cacheable, err := instructionCacheKey(input)
+	if err != nil || !cacheable {
+		t.Fatalf("instruction key = %s, %t, %v", key, cacheable, err)
+	}
+	// Frozen key from the previous execution semantics. Even the same authored
+	// RUN must miss old local results after native mount behavior is repaired.
+	const legacy = "sha256:31c840c11951deb4d15bae6ce2eda03fb196c45a405e3e0f4ec863f50b54ea36"
+	if key.String() == legacy {
+		t.Fatal("repaired RUN semantics reused a legacy local instruction-cache key")
 	}
 }
 
@@ -265,7 +279,7 @@ func TestPortableInstructionEligibilityUsesDeclaredInputs(t *testing.T) {
 	}
 }
 
-func TestInstructionCacheKeyIgnoresOutputOnlyConfig(t *testing.T) {
+func TestInstructionCacheKeyTracksExecutionConfig(t *testing.T) {
 	operation := planner.Operation{
 		Instruction: definition.Instruction{Name: "run", Form: "shell", Arguments: []string{"printf ready >/proof"}},
 	}
@@ -275,56 +289,28 @@ func TestInstructionCacheKeyIgnoresOutputOnlyConfig(t *testing.T) {
 		t.Fatalf("base instructionCacheKey() = %q, %v, %v", baseKey, cacheable, err)
 	}
 
-	changes := []definition.Instruction{
-		{Name: "label", Arguments: []string{"org.example.release", "two"}},
-		{Name: "cmd", Form: "exec", Arguments: []string{"/bin/echo", "two"}},
-	}
-	for _, change := range changes {
-		t.Run(change.Name, func(t *testing.T) {
+	for _, change := range []struct {
+		instruction definition.Instruction
+		wantSame    bool
+	}{
+		{definition.Instruction{Name: "label", Arguments: []string{"org.example.release", "two"}}, true},
+		{definition.Instruction{Name: "cmd", Form: "exec", Arguments: []string{"/bin/echo", "two"}}, true},
+		{definition.Instruction{Name: "env", Arguments: []string{"MODE", "two"}}, false},
+		{definition.Instruction{Name: "user", Arguments: []string{"1234:1234"}}, false},
+		{definition.Instruction{Name: "workdir", Arguments: []string{"/workspace"}}, false},
+	} {
+		t.Run(change.instruction.Name, func(t *testing.T) {
 			changed := base
 			changed.Logical = base.Logical.Clone()
-			if err := changed.Logical.Apply(change); err != nil {
+			if err := changed.Logical.Apply(change.instruction); err != nil {
 				t.Fatal(err)
 			}
 			got, cacheable, err := instructionCacheKey(changed)
 			if err != nil || !cacheable {
 				t.Fatalf("changed instructionCacheKey() = %q, %v, %v", got, cacheable, err)
 			}
-			if got != baseKey {
-				t.Fatalf("output-only %s changed RUN cache key: got %s, want %s", change.Name, got, baseKey)
-			}
-		})
-	}
-}
-
-func TestInstructionCacheKeyCapturesExecutionConfig(t *testing.T) {
-	operation := planner.Operation{
-		Instruction: definition.Instruction{Name: "run", Form: "shell", Arguments: []string{"printf ready >/proof"}},
-	}
-	base := instructionCacheTestInput(operation)
-	baseKey, cacheable, err := instructionCacheKey(base)
-	if err != nil || !cacheable {
-		t.Fatalf("base instructionCacheKey() = %q, %v, %v", baseKey, cacheable, err)
-	}
-
-	changes := []definition.Instruction{
-		{Name: "env", Arguments: []string{"MODE", "two"}},
-		{Name: "user", Arguments: []string{"1234:1234"}},
-		{Name: "workdir", Arguments: []string{"/workspace"}},
-	}
-	for _, change := range changes {
-		t.Run(change.Name, func(t *testing.T) {
-			changed := base
-			changed.Logical = base.Logical.Clone()
-			if err := changed.Logical.Apply(change); err != nil {
-				t.Fatal(err)
-			}
-			got, cacheable, err := instructionCacheKey(changed)
-			if err != nil || !cacheable {
-				t.Fatalf("changed instructionCacheKey() = %q, %v, %v", got, cacheable, err)
-			}
-			if got == baseKey {
-				t.Fatalf("execution-relevant %s did not change RUN cache key %s", change.Name, baseKey)
+			if same := got == baseKey; same != change.wantSame {
+				t.Fatalf("%s: RUN cache keys %s and %s, want equal=%v", change.instruction.Name, baseKey, got, change.wantSame)
 			}
 		})
 	}

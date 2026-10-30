@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/oci"
 
 	systemdefaults "github.com/moby/buildkit/util/system"
 	"github.com/opencontainers/image-spec/specs-go"

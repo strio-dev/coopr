@@ -12,10 +12,10 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/oci"
 	"github.com/google/go-containerregistry/pkg/registry"
 	"github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/oci"
 	"go.podman.io/common/pkg/libartifact"
 	"go.podman.io/image/v5/signature"
 	"go.podman.io/image/v5/types"

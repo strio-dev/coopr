@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/definition"
 	"github.com/opencontainers/go-digest"
+	"github.com/strio-dev/coopr/internal/definition"
 )
 
 func instruction(name string, args []string, props map[string]string) definition.Instruction {
@@ -116,7 +116,7 @@ func TestApplyHealthcheckAndOnBuild(t *testing.T) {
 
 func TestHealthcheckNoneAndMalformedDockerConfig(t *testing.T) {
 	config := New()
-	if err := config.Apply(instruction("healthcheck", []string{"NONE"}, nil)); err != nil {
+	if err := config.Apply(instruction("healthcheck", []string{"NONE"}, map[string]string{"interval": "ignored", "retries": "ignored"})); err != nil {
 		t.Fatal(err)
 	}
 	healthcheck, err := config.Healthcheck()

@@ -13,12 +13,12 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/buildah"
-	"coopr/internal/oci"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/oci"
 
-	"coopr/internal/testutil"
+	"github.com/strio-dev/coopr/internal/testutil"
 )
 
 // Opt-in because it writes to the selected containers-storage image store.

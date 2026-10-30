@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/oci"
 )
 
 func TestDirectionalComponentCacheReusesDefaultNetworkRunAcrossStores(t *testing.T) {

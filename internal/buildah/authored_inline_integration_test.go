@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/componentstore"
-	"coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/componentstore"
+	"github.com/strio-dev/coopr/internal/planner"
 
 	upstreamdefine "go.podman.io/buildah/define"
 	"go.podman.io/buildah/imagebuildah"

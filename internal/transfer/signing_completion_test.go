@@ -14,9 +14,9 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/buildah"
-	"coopr/internal/localstore"
-	"coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/localstore"
+	"github.com/strio-dev/coopr/internal/oci"
 
 	"github.com/google/go-containerregistry/pkg/registry"
 	specs "github.com/opencontainers/image-spec/specs-go"

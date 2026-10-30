@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"coopr/internal/componentstore"
-	"coopr/internal/oci"
-	"coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/componentstore"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/planner"
 	"go.podman.io/image/v5/types"
 	orasoci "oras.land/oras-go/v2/content/oci"
 )

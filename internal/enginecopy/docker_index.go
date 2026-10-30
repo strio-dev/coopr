@@ -11,8 +11,8 @@ import (
 
 	"github.com/moby/moby/client/pkg/jsonmessage"
 
-	"coopr/internal/imagestore"
-	"coopr/internal/localstore"
+	"github.com/strio-dev/coopr/internal/imagestore"
+	"github.com/strio-dev/coopr/internal/localstore"
 
 	dockerclient "github.com/moby/moby/client"
 	digest "github.com/opencontainers/go-digest"

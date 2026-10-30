@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/definition"
 )
 
 func (g *graph) mapExternalInput(kind, source string, packagePhase bool) (string, error) {

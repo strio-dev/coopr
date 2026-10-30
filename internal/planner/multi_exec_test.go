@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/definition"
 )
 
 func TestCloneAndNormalizeRunExecSequence(t *testing.T) {

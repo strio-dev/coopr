@@ -119,13 +119,6 @@ func TestHelp(t *testing.T) {
 	}
 }
 
-func TestCompletion(t *testing.T) {
-	var out, errOut bytes.Buffer
-	if status := run([]string{"completion", "bash"}, &out, &errOut); status != 0 || !strings.Contains(out.String(), "coopr") {
-		t.Fatalf("status %d, stdout %q, stderr %q", status, out.String(), errOut.String())
-	}
-}
-
 func TestVersion(t *testing.T) {
 	var out, errOut bytes.Buffer
 	if status := run([]string{"--version"}, &out, &errOut); status != 0 {

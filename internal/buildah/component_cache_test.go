@@ -16,16 +16,16 @@ import (
 
 	registryserver "github.com/google/go-containerregistry/pkg/registry"
 
-	"coopr/internal/buildcontext"
-	"coopr/internal/cache"
-	"coopr/internal/definition"
-	"coopr/internal/imageconfig"
-	"coopr/internal/oci"
-	"coopr/internal/planner"
-	"coopr/internal/stateidentity"
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/cache"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/stateidentity"
 	"go.podman.io/storage"
 )
 
@@ -425,6 +425,20 @@ func TestComponentCacheOptionalReadWarnsWithCause(t *testing.T) {
 	})
 	if !strings.Contains(warning, failure.Error()) {
 		t.Fatal(warning)
+	}
+}
+
+func TestExecutorSemanticsInvalidateLegacyRunMountResults(t *testing.T) {
+	// This is the previous execution identity, before direct-mount boolean and
+	// source-metadata isolation repairs. Its cached RUN results must not be reused.
+	legacy := `{"buildah":"1.45.1","modules":"fixture","isolation":"rootless","driver":"vfs","runtime":"crun","output_format":"oci"}`
+	previous := "buildah-" + digest.FromString(legacy).Encoded()
+	current, err := componentCacheExecutorSemantics("1.45.1", "fixture", "rootless", "vfs", nil, "crun", "oci")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current == previous {
+		t.Fatal("repaired RUN semantics reused a legacy portable-cache identity")
 	}
 }
 

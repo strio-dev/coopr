@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/componentstore"
+	"github.com/strio-dev/coopr/internal/componentstore"
 
 	registryserver "github.com/google/go-containerregistry/pkg/registry"
 	"github.com/opencontainers/go-digest"

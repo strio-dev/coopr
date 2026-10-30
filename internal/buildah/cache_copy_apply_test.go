@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"coopr/internal/definition"
 	"github.com/opencontainers/go-digest"
+	"github.com/strio-dev/coopr/internal/definition"
 	upstream "go.podman.io/buildah"
 )
 
