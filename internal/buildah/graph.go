@@ -474,7 +474,7 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 				failures[completion.stageID] = errors.Join(failures[completion.stageID], completion.err)
 			}
 		}
-		return graphDrainError(ctx.Err(), stages, primaryStage, failures)
+		return graphDrainError(ctx.Err(), stages, primaryStage, primary, failures)
 	}
 	reportCompleted := func() (Result, bool, error) {
 		for _, stage := range stages {
@@ -813,21 +813,20 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 	return Result{}, nil
 }
 
-func graphDrainError(ctxErr error, stages []planner.Stage, primaryStage string, failures map[string]error) error {
-	if ctxErr != nil {
-		combined := errors.Join(ctxErr, failures[""])
-		for _, stage := range stages {
-			combined = errors.Join(combined, failures[stage.ID])
-		}
-		return combined
-	}
+func graphDrainError(ctxErr error, stages []planner.Stage, primaryStage string, primary error, failures map[string]error) error {
 	primaryIndex := -1
 	for index, stage := range stages {
-		if err := failures[stage.ID]; err != nil {
+		cause := failures[stage.ID]
+		if stage.ID == primaryStage && primary != nil {
+			// Draining may have appended this stage's cancelled completion.
+			// Rank its original failure before that shutdown noise was added.
+			cause = primary
+		}
+		if cause != nil {
 			if primaryIndex < 0 {
 				primaryIndex = index
 			}
-			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			if !errors.Is(cause, context.Canceled) && !errors.Is(cause, context.DeadlineExceeded) {
 				primaryIndex = index
 				break
 			}
@@ -838,7 +837,7 @@ func graphDrainError(ctxErr error, stages []planner.Stage, primaryStage string, 
 	}
 	// Keep source-order failure precedence without losing a sibling's cleanup
 	// errors or incomplete-wait marker when cancellation began inside the graph.
-	combined := failures[primaryStage]
+	combined := errors.Join(ctxErr, failures[primaryStage])
 	for _, stage := range stages {
 		if stage.ID != primaryStage {
 			combined = errors.Join(combined, failures[stage.ID])
