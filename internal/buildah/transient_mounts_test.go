@@ -89,6 +89,8 @@ from %q {}
 `, base.reference), mount: "type=bind,from=assets,target=/src", command: "cat /src/value >/proof", contexts: []buildcontext.Spec{{Name: "assets", Kind: buildcontext.Local, Path: filepath.Join(contextDir, "assets")}}},
 		{name: "image", source: fmt.Sprintf(`from %q {}
 `, base.reference), mount: "type=bind,from=" + base.reference + ",source=/bin/busybox,target=/tools/busybox", command: "/tools/busybox printf mounted >/proof"},
+		{name: "image-owner", source: fmt.Sprintf(`from %q {}
+`, base.reference), mount: "type=bind,from=" + base.reference + ",source=/bin/busybox,target=/tools/busybox,U=1", command: "/tools/busybox printf mounted >/proof"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

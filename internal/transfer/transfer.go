@@ -18,7 +18,6 @@ import (
 
 	"github.com/strio-dev/coopr/internal/buildah"
 	"github.com/strio-dev/coopr/internal/componentstore"
-	"github.com/strio-dev/coopr/internal/enginecopy"
 	"github.com/strio-dev/coopr/internal/imagestore"
 	"github.com/strio-dev/coopr/internal/localstore"
 	"github.com/strio-dev/coopr/internal/oci"
@@ -730,8 +729,7 @@ func copyRoot(ctx context.Context, kind oci.Kind, storeDir string, root v1.Descr
 			var copyErr error
 			if root.MediaType == v1.MediaTypeImageIndex || root.MediaType == "application/vnd.docker.distribution.manifest.list.v2+json" {
 				if !opts.Signing.Enabled() && !opts.Push.ChangesManifest() && !opts.Push.RemoveSignatures {
-					result, copyErr = enginecopy.CopyIndex(ctx, storeDir, root, destination.Name)
-					result += "@" + root.Digest.String()
+					result, copyErr = copyImageIndexToDocker(ctx, storeDir, root, destination.Name, opts, preparedPolicy)
 					return copyErr
 				}
 			}

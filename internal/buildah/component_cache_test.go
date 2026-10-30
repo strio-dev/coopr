@@ -428,6 +428,20 @@ func TestComponentCacheOptionalReadWarnsWithCause(t *testing.T) {
 	}
 }
 
+func TestExecutorSemanticsInvalidateLegacyRunMountResults(t *testing.T) {
+	// This is the previous execution identity, before direct-mount boolean and
+	// source-metadata isolation repairs. Its cached RUN results must not be reused.
+	legacy := `{"buildah":"1.45.1","modules":"fixture","isolation":"rootless","driver":"vfs","runtime":"crun","output_format":"oci"}`
+	previous := "buildah-" + digest.FromString(legacy).Encoded()
+	current, err := componentCacheExecutorSemantics("1.45.1", "fixture", "rootless", "vfs", nil, "crun", "oci")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current == previous {
+		t.Fatal("repaired RUN semantics reused a legacy portable-cache identity")
+	}
+}
+
 func TestComponentImageCacheKeyRejectsOldLoweringAndCallerGraphChanges(t *testing.T) {
 	original := validComponentTestKey()
 	original.Inputs = map[string]digest.Digest{"caller-image": digest.FromString("caller-one")}

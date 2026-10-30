@@ -117,12 +117,22 @@ func resolveBaseSourceWithPolicy(ctx context.Context, resolver *oci.Resolver, re
 	if !transport {
 		return ResolveImageSource(ctx, resolver, reference, platform, store, system)
 	}
-	clean, cleanup, err := sanitizeTransportSource(ctx, reference, contextDir)
+	var policyReference types.ImageReference
+	copyReference, copyContext := reference, contextDir
+	switch prefix, _, _ := strings.Cut(reference, ":"); prefix {
+	case "oci", "oci-archive", "docker-archive", "dir":
+		policyReference, copyContext, err = confinedSourcePolicyReference(reference, contextDir)
+		if err != nil {
+			return ResolvedImageSource{}, err
+		}
+		copyReference = policyReference.Transport().Name() + ":" + policyReference.StringWithinTransport()
+	}
+	clean, cleanup, err := sanitizeTransportSource(ctx, copyReference, copyContext)
 	if err != nil {
 		return ResolvedImageSource{}, err
 	}
 	defer cleanup()
-	selected, err := resolveTransportSource(ctx, resolver, clean, platform, store, system)
+	selected, err := resolveTransportSource(ctx, resolver, clean, platform, store, system, policyReference)
 	if err == nil {
 		selected.Reference = reference
 	}
@@ -131,7 +141,7 @@ func resolveBaseSourceWithPolicy(ctx context.Context, resolver *oci.Resolver, re
 
 // Native libimage owns transport copying and platform selection. Inspect the
 // imported immutable image before admitting its configuration to the planner.
-func resolveTransportSource(ctx context.Context, resolver *oci.Resolver, reference string, platform v1.Platform, store storage.Store, system *types.SystemContext) (_ ResolvedImageSource, retErr error) {
+func resolveTransportSource(ctx context.Context, resolver *oci.Resolver, reference string, platform v1.Platform, store storage.Store, system *types.SystemContext, policyReference types.ImageReference) (_ ResolvedImageSource, retErr error) {
 	if system == nil {
 		system = &types.SystemContext{}
 	}
@@ -153,6 +163,16 @@ func resolveTransportSource(ctx context.Context, resolver *oci.Resolver, referen
 	copiedSystem.ArchitectureChoice = platform.Architecture
 	copiedSystem.VariantChoice = platform.Variant
 	system = &copiedSystem
+	if policyReference != nil {
+		policyPath, cleanup, err := snapshotSourcePolicy(system, policyReference, reference)
+		if err != nil {
+			return ResolvedImageSource{}, err
+		}
+		if cleanup != nil {
+			defer func() { retErr = errors.Join(retErr, cleanup()) }()
+		}
+		system.SignaturePolicyPath = policyPath
+	}
 	runtime, err := libimage.RuntimeFromStore(store, &libimage.RuntimeOptions{SystemContext: system})
 	if err != nil {
 		return ResolvedImageSource{}, err

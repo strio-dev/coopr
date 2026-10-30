@@ -224,28 +224,22 @@ func (operation Run) apply(builder operationBuilder, contextDir string) (retErr 
 			if !info.Mode().IsRegular() {
 				return fmt.Errorf("RUN stage bind source %q is neither a directory nor a regular file", mount.Properties["source"])
 			}
-			mountSource := source
 			mountOptions := writableContextBindOptions(mount.Properties)
-			mountOptions[0] = "ro"
-			mountOptions = slices.DeleteFunc(mountOptions, func(option string) bool { return option == "z" && mount.Properties["relabel"] == "" })
+			readonly := true
 			if value := mount.Properties["readonly"]; value != "" {
-				readonly, _ := strconv.ParseBool(value) // serializeRunMounts validated the value.
-				if !readonly {
-					snapshot, cleanup, err := snapshotWritableBindFile(source)
-					if err != nil {
-						return fmt.Errorf("snapshot writable RUN stage bind file %q: %w", mount.Properties["source"], err)
-					}
-					defer func() { retErr = errors.Join(retErr, cleanup()) }()
-					mountSource = snapshot
-					mountOptions = writableContextBindOptions(mount.Properties)
-					if mount.Properties["relabel"] == "" {
-						for index, option := range mountOptions {
-							if option == "z" {
-								mountOptions[index] = "Z"
-							}
-						}
-					}
-				}
+				readonly, _ = strconv.ParseBool(value) // serializeRunMounts validated the value.
+			}
+			if readonly {
+				mountOptions[0] = "ro"
+			}
+			mountOptions = slices.DeleteFunc(mountOptions, func(option string) bool { return option == "z" && mount.Properties["relabel"] == "" })
+			mountSource, cleanup, err := prepareRunBindFile(source, mountOptions)
+			if err != nil {
+				return fmt.Errorf("prepare RUN stage bind file %q: %w", mount.Properties["source"], err)
+			}
+			defer func() { retErr = errors.Join(retErr, cleanup()) }()
+			if mountSource != source && mount.Properties["relabel"] == "" {
+				mountOptions = append(mountOptions, "Z")
 			}
 			target := mount.Properties["target"]
 			if !path.IsAbs(target) {

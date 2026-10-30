@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -380,8 +381,14 @@ func planUsesWritableContext(plan *planner.Plan, mounts []RunMount) bool {
 }
 
 func writableContextBindOptions(properties map[string]string) []string {
+	// Mount admission accepts all native ParseBool spellings. Preserve that
+	// interpretation when translating validated properties into direct mounts.
+	enabled := func(name string) bool {
+		value, _ := strconv.ParseBool(properties[name])
+		return value
+	}
 	options := []string{"rw"}
-	if properties["bind-nonrecursive"] == "true" {
+	if enabled("bind-nonrecursive") {
 		options = append(options, "bind")
 	} else {
 		options = append(options, "rbind")
@@ -392,11 +399,11 @@ func writableContextBindOptions(properties map[string]string) []string {
 	}
 	options = append(options, relabel)
 	for _, name := range []string{"nosuid", "nodev", "noexec", "shared", "rshared", "private", "rprivate", "slave", "rslave", "no-dereference"} {
-		if properties[name] == "true" {
+		if enabled(name) {
 			options = append(options, name)
 		}
 	}
-	if properties["u"] == "true" {
+	if enabled("u") {
 		options = append(options, "U")
 	}
 	if propagation := properties["bind-propagation"]; propagation != "" {

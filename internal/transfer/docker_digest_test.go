@@ -122,46 +122,44 @@ func TestCopyRootDockerReturnsDestinationManifestDigest(t *testing.T) {
 			destination := Destination{Transport: "docker", Name: "example:dev"}
 			var progress bytes.Buffer
 			opts := Options{Push: PushOptions{Format: test.format}, ProgressWriter: &progress}
-			if media != v1.MediaTypeImageIndex {
-				rejectPath := filepath.Join(t.TempDir(), "reject.json")
-				if err := os.WriteFile(rejectPath, []byte(`{"default":[{"type":"reject"}]}`), 0600); err != nil {
-					t.Fatal(err)
-				}
-				var rejectedBody []byte
-				rejectionServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					switch {
-					case r.Method == http.MethodHead && r.URL.Path == "/_ping":
-						w.Header().Set("API-Version", "1.48")
-						w.Header().Set("OSType", "linux")
-					case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/images/load"):
-						var err error
-						rejectedBody, err = io.ReadAll(r.Body)
-						if err != nil {
-							w.WriteHeader(http.StatusBadRequest)
-							return
-						}
-						_, _ = io.WriteString(w, "{}\n")
-					default:
-						t.Errorf("unexpected rejection request %s %s", r.Method, r.URL)
-						w.WriteHeader(http.StatusNotFound)
-					}
-				}))
-				t.Cleanup(rejectionServer.Close)
-				t.Setenv("DOCKER_HOST", "tcp://"+strings.TrimPrefix(rejectionServer.URL, "http://"))
-				rejected := opts
-				rejected.SignaturePolicyPath = rejectPath
-				_, rejectErr := CopyRoot(ctx, oci.Image, layout, root, destination, rejected)
-				// Close waits for handlers, including an aborted load, before
-				// checking all received bytes and restoring the success server.
-				rejectionServer.Close()
-				if rejectErr == nil || !strings.Contains(rejectErr.Error(), "rejected by policy") {
-					t.Fatalf("copy rejection = %v, want signature-policy rejection", rejectErr)
-				}
-				if len(rejectedBody) != 0 {
-					t.Fatalf("rejected image sent %d bytes to Docker", len(rejectedBody))
-				}
-				t.Setenv("DOCKER_HOST", "unix://"+socket)
+			rejectPath := filepath.Join(t.TempDir(), "reject.json")
+			if err := os.WriteFile(rejectPath, []byte(`{"default":[{"type":"reject"}]}`), 0600); err != nil {
+				t.Fatal(err)
 			}
+			var rejectedBody []byte
+			rejectionServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodHead && r.URL.Path == "/_ping":
+					w.Header().Set("API-Version", "1.48")
+					w.Header().Set("OSType", "linux")
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/images/load"):
+					var err error
+					rejectedBody, err = io.ReadAll(r.Body)
+					if err != nil {
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					_, _ = io.WriteString(w, "{}\n")
+				default:
+					t.Errorf("unexpected rejection request %s %s", r.Method, r.URL)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			t.Cleanup(rejectionServer.Close)
+			t.Setenv("DOCKER_HOST", "tcp://"+strings.TrimPrefix(rejectionServer.URL, "http://"))
+			rejected := opts
+			rejected.SignaturePolicyPath = rejectPath
+			_, rejectErr := CopyRoot(ctx, oci.Image, layout, root, destination, rejected)
+			// Close waits for handlers, including an aborted load, before
+			// checking all received bytes and restoring the success server.
+			rejectionServer.Close()
+			if rejectErr == nil || !strings.Contains(rejectErr.Error(), "rejected by policy") {
+				t.Fatalf("copy rejection = %v, want signature-policy rejection", rejectErr)
+			}
+			if len(rejectedBody) != 0 {
+				t.Fatalf("rejected image sent %d bytes to Docker", len(rejectedBody))
+			}
+			t.Setenv("DOCKER_HOST", "unix://"+socket)
 			result, err := CopyRoot(ctx, oci.Image, layout, root, destination, opts)
 			server.Close()
 			if err != nil {

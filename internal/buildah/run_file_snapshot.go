@@ -6,20 +6,26 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"go.podman.io/buildah/copier"
 )
 
-// snapshotWritableBindFile gives a RUN its own copy of a file mounted from an
-// immutable stage or image. Writes to the bind mount must not change its source
-// or become part of the resulting image.
-func snapshotWritableBindFile(source string) (string, func() error, error) {
+// prepareRunBindFile isolates writes and pre-mount ownership/label changes from
+// an immutable stage or image. Readonly affects the later bind mount, not native
+// runtime setup, so U/z/Z also require a disposable source.
+func prepareRunBindFile(source string, options []string) (string, func() error, error) {
 	info, err := os.Stat(source)
 	if err != nil {
 		return "", nil, err
 	}
 	if !info.Mode().IsRegular() {
 		return "", nil, fmt.Errorf("RUN bind source %q is not a regular file", source)
+	}
+	if !slices.ContainsFunc(options, func(option string) bool {
+		return option == "rw" || option == "U" || option == "z" || option == "Z"
+	}) {
+		return source, func() error { return nil }, nil
 	}
 	root, err := os.MkdirTemp("", "coopr-run-bind-file-")
 	if err != nil {

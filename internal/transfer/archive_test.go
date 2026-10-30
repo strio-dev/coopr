@@ -12,12 +12,52 @@ import (
 	"github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/imagestore"
 	"github.com/strio-dev/coopr/internal/localstore"
 	"github.com/strio-dev/coopr/internal/oci"
 	"go.podman.io/image/v5/manifest"
+	"go.podman.io/image/v5/signature"
+	"go.podman.io/image/v5/types"
 	"oras.land/oras-go/v2/content"
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
+
+func TestArchiveGraphPolicyChecksManifestAfterUnknownTypeAlias(t *testing.T) {
+	ctx := context.Background()
+	graph, image := imageFixture(t, ctx)
+	layout := filepath.Join(t.TempDir(), "layout")
+	if err := localstore.Put(ctx, layout, graph, image); err != nil {
+		t.Fatal(err)
+	}
+	reference, err := imagestore.LayoutReference(layout, image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := reference.NewImageSource(ctx, &types.SystemContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = source.Close() }()
+	alias := image
+	alias.MediaType = "application/octet-stream"
+	data, err := json.Marshal(v1.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: v1.MediaTypeImageIndex, Manifests: []v1.Descriptor{alias, image}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := oci.Descriptor(v1.MediaTypeImageIndex, data)
+	if err := graph.Push(ctx, root, bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+	policy := &signature.Policy{Default: signature.PolicyRequirements{signature.NewPRReject()}}
+	policyContext, err := signature.NewPolicyContext(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = policyContext.Destroy() }()
+	if err := approveArchiveGraph(ctx, graph, source, root, policyContext); err == nil || !strings.Contains(err.Error(), "rejected by policy") {
+		t.Fatalf("aliased image acceptance = %v, want policy rejection", err)
+	}
+}
 
 func TestImageArchivePreservesDockerGraphsAndAllowsExplicitConversion(t *testing.T) {
 	ctx := context.Background()

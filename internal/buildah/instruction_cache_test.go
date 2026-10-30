@@ -127,6 +127,20 @@ func instructionCacheTestInput(operation planner.Operation) instructionCacheInpu
 	}
 }
 
+func TestLocalInstructionCacheInvalidatesLegacyExecution(t *testing.T) {
+	input := instructionCacheTestInput(planner.Operation{Instruction: definition.Instruction{Name: "run", Form: "exec", Arguments: []string{"true"}}})
+	key, cacheable, err := instructionCacheKey(input)
+	if err != nil || !cacheable {
+		t.Fatalf("instruction key = %s, %t, %v", key, cacheable, err)
+	}
+	// Frozen key from the previous execution semantics. Even the same authored
+	// RUN must miss old local results after native mount behavior is repaired.
+	const legacy = "sha256:31c840c11951deb4d15bae6ce2eda03fb196c45a405e3e0f4ec863f50b54ea36"
+	if key.String() == legacy {
+		t.Fatal("repaired RUN semantics reused a legacy local instruction-cache key")
+	}
+}
+
 func TestInstructionCacheKeyCapturesRunInputs(t *testing.T) {
 	config := imageconfig.New()
 	if err := config.Apply(definition.Instruction{Name: "env", Arguments: []string{"MODE", "one"}}); err != nil {

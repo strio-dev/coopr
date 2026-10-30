@@ -131,6 +131,11 @@ func TestPublishedSchemaRejectsStaticTypos(t *testing.T) {
 func TestSchemaLiteralEnumsAndDeferredEnums(t *testing.T) {
 	for _, source := range []string{
 		`run "true" security="typo"`,
+		`run "true" network="private"`,
+		`run "true" network="ns:/coopr-test-namespace"`,
+		`run "true" network="buildnet"`,
+		`run "true" network="pasta:--map-gw"`,
+		`run "true" network="slirp4netns:allow_host_loopback=true"`,
 		`run "true" { mount "cache" sharing="typo" target="/cache" }`,
 		`run "true" { mount "bind" relabel="typo" target="/src" }`,
 		`run "true" { mount "bind" bind-propagation="typo" target="/src" }`,
@@ -141,6 +146,7 @@ func TestSchemaLiteralEnumsAndDeferredEnums(t *testing.T) {
 	}
 	for _, source := range []string{
 		`run "true" security="${security}"`,
+		`run "true" network="${network}"`,
 		`run "true" { mount "cache" sharing="${sharing}" target="/cache" }`,
 		`run "true" { mount "bind" relabel="${relabel}" target="/src" }`,
 	} {

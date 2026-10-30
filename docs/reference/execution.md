@@ -91,7 +91,7 @@ Configuration-only instructions change stage state without changing the filesyst
 
 ### RUN network and devices
 
-The build-wide `--network` supplies RUN's default. An authored value, including `network="default"`, overrides it for authored, inherited, and component RUNs. Modes include default, private, none, host, named networks, `ns:PATH`, and Pasta/slirp4netns options. Effective modes determine validation and cache identity; `network="none"` rejects DNS controls.
+The build-wide `--network` supplies RUN's default and supports Buildah's private, named-network, `ns:PATH`, Pasta and slirp4netns options. An authored RUN accepts `network="default"`, `network="none"`, or `network="host"`, matching Containerfile RUN. This value overrides the build-wide default for authored, inherited, and component RUNs. Argument substitutions are checked after expansion. Effective modes determine validation and cache identity; `network="none"` rejects DNS controls.
 
 Chroot shares its caller's network namespace. It accepts default or host networking; requests for other modes fail before execution or cache reuse. Use `--isolation=oci` or `--isolation=rootless` for network namespace isolation.
 

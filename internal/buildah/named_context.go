@@ -85,11 +85,15 @@ func MaterializeArchiveContext(ctx context.Context, reader io.Reader) (PrimaryCo
 	if err := ctx.Err(); err != nil {
 		return PrimaryContext{}, nil, err
 	}
-	directory, err := os.MkdirTemp("", "coopr-primary-archive-")
+	temporary, err := os.MkdirTemp("", "coopr-primary-archive-")
 	if err != nil {
 		return PrimaryContext{}, nil, fmt.Errorf("create archive context directory: %w", err)
 	}
-	cleanup := func() error { return os.RemoveAll(directory) }
+	cleanup := func() error { return os.RemoveAll(temporary) }
+	directory := filepath.Join(temporary, "download")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		return PrimaryContext{}, nil, errors.Join(fmt.Errorf("create archive context: %w", err), cleanup())
+	}
 	if _, err := extractRemoteNamedContext(ctx, directory, reader); err != nil {
 		return PrimaryContext{}, nil, errors.Join(fmt.Errorf("extract context archive: %w", err), cleanup())
 	}
@@ -444,11 +448,15 @@ func downloadHTTPContext(ctx context.Context, spec buildcontext.Spec) (_ string,
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return "", nil, nil, fmt.Errorf("download HTTP context %q: HTTP status %s", spec.Name, response.Status)
 	}
-	directory, err := os.MkdirTemp("", "coopr-primary-http-")
+	temporary, err := os.MkdirTemp("", "coopr-primary-http-")
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("create HTTP context directory: %w", err)
 	}
-	cleanup = func() error { return os.RemoveAll(directory) }
+	cleanup = func() error { return os.RemoveAll(temporary) }
+	directory := filepath.Join(temporary, "download")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		return "", nil, nil, errors.Join(fmt.Errorf("create HTTP context: %w", err), cleanup())
+	}
 	archiveEpoch, err := extractRemoteNamedContext(ctx, directory, response.Body)
 	if err != nil {
 		return "", nil, nil, errors.Join(fmt.Errorf("extract HTTP context %q as a tar archive: %w", spec.Name, err), cleanup())

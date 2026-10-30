@@ -1,12 +1,71 @@
 package buildah
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/imageconfig"
 	"github.com/strio-dev/coopr/internal/planner"
 )
+
+func TestAuthoredRunNetworkModesAreCheckedAfterArgumentExpansion(t *testing.T) {
+	for _, mode := range []string{"default", "none", "host", "private", "buildnet", "ns:/coopr-test-namespace", "pasta:--map-gw", "slirp4netns:allow_host_loopback=true"} {
+		t.Run(mode, func(t *testing.T) {
+			valid := mode == "default" || mode == "none" || mode == "host"
+			for _, stage := range []string{`from "scratch"`, `extend`} {
+				def, err := definition.Parse(strings.NewReader(fmt.Sprintf(`arg "network"
+%s {
+    arg "network"
+    run "true" network="${network}"
+}
+`, stage)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var plan *planner.Plan
+				if stage == `extend` {
+					publication, publishErr := planner.Create(def, planner.Options{Mode: planner.Publish})
+					if publishErr != nil {
+						t.Fatal(publishErr)
+					}
+					plan, err = planner.Instantiate(publication.Component, planner.Options{Arguments: map[string]string{"network": mode}})
+				} else {
+					plan, err = planner.Create(def, planner.Options{Arguments: map[string]string{"network": mode}})
+				}
+				if !valid {
+					if err == nil || !strings.Contains(err.Error(), "network property") {
+						t.Fatalf("%s network %q: error = %v, want unsupported network property", stage, mode, err)
+					}
+					continue
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				operation := plan.Stages[len(plan.Stages)-1].Operations[0]
+				if operation.Properties["network"] != mode || !operation.NetworkExplicit {
+					t.Fatalf("%s resolved RUN = %+v", stage, operation)
+				}
+				if err := authorizePlannedOperation(operation, nil, nil); (mode == "host") != (err != nil) {
+					t.Fatalf("%s network %q: authorization = %v", stage, mode, err)
+				}
+			}
+		})
+	}
+}
+
+func TestInheritedRunRejectsBuildWideOnlyNetworkModes(t *testing.T) {
+	for _, mode := range []string{"private", "buildnet", "ns:/coopr-test-namespace", "pasta:--map-gw", "slirp4netns:allow_host_loopback=true"} {
+		logical, err := imageconfig.Parse([]byte(`{"config":{"Env":["NETWORK=` + mode + `"],"OnBuild":["RUN --network=$NETWORK true"]}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := consumeOnBuild(logical); err == nil || !strings.Contains(err.Error(), "network property") {
+			t.Fatalf("inherited network %q: error = %v, want unsupported network property", mode, err)
+		}
+	}
+}
 
 func TestHostNetworkRequiresExplicitRequestEntitlement(t *testing.T) {
 	operation := planner.Operation{Instruction: definition.Instruction{Name: "run", Properties: map[string]string{"network": "host"}}}

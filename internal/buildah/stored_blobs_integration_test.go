@@ -300,7 +300,7 @@ func TestPulledImageCompressionVariantsExportNativeOffline(t *testing.T) {
 				}
 				offline.Store(false)
 			}
-			transported, err := resolveTransportSource(ctx, resolver, "oci:"+layout+":variants", platform, lease.store, system)
+			transported, err := resolveTransportSource(ctx, resolver, "oci:"+layout+":variants", platform, lease.store, system, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

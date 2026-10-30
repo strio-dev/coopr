@@ -63,6 +63,7 @@ type instructionCacheInput struct {
 }
 
 type instructionCacheDocument struct {
+	CooprExecution   string                          `json:"coopr_execution"`
 	Schema           string                          `json:"schema"`
 	BuildahVersion   string                          `json:"buildah_version"`
 	ParentRootFS     string                          `json:"parent_rootfs"`
@@ -611,7 +612,8 @@ func instructionCacheKey(input instructionCacheInput) (digest.Digest, bool, erro
 		}
 	}
 	document, err := json.Marshal(instructionCacheDocument{
-		Schema: instructionCacheSchema, BuildahVersion: upstreamdefine.Version,
+		CooprExecution: cooprExecutionRevision,
+		Schema:         instructionCacheSchema, BuildahVersion: upstreamdefine.Version,
 		ParentRootFS: input.ParentRootFS, ExecutionConfig: config, Operation: input.Operation,
 		Platform: input.Platform, Isolation: input.Isolation, Runtime: input.Runtime, Format: format,
 		InputDigest: input.InputDigest, ResolvedInputs: input.ResolvedInputs,

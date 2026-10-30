@@ -186,12 +186,16 @@ func TestRequestFromPlanLowersRunHostNetworkAndSandboxSecurity(t *testing.T) {
 	}
 }
 
-func TestRequestFromPlanLowersNativeRunNetworkModes(t *testing.T) {
-	for _, network := range []string{"private", "slirp4netns:mtu=1400", "ns:/run/netns/example", "buildnet"} {
+func TestRequestFromPlanLowersNativeBuildWideNetworkModes(t *testing.T) {
+	namespaceFile := filepath.Join(t.TempDir(), "netns")
+	if err := os.WriteFile(namespaceFile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, network := range []string{"private", "slirp4netns:mtu=1400", "ns:" + namespaceFile, "buildnet"} {
 		request, err := RequestFromPlan(testPlan(t, `from "scratch" {
-    run "true" network="`+network+`"
+    run "true"
 }
-`), PlanOptions{})
+`), PlanOptions{Network: network})
 		if err != nil {
 			t.Fatalf("lower %s: %v", network, err)
 		}

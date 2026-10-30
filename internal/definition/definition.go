@@ -543,6 +543,9 @@ func validate(inst Instruction, childCount int, child, resolved bool) error {
 			return fmt.Errorf("expected a name, optional default, and no properties")
 		}
 	case "run":
+		if err := validatePropertyEnum(p, "network", resolved, "default", "none", "host"); err != nil {
+			return err
+		}
 		if err := validatePropertyEnum(p, "security", resolved, "sandbox", "insecure"); err != nil {
 			return err
 		}

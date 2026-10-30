@@ -214,11 +214,11 @@ from "scratch" { copy "/proof" "/left" from="left"; copy "/proof" "/right" from=
 		}
 	}()
 	platform := v1.Platform{OS: "linux", Architecture: runtime.GOARCH}
-	first, err := resolveTransportSource(f.ctx, options.Resolver, "oci:"+firstLayout, platform, executor.store, executor.system)
+	first, err := resolveTransportSource(f.ctx, options.Resolver, "oci:"+firstLayout, platform, executor.store, executor.system, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := resolveTransportSource(f.ctx, options.Resolver, "oci:"+secondLayout, platform, executor.store, executor.system)
+	second, err := resolveTransportSource(f.ctx, options.Resolver, "oci:"+secondLayout, platform, executor.store, executor.system, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

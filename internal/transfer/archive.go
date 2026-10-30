@@ -178,14 +178,20 @@ func copyImageArchive(ctx context.Context, layoutPath string, root v1.Descriptor
 // boundary when preserving a list that the native OCI destination would convert.
 func approveArchiveGraph(ctx context.Context, graph content.Fetcher, source types.ImageSource, root v1.Descriptor, policy *signature.PolicyContext) error {
 	pending := []v1.Descriptor{root}
-	visited := make(map[digest.Digest]bool)
+	type descriptorKey struct {
+		digest    digest.Digest
+		mediaType string
+		size      int64
+	}
+	visited := make(map[descriptorKey]bool)
 	for len(pending) > 0 {
 		descriptor := pending[0]
 		pending = pending[1:]
-		if visited[descriptor.Digest] {
+		key := descriptorKey{descriptor.Digest, descriptor.MediaType, descriptor.Size}
+		if visited[key] {
 			continue
 		}
-		visited[descriptor.Digest] = true
+		visited[key] = true
 		if manifest.MIMETypeIsMultiImage(descriptor.MediaType) {
 			children, err := content.Successors(ctx, graph, descriptor)
 			if err != nil {
