@@ -27,7 +27,7 @@ func TestOnBuildMetadataRoundTripsOrdinaryInstructions(t *testing.T) {
 		{name: "env deferred and quoted", child: `env "MESSAGE" "hello \"$later\" C:\\tmp path"`, want: []definition.Instruction{{Name: "env", Arguments: []string{"MESSAGE", `hello "$later" C:tmp path`}}}},
 		{name: "label", child: `label z="last value" a="first\\value" message="he said \"ready\""`, want: []definition.Instruction{{Name: "label", Arguments: []string{"a", `firstvalue`}}, {Name: "label", Arguments: []string{"message", `he said "ready"`}}, {Name: "label", Arguments: []string{"z", "last value"}}}},
 		{
-			name: "run exec flags mounts devices", child: `run network="none" security="insecure" {
+			name: "run exec flags mounts devices", child: `run network="none" {
       exec "/bin/echo" "$later" "C:\\path with space"
 	  mount "secret" id="token" target="/run/a b\\c" required="true" mode="0400"
 	  device "vendor.example/gpu=one" "vendor.example/gpu=two" required="true"
@@ -35,7 +35,7 @@ func TestOnBuildMetadataRoundTripsOrdinaryInstructions(t *testing.T) {
 	  device "vendor.example/gpu=four,required=true" required="false"
 	  device "vendor.example/gpu=five,required=false" required="true"
 	}`,
-			want: []definition.Instruction{{Name: "run", Form: "exec", Arguments: []string{"/bin/echo", "$later", `C:\path with space`}, Properties: map[string]string{"network": "none", "security": "insecure"}, Children: []definition.Instruction{
+			want: []definition.Instruction{{Name: "run", Form: "exec", Arguments: []string{"/bin/echo", "$later", `C:\path with space`}, Properties: map[string]string{"network": "none"}, Children: []definition.Instruction{
 				{Name: "mount", Arguments: []string{"secret"}, Properties: map[string]string{"id": "token", "target": `/run/a b\c`, "required": "true", "mode": "400"}},
 				{Name: "device", Arguments: []string{"vendor.example/gpu=one"}, Properties: map[string]string{"required": "true"}},
 				{Name: "device", Arguments: []string{"vendor.example/gpu=two"}, Properties: map[string]string{"required": "true"}},

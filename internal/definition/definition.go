@@ -546,9 +546,6 @@ func validate(inst Instruction, childCount int, child, resolved bool) error {
 		if err := validatePropertyEnum(p, "network", resolved, "default", "none", "host"); err != nil {
 			return err
 		}
-		if err := validatePropertyEnum(p, "security", resolved, "sandbox", "insecure"); err != nil {
-			return err
-		}
 		if inst.Commands == nil && (a < 1 || (inst.Form != "exec" && a != 1)) {
 			return fmt.Errorf("expected one shell command or exec arguments")
 		}

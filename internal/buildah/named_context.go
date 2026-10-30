@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -135,7 +136,7 @@ func materializePrimaryGitContext(ctx context.Context, spec buildcontext.Spec, c
 }
 
 func clonedGitCommitEpoch(ctx context.Context, repository string) (int64, error) {
-	executable, err := gitAddExecutable()
+	executable, err := exec.LookPath("git")
 	if err != nil {
 		return 0, err
 	}

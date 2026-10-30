@@ -529,7 +529,7 @@ func TestInstructionInjectedOnBuildNativeDifferential(t *testing.T) {
 }
 
 func TestInstructionNativeIngestionPolicyAllowedTriggers(t *testing.T) {
-	for _, raw := range []string{`ARG A=value`, `RUN true`, `RUN --device=vendor.example/gpu=all true`, `RUN --security=insecure true`, `COPY payload /proof`, `ADD --unpack=false payload /proof`, `ENV A=value`, `LABEL A=value`, `USER ""`, `WORKDIR ""`, `CMD ["true"]`, `ENTRYPOINT ["true"]`, `SHELL ["/bin/sh","-ec"]`, `EXPOSE 80`, `VOLUME /data`, `STOPSIGNAL SIGTERM`, `HEALTHCHECK NONE`} {
+	for _, raw := range []string{`ARG A=value`, `RUN true`, `RUN --device=vendor.example/gpu=all true`, `COPY payload /proof`, `ADD --unpack=false payload /proof`, `ENV A=value`, `LABEL A=value`, `USER ""`, `WORKDIR ""`, `CMD ["true"]`, `ENTRYPOINT ["true"]`, `SHELL ["/bin/sh","-ec"]`, `EXPOSE 80`, `VOLUME /data`, `STOPSIGNAL SIGTERM`, `HEALTHCHECK NONE`} {
 		t.Run(raw, func(t *testing.T) {
 			node, err := imagebuilder.ParseDockerfile(strings.NewReader("FROM scratch\n"))
 			if err != nil {

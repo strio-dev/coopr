@@ -63,12 +63,12 @@ func TestBuildWideHostNetworkAuthorizesRuns(t *testing.T) {
 
 func TestNormalizePlanOptionsHostGrantIsIdempotentAndPreservesCaller(t *testing.T) {
 	allow := make([]string, 1, 2)
-	allow[0] = securityInsecureEntitlement
+	allow[0] = "device"
 	options, err := normalizePlanOptions(PlanOptions{Network: " host ", Allow: allow})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(options.Allow, []string{securityInsecureEntitlement, networkHostEntitlement}) {
+	if !reflect.DeepEqual(options.Allow, []string{"device", networkHostEntitlement}) {
 		t.Fatalf("host network grants = %v", options.Allow)
 	}
 	if allow[:cap(allow)][1] != "" {

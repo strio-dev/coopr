@@ -142,10 +142,13 @@ func TestComponentBuildArgHelpHasNoDefault(t *testing.T) {
 	if strings.Contains(out.String(), "(default name[=value])") {
 		t.Fatalf("help shows an invented build argument default: %s", out.String())
 	}
-	for _, text := range []string{"--pull", "base image pull policy", "--no-cache", "save fresh results to the build cache", "--network", "--add-host", "--secret", "--ssh", "--cache-from", "--cache-to", "--allow", "network.host", "security.insecure"} {
+	for _, text := range []string{"--pull", "base image pull policy", "--no-cache", "save fresh results to the build cache", "--network", "--add-host", "--secret", "--ssh", "--cache-from", "--cache-to", "--allow", "network.host"} {
 		if !strings.Contains(out.String(), text) {
 			t.Errorf("component help missing %q", text)
 		}
+	}
+	if strings.Contains(out.String(), "security.insecure") {
+		t.Fatalf("component help advertises the removed insecure execution entitlement: %s", out.String())
 	}
 }
 

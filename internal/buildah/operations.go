@@ -62,7 +62,6 @@ type Run struct {
 	Commands          [][]string
 	InlineFiles       []definition.InlineFile
 	Network           string
-	Security          string
 	Mounts            []RunMount
 	Devices           []runDeviceRequest
 	SecretSpecs       []string
@@ -88,12 +87,6 @@ func (operation Run) apply(builder operationBuilder, contextDir string) (retErr 
 	network, namespaces, err := runNetworkOptions(operation.Network)
 	if err != nil {
 		return fmt.Errorf("RUN network: %w", err)
-	}
-	switch operation.Security {
-	case "", "sandbox":
-	case "insecure":
-	default:
-		return fmt.Errorf("unsupported RUN security mode %q", operation.Security)
 	}
 	var deviceSpecs []string
 	cdiConfigDir := ""
@@ -262,9 +255,6 @@ func (operation Run) apply(builder operationBuilder, contextDir string) (retErr 
 	}
 	if provider, ok := builder.(interface{ runHostFileControls() (bool, bool) }); ok {
 		runOptions.NoHostname, runOptions.NoHosts = provider.runHostFileControls()
-	}
-	if operation.Security == "insecure" {
-		runOptions.Args = []string{insecureRunRequestedMarker}
 	}
 	lockContext := operation.executionContext
 	if lockContext == nil {

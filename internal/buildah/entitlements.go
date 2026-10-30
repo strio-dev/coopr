@@ -9,7 +9,6 @@ import (
 )
 
 const networkHostEntitlement = "network.host"
-const securityInsecureEntitlement = "security.insecure"
 
 func allowedEntitlements(values []string) (entitlements.Set, error) {
 	parsed := make([]entitlements.Entitlement, 0, len(values))
@@ -18,7 +17,7 @@ func allowedEntitlements(values []string) (entitlements.Set, error) {
 			parsed = append(parsed, entitlements.Entitlement(value))
 		}
 	}
-	allowed, err := entitlements.WhiteList(parsed, nil)
+	allowed, err := entitlements.WhiteList(parsed, []entitlements.Entitlement{entitlements.EntitlementNetworkHost, entitlements.EntitlementDevice})
 	if err != nil {
 		return nil, fmt.Errorf("unsupported build entitlement: %w", err)
 	}
@@ -28,9 +27,6 @@ func allowedEntitlements(values []string) (entitlements.Set, error) {
 func authorizePlannedOperation(operation planner.Operation, allowed entitlements.Set, deviceCache *cdi.Cache) error {
 	if operation.Name == "run" && operation.Properties["network"] == "host" && !allowed.Allowed(networkHostEntitlement) {
 		return fmt.Errorf("RUN network=host requires --allow %s", networkHostEntitlement)
-	}
-	if operation.Name == "run" && operation.Properties["security"] == "insecure" && !allowed.Allowed(securityInsecureEntitlement) {
-		return fmt.Errorf("RUN security=insecure requires --allow %s", securityInsecureEntitlement)
 	}
 	if operation.Name != "run" {
 		return nil
@@ -73,9 +69,6 @@ func authorizeOperations(operations []Operation, allow []string) error {
 		}
 		if run.Network == "host" && !allowed.Allowed(networkHostEntitlement) {
 			return fmt.Errorf("operation %d: RUN network=host requires --allow %s", index+1, networkHostEntitlement)
-		}
-		if run.Security == "insecure" && !allowed.Allowed(securityInsecureEntitlement) {
-			return fmt.Errorf("operation %d: RUN security=insecure requires --allow %s", index+1, securityInsecureEntitlement)
 		}
 		if len(run.Devices) == 0 {
 			continue

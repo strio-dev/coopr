@@ -1,55 +1,57 @@
 package buildah
 
 import (
+	"context"
+	"flag"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
 
-func TestGitWrapperConsumesLaunchEnvironmentAndAllowsChildGit(t *testing.T) {
-	realGit, err := exec.LookPath("git")
+func TestGitReexecDoesNotSelectPrivateExecutable(t *testing.T) {
+	arguments := []string{"git-reexec-no-dispatch", "selected-executable-ran"}
+	if slices.Equal(flag.Args(), arguments) {
+		_, _ = fmt.Fprint(os.Stdout, "native-bootstrap-completed")
+		return
+	}
+	echo, err := exec.LookPath("echo")
 	if err != nil {
 		t.Fatal(err)
 	}
-	directory := filepath.Join(t.TempDir(), "git-wrapper")
-	probe := filepath.Join(t.TempDir(), "git-probe")
-	if err := os.WriteFile(probe, []byte(`#!/bin/sh
-printf '%s\n' "${COOPR_REAL_GIT_EXECUTABLE+set}" "${COOPR_GIT_WRAPPER_DIRECTORY+set}" "$PATH" "$HOME" "$XDG_CONFIG_HOME" "$GIT_ALLOW_PROTOCOL" "$GIT_CONFIG_GLOBAL"
-command -v git
-git --version
+	command := exec.Command(testWorkerBinary(t), "-test.run=^TestGitReexecDoesNotSelectPrivateExecutable$", "-test.short=true", "--", arguments[0], arguments[1])
+	command.Args[0] = "git"
+	command.Env = append(os.Environ(), "COOPR_REAL_GIT_EXECUTABLE="+echo)
+	output, err := command.CombinedOutput()
+	if err != nil || !strings.Contains(string(output), "native-bootstrap-completed") || strings.Contains(string(output), "selected-executable-ran") {
+		t.Fatalf("Git argv collision dispatched a private executable: %v: %s", err, output)
+	}
+}
+
+func TestResolveGitCommitIsolatesHomeConfiguration(t *testing.T) {
+	directory := t.TempDir()
+	executable := filepath.Join(directory, "git")
+	if err := os.WriteFile(executable, []byte(`#!/bin/sh
+test "$HOME" = /dev/null || exit 1
+test "$XDG_CONFIG_HOME" = /dev/null || exit 1
+test "$GIT_CONFIG_GLOBAL" = /dev/null || exit 1
+test "$GIT_CONFIG_NOSYSTEM" = 1 || exit 1
+test "$GIT_ALLOW_PROTOCOL" = git:http:https || exit 1
+test -z "$SSH_AUTH_SOCK" || exit 1
+printf 'A1B2C3\n'
 `), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// Repeated exact entries are private launch state. Similar paths and empty
-	// search entries belong to the caller and must survive unchanged.
-	paths := []string{directory, filepath.Dir(realGit), "", directory + "-other", directory, directory + "/"}
-	wantPaths := []string{filepath.Dir(realGit), "", directory + "-other", directory + "/"}
-	command := exec.Command(testWorkerBinary(t))
-	command.Args[0] = "git"
-	command.Env = append(gitWorkerEnvironment(os.Environ()),
-		realGitExecutable+"="+probe,
-		gitWrapperDirectory+"="+directory,
-		"PATH="+strings.Join(paths, string(os.PathListSeparator)),
-		"HOME=/ambient-home", "XDG_CONFIG_HOME=/ambient-config",
-	)
-	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("Git wrapper: %v: %s", err, output)
-	}
-	lines := strings.Split(strings.TrimSuffix(string(output), "\n"), "\n")
-	want := []string{"", "", strings.Join(wantPaths, string(os.PathListSeparator)), "/dev/null", "/dev/null", "git:http:https", "/dev/null", realGit}
-	if len(lines) != len(want)+1 {
-		t.Fatalf("Git probe output = %q", output)
-	}
-	for index, value := range want {
-		if lines[index] != value {
-			t.Errorf("Git probe line %d = %q, want %q", index, lines[index], value)
-		}
-	}
-	if !strings.HasPrefix(lines[len(want)], "git version ") {
-		t.Fatalf("child Git did not run: %q", lines[len(want)])
+	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("HOME", "/ambient-home")
+	t.Setenv("XDG_CONFIG_HOME", "/ambient-config")
+	t.Setenv("SSH_AUTH_SOCK", "/ambient-agent")
+	commit, err := resolveGitCommit(context.Background(), directory)
+	if err != nil || commit != "a1b2c3" {
+		t.Fatalf("isolated Git commit = %q, %v", commit, err)
 	}
 }
 

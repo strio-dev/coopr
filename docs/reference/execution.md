@@ -98,7 +98,6 @@ Chroot shares its caller's network namespace. It accepts default or host network
 | Elevated operation | Authorization and limit |
 | --- | --- |
 | `network="host"` | Requires `--allow network.host` or build-wide `--network=host`, including cache hits. In containerized Coopr, host means the outer container's network namespace. |
-| `security="insecure"` | Requires `--allow security.insecure`, including cache hits. Requires OCI/rootless isolation; chroot fails. Applies the insecure OCI spec policy, bounded by outer container, user namespace, and kernel permissions. Writable sysfs/cgroup remounts may fail in nested rootless containers; failures are reported. |
 | RUN `device` children | Require `--allow device`, `--allow device=SELECTOR`, or CDI auto-allow annotation. Selection/authorization precede cache lookup. Only devices/CDI files available to the outer container can pass through. |
 
 Request a CDI device with a child of RUN:
@@ -170,7 +169,7 @@ Both build commands accept the following RUN and lifecycle settings. Defaults no
 | CPU | `--cpu-period`, `--cpu-quota` (-1 unlimited), `--cpu-shares` / `-c`, `--cpuset-cpus`, `--cpuset-mems`. |
 | Limits and groups | Repeatable `--ulimit NAME=SOFT:HARD`, `--group-add`. |
 | Mounts and devices | Repeatable `--mount SPEC`, `--volume HOST:CONTAINER[:OPTIONS]` / `-v`, `--device`. CDI lookup uses global `--cdi-spec-dir`; hidden `--cdi-config-dir` overrides that list for a build. |
-| Capabilities and security | Repeatable `--cap-add`, `--cap-drop`, `--security-opt`; elevated authored requests require `--allow` entitlements. |
+| Capabilities and security | Repeatable `--cap-add`, `--cap-drop`, `--security-opt` apply native security settings to all RUNs. |
 | User namespaces | `--userns host\|private\|auto\|PATH`, `--userns-uid-map`, `--userns-gid-map` (`CONTAINER:HOST:SIZE`), `--userns-uid-map-user`, `--userns-gid-map-group`. |
 | Other namespaces | `--cgroupns`, `--pid`, `--ipc`, `--uts` (`host`, `private`, or a namespace path); `--cgroup-parent`. |
 | Runtime | `--isolation oci\|rootless\|chroot`, `--runtime`, repeatable `--runtime-flag`, `--hooks-dir`. Global `--module`, `--cgroup-manager`, `--network-config-dir` select native configuration. |

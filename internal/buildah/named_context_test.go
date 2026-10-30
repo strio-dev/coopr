@@ -714,8 +714,6 @@ func TestBuildPlanConsumesRemoteNamedContexts(t *testing.T) {
 	t.Setenv("HOME", gitHome)
 	t.Setenv("GIT_CONFIG_GLOBAL", gitConfig)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(gitHome, ".config"))
-	t.Setenv(gitWrapperDirectory, filepath.Join(gitHome, "fake-wrapper"))
-	t.Setenv(realGitExecutable, "/bin/false")
 	for _, test := range []struct {
 		name, proof string
 		spec        buildcontext.Spec

@@ -146,7 +146,7 @@ func cloneGitSource(ctx context.Context, builder any, source, repository string,
 	if err != nil {
 		return "", err
 	}
-	executable, err := gitAddExecutable()
+	executable, err := exec.LookPath("git")
 	if err != nil {
 		return "", err
 	}
@@ -258,17 +258,6 @@ func parseGitAddSource(source string) (remote, subdirectory, reference string, e
 	return remote, subdirectory, reference, nil
 }
 
-func gitAddExecutable() (string, error) {
-	if executable := os.Getenv(realGitExecutable); filepath.IsAbs(executable) {
-		return executable, nil
-	}
-	executable, err := exec.LookPath("git")
-	if err != nil {
-		return "", fmt.Errorf("find Git executable for ADD: %w", err)
-	}
-	return executable, nil
-}
-
 func redactGitSource(source string) string {
 	remote, fragment, hasFragment := strings.Cut(source, "#")
 	parsed, err := url.Parse(remote)
@@ -318,12 +307,14 @@ func verifyGitCommit(ctx context.Context, repository, expected string) error {
 }
 
 func resolveGitCommit(ctx context.Context, repository string) (string, error) {
-	executable, err := gitAddExecutable()
+	executable, err := exec.LookPath("git")
 	if err != nil {
 		return "", err
 	}
 	process := gitCommandContext(ctx, executable, "-C", repository, "rev-parse", "--verify", "HEAD")
 	process.Env = gitWorkerEnvironment(os.Environ())
+	process.Env = removeEnvironment(process.Env, "HOME", "XDG_CONFIG_HOME", "SSH_AUTH_SOCK")
+	process.Env = append(process.Env, "HOME=/dev/null", "XDG_CONFIG_HOME=/dev/null")
 	output, err := process.Output()
 	if err != nil {
 		return "", fmt.Errorf("resolve cloned Git HEAD: %w", err)

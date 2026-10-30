@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"time"
@@ -20,7 +19,6 @@ import (
 	"go.podman.io/buildah/define"
 	"go.podman.io/buildah/pkg/blobcache"
 	"go.podman.io/buildah/pkg/parse"
-	buildahutil "go.podman.io/buildah/util"
 	nettypes "go.podman.io/common/libnetwork/types"
 	commonconfig "go.podman.io/common/pkg/config"
 	imagecopy "go.podman.io/image/v5/copy"
@@ -721,33 +719,9 @@ func (b nativeBuilder) run(command []string, options upstream.RunOptions) (retEr
 		options.Isolation = define.IsolationOCI
 	}
 	options.Terminal = upstream.WithoutTerminal
-	if len(options.Args) == 1 && options.Args[0] == insecureRunRequestedMarker {
-		if options.Isolation != define.IsolationOCI && options.Isolation != define.IsolationOCIRootless {
-			return fmt.Errorf("RUN security=insecure requires OCI or rootless isolation, got %s", options.Isolation)
-		}
-		realRuntime, err := resolveInsecureRuntime(b.runtime)
-		if err != nil {
-			return err
-		}
-		options.Runtime = insecureRuntimeExecutable
-		options.Args = nativeRuntimeArgs(options.Args, b.runtimeArgs, realRuntime)
-		processLabel, mountLabel := b.ProcessLabel, b.MountLabel
-		b.ProcessLabel, b.MountLabel = "", ""
-		defer func() {
-			b.ProcessLabel, b.MountLabel = processLabel, mountLabel
-		}()
-	} else {
-		options.Runtime = b.runtime
-		options.Args = nativeRuntimeArgs(options.Args, b.runtimeArgs, "")
-	}
+	options.Runtime = b.runtime
+	options.Args = append(slices.Clone(b.runtimeArgs), options.Args...)
 	return b.runWithSlirpNetwork(command, options)
-}
-
-func nativeRuntimeArgs(generated, flags []string, insecureRuntime string) []string {
-	if insecureRuntime != "" {
-		return append([]string{insecureRuntimeMarker, insecureRuntime}, flags...)
-	}
-	return append(slices.Clone(flags), generated...)
 }
 
 func effectiveRuntime(fallback string, controls RunControls) string {
@@ -755,27 +729,6 @@ func effectiveRuntime(fallback string, controls RunControls) string {
 		return controls.Runtime
 	}
 	return fallback
-}
-
-func resolveInsecureRuntime(runtime string) (string, error) {
-	if runtime == "" {
-		runtime = buildahutil.Runtime()
-	}
-	if local := buildahutil.FindLocalRuntime(runtime); local != "" {
-		runtime = local
-	}
-	resolved, err := exec.LookPath(runtime)
-	if err != nil {
-		return "", fmt.Errorf("resolve OCI runtime for RUN security=insecure: %w", err)
-	}
-	resolved, err = filepath.Abs(resolved)
-	if err != nil {
-		return "", fmt.Errorf("resolve OCI runtime for RUN security=insecure: %w", err)
-	}
-	if resolved == insecureRuntimeExecutable {
-		return "", fmt.Errorf("resolve OCI runtime for RUN security=insecure: invalid runtime %q", resolved)
-	}
-	return resolved, nil
 }
 
 func (b nativeBuilder) add(destination string, extract bool, options upstream.AddAndCopyOptions, sources ...string) error {

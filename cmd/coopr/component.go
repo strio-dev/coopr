@@ -170,7 +170,7 @@ func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
 	f.StringVar(&osName, "os", "", "target operating system")
 	f.StringVar(&arch, "arch", "", "target architecture")
 	f.StringVar(&variant, "variant", "", "target architecture variant")
-	f.StringArrayVar(&allow, "allow", nil, "allow an elevated build entitlement (repeatable: network.host, security.insecure, device, or device=SELECTOR)")
+	f.StringArrayVar(&allow, "allow", nil, "allow an elevated build entitlement (repeatable: network.host, device, or device=SELECTOR)")
 	times.addTo(cmd)
 	if standalone {
 		addGlobalRunFlags(cmd.Flags())

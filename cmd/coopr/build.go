@@ -215,7 +215,7 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 	f.StringVar(&arch, "arch", "", "target architecture")
 	f.StringVar(&variant, "variant", "", "target architecture variant")
 	cmd.MarkFlagsMutuallyExclusive("all-platforms", "platform")
-	f.StringArrayVar(&allow, "allow", nil, "allow an elevated build entitlement (repeatable: network.host, security.insecure, device, or device=SELECTOR)")
+	f.StringArrayVar(&allow, "allow", nil, "allow an elevated build entitlement (repeatable: network.host, device, or device=SELECTOR)")
 	times.addTo(cmd)
 	if standalone {
 		addGlobalRunFlags(cmd.Flags())

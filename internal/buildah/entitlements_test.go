@@ -10,6 +10,12 @@ import (
 	"github.com/strio-dev/coopr/internal/planner"
 )
 
+func TestRetiredInsecureEntitlementIsRejected(t *testing.T) {
+	if _, err := allowedEntitlements([]string{"security.insecure"}); err == nil {
+		t.Fatal("retired security.insecure entitlement accepted")
+	}
+}
+
 func TestAuthoredRunNetworkModesAreCheckedAfterArgumentExpansion(t *testing.T) {
 	for _, mode := range []string{"default", "none", "host", "private", "buildnet", "ns:/coopr-test-namespace", "pasta:--map-gw", "slirp4netns:allow_host_loopback=true"} {
 		t.Run(mode, func(t *testing.T) {
@@ -84,26 +90,6 @@ func TestHostNetworkRequiresExplicitRequestEntitlement(t *testing.T) {
 func TestUnknownEntitlementIsRejected(t *testing.T) {
 	if _, err := allowedEntitlements([]string{"security.unknown"}); err == nil || !strings.Contains(err.Error(), "unsupported build entitlement") {
 		t.Fatalf("unknown entitlement error = %v", err)
-	}
-}
-
-func TestInsecureSecurityRequiresExplicitRequestEntitlement(t *testing.T) {
-	operation := planner.Operation{Instruction: definition.Instruction{Name: "run", Properties: map[string]string{"security": "insecure"}}}
-	if err := authorizePlannedOperation(operation, nil, nil); err == nil || !strings.Contains(err.Error(), "--allow security.insecure") {
-		t.Fatalf("missing entitlement error = %v", err)
-	}
-	allowed, err := allowedEntitlements([]string{"security.insecure"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := authorizePlannedOperation(operation, allowed, nil); err != nil {
-		t.Fatalf("authorized insecure security: %v", err)
-	}
-	if err := authorizeOperations([]Operation{Run{Command: []string{"true"}, Security: "insecure"}}, nil); err == nil || !strings.Contains(err.Error(), "--allow security.insecure") {
-		t.Fatalf("direct build missing entitlement error = %v", err)
-	}
-	if err := authorizeOperations([]Operation{Run{Command: []string{"true"}, Security: "insecure"}}, []string{"security.insecure"}); err != nil {
-		t.Fatalf("authorized direct insecure security: %v", err)
 	}
 }
 

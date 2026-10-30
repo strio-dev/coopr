@@ -229,13 +229,6 @@ func lowerOperationWithCacheMountIDs(operation planner.Operation, shell []string
 		if err := allowProperties(instruction); err != nil {
 			return nil, nil, err
 		}
-		security := instruction.Properties["security"]
-		switch security {
-		case "", "sandbox":
-		case "insecure":
-		default:
-			return nil, nil, fmt.Errorf("RUN security mode %q is not supported", security)
-		}
 		command := slices.Clone(instruction.Arguments)
 		var commands [][]string
 		if instruction.Commands != nil {
@@ -264,7 +257,7 @@ func lowerOperationWithCacheMountIDs(operation planner.Operation, shell []string
 		if err != nil {
 			return nil, nil, fmt.Errorf("RUN devices: %w", err)
 		}
-		return []Operation{Run{Command: command, Commands: commands, InlineFiles: slices.Clone(instruction.InlineFiles), Network: instruction.Properties["network"], Security: security, Mounts: mounts, Devices: devices, Env: argumentEnvironment(operation.ArgumentsInScope)}}, nil, nil
+		return []Operation{Run{Command: command, Commands: commands, InlineFiles: slices.Clone(instruction.InlineFiles), Network: instruction.Properties["network"], Mounts: mounts, Devices: devices, Env: argumentEnvironment(operation.ArgumentsInScope)}}, nil, nil
 	case "copy", "add":
 		return lowerCopyOrAdd(instruction, operation.InputContext)
 	case "env", "label":

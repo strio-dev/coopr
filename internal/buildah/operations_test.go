@@ -233,16 +233,13 @@ func TestRunPassesResolvedCDIDevicesToBuildah(t *testing.T) {
 	}
 }
 
-func TestRunSecurityModes(t *testing.T) {
+func TestRunKeepsNativeRuntimeSelection(t *testing.T) {
 	fake := &recordingBuilder{}
-	if err := applyOperations(context.Background(), fake, "", []Operation{Run{Command: []string{"/bin/true"}, Security: "sandbox"}}); err != nil {
-		t.Fatalf("sandbox security mode: %v", err)
+	if err := applyOperations(context.Background(), fake, "", []Operation{Run{Command: []string{"/bin/true"}}}); err != nil {
+		t.Fatal(err)
 	}
-	if err := applyOperations(context.Background(), fake, "", []Operation{Run{Command: []string{"/bin/true"}, Security: "insecure"}}); err != nil {
-		t.Fatalf("insecure security mode: %v", err)
-	}
-	if got := fake.runOptions[1].Args; !reflect.DeepEqual(got, []string{insecureRunRequestedMarker}) {
-		t.Fatalf("insecure runtime marker = %#v", got)
+	if len(fake.runOptions) != 1 || fake.runOptions[0].Runtime != "" || len(fake.runOptions[0].Args) != 0 {
+		t.Fatalf("RUN overrode native runtime selection: %+v", fake.runOptions)
 	}
 }
 

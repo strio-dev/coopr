@@ -151,46 +151,6 @@ func TestWarmHostNetworkRunCacheStillRequiresEntitlement(t *testing.T) {
 	}
 }
 
-func TestWarmInsecureRunCacheStillRequiresEntitlement(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping a live insecure instruction cache build in short mode")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	root := t.TempDir()
-	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
-	base := newLiveBusyBoxStorage(t, ctx, root, store)
-	policy := filepath.Join(root, "policy.json")
-	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	plan := testPlan(t, fmt.Sprintf(`from %q {
-    run "test -r /proc/self/status && printf cached-insecure-run >/proof" network="none" security="insecure"
-    label after="insecure-run"
-}
-`, base.reference))
-	common := SupervisedPlanOptions{
-		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-		Pull: false, SignaturePolicyPath: policy,
-		Stdout: io.Discard, Stderr: io.Discard,
-	}
-	allowed := common
-	allowed.Allow = []string{"security.insecure"}
-	allowed.Output = Output{Path: filepath.Join(root, "allowed-layout")}
-	_, err := BuildPlanSupervised(ctx, plan, allowed)
-	if err != nil {
-		t.Fatalf("populate insecure RUN cache: %v", err)
-	}
-	if records := instructionCacheRecordCount(t, store); records != 1 {
-		t.Fatalf("cold insecure RUN cache records = %d, want 1", records)
-	}
-	denied := common
-	denied.Output = Output{Path: filepath.Join(root, "denied-layout")}
-	if _, err := BuildPlanSupervised(ctx, plan, denied); err == nil || !strings.Contains(err.Error(), "--allow security.insecure") {
-		t.Fatalf("warm cache without entitlement error = %v", err)
-	}
-}
-
 func TestWarmDeviceRunCacheStillRequiresEntitlement(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping a live CDI instruction cache build in short mode")

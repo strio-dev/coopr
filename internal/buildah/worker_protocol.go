@@ -39,7 +39,6 @@ const (
 )
 
 func init() {
-	reexec.Register("git", runGitWrapper)
 	// unshare uses a modified argv[0] for the second, user-namespaced reexec.
 	for _, name := range []string{planWorkerName, planWorkerName + "-in-a-user-namespace"} {
 		reexec.Register(name, runPlanWorker)
@@ -493,11 +492,7 @@ func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition
 	command.Stdin = options.Stdin
 	command.Stdout = options.Stdout
 	command.Stderr = options.Stderr
-	gitEnvironment, err := prepareGitWorkerEnvironment(os.Environ(), jobDir)
-	if err != nil {
-		return planWorkerResponse{}, err
-	}
-	command.Env = append(withoutSigningPassword(gitEnvironment), "TMPDIR="+workerTempAlias)
+	command.Env = append(withoutSigningPassword(gitWorkerEnvironment(os.Environ())), "TMPDIR="+workerTempAlias)
 	processErr := runWorkerProcess(ctx, command, workerGrace)
 	if processErr != nil {
 		cleanupErr := error(nil)

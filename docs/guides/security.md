@@ -86,7 +86,6 @@ See [remote inputs](../reference/definition.md#remote-inputs) for exact secret n
 Entitlements are checked even on cache hits. Grants cannot supply privileges missing from the host or outer container.
 
 - **Host networking:** `run network="host"` requires `--allow network.host`. Build-wide `--network=host` both selects host networking and grants this permission.
-- **Insecure execution:** `run security="insecure"` requires `--allow security.insecure` and OCI/rootless isolation. Chroot isolation is rejected.
 - **CDI devices:** a RUN `device` child requires `--allow device` or a matching `--allow device=SELECTOR`, unless the CDI metadata authorizes the device.
 
 ## Trust images and components

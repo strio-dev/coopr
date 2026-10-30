@@ -357,8 +357,6 @@ func TestPackageCacheEligibilityRejectsUndeclaredInputs(t *testing.T) {
 	}
 	eligible := []planner.Operation{
 		{Instruction: definition.Instruction{Name: "run", Arguments: []string{"true"}, Properties: map[string]string{"network": "host"}}},
-		{Instruction: definition.Instruction{Name: "run", Arguments: []string{"true"}, Properties: map[string]string{"network": "none", "security": "insecure"}}},
-
 		{Instruction: definition.Instruction{Name: "run", Arguments: []string{"true"}, Properties: map[string]string{"network": "default"}}},
 		{Instruction: definition.Instruction{Name: "run", Arguments: []string{"true"}, Properties: map[string]string{"network": "none"}, Children: []definition.Instruction{{Name: "mount", Arguments: []string{"secret"}, Properties: map[string]string{"id": "token"}}}}},
 		{Instruction: definition.Instruction{Name: "run", Arguments: []string{"true"}, Properties: map[string]string{"network": "none"}, Children: []definition.Instruction{{Name: "mount", Arguments: []string{"ssh"}}}}},

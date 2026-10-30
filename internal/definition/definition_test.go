@@ -267,7 +267,7 @@ func TestInvalidDefinitions(t *testing.T) {
 }
 
 func TestStandardOptionsDeferToFrontend(t *testing.T) {
-	parsed, err := parseFragment(strings.NewReader(`run "true" network="host" security="sandbox"`))
+	parsed, err := parseFragment(strings.NewReader(`run "true" network="host"`))
 	if err != nil {
 		t.Fatal(err)
 	}

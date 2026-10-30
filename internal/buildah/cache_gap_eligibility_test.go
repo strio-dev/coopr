@@ -11,9 +11,9 @@ import (
 
 func TestCacheGapKnownExecutionInputsCanReuseAggregateResults(t *testing.T) {
 	for _, properties := range []map[string]string{
-		{"network": "host"}, {"network": "private"}, {"network": "none", "security": "insecure"},
+		{"network": "host"}, {"network": "private"}, {"network": "none"},
 	} {
-		t.Run(properties["network"]+"/"+properties["security"], func(t *testing.T) {
+		t.Run(properties["network"], func(t *testing.T) {
 			stage := planner.Stage{ID: "output", Kind: "extend", Operations: []planner.Operation{{Instruction: definition.Instruction{Name: "run", Arguments: []string{"true"}, Properties: properties}}}}
 			resolved := &ResolvedComponentPlan{Plan: &planner.Plan{Stages: []planner.Stage{stage}, Outputs: []string{"output"}}}
 			if !componentCacheEligible(resolved) {

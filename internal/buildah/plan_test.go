@@ -172,16 +172,16 @@ func TestLowerOperationRejectsUnknownInstruction(t *testing.T) {
 	}
 }
 
-func TestRequestFromPlanLowersRunHostNetworkAndSandboxSecurity(t *testing.T) {
+func TestRequestFromPlanLowersRunHostNetwork(t *testing.T) {
 	request, err := RequestFromPlan(testPlan(t, `from "scratch" {
-    run "true" network="host" security="sandbox"
+    run "true" network="host"
 }
 `), PlanOptions{Allow: []string{"network.host"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	run := request.Operations[0].(Run)
-	if run.Network != "host" || run.Security != "sandbox" || !reflect.DeepEqual(request.Allow, []string{"network.host"}) {
+	if run.Network != "host" || !reflect.DeepEqual(request.Allow, []string{"network.host"}) {
 		t.Fatalf("lowered RUN = %#v; allow = %#v", run, request.Allow)
 	}
 }
@@ -225,17 +225,12 @@ func TestRequestFromPlanValidatesDNSAgainstEffectiveRunNetwork(t *testing.T) {
 	}
 }
 
-func TestRequestFromPlanLowersRunInsecureSecurity(t *testing.T) {
-	request, err := RequestFromPlan(testPlan(t, `from "scratch" {
-    run "true" security="insecure"
-}
-`), PlanOptions{Allow: []string{"security.insecure"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	run := request.Operations[0].(Run)
-	if run.Security != "insecure" || !reflect.DeepEqual(request.Allow, []string{"security.insecure"}) {
-		t.Fatalf("lowered RUN = %#v; allow = %#v", run, request.Allow)
+func TestLowerRunRejectsRetiredSecurityProperty(t *testing.T) {
+	for _, mode := range []string{"sandbox", "insecure"} {
+		instruction := definition.Instruction{Name: "run", Arguments: []string{"true"}, Properties: map[string]string{"security": mode}}
+		if _, _, err := lowerOperation(planner.Operation{Instruction: instruction}, nil); err == nil {
+			t.Fatalf("retired RUN security property %q was lowered", mode)
+		}
 	}
 }
 
