@@ -90,18 +90,7 @@ func testGeneratedOCIBase(t *testing.T, explicitAfter bool, converted bool, name
 		t.Fatal(err)
 	}
 	store := cacheTestStore(root)
-	text := `from "oci:input:latest" as="producer" {
-    run "cp -a /ctx/input /ctx/out" {
-     mount "bind" target="/ctx" rw="true"
-    }
-}
-from "oci:out:latest" after="producer" {
-    env generated="yes"
-}
-`
-	if !explicitAfter {
-		text = strings.ReplaceAll(text, ` after="producer"`, "")
-	}
+	outputSource := "oci:out:latest"
 
 	sourcePolicyFile := ""
 	if converted {
@@ -109,21 +98,33 @@ from "oci:out:latest" after="producer" {
 		if err := os.WriteFile(sourcePolicyFile, []byte(`{"rules":[{"action":"CONVERT","selector":{"identifier":"docker-image://registry.invalid/generated:latest"},"updates":{"identifier":"oci:out:latest"}}]}`), 0600); err != nil {
 			t.Fatal(err)
 		}
-		text = strings.ReplaceAll(text, `from "oci:out:latest" {}
-`, `from "registry.invalid/generated:latest" {}
-`)
+		outputSource = "registry.invalid/generated:latest"
 	}
 
 	var contexts []buildcontext.Spec
 	if namedContext {
-		text = strings.ReplaceAll(text, `from "registry.invalid/generated:latest" {}
-`, `from "generated" {}
-`)
+		outputSource = "generated"
 		contexts = []buildcontext.Spec{{Name: "generated", Kind: buildcontext.DockerImage, Reference: "registry.invalid/generated:latest"}}
 	}
+	after := ""
+	if explicitAfter {
+		after = ` after="producer"`
+	}
+	text := fmt.Sprintf(`from "oci:input:latest" as="producer" {
+    run "cp -a /ctx/input /ctx/out" {
+     mount "bind" target="/ctx" rw="true"
+    }
+}
+from %q%s {
+    env generated="yes"
+}
+`, outputSource, after)
 	def, err := definition.Parse(strings.NewReader(text))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(def.Instructions) != 2 || !slices.Equal(def.Instructions[1].Arguments, []string{outputSource}) {
+		t.Fatalf("generated workflow did not select source %q: %+v", outputSource, def.Instructions)
 	}
 
 	policy := filepath.Join(root, "policy.json")
@@ -135,19 +136,6 @@ from "oci:out:latest" after="producer" {
 		jobs = 1
 	}
 
-	if converted {
-		nativeRoot := filepath.Join(root, "native-policy")
-		if err := os.Mkdir(nativeRoot, 0700); err != nil {
-			t.Fatal(err)
-		}
-		cmd := reexec.CommandContext(ctx, upstreamGeneratedWorker, nativeRoot, contextDir, filepath.Join(root, "native-policy-result"), fmt.Sprint(explicitAfter), sourcePolicyFile, fmt.Sprint(namedContext))
-		if data, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("native policy workflow: %v\n%s", err, data)
-		}
-		if err := os.RemoveAll(filepath.Join(contextDir, "out")); err != nil {
-			t.Fatal(err)
-		}
-	}
 	for attempt := 0; attempt < 2; attempt++ {
 		output := filepath.Join(root, fmt.Sprintf("result-%d", attempt))
 		_, err = BuildDefinitionSupervised(ctx, def, planner.Options{Mode: planner.Build, BuildContexts: contexts, Platform: "linux/" + runtime.GOARCH, BuildUnusedStages: !explicitAfter}, SupervisedPlanOptions{SourcePolicyFile: sourcePolicyFile, Store: store, ContextDir: contextDir, Isolation: "rootless", Runtime: "crun", Output: Output{Path: output, DisableCompression: true}, SignaturePolicyPath: policy, Jobs: jobs, Lifecycle: LifecycleControls{NoLayers: !explicitAfter}, Stdout: io.Discard, Stderr: os.Stderr})

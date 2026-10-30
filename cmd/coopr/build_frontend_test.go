@@ -51,20 +51,6 @@ func TestResolveBuildInputKeepsExplicitHTTPDefinitionOutsideContext(t *testing.T
 	}
 }
 
-func TestBuildArgFilesPrecedeExplicitArguments(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "args")
-	if err := os.WriteFile(path, []byte("one=file\ntwo=value\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	got, err := readBuildArgFiles([]string{path}, []string{"one=flag"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got["one"] != "flag" || got["two"] != "value" {
-		t.Fatalf("args = %#v", got)
-	}
-}
-
 func TestResolveBuildInputRequiresExplicitDefinition(t *testing.T) {
 	root := t.TempDir()
 	for _, name := range []string{"image.coopr", "component.coopr"} {

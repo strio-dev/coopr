@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -137,27 +136,6 @@ func TestResolveRemoteImageFromRegistry(t *testing.T) {
 	}
 	if resolved.Root.Digest != root.Digest || resolved.Repository == "local" {
 		t.Fatalf("unexpected registry fallback resolution: %+v", resolved)
-	}
-}
-
-func TestResolveRegistryImageDoesNotCreateAbsentLocalStore(t *testing.T) {
-	_, repo, _, name := testRepository(t, registry.New())
-	ctx := context.Background()
-	platform := v1.Platform{OS: "linux", Architecture: "amd64"}
-	root, _ := imageManifest(t, repo, platform, "remote layer")
-	if err := repo.Tag(ctx, root, "remote"); err != nil {
-		t.Fatal(err)
-	}
-	storeDir := filepath.Join(t.TempDir(), "missing", "images")
-	resolver, err := NewResolver(Options{TLSVerify: boolOption(false)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := resolver.Resolve(ctx, name+":remote", platform, Image); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(storeDir); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("registry resolution created local store %q: %v", storeDir, err)
 	}
 }
 

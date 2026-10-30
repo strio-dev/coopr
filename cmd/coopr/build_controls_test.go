@@ -138,6 +138,12 @@ func TestPullPolicyFlagsUseMissingByDefault(t *testing.T) {
 		if flag.NoOptDefVal != "always" {
 			t.Fatalf("%s bare --pull = %q", test.name, flag.NoOptDefVal)
 		}
+		if err := test.cmd.ParseFlags([]string{"--pull"}); err != nil {
+			t.Fatalf("%s parse bare --pull: %v", test.name, err)
+		}
+		if flag.Value.String() != "always" {
+			t.Fatalf("%s bare --pull became %q", test.name, flag.Value.String())
+		}
 		for _, policy := range []string{"always", "missing", "never", "newer"} {
 			if err := test.cmd.ParseFlags([]string{"--pull=" + policy}); err != nil {
 				t.Fatalf("%s --pull=%s: %v", test.name, policy, err)

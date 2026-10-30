@@ -38,12 +38,15 @@ func TestNativeImageRetryCoversMetadataResolution(t *testing.T) {
 	_ = stream.Close()
 	armed.Store(true)
 	host := strings.TrimPrefix(server.URL, "http://")
-	resolver, err := NewResolver(Options{TLSVerify: boolOption(false), Retry: 3, RetrySet: true})
+	resolver, err := NewResolver(Options{TLSVerify: boolOption(false), Retry: 3, RetrySet: true, RetryDelay: time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := resolver.ResolveRemoteImage(context.Background(), host+"/coopr/test:retry", platform); err != nil {
 		t.Fatalf("retry-enabled resolution failed after %d manifest requests: %v", manifestRequests.Load(), err)
+	}
+	if got := manifestRequests.Load(); got < 2 {
+		t.Fatalf("manifest requests = %d, want a failed attempt followed by recovery", got)
 	}
 }
 
@@ -78,7 +81,7 @@ func TestNativeImageRetryCoversConfigBlob(t *testing.T) {
 	}
 	armed.Store(true)
 	host := strings.TrimPrefix(server.URL, "http://")
-	resolver, err := NewResolver(Options{TLSVerify: boolOption(false), Retry: 3, RetrySet: true})
+	resolver, err := NewResolver(Options{TLSVerify: boolOption(false), Retry: 3, RetrySet: true, RetryDelay: time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +122,7 @@ func TestNativeImageRetryCoversPolicyManifest(t *testing.T) {
 	}
 	armed.Store(true)
 	host := strings.TrimPrefix(server.URL, "http://")
-	resolver, err := NewResolver(Options{TLSVerify: boolOption(false), Retry: 3, RetrySet: true})
+	resolver, err := NewResolver(Options{TLSVerify: boolOption(false), Retry: 3, RetrySet: true, RetryDelay: time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}

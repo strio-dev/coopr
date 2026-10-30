@@ -69,6 +69,24 @@ func TestDefinitionStdinRetainsModeValidation(t *testing.T) {
 	}
 }
 
+func TestConsumedContextStdinReachesComponentModeValidation(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "image.coopr")
+	if err := os.WriteFile(file, []byte(`from "scratch" {}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var archive bytes.Buffer
+	if err := tar.NewWriter(&archive).Close(); err != nil {
+		t.Fatal(err)
+	}
+	stdin := bytes.NewReader(archive.Bytes())
+	_, err := BuildComponent(context.Background(), ComponentOptions{
+		File: file, Context: "-", Stdin: stdin, RunStdin: stdin,
+	})
+	if err == nil || !strings.Contains(err.Error(), "component publication requires extend") {
+		t.Fatalf("consumed context stdin did not reach component mode validation: %v", err)
+	}
+}
+
 func TestHTTPDefinitionReportsStatusAndCancellation(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "missing", http.StatusNotFound) }))
 	defer server.Close()

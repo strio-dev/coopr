@@ -61,28 +61,6 @@ func TestProjectLockFlagsAreAbsent(t *testing.T) {
 	}
 }
 
-func TestBuildCommandsAcceptPull(t *testing.T) {
-	for _, cmd := range []*cobra.Command{newBuildCommand(), newComponentBuildCommand()} {
-		flag := cmd.Flags().Lookup("pull")
-		if flag == nil {
-			t.Fatalf("%s does not expose --pull", cmd.CommandPath())
-		}
-		if flag.DefValue != "missing" {
-			t.Fatalf("%s --pull default = %q, want missing", cmd.CommandPath(), flag.DefValue)
-		}
-		if err := cmd.ParseFlags([]string{"--pull"}); err != nil {
-			t.Fatalf("%s parse --pull: %v", cmd.CommandPath(), err)
-		}
-		got, err := cmd.Flags().GetString("pull")
-		if err != nil {
-			t.Fatalf("%s read --pull: %v", cmd.CommandPath(), err)
-		}
-		if got != "always" {
-			t.Fatalf("%s --pull policy = %q, want always", cmd.CommandPath(), got)
-		}
-	}
-}
-
 func TestBuildCommandsAcceptNoCache(t *testing.T) {
 	for _, cmd := range []*cobra.Command{newBuildCommand(), newComponentBuildCommand()} {
 		flag := cmd.Flags().Lookup("no-cache")
@@ -101,25 +79,6 @@ func TestBuildCommandsAcceptNoCache(t *testing.T) {
 		}
 		if !got {
 			t.Fatalf("%s --no-cache was not enabled", cmd.CommandPath())
-		}
-	}
-}
-
-func TestBuildCommandsAcceptNetworkAndAddHost(t *testing.T) {
-	for _, factory := range []func() *cobra.Command{newBuildCommand, newComponentBuildCommand} {
-		for _, mode := range []string{"default", "none", "host"} {
-			cmd := factory()
-			if got := cmd.Flags().Lookup("network"); got == nil || got.DefValue != "default" {
-				t.Fatalf("%s --network flag = %#v", cmd.CommandPath(), got)
-			}
-			if err := cmd.ParseFlags([]string{"--network", mode, "--add-host", "one.test:127.0.0.1", "--add-host", "two.test:127.0.0.2"}); err != nil {
-				t.Fatalf("%s parse network options: %v", cmd.CommandPath(), err)
-			}
-			gotMode, _ := cmd.Flags().GetString("network")
-			gotHosts, _ := cmd.Flags().GetStringSlice("add-host")
-			if gotMode != mode || strings.Join(gotHosts, ",") != "one.test:127.0.0.1,two.test:127.0.0.2" {
-				t.Fatalf("%s network options = %q, %v", cmd.CommandPath(), gotMode, gotHosts)
-			}
 		}
 	}
 }

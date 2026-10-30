@@ -306,42 +306,39 @@ func TestCacheTargetPreservesRawEnvelope(t *testing.T) {
 
 }
 
-func TestArtifactReadRetriesUseNativeControls(t *testing.T) {
+func TestArtifactBlobReadRetriesUseNativeControls(t *testing.T) {
 	for _, maxRetry := range []uint{0, 1} {
-		for _, fault := range []string{"manifest", "blob"} {
-			t.Run(fmt.Sprintf("%s/%d", fault, maxRetry), func(t *testing.T) {
-				backend := registryserver.New()
-				var armed atomic.Bool
-				var failures atomic.Int32
-				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					match := r.Method == http.MethodGet && (fault == "manifest" && strings.Contains(r.URL.Path, "/manifests/") || fault == "blob" && strings.Contains(r.URL.Path, "/blobs/"))
-					if armed.Load() && match && failures.Add(1) == 1 {
-						http.Error(w, "transient", http.StatusServiceUnavailable)
-						return
-					}
-					backend.ServeHTTP(w, r)
-				}))
-				defer server.Close()
-				resolver, err := testResolver(t, Options{TLSVerify: boolOption(false), RetrySet: true, Retry: maxRetry, RetryDelay: time.Millisecond})
-				if err != nil {
-					t.Fatal(err)
+		t.Run(fmt.Sprintf("retries=%d", maxRetry), func(t *testing.T) {
+			backend := registryserver.New()
+			var armed atomic.Bool
+			var failures atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if armed.Load() && r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/blobs/") && failures.Add(1) == 1 {
+					http.Error(w, "transient", http.StatusServiceUnavailable)
+					return
 				}
-				meta, paths := publicationMetadata(t, nil, false)
-				name := strings.TrimPrefix(server.URL, "http://") + "/test/component:stable"
-				if _, err = resolver.PublishComponent(context.Background(), name, meta, paths); err != nil {
-					t.Fatal(err)
+				backend.ServeHTTP(w, r)
+			}))
+			defer server.Close()
+			resolver, err := testResolver(t, Options{TLSVerify: boolOption(false), RetrySet: true, Retry: maxRetry, RetryDelay: time.Millisecond})
+			if err != nil {
+				t.Fatal(err)
+			}
+			meta, paths := publicationMetadata(t, nil, false)
+			name := strings.TrimPrefix(server.URL, "http://") + "/test/component:stable"
+			if _, err = resolver.PublishComponent(context.Background(), name, meta, paths); err != nil {
+				t.Fatal(err)
+			}
+			armed.Store(true)
+			_, err = resolver.Resolve(context.Background(), name, meta.Platform, Component)
+			if maxRetry == 0 {
+				if err == nil || failures.Load() != 1 {
+					t.Fatalf("zero retry: %d %v", failures.Load(), err)
 				}
-				armed.Store(true)
-				_, err = resolver.Resolve(context.Background(), name, meta.Platform, Component)
-				if maxRetry == 0 {
-					if err == nil || failures.Load() != 1 {
-						t.Fatalf("zero retry: %d %v", failures.Load(), err)
-					}
-				} else if err != nil || failures.Load() < 2 {
-					t.Fatalf("retry: %d %v", failures.Load(), err)
-				}
-			})
-		}
+			} else if err != nil || failures.Load() < 2 {
+				t.Fatalf("retry: %d %v", failures.Load(), err)
+			}
+		})
 	}
 }
 

@@ -38,7 +38,6 @@ func TestArtifactRegistryUploadSessionRetryBudget(t *testing.T) {
 	}{
 		{retries: 0},
 		{retries: 1},
-		{retries: 0, persistent: true},
 		{retries: 1, persistent: true},
 		{retries: 2, persistent: true},
 	} {

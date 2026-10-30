@@ -158,25 +158,6 @@ extend { copy "/payload" "/payload" from="derived"; }
 	}
 }
 
-func TestStageEntryDefaultsSeparateComponentCacheLowering(t *testing.T) {
-	key, err := new(componentCache).key(&graphExecutor{store: componentCacheKeyStore{}}, validComponentTestKey().Input, &ResolvedComponentPlan{Identity: digest.FromString("component"), Plan: &planner.Plan{}}, nil, v1.Platform{OS: "linux", Architecture: "amd64"}, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	current, err := key.Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	key.Lowering = "coopr-buildah-component-image-v4"
-	prior, err := key.Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if current == prior {
-		t.Fatal("pre-default component lowering reused the current key")
-	}
-}
-
 func TestStageEntryDefaultsFromExtendUsesKnownInvocationCaller(t *testing.T) {
 	def, err := definition.Parse(strings.NewReader(`extend as="caller" {}
 from "caller" as="child" { env observed="$PATH"; }

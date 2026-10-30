@@ -134,37 +134,23 @@ func TestCopyAndAddPassParentsToBuildah(t *testing.T) {
 	}
 }
 
-func TestCopyPassesLinkToBuildah(t *testing.T) {
-	for _, linked := range []bool{true, false} {
-		t.Run(strconv.FormatBool(linked), func(t *testing.T) {
-			fake := &recordingBuilder{}
-			err := applyOperations(context.Background(), fake, t.TempDir(), []Operation{
-				Copy{Sources: []string{"source"}, Destination: "/copy", Link: linked},
+func TestCopyAndAddPassLinkToBuildah(t *testing.T) {
+	for _, kind := range []string{"copy", "add"} {
+		for _, linked := range []bool{true, false} {
+			t.Run(kind+"/"+strconv.FormatBool(linked), func(t *testing.T) {
+				var operation Operation = Copy{Sources: []string{"source"}, Destination: "/copy", Link: linked}
+				if kind == "add" {
+					operation = Add{Sources: []string{"source"}, Destination: "/add", Link: linked}
+				}
+				fake := &recordingBuilder{}
+				if err := applyOperations(context.Background(), fake, t.TempDir(), []Operation{operation}); err != nil {
+					t.Fatal(err)
+				}
+				if len(fake.addOptions) != 1 || fake.addOptions[0].Link != linked {
+					t.Fatalf("Buildah %s options = %#v, want Link=%v", kind, fake.addOptions, linked)
+				}
 			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(fake.addOptions) != 1 || fake.addOptions[0].Link != linked {
-				t.Fatalf("Buildah COPY Link = %v, want %v", fake.addOptions[0].Link, linked)
-			}
-		})
-	}
-}
-
-func TestAddPassesLinkToBuildah(t *testing.T) {
-	for _, linked := range []bool{true, false} {
-		t.Run(strconv.FormatBool(linked), func(t *testing.T) {
-			fake := &recordingBuilder{}
-			err := applyOperations(context.Background(), fake, t.TempDir(), []Operation{
-				Add{Sources: []string{"source"}, Destination: "/add", Link: linked},
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(fake.addOptions) != 1 || fake.addOptions[0].Link != linked {
-				t.Fatalf("Buildah ADD Link = %v, want %v", fake.addOptions[0].Link, linked)
-			}
-		})
+		}
 	}
 }
 
