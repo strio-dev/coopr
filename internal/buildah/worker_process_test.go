@@ -9,8 +9,10 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -45,6 +47,18 @@ func TestWorkerProcessHelper(t *testing.T) {
 		signalIgnoreTermination()
 		signalReady(t, os.Getpid(), syscall.Getpgrp(), 0, 0)
 		select {}
+	case "responsive":
+		signalIgnoreTermination()
+		challenge := make(chan os.Signal, 1)
+		signal.Notify(challenge, syscall.SIGUSR1)
+		defer signal.Stop(challenge)
+		signalReady(t, os.Getpid(), syscall.Getpgrp(), 0, 0)
+		for range challenge {
+			data := fmt.Sprintf("%d %d 0 0", os.Getpid(), syscall.Getpgrp())
+			if err := os.WriteFile(os.Getenv("COOPR_TEST_WORKER_READY")+".alive", []byte(data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
 	case "parent":
 		signalIgnoreTermination()
 		startWorkerProcessGrandchild(t)
@@ -103,6 +117,129 @@ func TestRunWorkerProcessReturnsSuccessfulExit(t *testing.T) {
 	}
 	if cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setpgid || cmd.SysProcAttr.Pdeathsig != syscall.SIGKILL {
 		t.Fatalf("worker process attributes = %+v", cmd.SysProcAttr)
+	}
+}
+
+func TestRunWorkerProcessObservesExitOnCreatingThread(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	callerThread := unix.Gettid()
+	cmd := exec.Command(testWorkerBinary(t), "-test.run=^TestWorkerProcessHelper$", "-test.short="+strconv.FormatBool(testing.Short()))
+	cmd.Env = replaceEnv(os.Environ(), workerProcessHelperMode, "success")
+	var waitThread atomic.Int64
+	err := runWorkerProcessControlled(context.Background(), cmd, time.Second, workerProcessControl{
+		signalGroup: syscall.Kill,
+		killProcess: func(process *os.Process) error { return process.Kill() },
+		killWait:    time.Second,
+		waitExit: func(pid int) error {
+			waitThread.Store(int64(unix.Gettid()))
+			var info unix.Siginfo
+			return unix.Waitid(unix.P_PID, pid, &info, unix.WEXITED|unix.WNOWAIT|unix.WNOTHREAD, nil)
+		},
+	})
+	if err != nil {
+		t.Fatalf("exit observation did not own the child: caller thread=%d wait thread=%d error=%v", callerThread, waitThread.Load(), err)
+	}
+	if cmd.ProcessState == nil || !cmd.ProcessState.Success() {
+		t.Fatalf("worker process state = %v", cmd.ProcessState)
+	}
+}
+
+func TestRunWorkerProcessOutlivesExitedCallerThread(t *testing.T) {
+	ready := filepath.Join(t.TempDir(), "worker")
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := exec.Command(testWorkerBinary(t), "-test.run=^TestWorkerProcessHelper$", "-test.short="+strconv.FormatBool(testing.Short()))
+	cmd.Env = replaceEnv(os.Environ(), workerProcessHelperMode, "responsive")
+	cmd.Env = replaceEnv(cmd.Env, "COOPR_TEST_WORKER_READY", ready)
+	observing := make(chan struct{})
+	releaseObservation := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseObservation) }) }
+	var process *os.Process
+	var pid int
+	t.Cleanup(func() {
+		cancel()
+		if process != nil {
+			_ = process.Kill()
+		}
+		release()
+		if pid > 0 {
+			waitProcessGone(t, pid)
+		}
+	})
+	type callerResult struct {
+		thread int
+		err    error
+	}
+	returned := make(chan callerResult, 1)
+	call := func() {
+		thread := unix.Gettid()
+		err := runWorkerProcessControlled(ctx, cmd, time.Second, workerProcessControl{
+			signalGroup: func(int, syscall.Signal) error { return syscall.EPERM },
+			killProcess: func(*os.Process) error { return syscall.EPERM },
+			killWait:    50 * time.Millisecond,
+			waitExit: func(pid int) error {
+				close(observing)
+				<-releaseObservation
+				return waitWorkerExit(pid)
+			},
+		})
+		returned <- callerResult{thread: thread, err: err}
+	}
+	go func() {
+		runtime.LockOSThread()
+		if unix.Gettid() == os.Getpid() {
+			// Go parks its initial thread instead of retiring it. Keep it
+			// occupied so the actual caller owns a thread that can exit.
+			go func() {
+				runtime.LockOSThread()
+				call()
+			}()
+			<-releaseObservation
+			runtime.UnlockOSThread()
+			return
+		}
+		call()
+	}()
+	select {
+	case <-observing:
+		process = cmd.Process
+	case result := <-returned:
+		t.Fatalf("worker returned before observing its child: %v", result.err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker did not start observing its child")
+	}
+	pids := waitReadyValues(ready, 3*time.Second)
+	pid = pids[0]
+	if pid == 0 {
+		t.Fatalf("worker did not become ready: %v", pids)
+	}
+	cancel()
+	var result callerResult
+	select {
+	case result = <-returned:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not bound its incomplete cancellation")
+	}
+	if !errors.Is(result.err, ErrWorkerWaitIncomplete) || !errors.Is(result.err, context.Canceled) {
+		t.Fatalf("incomplete worker result = %v", result.err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		err := unix.Tgkill(os.Getpid(), result.thread, 0)
+		if errors.Is(err, syscall.ESRCH) {
+			break
+		}
+		if err != nil || time.Now().After(deadline) {
+			t.Fatalf("caller thread %d did not exit: %v", result.thread, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := process.Signal(syscall.SIGUSR1); err != nil {
+		t.Fatalf("worker died with its caller thread: %v", err)
+	}
+	if reply := waitReadyValues(ready+".alive", 3*time.Second); reply[0] != pid {
+		t.Fatalf("worker did not answer after caller thread %d exited: %v", result.thread, reply)
 	}
 }
 

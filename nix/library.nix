@@ -11,7 +11,7 @@
   version = "dev";
   src = coopr.testSource;
   modRoot = "examples/library";
-  vendorHash = "sha256-eUmCYrMgf7V40u13adD8AkSSU0hYwFoiM3PTdSKPrKE=";
+  vendorHash = "sha256-QvvYkmMLA5Fwk/cAchbRGh1X8p64Pu17XcMEzOZ/K28=";
   subPackages = [ "." ];
   inherit (coopr) tags nativeBuildInputs buildInputs;
   env.CGO_ENABLED = "1";

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -76,10 +77,6 @@ func runWorkerProcessControlled(ctx context.Context, cmd *exec.Cmd, grace time.D
 	if cmd.WaitDelay == 0 {
 		cmd.WaitDelay = control.killWait
 	}
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start build worker: %w", err)
-	}
-
 	// Observe without reaping, as os.Process does on Linux. The unreaped leader
 	// retains the group identity until its final signal; Cmd.Wait then owns the
 	// sole reap and output drain. Serialize cancellation with that transition.
@@ -94,9 +91,19 @@ func runWorkerProcessControlled(ctx context.Context, cmd *exec.Cmd, grace time.D
 		}
 		return nativeControl.signalGroup(group, signal)
 	}
+	started := make(chan error, 1)
 	waited := make(chan error, 1)
 	observationFailed := make(chan error, 1)
 	go func() {
+		// Pdeathsig follows the creating OS thread. Like Buildah, retain that
+		// thread through child exit, even when the caller returns incomplete.
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		startErr := cmd.Start()
+		started <- startErr
+		if startErr != nil {
+			return
+		}
 		var observeErr error
 		for {
 			observeErr = nativeControl.waitExit(cmd.Process.Pid)
@@ -128,6 +135,10 @@ func runWorkerProcessControlled(ctx context.Context, cmd *exec.Cmd, grace time.D
 			waited <- errors.Join(observeErr, cleanupErr, waitErr)
 		}
 	}()
+	// Startup must finish before cancellation can access the child identity.
+	if err := <-started; err != nil {
+		return fmt.Errorf("start build worker: %w", err)
+	}
 
 	select {
 	case err := <-waited:
