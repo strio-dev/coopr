@@ -479,13 +479,14 @@ func TestRunWorkerProcessBoundsSignalAndDirectKillFailures(t *testing.T) {
 	cmd.Env = replaceEnv(cmd.Env, "COOPR_TEST_WORKER_READY", ready)
 
 	cancelled := make(chan [4]int, 1)
+	cancelledAt := make(chan time.Time, 1)
 	go func() {
 		pids := waitReadyValues(ready, 3*time.Second)
 		cancelled <- pids
+		cancelledAt <- time.Now()
 		cancel()
 	}()
 	directKillCalled := false
-	started := time.Now()
 	err := runWorkerProcessControlled(ctx, cmd, time.Second, workerProcessControl{
 		signalGroup: func(int, syscall.Signal) error { return syscall.EPERM },
 		killProcess: func(*os.Process) error {
@@ -494,6 +495,23 @@ func TestRunWorkerProcessBoundsSignalAndDirectKillFailures(t *testing.T) {
 		},
 		killWait: 50 * time.Millisecond,
 	})
+	returnedAt := time.Now()
+	pids := <-cancelled
+	started := <-cancelledAt
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+				t.Errorf("clean up helper group: %v", err)
+			}
+			waitProcessGone(t, cmd.Process.Pid)
+		}
+		if pids[2] > 0 {
+			waitProcessGone(t, pids[2])
+		}
+	})
+	if pids[0] == 0 || pids[2] == 0 {
+		t.Fatalf("helper did not become ready: %v", pids)
+	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("worker error = %v, want context cancellation", err)
 	}
@@ -503,19 +521,9 @@ func TestRunWorkerProcessBoundsSignalAndDirectKillFailures(t *testing.T) {
 	if !strings.Contains(err.Error(), "timed out waiting for build worker exit") {
 		t.Fatalf("worker error = %v, want bounded wait error", err)
 	}
-	if elapsed := time.Since(started); elapsed > time.Second {
+	if elapsed := returnedAt.Sub(started); elapsed > time.Second {
 		t.Fatalf("signal failure path took %s", elapsed)
 	}
-
-	pids := <-cancelled
-	if pids[0] == 0 || pids[2] == 0 {
-		t.Fatalf("helper did not become ready: %v", pids)
-	}
-	if err := syscall.Kill(-pids[1], syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-		t.Fatalf("clean up helper group: %v", err)
-	}
-	waitProcessGone(t, pids[0])
-	waitProcessGone(t, pids[2])
 }
 
 func signalIgnoreTermination() {

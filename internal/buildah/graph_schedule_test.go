@@ -3,6 +3,7 @@ package buildah
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +14,60 @@ import (
 
 	"github.com/strio-dev/coopr/internal/planner"
 )
+
+func TestGraphDrainPreservesSiblingCompletionFailures(t *testing.T) {
+	stageFailure := WorkerFailure(errors.New("RUN failed"))
+	stageFailure.Code = 42
+	cleanupFailure := errors.New("remove sibling builder failed")
+	incomplete := errors.Join(context.Canceled, ErrWorkerWaitIncomplete, cleanupFailure)
+	stages := []planner.Stage{{ID: "sibling"}, {ID: "failed"}}
+	for _, ctxErr := range []error{nil, context.Canceled} {
+		t.Run(fmt.Sprintf("caller cancellation %v", ctxErr), func(t *testing.T) {
+			err := graphDrainError(ctxErr, stages, "failed", map[string]error{
+				"failed": stageFailure, "sibling": incomplete,
+			})
+			for _, want := range []error{stageFailure, context.Canceled, ErrWorkerWaitIncomplete, cleanupFailure} {
+				if !errors.Is(err, want) {
+					t.Errorf("graph drain lost %v: %v", want, err)
+				}
+			}
+			if ctxErr != nil {
+				return
+			}
+			data, marshalErr := json.Marshal(WorkerFailure(err))
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			var relayed workerError
+			if err := json.Unmarshal(data, &relayed); err != nil {
+				t.Fatal(err)
+			}
+			if relayed.ExitCode() != 42 || !errors.Is(&relayed, ErrWorkerWaitIncomplete) {
+				t.Fatalf("graph failure relay lost RUN status or incomplete wait: %s", data)
+			}
+		})
+	}
+}
+
+func TestGraphDrainKeepsSourceOrderAndSingleFailureDiagnostic(t *testing.T) {
+	first := WorkerFailure(errors.New("first failed"))
+	first.Code = 17
+	second := WorkerFailure(errors.New("second failed"))
+	second.Code = 42
+	stages := []planner.Stage{{ID: "first"}, {ID: "second"}}
+	combined := graphDrainError(nil, stages, "second", map[string]error{"first": first, "second": second})
+	if WorkerFailure(combined).ExitCode() != 17 || !errors.Is(combined, second) {
+		t.Fatalf("graph drain lost source order or second failure: %v", combined)
+	}
+	if got := graphDrainError(nil, stages, "second", map[string]error{"second": second}); got.Error() != second.Error() {
+		t.Fatalf("single failure diagnostic = %q, want %q", got, second)
+	}
+	global := errors.New("graph failed")
+	combined = graphDrainError(nil, stages, "", map[string]error{"": global, "first": context.Canceled})
+	if !errors.Is(combined, global) || !errors.Is(combined, context.Canceled) {
+		t.Fatalf("graph drain lost graph or cancelled-stage failure: %v", combined)
+	}
+}
 
 func TestReadyGraphStagesLaunchDownstreamAsSoonAsDependencyCompletes(t *testing.T) {
 	stages := []planner.Stage{

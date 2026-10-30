@@ -226,7 +226,7 @@ func Build(ctx context.Context, request Request) (result Result, retErr error) {
 		if err != nil {
 			return Result{}, err
 		}
-		defer func() { retErr = errors.Join(retErr, cleanup()) }()
+		defer func() { retErr = cleanup(retErr) }()
 		request.ContextDir, contextIgnoreFile = prepared.ContextDir, prepared.IgnoreFile
 	}
 	for index, operation := range request.Operations {

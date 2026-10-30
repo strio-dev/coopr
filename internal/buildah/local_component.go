@@ -166,7 +166,7 @@ func (executor *graphExecutor) materializeLocalComponent(ctx context.Context, re
 	if err != nil {
 		return "", "", err
 	}
-	defer func() { retErr = errors.Join(retErr, os.RemoveAll(workspace)) }()
+	defer func() { retErr = RemoveWorkerDirectory(workspace, retErr) }()
 	paths := publicationPackagePaths(plan, workspace)
 	options := executor.options
 	options.ProgressPrefix = progressPrefix + "[package " + progressText(reference) + "] "

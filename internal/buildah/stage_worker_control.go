@@ -27,7 +27,7 @@ type stageControlReply struct {
 	Return    *componentReturnReply    `json:"return,omitempty"`
 	Selection *componentSelectionReply `json:"selection,omitempty"`
 	Base      *ResolvedImageSource     `json:"base,omitempty"`
-	Error     string                   `json:"error,omitempty"`
+	Failure   *workerError             `json:"failure,omitempty"`
 }
 
 // The two pipes are private to the coordinator and stage process. They never
@@ -72,6 +72,15 @@ func (control *stageWorkerControl) attach(command *exec.Cmd) error {
 // scheduler's own event loop rather than touching graph maps from this goroutine.
 func (control *stageWorkerControl) serve(ctx context.Context, stageID string, handler componentReturnHandler, selectComponent componentSelectionHandler, baseHandlers ...baseSelectionHandler) error {
 	decoder, encoder := json.NewDecoder(control.parentRead), json.NewEncoder(control.parentWrite)
+	writeReply := func(reply stageControlReply) error {
+		err := encoder.Encode(reply)
+		if errors.Is(reply.Failure, ErrWorkerWaitIncomplete) {
+			// The worker may never read its reply. Retain the incomplete state
+			// in the coordinator too, and stop further work on this control pipe.
+			err = errors.Join(reply.Failure, err)
+		}
+		return err
+	}
 	seen := make(map[planner.ComponentBoundary]bool)
 	var revision uint64
 	for {
@@ -93,24 +102,24 @@ func (control *stageWorkerControl) serve(ctx context.Context, stageID string, ha
 			}
 		}
 		if count > 1 {
-			reply.Error = "stage control request mixes operation types"
-			if err := encoder.Encode(reply); err != nil {
+			reply.Failure = WorkerFailure(errors.New("stage control request mixes operation types"))
+			if err := writeReply(reply); err != nil {
 				return err
 			}
 			continue
 		}
 		if request.Base != nil {
 			if len(baseHandlers) == 0 || baseHandlers[0] == nil {
-				reply.Error = "stage has no base selection coordinator"
+				reply.Failure = WorkerFailure(errors.New("stage has no base selection coordinator"))
 			} else {
 				selected, err := baseHandlers[0](ctx, *request.Base)
 				if err != nil {
-					reply.Error = err.Error()
+					reply.Failure = WorkerFailure(err)
 				} else {
 					reply.Base = &selected
 				}
 			}
-			if err := encoder.Encode(reply); err != nil {
+			if err := writeReply(reply); err != nil {
 				return errors.Join(ctx.Err(), err)
 			}
 			continue
@@ -118,48 +127,45 @@ func (control *stageWorkerControl) serve(ctx context.Context, stageID string, ha
 		call := request.Return
 		if request.Selection != nil {
 			if selectComponent == nil {
-				reply.Error = "stage has no component selection coordinator"
+				reply.Failure = WorkerFailure(errors.New("stage has no component selection coordinator"))
 			} else {
 				selected, err := selectComponent(ctx, *request.Selection)
 				if err != nil {
-					reply.Error = err.Error()
+					reply.Failure = WorkerFailure(err)
 				} else {
 					reply.Selection = &selected
 				}
 			}
-			if err := encoder.Encode(reply); err != nil {
+			if err := writeReply(reply); err != nil {
 				return errors.Join(ctx.Err(), err)
 			}
 			continue
 		}
 		switch {
 		case call == nil:
-			reply.Error = "stage control request lacks a component return"
+			reply.Failure = WorkerFailure(errors.New("stage control request lacks a component return"))
 		case call.Boundary.StageID != stageID || call.Boundary.Instruction < 0:
-			reply.Error = "component return has an invalid stage boundary"
+			reply.Failure = WorkerFailure(errors.New("component return has an invalid stage boundary"))
 		case call.Revision != revision:
-			reply.Error = "component return has a stale revision"
+			reply.Failure = WorkerFailure(errors.New("component return has a stale revision"))
 		case seen[call.Boundary]:
-			reply.Error = "duplicate component return boundary"
+			reply.Failure = WorkerFailure(errors.New("duplicate component return boundary"))
 		case handler == nil:
-			reply.Error = "stage has no component return coordinator"
+			reply.Failure = WorkerFailure(errors.New("stage has no component return coordinator"))
 		default:
 			result, err := handler(ctx, *call)
 			if err != nil {
-				reply.Error = err.Error()
+				reply.Failure = WorkerFailure(err)
 			} else if result.Revision != revision+1 {
-				reply.Error = "component return coordinator supplied an invalid revision"
+				reply.Failure = WorkerFailure(errors.New("component return coordinator supplied an invalid revision"))
 			} else {
 				reply.Return = &result
 				seen[call.Boundary] = true
 				revision = result.Revision
 			}
 		}
-		if err := encoder.Encode(reply); err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			return fmt.Errorf("write stage control reply: %w", err)
+		if err := writeReply(reply); err != nil {
+			return errors.Join(ctx.Err(), fmt.Errorf("write stage control reply: %w", err))
 		}
 	}
 }
@@ -224,8 +230,8 @@ func (client *stageWorkerControlClient) exchange(ctx context.Context, request st
 	if err := client.decoder.Decode(&reply); err != nil {
 		return stageControlReply{}, errors.Join(ctx.Err(), fmt.Errorf("receive stage control reply: %w", err))
 	}
-	if reply.Error != "" {
-		return stageControlReply{}, errors.New(reply.Error)
+	if reply.Failure != nil {
+		return stageControlReply{}, reply.Failure
 	}
 	return reply, nil
 }
@@ -283,8 +289,8 @@ func runControlledStageWorker(ctx context.Context, command *exec.Cmd, stageID st
 	cancel()
 	control.close()
 	serveErr := <-served
-	if errors.Is(serveErr, context.Canceled) {
+	if serveErr == context.Canceled {
 		serveErr = nil
 	}
-	return errors.Join(processErr, serveErr, parentCtx.Err())
+	return errors.Join(serveErr, processErr, parentCtx.Err())
 }

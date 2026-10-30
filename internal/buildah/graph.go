@@ -291,7 +291,7 @@ func executePlanGraph(ctx context.Context, plan *planner.Plan, options PlanOptio
 	if err != nil {
 		return Result{}, err
 	}
-	defer func() { retErr = errors.Join(retErr, cleanup()) }()
+	defer func() { retErr = cleanup(retErr) }()
 	executor, err := newGraphExecutor(ctx, options)
 	if err != nil {
 		return Result{}, err
@@ -474,24 +474,7 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 				failures[completion.stageID] = errors.Join(failures[completion.stageID], completion.err)
 			}
 		}
-		if err := ctx.Err(); err != nil {
-			combined := errors.Join(err, failures[""])
-			for _, stage := range stages {
-				combined = errors.Join(combined, failures[stage.ID])
-			}
-			return combined
-		}
-		for _, stage := range stages {
-			if err := failures[stage.ID]; err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-				return err
-			}
-		}
-		for _, stage := range stages {
-			if err := failures[stage.ID]; err != nil {
-				return err
-			}
-		}
-		return primary
+		return graphDrainError(ctx.Err(), stages, primaryStage, failures)
 	}
 	reportCompleted := func() (Result, bool, error) {
 		for _, stage := range stages {
@@ -721,11 +704,17 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 			if event.base != nil {
 				selected, err := executor.resolveInput(graphCtx, event.base.Reference, event.base.Platform, event.base.Files)
 				event.reply <- componentControlResult{base: selected, err: err}
+				if errors.Is(err, ErrWorkerWaitIncomplete) {
+					return Result{}, drain(event.stageID, err)
+				}
 				continue
 			}
 			if event.selection != nil {
 				selected, err := executor.selectCoordinatedComponent(graphCtx, *event.selection)
 				event.reply <- componentControlResult{selection: selected, err: err}
+				if errors.Is(err, ErrWorkerWaitIncomplete) {
+					return Result{}, drain(event.stageID, err)
+				}
 				continue
 			}
 			request := event.returned
@@ -822,6 +811,43 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 		return Result{}, fmt.Errorf("selected output stage %s was not executed", imageOutputID)
 	}
 	return Result{}, nil
+}
+
+func graphDrainError(ctxErr error, stages []planner.Stage, primaryStage string, failures map[string]error) error {
+	if ctxErr != nil {
+		combined := errors.Join(ctxErr, failures[""])
+		for _, stage := range stages {
+			combined = errors.Join(combined, failures[stage.ID])
+		}
+		return combined
+	}
+	primaryIndex := -1
+	for index, stage := range stages {
+		if err := failures[stage.ID]; err != nil {
+			if primaryIndex < 0 {
+				primaryIndex = index
+			}
+			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				primaryIndex = index
+				break
+			}
+		}
+	}
+	if primaryIndex >= 0 {
+		primaryStage = stages[primaryIndex].ID
+	}
+	// Keep source-order failure precedence without losing a sibling's cleanup
+	// errors or incomplete-wait marker when cancellation began inside the graph.
+	combined := failures[primaryStage]
+	for _, stage := range stages {
+		if stage.ID != primaryStage {
+			combined = errors.Join(combined, failures[stage.ID])
+		}
+	}
+	if primaryStage != "" {
+		combined = errors.Join(combined, failures[""])
+	}
+	return combined
 }
 
 func graphStageAliases(stages []planner.Stage) map[string]map[string]string {

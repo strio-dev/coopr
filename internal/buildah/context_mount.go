@@ -36,14 +36,14 @@ type preparedRunInput struct {
 	cleanup    func() error
 }
 
-func prepareBuildContext(plan *planner.Plan, options PlanOptions) (PlanOptions, func() error, error) {
+func prepareBuildContext(plan *planner.Plan, options PlanOptions) (PlanOptions, func(error) error, error) {
 	if options.ContextDir == "" || options.ContextPrepared || !planUsesWritableContext(plan, options.TransientRunMounts) {
-		return options, func() error { return nil }, nil
+		return options, func(err error) error { return err }, nil
 	}
 	return snapshotBuildContext(options)
 }
 
-func snapshotBuildContext(options PlanOptions) (PlanOptions, func() error, error) {
+func snapshotBuildContext(options PlanOptions) (PlanOptions, func(error) error, error) {
 	artifacts := append(slices.Clone(options.ContextArtifacts), options.Store.RunRoot, options.Store.GraphRoot, options.Store.ImageStore, options.Output.Path, options.CacheLocalDir)
 	policy, err := prepareContextPolicyWithIgnore(options.ContextDir, artifacts, options.IgnoreFile)
 	if err != nil {
@@ -64,7 +64,7 @@ func snapshotBuildContext(options PlanOptions) (PlanOptions, func() error, error
 		return options, nil, errors.Join(err, cleanup())
 	}
 	options.ContextDir, options.ContextPrepared = snapshot, true
-	return options, cleanup, nil
+	return options, func(err error) error { return RemoveWorkerDirectory(filepath.Dir(snapshot), err) }, nil
 }
 
 func prepareRunInput(ctx context.Context, builder operationBuilder, contextDir string, artifacts []string, operation Run) (_ preparedRunInput, retErr error) {

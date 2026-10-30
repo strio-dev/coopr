@@ -94,7 +94,7 @@ func PublishPlan(ctx context.Context, plan *planner.Plan, options PublicationOpt
 		if err != nil {
 			return nil, fmt.Errorf("create unused package workspace: %w", err)
 		}
-		defer func() { retErr = errors.Join(retErr, os.RemoveAll(temporary)) }()
+		defer func() { retErr = RemoveWorkerDirectory(temporary, retErr) }()
 		validationOutput = filepath.Join(temporary, "unused.oci")
 	}
 	if err := validateRequest(Request{
@@ -112,7 +112,7 @@ func PublishPlan(ctx context.Context, plan *planner.Plan, options PublicationOpt
 	if err != nil {
 		return nil, err
 	}
-	defer func() { retErr = errors.Join(retErr, cleanupContext()) }()
+	defer func() { retErr = cleanupContext(retErr) }()
 	for _, output := range outputs {
 		cacheCheck := planOptions
 		cacheCheck.Output.Path = output.path
