@@ -238,7 +238,7 @@ func TestControlledStageWorkerSupervision(t *testing.T) {
 					t.Fatalf("start failure = %v", err)
 				}
 			}
-			if !stageWorkerExitConfirmed(command) {
+			if !stageWorkerExitConfirmed(command, err) {
 				t.Fatal("worker was not reaped")
 			}
 		})

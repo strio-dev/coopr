@@ -162,7 +162,7 @@ func TransferStoredImageResultSupervised(ctx context.Context, options StoredTran
 	if err != nil {
 		return StoredTransferResult{}, err
 	}
-	defer func() { retErr = errors.Join(retErr, os.RemoveAll(jobDir)) }()
+	defer func() { retErr = RemoveWorkerDirectory(jobDir, retErr) }()
 	helper := ""
 	if options.SequoiaFingerprint != "" && !NativeSequoia {
 		helper, err = FindSequoiaHelper(ctx)
@@ -201,12 +201,15 @@ func TransferStoredImageResultSupervised(ctx context.Context, options StoredTran
 	} else {
 		processErr = runWorkerProcess(ctx, command, workerGrace)
 	}
+	if errors.Is(processErr, ErrWorkerWaitIncomplete) {
+		return StoredTransferResult{}, processErr
+	}
 	var response storedTransferResponse
 	if err := readWorkerJSON(request.ResultPath, &response); err != nil {
 		return StoredTransferResult{}, errors.Join(processErr, err)
 	}
 	if response.Error != "" {
-		return StoredTransferResult{}, errors.New(response.Error)
+		return StoredTransferResult{}, errors.Join(WorkerFailure(errors.New(response.Error)), WorkerSupervisionError(processErr))
 	}
 	if processErr != nil {
 		return StoredTransferResult{}, processErr

@@ -236,6 +236,59 @@ from "scratch" {
 	}
 }
 
+type cancelOnDeleteStore struct {
+	storage.Store
+	cancel context.CancelFunc
+	err    error
+}
+
+func (store cancelOnDeleteStore) DeleteContainer(string) error {
+	store.cancel()
+	return store.err
+}
+
+func TestGraphCancellationPreservesBuilderCleanupError(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping native builder cleanup in short mode")
+	}
+	root := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	plan := testPlan(t, `from "scratch" { env MESSAGE="hello" }`)
+	executor, err := newGraphExecutor(ctx, PlanOptions{
+		Store: cacheTestStore(root), ContextDir: root, Isolation: "rootless", Jobs: 1,
+		Network: "none", Output: Output{Path: filepath.Join(root, "layout")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	native := executor.store
+	defer func() {
+		containers, listErr := native.Containers()
+		if listErr != nil {
+			t.Error(listErr)
+		}
+		for _, container := range containers {
+			if err := native.DeleteContainer(container.ID); err != nil {
+				t.Error(err)
+			}
+		}
+		if err := executor.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	cleanupErr := errors.New("fixture builder deletion failure")
+	executor.store = cancelOnDeleteStore{Store: native, cancel: cancel, err: cleanupErr}
+	stages, output, err := validateStandaloneGraph(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = executor.executePlanGraph(ctx, plan, stages, output, nil, nil, nil)
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, cleanupErr) {
+		t.Fatalf("cancelled graph error = %v, want cancellation and builder cleanup failure", err)
+	}
+}
+
 func TestBuildPlanSupervisedCancelsIndependentStagesAndCleansBuilders(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live parallel stage cancellation in short mode")

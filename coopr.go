@@ -213,9 +213,7 @@ func Execute(ctx context.Context, program Program, options Options) (result Resu
 			return Result{}, err
 		}
 		defer func() {
-			if err := os.RemoveAll(staging); err != nil {
-				retErr = errors.Join(retErr, fmt.Errorf("remove filesystem staging: %w", err))
-			}
+			retErr = buildah.RemoveWorkerDirectory(staging, retErr)
 		}()
 		out.Filesystem = buildah.FilesystemOutput{Type: "local", Path: filepath.Join(staging, "rootfs")}
 		contextArtifacts = []string{staging}

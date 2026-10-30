@@ -103,6 +103,25 @@ func TestExecuteStageWorkerWritesFailureResponseBeforeReturning(t *testing.T) {
 	}
 }
 
+func TestStageFailurePreservesSupervisionErrorAndRUNStatus(t *testing.T) {
+	transportErr := exec.Command("sh", "-c", "exit 1").Run()
+	cleanupErr := errors.New("fixture group cleanup failed")
+	response := stageWorkerResponse{Error: "RUN exited 42", Failure: &workerError{Message: "RUN exited 42", Code: 42}}
+	for _, processErr := range []error{transportErr, errors.Join(transportErr, cleanupErr)} {
+		_, err := (&graphExecutor{}).completeStageWorkerResponse(context.Background(), "failed", response, nil, processErr, false, "")
+		var status interface{ ExitCode() int }
+		if !errors.As(err, &status) || status.ExitCode() != 42 {
+			t.Fatalf("failed operation lost RUN status: %v", err)
+		}
+		if errors.Is(processErr, cleanupErr) && !errors.Is(err, cleanupErr) {
+			t.Fatalf("failed operation lost supervision error: %v", err)
+		}
+		if processErr == transportErr && err.Error() != response.Error {
+			t.Fatalf("ordinary worker transport changed RUN diagnostic: %v", err)
+		}
+	}
+}
+
 func TestStageWorkerMessagePreservesExecutionInputs(t *testing.T) {
 	root := t.TempDir()
 	logical := imageconfig.New()
@@ -196,7 +215,7 @@ func TestStageWorkerRecognizesReapedSignalExit(t *testing.T) {
 	if err == nil || command.ProcessState == nil {
 		t.Fatalf("signaled worker exit = %v, state = %v", err, command.ProcessState)
 	}
-	if command.ProcessState.Exited() || !stageWorkerExitConfirmed(command) {
+	if command.ProcessState.Exited() || !stageWorkerExitConfirmed(command, err) {
 		t.Fatalf("reaped signaled worker was treated as alive: state = %v", command.ProcessState)
 	}
 	status, ok := command.ProcessState.Sys().(syscall.WaitStatus)

@@ -475,7 +475,11 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 			}
 		}
 		if err := ctx.Err(); err != nil {
-			return err
+			combined := errors.Join(err, failures[""])
+			for _, stage := range stages {
+				combined = errors.Join(combined, failures[stage.ID])
+			}
+			return combined
 		}
 		for _, stage := range stages {
 			if err := failures[stage.ID]; err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {

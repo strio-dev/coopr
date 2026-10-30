@@ -93,7 +93,7 @@ func MaintainStoreSupervised(ctx context.Context, request StoreMaintenanceReques
 	if err != nil {
 		return StoreMaintenanceResult{}, err
 	}
-	defer func() { _ = os.RemoveAll(dir) }()
+	defer func() { retErr = RemoveWorkerDirectory(dir, retErr) }()
 	request.ResultPath = filepath.Join(dir, "result.json")
 	requestPath := filepath.Join(dir, "request.json")
 	if err := writeWorkerJSON(requestPath, request); err != nil {
@@ -115,6 +115,9 @@ func MaintainStoreSupervised(ctx context.Context, request StoreMaintenanceReques
 }
 
 func readMaintenanceResult(ctx context.Context, resultPath string, processErr error) (StoreMaintenanceResult, error) {
+	if errors.Is(processErr, ErrWorkerWaitIncomplete) {
+		return StoreMaintenanceResult{}, errors.Join(processErr, ctx.Err())
+	}
 	var result StoreMaintenanceResult
 	if err := readWorkerJSON(resultPath, &result); err != nil {
 		return StoreMaintenanceResult{}, errors.Join(processErr, err)
@@ -122,7 +125,7 @@ func readMaintenanceResult(ctx context.Context, resultPath string, processErr er
 	if result.Error != "" {
 		// A persisted response describes the actual operation failure. Preserve
 		// cancellation separately instead of replacing it with an exit status.
-		return result, errors.Join(ctx.Err(), errors.New(result.Error))
+		return result, errors.Join(WorkerFailure(errors.New(result.Error)), WorkerSupervisionError(processErr), ctx.Err())
 	}
 	return result, errors.Join(processErr, ctx.Err())
 }
