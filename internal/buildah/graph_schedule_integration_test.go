@@ -244,6 +244,18 @@ func TestBuildPlanSupervisedCancelsIndependentStagesAndCleansBuilders(t *testing
 	root := t.TempDir()
 	storeOptions := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	base := newLiveBusyBoxStorage(t, context.Background(), root, storeOptions)
+	if err := WithStore(storeOptions, func(store storage.Store) error {
+		containers, err := store.Containers()
+		if err != nil {
+			return err
+		}
+		if len(containers) != 0 {
+			return fmt.Errorf("base fixture left working containers before graph execution: %+v", containers)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	policy := filepath.Join(root, "policy.json")
 	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -264,14 +276,14 @@ from "scratch" {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	started := time.Now()
-	_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
+	_, buildErr := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 		Store: storeOptions, ContextDir: root, Isolation: "rootless", Runtime: "crun", Output: Output{Path: layout},
 		Jobs: 2,
 		Pull: false, SignaturePolicyPath: policy,
 		Stdout: io.Discard, Stderr: io.Discard,
 	})
-	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "build worker exited after cleanup") {
-		t.Fatalf("cancelled parallel graph error = %v", err)
+	if !errors.Is(buildErr, context.DeadlineExceeded) || !strings.Contains(buildErr.Error(), "build worker exited after cleanup") {
+		t.Fatalf("cancelled parallel graph error = %v", buildErr)
 	}
 	if elapsed := time.Since(started); elapsed > 12*time.Second {
 		t.Fatalf("parallel stage cancellation took %s", elapsed)
@@ -295,7 +307,11 @@ from "scratch" {
 		t.Fatal(err)
 	}
 	if len(containers) != 0 {
-		t.Fatalf("cancelled graph left %d working containers", len(containers))
+		for _, container := range containers {
+			mounted, mountErr := store.Mounted(container.LayerID)
+			t.Logf("remaining container id=%s names=%q layer=%s mounts=%d mount_error=%v", container.ID, container.Names, container.LayerID, mounted, mountErr)
+		}
+		t.Fatalf("cancelled graph left %d working containers; build error: %v", len(containers), buildErr)
 	}
 }
 
