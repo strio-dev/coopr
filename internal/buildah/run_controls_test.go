@@ -115,6 +115,18 @@ func TestResourceControlEnvironmentRejectsUnsupportedHostLimits(t *testing.T) {
 	}
 }
 
+func TestResourceControlEnvironmentTreatsCpusetIndependently(t *testing.T) {
+	for _, controls := range []RunControls{{CPUSetCPUs: "0"}, {CPUSetMems: "0"}} {
+		if err := validateResourceControlEnvironment(controls, true, true, []string{"cpuset"}, nil); err != nil {
+			t.Fatalf("cpuset-only control requires unrelated controller: %v", err)
+		}
+		controls.CPUQuota = 5000
+		if err := validateResourceControlEnvironment(controls, true, true, []string{"cpuset"}, nil); err == nil {
+			t.Fatal("CPU quota accepted without the cpu controller")
+		}
+	}
+}
+
 func TestDNSControlsRejectBuildNetworkNone(t *testing.T) {
 	if err := validateRunControlsForNetwork(RunControls{DNSServers: []string{"1.1.1.1"}}, "none"); err == nil {
 		t.Fatal("DNS server accepted with build network none")

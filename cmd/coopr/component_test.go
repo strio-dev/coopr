@@ -29,7 +29,7 @@ func TestComponentBuildCommandValidation(t *testing.T) {
 		{"removed publish command", []string{"component", "publish", file}, "unknown command"},
 		{"removed lock flag", []string{"component", "build", file, "--frozen"}, "unknown flag"},
 		{"removed builder address", []string{"component", "build", file, "--builder-address", ""}, "unknown flag"},
-		{"invalid network", []string{"component", "build", file, "--network", "bad/network"}, "invalid named build network"},
+		{"missing network namespace", []string{"component", "build", file, "--network", filepath.Join(t.TempDir(), "missing-netns")}, "checking network namespace"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var output, stderr bytes.Buffer

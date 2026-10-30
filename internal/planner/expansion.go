@@ -8,20 +8,13 @@ import (
 	"github.com/containerd/platforms"
 	"github.com/moby/buildkit/frontend/dockerfile/shell"
 	"github.com/openshift/imagebuilder"
+	commonconfig "go.podman.io/common/pkg/config"
 )
-
-var predefinedProxyArgumentNames = map[string]bool{
-	"HTTP_PROXY": true, "http_proxy": true,
-	"HTTPS_PROXY": true, "https_proxy": true,
-	"FTP_PROXY": true, "ftp_proxy": true,
-	"NO_PROXY": true, "no_proxy": true,
-	"ALL_PROXY": true, "all_proxy": true,
-}
 
 // IsPredefinedProxyArgument reports whether name has Dockerfile's special
 // proxy build-argument semantics.
 func IsPredefinedProxyArgument(name string) bool {
-	return predefinedProxyArgumentNames[name]
+	return slices.Contains(commonconfig.ProxyEnv, name)
 }
 
 // PredefinedProxyArguments returns only Dockerfile predefined proxy values.
@@ -51,6 +44,9 @@ func (g *graph) collectArgumentReferences(inst definition.Instruction, values sc
 	// These configuration values are literal in native Dockerfile semantics.
 	if inst.Name == "shell" || inst.Name == "maintainer" {
 		return
+	}
+	if inst.Name == "healthcheck" && len(inst.Arguments) == 1 && inst.Arguments[0] == "NONE" {
+		return // Native NONE ignores options, including references in their values.
 	}
 	collect := func(value string, processQuotes, heredoc bool) {
 		lex := shell.NewLex('\\')

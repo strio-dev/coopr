@@ -145,6 +145,14 @@ func TransferStoredImageResultSupervised(ctx context.Context, options StoredTran
 		}
 	}
 	var err error
+	authFile, ownedAuthFile, err := oci.MaterializeRegistryAuthFile(options.AuthFile)
+	if err != nil {
+		return StoredTransferResult{}, err
+	}
+	if ownedAuthFile {
+		defer func() { retErr = RemoveWorkerDirectory(authFile, retErr) }()
+	}
+	options.AuthFile = authFile
 	options.AuthFile, options.CertDir, err = oci.NormalizeRegistryPaths(options.AuthFile, options.CertDir)
 	if err != nil {
 		return StoredTransferResult{}, err

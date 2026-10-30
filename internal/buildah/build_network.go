@@ -5,13 +5,12 @@ import (
 	"fmt"
 	"maps"
 	"net"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 
 	"github.com/opencontainers/go-digest"
-	"github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/spf13/pflag"
 	"github.com/strio-dev/coopr/internal/definition"
 	"github.com/strio-dev/coopr/internal/planner"
 	"go.podman.io/buildah/define"
@@ -39,34 +38,17 @@ func normalizeBuildNetwork(value string) (string, error) {
 	if value == "" {
 		return defaultBuildNetwork, nil
 	}
-	switch value {
-	case defaultBuildNetwork, "private", "none", "host":
-		return value, nil
-	}
 	if path, found := strings.CutPrefix(value, "ns:"); found {
-		if path == "" {
-			return "", fmt.Errorf("network namespace path must not be empty")
-		}
-		absolute, err := filepath.Abs(path)
-		if err != nil {
-			return "", fmt.Errorf("resolve network namespace %q: %w", path, err)
-		}
-		if _, err := os.Stat(absolute); err != nil {
-			return "", fmt.Errorf("inspect network namespace %q: %w", path, err)
-		}
-		return "ns:" + absolute, nil
-	}
-	name, options, hasOptions := strings.Cut(value, ":")
-	if name == "pasta" || name == "slirp4netns" {
-		if hasOptions {
-			if options == "" || strings.ContainsAny(options, "\t\r\n\x00") {
-				return "", fmt.Errorf("invalid %s network options %q", name, options)
+		if path != "" {
+			absolute, err := filepath.Abs(path)
+			if err != nil {
+				return "", fmt.Errorf("resolve network namespace %q: %w", path, err)
 			}
+			value = "ns:" + absolute
 		}
-		return value, nil
 	}
-	if strings.ContainsAny(value, "\t\r\n\x00:/") {
-		return "", fmt.Errorf("invalid named build network %q", value)
+	if _, _, err := nativeBuildNetworkOptions(value); err != nil {
+		return "", err
 	}
 	return value, nil
 }
@@ -76,25 +58,20 @@ func runNetworkOptions(value string) (define.NetworkConfigurationPolicy, define.
 	if err != nil {
 		return define.NetworkDefault, nil, err
 	}
-	policy := define.NetworkEnabled
-	var namespaces define.NamespaceOptions
-	switch value {
-	case defaultBuildNetwork, "private":
-		namespaces.AddOrReplace(define.NamespaceOption{Name: string(specs.NetworkNamespace)})
-	case "none":
-		policy = define.NetworkDisabled
-		namespaces.AddOrReplace(define.NamespaceOption{Name: string(specs.NetworkNamespace)})
-	case "host":
-		namespaces.AddOrReplace(define.NamespaceOption{Name: string(specs.NetworkNamespace), Host: true})
-	default:
-		path := strings.TrimPrefix(value, "ns:")
-		if strings.HasPrefix(value, "ns:") {
-			namespaces.AddOrReplace(define.NamespaceOption{Name: string(specs.NetworkNamespace), Path: path})
-		} else {
-			namespaces.AddOrReplace(define.NamespaceOption{Name: string(specs.NetworkNamespace), Path: value})
-		}
+	return nativeBuildNetworkOptions(value)
+}
+
+func nativeBuildNetworkOptions(value string) (define.NetworkConfigurationPolicy, define.NamespaceOptions, error) {
+	if value == defaultBuildNetwork {
+		value = "private"
 	}
-	return policy, namespaces, nil
+	flags := pflag.NewFlagSet("network", pflag.ContinueOnError)
+	flags.String("network", "", "")
+	if err := flags.Set("network", value); err != nil {
+		return define.NetworkDefault, nil, err
+	}
+	namespaces, policy, err := buildahparse.NamespaceOptionsFromFlagSet(flags, flags.Lookup)
+	return policy, namespaces, err
 }
 
 func normalizeAddHosts(values []string) ([]string, error) {

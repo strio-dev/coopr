@@ -74,6 +74,25 @@ func TestExecuteCanceledBeforeValidation(t *testing.T) {
 	}
 }
 
+func TestExecuteResolvesNativeSecurityDefaultsBeforeStartingWorkers(t *testing.T) {
+	wasInitialized := initialized.Swap(true)
+	defer initialized.Store(wasInitialized)
+	root := t.TempDir()
+	profile := filepath.Join(root, "missing-seccomp.json")
+	config := filepath.Join(root, "containers.conf")
+	if err := os.WriteFile(config, []byte("[containers]\nseccomp_profile = \""+profile+"\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CONTAINERS_CONF", config)
+	t.Setenv("CONTAINERS_CONF_OVERRIDE", "")
+	_, err := Execute(context.Background(), Program{Output: "out", States: []State{{ID: "out", From: Source{Image: "scratch"}}}}, Options{
+		ContextDir: root, Output: Output{OCI: filepath.Join(root, "output")},
+	})
+	if !errors.Is(err, os.ErrNotExist) || !strings.Contains(err.Error(), profile) {
+		t.Fatalf("native security policy was not resolved before worker startup: %v", err)
+	}
+}
+
 func TestOutputClosureAndOnBuild(t *testing.T) {
 	p, err := compile(Program{Output: "out", States: []State{{ID: "unused", From: Source{Image: "unused:latest"}}, {ID: "base", From: Source{Image: "scratch"}}, {ID: "out", From: Source{State: "base"}}}})
 	if err != nil {

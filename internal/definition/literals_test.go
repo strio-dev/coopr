@@ -30,7 +30,6 @@ onbuild { healthcheck NONE }
 	}
 	for _, source := range []string{
 		`healthcheck NONE "extra"`,
-		`healthcheck NONE interval="30s"`,
 		`healthcheck NONE { exec "/check" }`,
 		`healthcheck #null`,
 		`healthcheck { exec #null }`,

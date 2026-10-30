@@ -653,6 +653,7 @@ func rootCapabilities() []string {
 type nativeBuilder struct {
 	*upstream.Builder
 	systemContext    *types.SystemContext
+	registryOptions  oci.Options
 	executableOrigin string
 	isolation        define.Isolation
 	runtime          string

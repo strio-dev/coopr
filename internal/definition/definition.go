@@ -11,9 +11,10 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 
 	kdl "github.com/calico32/kdl-go"
+	dockerspec "github.com/moby/docker-image-spec/specs-go/v1"
+	"github.com/openshift/imagebuilder"
 )
 
 // Definition contains top-level global arguments and unevaluated stage blocks.
@@ -291,9 +292,6 @@ func parseNode(node *kdl.Node, source []byte, position string, child bool) (Inst
 		inst.Properties[name] = s
 	}
 	applyCommandDefaults(&inst, healthcheckDisabled)
-	if healthcheckDisabled && (inst.Form != "" || len(inst.Properties) != 0) {
-		return inst, fmt.Errorf("%s %q: NONE does not accept properties", position, inst.Name)
-	}
 	if inst.Name == "healthcheck" && !healthcheckDisabled && (len(inst.Arguments) > 0 || inst.Form == "exec") {
 		if inst.Form == "exec" {
 			inst.Arguments = append([]string{"CMD"}, inst.Arguments...)
@@ -648,55 +646,51 @@ func validate(inst Instruction, childCount int, child, resolved bool) error {
 }
 
 func validateHealthcheck(inst Instruction, resolved bool) error {
+	_, err := healthcheckConfig(inst, resolved)
+	return err
+}
+
+// HealthcheckConfig normalizes a resolved healthcheck through the same native
+// frontend used by Buildah. NONE deliberately ignores its options.
+func HealthcheckConfig(inst Instruction) (*dockerspec.HealthcheckConfig, error) {
+	return healthcheckConfig(inst, true)
+}
+
+func healthcheckConfig(inst Instruction, resolved bool) (*dockerspec.HealthcheckConfig, error) {
 	if len(inst.Arguments) == 0 {
-		return fmt.Errorf("expected CMD, CMD-SHELL, or NONE")
+		return nil, fmt.Errorf("expected CMD, CMD-SHELL, or NONE")
 	}
 	for _, argument := range inst.Arguments {
 		if strings.ContainsRune(argument, '\x00') {
-			return fmt.Errorf("healthcheck arguments cannot contain NUL")
+			return nil, fmt.Errorf("healthcheck arguments cannot contain NUL")
 		}
 	}
-	switch inst.Arguments[0] {
-	case "NONE":
-		if len(inst.Arguments) != 1 {
-			return fmt.Errorf("NONE does not accept command arguments")
-		}
-		if len(inst.Properties) != 0 {
-			return fmt.Errorf("NONE does not accept properties")
-		}
-		return nil
-	case "CMD":
-		if len(inst.Arguments) < 2 {
-			return fmt.Errorf("CMD requires at least one command argument")
-		}
+	step := &imagebuilder.Step{Command: "healthcheck", Args: slices.Clone(inst.Arguments), Attrs: map[string]bool{"json": true}}
+	switch step.Args[0] {
+	case "NONE", "CMD":
 	case "CMD-SHELL":
 		if len(inst.Arguments) != 2 {
-			return fmt.Errorf("CMD-SHELL requires exactly one command")
+			return nil, fmt.Errorf("CMD-SHELL requires exactly one command")
 		}
+		step.Args[0] = "CMD"
+		step.Attrs = nil
 	default:
-		return fmt.Errorf("expected CMD, CMD-SHELL, or NONE")
+		return nil, fmt.Errorf("expected CMD, CMD-SHELL, or NONE")
 	}
 
-	for _, name := range []string{"interval", "timeout", "start-period", "start-interval"} {
+	for _, name := range []string{"interval", "timeout", "start-period", "start-interval", "retries"} {
 		value, exists := inst.Properties[name]
 		if !exists || (!resolved && strings.Contains(value, "$")) {
 			continue
 		}
-		duration, err := time.ParseDuration(value)
-		if err != nil {
-			return fmt.Errorf("%s property must be a duration: %w", name, err)
-		}
-		if duration <= 0 {
-			return fmt.Errorf("%s property must be positive", name)
-		}
+		step.Flags = append(step.Flags, "--"+name+"="+value)
 	}
-	if value, exists := inst.Properties["retries"]; exists && (resolved || !strings.Contains(value, "$")) {
-		retries, err := strconv.Atoi(value)
-		if err != nil || retries < 1 || int64(retries) > 1<<31-1 {
-			return fmt.Errorf("retries property must be a positive integer no greater than 2147483647")
-		}
+	builder := imagebuilder.NewBuilder(nil)
+	if err := builder.Run(step, imagebuilder.NoopExecutor, true); err != nil {
+		return nil, err
 	}
-	return nil
+	config := dockerspec.HealthcheckConfig(*builder.RunConfig.Healthcheck)
+	return &config, nil
 }
 
 // FlattenLayers exposes group children to the ordinary ordered planner while

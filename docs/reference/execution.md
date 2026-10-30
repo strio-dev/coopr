@@ -91,7 +91,7 @@ Configuration-only instructions change stage state without changing the filesyst
 
 ### RUN network and devices
 
-The build-wide `--network` supplies RUN's default and supports Buildah's private, named-network, `ns:PATH`, Pasta and slirp4netns options. An authored RUN accepts `network="default"`, `network="none"`, or `network="host"`, matching Containerfile RUN. This value overrides the build-wide default for authored, inherited, and component RUNs. Argument substitutions are checked after expansion. Effective modes determine validation and cache identity; `network="none"` rejects DNS controls.
+The build-wide `--network` supplies RUN's default and supports Buildah's private, named-network, namespace-path, Pasta and slirp4netns options. Namespace paths can be absolute or use `ns:PATH`; `container` is an alias for a private namespace. An authored RUN accepts `network="default"`, `network="none"`, or `network="host"`, matching Containerfile RUN. This value overrides the build-wide default for authored, inherited, and component RUNs. Argument substitutions are checked after expansion. Effective modes determine validation and cache identity; `network="none"` rejects DNS controls.
 
 Chroot shares its caller's network namespace. It accepts default or host networking; requests for other modes fail before execution or cache reuse. Use `--isolation=oci` or `--isolation=rootless` for network namespace isolation.
 
@@ -122,7 +122,7 @@ Repeatable `--add-host 'HOST[;HOST...]:IP'` applies to all RUNs and cache identi
 
 Argument values are strings and require valid UTF-8. Unset/undeclared ARG references expand to empty text; structural references must remain valid afterward. Conflicting package values fail. See [argument syntax](definition.md#arguments) and [command forms](definition.md#command-forms) for substitution and shell/exec boundaries.
 
-Unused supplied build arguments are ignored with a warning containing names only. Predefined proxy arguments (`HTTP_PROXY`, `HTTPS_PROXY`, `FTP_PROXY`, `NO_PROXY`, `ALL_PROXY`, and lowercase forms) can reach RUN without ARG declarations and do not enter its argument/cache identity. Declaring one explicitly gives it normal ARG scope and cache behavior. Host proxy forwarding is controlled by `--http-proxy`.
+Unused supplied build arguments are ignored with a warning containing names only. Predefined proxy arguments (`HTTP_PROXY`, `HTTPS_PROXY`, `FTP_PROXY`, `NO_PROXY`, and lowercase forms) can reach RUN without ARG declarations and do not enter its argument/cache identity. Declaring one explicitly gives it normal ARG scope and cache behavior. Other names, including `ALL_PROXY`, require an ARG declaration. Host proxy forwarding is controlled by `--http-proxy`.
 
 ### Timestamps and cache age
 
@@ -164,7 +164,7 @@ Both build commands accept the following RUN and lifecycle settings. Defaults no
 | --- | --- |
 | Scheduling | `--jobs` / `-j` limits total stage/platform work (1; 0 unlimited). `--skip-unused-stages=true` executes only the selected output’s dependencies. |
 | Proxy and DNS | `--http-proxy=true` forwards host proxy variables. Repeatable `--dns`, `--dns-search`, `--dns-option` configure RUN resolution; `--dns none` disables DNS configuration. |
-| Network | `--network` selects `default`, `private`, `none`, `host`, `ns:PATH`, `pasta[:OPTIONS]`, or a named network. Repeatable `--add-host HOST:IP` adds host entries. `--no-hosts` and `--no-hostname` preserve the image’s files. |
+| Network | `--network` selects `default`, `private` (or `container`), `none`, `host`, an absolute namespace path or `ns:PATH`, `pasta[:OPTIONS]`, `slirp4netns[:OPTIONS]`, or a named network. Repeatable `--add-host HOST:IP` adds host entries. `--no-hosts` and `--no-hostname` preserve the image’s files. |
 | Memory | `--memory` / `-m`, `--memory-swap` (memory plus swap; -1 unlimited swap), `--shm-size`. |
 | CPU | `--cpu-period`, `--cpu-quota` (-1 unlimited), `--cpu-shares` / `-c`, `--cpuset-cpus`, `--cpuset-mems`. |
 | Limits and groups | Repeatable `--ulimit NAME=SOFT:HARD`, `--group-add`. |

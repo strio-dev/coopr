@@ -33,7 +33,7 @@ const portableCacheLoweringVersion = "coopr-buildah-component-image-v8"
 
 // Advance when Coopr changes native execution behavior. Both local instruction
 // and portable instruction/component/package caches must miss older results.
-const cooprExecutionRevision = "coopr-buildah-execution-v1"
+const cooprExecutionRevision = "coopr-buildah-execution-v2"
 
 type componentCache struct {
 	images      *portableInstructionCache

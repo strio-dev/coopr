@@ -30,6 +30,9 @@ type PlanOptions struct {
 	ProgressReference  string
 	progressStageTotal int
 	executableOrigin   string
+	// Source download policy is still needed when a scratch-only graph has no
+	// image resolver. It crosses the existing stage-worker registry boundary.
+	registryOptions oci.Options
 	// componentParent shares selection and cycle state with nested local publication.
 	// Execution options and caches remain owned by each executor.
 	componentParent *graphExecutor
@@ -88,6 +91,13 @@ type PlanOptions struct {
 	// immutable scope. Callers must include definition/component identity,
 	// platform, normalized parameters, and stage identity in that scope.
 	CacheMountID CacheMountIDResolver
+}
+
+func (options PlanOptions) registrySettings() oci.Options {
+	if options.Resolver != nil {
+		return options.Resolver.RegistryOptions()
+	}
+	return options.registryOptions
 }
 
 // ResolvedBaseKey includes the stage platform because the same mutable image

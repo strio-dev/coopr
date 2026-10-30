@@ -205,6 +205,12 @@ func Execute(ctx context.Context, program Program, options Options) (result Resu
 	if options.Output.Filesystem != "" && pathsOverlap(options.Output.OCI, options.Output.Filesystem) {
 		return Result{}, errors.New("output destinations must not overlap")
 	}
+	controls, err := buildah.ParseRunControls(buildah.RunControlInput{
+		HTTPProxy: true, Runtime: options.Runtime, Isolation: options.Isolation,
+	})
+	if err != nil {
+		return Result{}, fmt.Errorf("native execution defaults: %w", err)
+	}
 	out := buildah.Output{Path: options.Output.OCI}
 	var contextArtifacts []string
 	if options.Output.Filesystem != "" {
@@ -221,6 +227,7 @@ func Execute(ctx context.Context, program Program, options Options) (result Resu
 	native, err := buildah.BuildPlanSupervised(ctx, plan, buildah.SupervisedPlanOptions{
 		Store:      buildah.StoreOptions{RunRoot: options.Store.RunRoot, GraphRoot: options.Store.GraphRoot, GraphDriverName: options.Store.Driver, GraphDriverOptions: options.Store.DriverOptions},
 		ContextDir: options.ContextDir, ContextArtifacts: contextArtifacts, Runtime: options.Runtime, Isolation: options.Isolation, Jobs: options.Jobs, Output: out,
+		RunControls:   controls,
 		CacheLocalDir: options.Cache.LocalDir, NoCache: options.Cache.NoCache,
 		AuthFile: options.Registry.AuthFile, CertDir: options.Registry.CertDir, Credentials: options.Registry.Credentials, TLSVerify: options.Registry.TLSVerify, PullPolicy: options.Registry.PullPolicy, SignaturePolicyPath: options.Registry.SignaturePolicyPath,
 		Stdout: options.Stdout, Stderr: options.Stderr,

@@ -389,6 +389,14 @@ func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition
 		return planWorkerResponse{}, fmt.Errorf("acquire supervised store activity lease: %w", err)
 	}
 	defer func() { retErr = errors.Join(retErr, activity.Close()) }()
+	authFile, ownedAuthFile, err := oci.MaterializeRegistryAuthFile(options.AuthFile)
+	if err != nil {
+		return planWorkerResponse{}, err
+	}
+	if ownedAuthFile {
+		defer func() { retErr = RemoveWorkerDirectory(authFile, retErr) }()
+	}
+	options.AuthFile = authFile
 	options.AuthFile, options.CertDir, err = oci.NormalizeRegistryPaths(options.AuthFile, options.CertDir)
 	if err != nil {
 		return planWorkerResponse{}, err
@@ -770,6 +778,7 @@ func executePlanWorker(requestPath string) error {
 		}
 	}
 	planOptions := PlanOptions{
+		registryOptions:  oci.Options{Retry: request.Retry, RetrySet: request.RetrySet, RetryDelay: request.RetryDelay},
 		executableOrigin: request.ExecutableOrigin,
 		Store:            request.Store, ContextDir: request.ContextDir, SourcePolicyFile: request.SourcePolicyFile, SourcePolicy: request.SourcePolicy, IgnoreFile: request.IgnoreFile, ContextArtifacts: request.ContextArtifacts, Isolation: request.Isolation,
 		Runtime: request.Runtime, Output: request.Output, Resolver: resolver, ResolvedBases: resolvedBases, ReplannedBaseDelta: replannedBaseDelta,

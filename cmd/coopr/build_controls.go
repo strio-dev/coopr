@@ -144,6 +144,23 @@ func (flags *registryFlags) addTo(command *cobra.Command) {
 		}
 		return nil
 	}
+	if run := command.RunE; run != nil {
+		command.RunE = func(cmd *cobra.Command, args []string) (retErr error) {
+			path, owned, err := oci.MaterializeRegistryAuthFile(flags.authFileOption(cmd))
+			if err != nil {
+				return err
+			}
+			if owned {
+				original := flags.authFile
+				flags.authFile = path
+				defer func() {
+					flags.authFile = original
+					retErr = buildah.RemoveWorkerDirectory(path, retErr)
+				}()
+			}
+			return run(cmd, args)
+		}
+	}
 	set.BoolVar(&flags.tlsVerify, "tls-verify", true, "require valid HTTPS certificates for registry connections")
 }
 

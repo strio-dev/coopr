@@ -162,6 +162,7 @@ func (executor *graphExecutor) nativeBuilder(builder *upstream.Builder, options 
 	controls := executor.options.RunControls
 	return nativeBuilder{
 		Builder: builder, systemContext: options.SystemContext, isolation: options.Isolation,
+		registryOptions:  executor.options.registrySettings(),
 		executableOrigin: executor.options.executableOrigin,
 		runtime:          effectiveRuntime(executor.options.Runtime, controls), runtimeArgs: slices.Clone(controls.RuntimeFlags),
 		secretSpecs: executor.options.Secrets, sshSpecs: executor.options.SSH,

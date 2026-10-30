@@ -12,7 +12,6 @@ import (
 	"regexp"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -280,7 +279,7 @@ func (c *Config) Apply(inst definition.Instruction) error {
 		}
 		return setRaw(c.root, "author", maintainer)
 	case "healthcheck":
-		healthcheck, err := healthcheckFromInstruction(inst)
+		healthcheck, err := definition.HealthcheckConfig(inst)
 		if err != nil {
 			return err
 		}
@@ -539,35 +538,6 @@ func validateNested(nested map[string]json.RawMessage) error {
 	}
 
 	return nil
-}
-
-func healthcheckFromInstruction(inst definition.Instruction) (*Healthcheck, error) {
-	if len(inst.Arguments) == 1 && inst.Arguments[0] == "NONE" {
-		return &Healthcheck{Test: []string{"NONE"}}, nil
-	}
-	healthcheck := &Healthcheck{Test: slices.Clone(inst.Arguments)}
-	for name, target := range map[string]*time.Duration{
-		"interval": &healthcheck.Interval, "timeout": &healthcheck.Timeout,
-		"start-period": &healthcheck.StartPeriod, "start-interval": &healthcheck.StartInterval,
-	} {
-		value, exists := inst.Properties[name]
-		if !exists {
-			continue
-		}
-		duration, err := time.ParseDuration(value)
-		if err != nil {
-			return nil, fmt.Errorf("HEALTHCHECK %s: %w", name, err)
-		}
-		*target = duration
-	}
-	if value, exists := inst.Properties["retries"]; exists {
-		retries, err := strconv.Atoi(value)
-		if err != nil {
-			return nil, fmt.Errorf("HEALTHCHECK retries: %w", err)
-		}
-		healthcheck.Retries = retries
-	}
-	return healthcheck, nil
 }
 
 func validateRootFS(raw json.RawMessage) error {

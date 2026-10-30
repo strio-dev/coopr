@@ -3,7 +3,41 @@ package planner
 import (
 	"reflect"
 	"testing"
+
+	"github.com/openshift/imagebuilder"
+	commonconfig "go.podman.io/common/pkg/config"
 )
+
+func TestPredefinedProxyArgumentsFollowNativeList(t *testing.T) {
+	arguments := map[string]string{"ALL_PROXY": "socks5://uppercase", "all_proxy": "socks5://lowercase", "OTHER": "value"}
+	want := map[string]string{}
+	native := imagebuilder.NewBuilder(nil)
+	for _, name := range commonconfig.ProxyEnv {
+		if !native.AllowedArgs[name] {
+			t.Fatalf("native proxy list contains nonautomatic argument %q", name)
+		}
+		arguments[name] = "proxy-value"
+		want[name] = "proxy-value"
+	}
+	if got := PredefinedProxyArguments(arguments); !reflect.DeepEqual(got, want) {
+		t.Fatalf("automatic proxy arguments = %#v, native=%#v", got, want)
+	}
+}
+
+func TestExplicitAllProxyArgumentUsesOrdinaryScope(t *testing.T) {
+	plan := makePlan(t, `from "scratch" {
+    arg "ALL_PROXY"
+    run "env"
+}
+`, Options{Arguments: map[string]string{"ALL_PROXY": "socks5://explicit"}})
+	operation := plan.Stages[0].Operations[0]
+	if got := operation.ArgumentsInScope["ALL_PROXY"]; got != "socks5://explicit" {
+		t.Fatalf("explicit ALL_PROXY = %q", got)
+	}
+	if len(operation.DeclaredProxyArguments) != 0 {
+		t.Fatalf("ordinary ALL_PROXY given special proxy handling: %q", operation.DeclaredProxyArguments)
+	}
+}
 
 func TestPredefinedProxyArgumentsMayBeSuppliedWithoutARG(t *testing.T) {
 	arguments := map[string]string{
@@ -15,8 +49,6 @@ func TestPredefinedProxyArgumentsMayBeSuppliedWithoutARG(t *testing.T) {
 		"ftp_proxy":   "ftp://lowercase",
 		"NO_PROXY":    "uppercase.example",
 		"no_proxy":    "lowercase.example",
-		"ALL_PROXY":   "socks5://uppercase",
-		"all_proxy":   "socks5://lowercase",
 	}
 	plan := makePlan(t, `from "scratch" {
     run "env"

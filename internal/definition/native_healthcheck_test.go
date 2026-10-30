@@ -7,12 +7,43 @@ import (
 	"github.com/openshift/imagebuilder"
 )
 
+func TestHealthcheckNoneIgnoresNativeOptions(t *testing.T) {
+	for _, test := range []struct{ kdl, native string }{
+		{`interval="1s" retries=3`, "--interval=1s --retries=3"},
+		{`interval="not-a-duration" retries="not-a-count"`, "--interval=not-a-duration --retries=not-a-count"},
+		{`interval="$interval" retries="$retries"`, "--interval=$interval --retries=$retries"},
+	} {
+		t.Run(test.native, func(t *testing.T) {
+			ast, err := imagebuilder.ParseDockerfile(strings.NewReader("HEALTHCHECK " + test.native + " NONE"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			builder := imagebuilder.NewBuilder(nil)
+			step := builder.Step()
+			if err := step.Resolve(ast.Children[0]); err != nil {
+				t.Fatal(err)
+			}
+			if err := builder.Run(step, imagebuilder.NoopExecutor, true); err != nil {
+				t.Fatalf("native NONE options: %v", err)
+			}
+			if _, err := parseFragment(strings.NewReader(`healthcheck NONE ` + test.kdl)); err != nil {
+				t.Fatalf("native accepted options rejected: %v", err)
+			}
+			if _, err := parseFragment(strings.NewReader(`onbuild { healthcheck NONE ` + test.kdl + ` }`)); err != nil {
+				t.Fatalf("ONBUILD NONE options rejected: %v", err)
+			}
+		})
+	}
+}
+
 func TestHealthcheckValidationMatchesNativeImagebuilder(t *testing.T) {
 	for _, test := range []struct {
 		kdl, native string
 		valid       bool
 	}{
 		{`interval="1ns"`, "--interval=1ns", true},
+		{`interval=""`, "--interval=", true},
+		{`retries=""`, "--retries=", true},
 		{`interval="0s"`, "--interval=0s", false},
 		{`start-period="-1ns"`, "--start-period=-1ns", false},
 		{`retries=0`, "--retries=0", false},

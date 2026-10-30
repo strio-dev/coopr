@@ -230,7 +230,7 @@ healthcheck interval="30s" timeout="3s" retries=3 {
 onbuild { copy "generated" "/generated" }
 ```
 
-Timing properties are `interval`, `timeout`, `start-period`, and `start-interval`. Supplied durations must be positive, including values below a millisecond; `retries` must be an integer from 1 through 2147483647. Omit an option to use the native default. `healthcheck NONE` disables a healthcheck and takes no other options. Quoted `"NONE"` remains a shell command; `exec "NONE"` remains an executable argument.
+Timing properties are `interval`, `timeout`, `start-period`, and `start-interval`. Supplied durations must be positive, including values below a millisecond; `retries` must be an integer from 1 through 2147483647. Omit an option to use the native default. `healthcheck NONE` disables a healthcheck; any timing or retry options are ignored, matching Buildah. Quoted `"NONE"` remains a shell command; `exec "NONE"` remains an executable argument.
 
 ONBUILD wraps one supported image instruction. Stage declarations, `maintainer`, `component`, `layer`, and nested `onbuild` are not supported inside it. Existing external MAINTAINER triggers can be imported and retain their literal text. A child FROM executes inherited triggers before its authored instructions, using the child's context, then clears them. Local stage sources must be available before that child FROM.
 

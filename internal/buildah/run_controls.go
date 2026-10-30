@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -15,12 +16,14 @@ import (
 
 	"github.com/docker/go-units"
 	"github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/opencontainers/selinux/go-selinux"
 	upstream "go.podman.io/buildah"
 	"go.podman.io/buildah/define"
 	buildahparse "go.podman.io/buildah/pkg/parse"
 	buildahutil "go.podman.io/buildah/pkg/util"
 	"go.podman.io/common/pkg/capabilities"
 	commonconfig "go.podman.io/common/pkg/config"
+	"go.podman.io/storage/pkg/fileutils"
 	storageTypes "go.podman.io/storage/types"
 	"tags.cncf.io/container-device-interface/pkg/parser"
 )
@@ -243,11 +246,9 @@ func ParseRunControls(input RunControlInput) (RunControls, error) {
 	if _, err := capabilities.MergeCapabilities(nil, controls.CapAdd, controls.CapDrop); err != nil {
 		return RunControls{}, err
 	}
-	securityOptions := append(containerConfig.SecurityOptions(), input.SecurityOptions...)
-	if !hasSecurityOption(input.SecurityOptions, "seccomp") && !hasSecurityOption(securityOptions, "seccomp") {
-		if profile := defaultSeccompProfile(); profile != "" {
-			securityOptions = append(securityOptions, "seccomp="+profile)
-		}
+	securityOptions, err := runSecurityOptions(containerConfig, input.SecurityOptions, selinux.CurrentLabel)
+	if err != nil {
+		return RunControls{}, err
 	}
 	if err := controls.parseSecurityOptions(securityOptions); err != nil {
 		return RunControls{}, err
@@ -358,13 +359,45 @@ func hasSecurityOption(options []string, name string) bool {
 	})
 }
 
-func defaultSeccompProfile() string {
-	for _, path := range []string{buildahparse.SeccompOverridePath, buildahparse.SeccompDefaultPath} {
-		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
-			return path
+// Buildah's config-dependent security helpers are private and its public flag
+// parser reads process-global configuration. Resolve these defaults from the
+// request's configuration using the same public SELinux and path APIs.
+func runSecurityOptions(containerConfig *commonconfig.Config, explicit []string, currentLabel func() (string, error)) ([]string, error) {
+	securityOptions := append(containerConfig.SecurityOptions(), explicit...)
+	if containerConfig.Containers.EnableLabeledUsers {
+		label, err := currentLabel()
+		if err != nil {
+			return nil, err
+		}
+		if label != "" {
+			context, err := selinux.NewContext(label)
+			if err != nil {
+				return nil, err
+			}
+			securityOptions = append([]string{"label=user:" + context["user"], "label=role:" + context["role"]}, securityOptions...)
 		}
 	}
-	return ""
+	if !hasSecurityOption(securityOptions, "seccomp") {
+		profile, err := defaultSeccompProfile([]string{buildahparse.SeccompOverridePath, buildahparse.SeccompDefaultPath})
+		if err != nil {
+			return nil, err
+		}
+		if profile != "" {
+			securityOptions = append(securityOptions, "seccomp="+profile)
+		}
+	}
+	return securityOptions, nil
+}
+
+func defaultSeccompProfile(paths []string) (string, error) {
+	for _, path := range paths {
+		if err := fileutils.Exists(path); err == nil {
+			return path, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+	}
+	return "", nil
 }
 
 func deduplicateTrimmed(values []string) []string {
@@ -767,8 +800,9 @@ func validateRunControlsForNetwork(controls RunControls, network string) error {
 
 func validateResourceControlEnvironment(controls RunControls, rootless, unified bool, controllers []string, probeErr error) error {
 	needsMemory := controls.Memory != 0 || controls.MemorySwap != 0
-	needsCPU := controls.CPUPeriod != 0 || controls.CPUQuota != 0 || controls.CPUShares != 0 || controls.CPUSetCPUs != "" || controls.CPUSetMems != ""
-	if !needsMemory && !needsCPU {
+	needsCPU := controls.CPUPeriod != 0 || controls.CPUQuota != 0 || controls.CPUShares != 0
+	needsCPUSet := controls.CPUSetCPUs != "" || controls.CPUSetMems != ""
+	if !needsMemory && !needsCPU && !needsCPUSet {
 		return nil
 	}
 	if probeErr != nil {
@@ -784,7 +818,7 @@ func validateResourceControlEnvironment(controls RunControls, rootless, unified 
 		if needsCPU && !slices.Contains(controllers, "cpu") {
 			return fmt.Errorf("RUN CPU limits require the cpu cgroup controller delegated to Coopr")
 		}
-		if (controls.CPUSetCPUs != "" || controls.CPUSetMems != "") && !slices.Contains(controllers, "cpuset") {
+		if needsCPUSet && !slices.Contains(controllers, "cpuset") {
 			return fmt.Errorf("RUN CPU set limits require the cpuset cgroup controller delegated to Coopr")
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"syscall"
@@ -16,6 +17,7 @@ import (
 	"go.podman.io/common/libnetwork/slirp4netns"
 	commonconfig "go.podman.io/common/pkg/config"
 	"go.podman.io/common/pkg/netns"
+	"golang.org/x/sys/unix"
 )
 
 const slirpNetworkName = "slirp4netns"
@@ -25,6 +27,11 @@ func (b nativeBuilder) runWithSlirpNetwork(command []string, options upstream.Ru
 	if options.Isolation == define.IsolationChroot || !found {
 		return b.Run(command, options)
 	}
+
+	// common's Setup uses Pdeathsig, whose lifetime follows the creating OS
+	// thread. Retain that thread until RUN and the helper's final reap finish.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 
 	network, err := prepareSlirpRunNetwork(b.runControls, b.ContainerID, mode)
 	if err != nil {
@@ -168,14 +175,8 @@ func (network *slirpRunNetwork) Close() error {
 		network.exitWriter = nil
 	}
 	if network.pid > 0 {
-		deadline := time.Now().Add(time.Second)
-		for processAlive(network.pid) && time.Now().Before(deadline) {
-			time.Sleep(10 * time.Millisecond)
-		}
-		if processAlive(network.pid) {
-			if err := syscall.Kill(-network.pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-				errs = append(errs, fmt.Errorf("stop slirp4netns process %d: %w", network.pid, err))
-			}
+		if err := reapSlirpHelper(network.pid); err != nil {
+			errs = append(errs, err)
 		}
 		network.pid = 0
 	}
@@ -194,7 +195,39 @@ func (network *slirpRunNetwork) Close() error {
 	return errors.Join(errs...)
 }
 
-func processAlive(pid int) bool {
-	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
+func reapSlirpHelper(pid int) error {
+	deadline := time.Now().Add(time.Second)
+	for {
+		var info unix.Siginfo
+		err := unix.Waitid(unix.P_PID, pid, &info, unix.WEXITED|unix.WNOWAIT|unix.WNOHANG, nil)
+		if errors.Is(err, syscall.EINTR) {
+			continue
+		}
+		if err != nil {
+			// ECHILD means ownership was lost; never signal a numeric PID after
+			// another reaper may have released its identity.
+			return fmt.Errorf("observe slirp4netns process %d: %w", pid, err)
+		}
+		if info.Signo != 0 || !time.Now().Before(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// The unreaped leader protects the group ID while stopping any descendants.
+	var killErr error
+	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		killErr = fmt.Errorf("stop slirp4netns process %d: %w", pid, err)
+	}
+	for {
+		_, err := syscall.Wait4(pid, nil, 0, nil)
+		if errors.Is(err, syscall.EINTR) {
+			continue
+		}
+		// Keep the creating thread alive until the child is actually reaped.
+		// The enclosing build-worker supervisor bounds cancellation externally.
+		if err != nil {
+			return errors.Join(killErr, fmt.Errorf("wait for slirp4netns process %d: %w", pid, err))
+		}
+		return killErr
+	}
 }

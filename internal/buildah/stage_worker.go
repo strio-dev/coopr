@@ -218,6 +218,7 @@ func (executor *graphExecutor) executeGraphStageIsolated(ctx context.Context, pl
 		AddHosts:           append([]string(nil), executor.options.AddHosts...),
 		ProxyArgs:          cloneStringMap(executor.options.ProxyArgs),
 		RunControls:        executor.options.RunControls, Lifecycle: executor.options.Lifecycle,
+		RegistryOptions:  executor.options.registrySettings(),
 		ImageControls:    executor.options.ImageControls,
 		Timestamp:        executor.options.Timestamp,
 		CacheTTL:         executor.options.CacheTTL,
@@ -248,7 +249,6 @@ func (executor *graphExecutor) executeGraphStageIsolated(ctx context.Context, pl
 		request.InstructionRelay = executor.instructionPortableCache.stagingDir
 	}
 	if executor.options.Resolver != nil {
-		request.RegistryOptions = executor.options.Resolver.RegistryOptions()
 		request.ResolverEnabled = true
 		request.ComponentStore = executor.options.Resolver.ComponentStoreDir()
 		request.Pull = executor.options.Resolver.PullImages()
@@ -499,6 +499,7 @@ func executeStageWorkerRequestControlled(ctx context.Context, request stageWorke
 		}
 	}
 	options := PlanOptions{
+		registryOptions:   request.RegistryOptions,
 		executableOrigin:  request.ExecutableOrigin,
 		ProgressReference: request.ProgressReference,
 		ProgressPrefix:    request.ProgressPrefix,

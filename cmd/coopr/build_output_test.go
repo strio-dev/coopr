@@ -180,7 +180,7 @@ func TestBuildOutputFlags(t *testing.T) {
 		{"malformed tag", []string{"--tag", "bad tag"}, "invalid local image"},
 		{"digest as tag", []string{"-t", "localhost/app@sha256:" + strings.Repeat("a", 64)}, "digest"},
 		{"invalid format", []string{"--format", "made-up"}, "unsupported image format"},
-		{"invalid network", []string{"--network", "bad/network"}, "invalid named build network"},
+		{"missing network namespace", []string{"--network", filepath.Join(t.TempDir(), "missing-netns")}, "checking network namespace"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var out, errOut bytes.Buffer

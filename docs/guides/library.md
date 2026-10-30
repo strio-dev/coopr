@@ -33,6 +33,10 @@ Run it as the intended execution account, normally rootless. An operator may
 also run builds as root or through sudo with full engine authority. Services
 must authenticate build requests before calling `Execute`.
 
+`Execute` applies the native `containers.conf` execution defaults, including
+SELinux and seccomp settings, before starting workers. Invalid configured
+security profiles fail the request.
+
 The following program builds from UBI, runs a shell command, and exports both an
 OCI image layout and a filesystem tree. Choose fresh output paths before running
 it; their parent directory must already exist:

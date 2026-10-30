@@ -425,14 +425,12 @@ onbuild { run "make generated" }
 func TestInvalidHealthcheckAndOnBuildSyntax(t *testing.T) {
 	tests := []struct{ source, want string }{
 		{`healthcheck`, "CMD, CMD-SHELL, or NONE"},
-		{`healthcheck NONE interval="1s"`, "does not accept properties"},
-		{`healthcheck NONE retries=3`, "does not accept properties"},
 		{`healthcheck "one" "two"`, "exactly one command"},
 		{`healthcheck "true" bogus="1s"`, `unsupported property "bogus"`},
-		{`healthcheck "true" retries="three"`, "positive integer"},
+		{`healthcheck "true" retries="three"`, "invalid syntax"},
 		{`healthcheck "true" interval="now"`, "duration"},
 		{`healthcheck "true" interval="0s"`, "positive"},
-		{`healthcheck "true" retries=0`, "positive integer"},
+		{`healthcheck "true" retries=0`, "must be at least 1"},
 		{`healthcheck "true" start-period="-1s"`, "positive"},
 		{`healthcheck NONE { exec "/check" }`, "cannot combine"},
 		{`onbuild`, "exactly one child"},

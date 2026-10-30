@@ -15,12 +15,30 @@ func runCgroupManager() (manager string, unavailableSystemdSession bool, err err
 	if err != nil {
 		return "", false, err
 	}
+	return adjustedRunCgroupManager(containerConfig)
+}
+
+func adjustedRunCgroupManager(containerConfig *commonconfig.Config) (manager string, unavailableSystemdSession bool, err error) {
 	configured := *containerConfig
 	requestedManager := configured.Engine.CgroupManager
 	configured.CheckCgroupsAndAdjustConfig()
 	return configured.Engine.CgroupManager,
 		requestedManager == commonconfig.SystemdCgroupsManager && configured.Engine.CgroupManager != commonconfig.SystemdCgroupsManager,
 		nil
+}
+
+func runControlCgroupManager(controls RunControls) (manager string, unavailableSystemdSession bool, err error) {
+	containerConfig, err := loadRunContainerConfig(controls.ConfigModules)
+	if err != nil {
+		return "", false, err
+	}
+	if controls.CgroupManager != "" {
+		containerConfig.Engine.CgroupManager = controls.CgroupManager
+	}
+	if controls.CgroupManagerSet {
+		return containerConfig.Engine.CgroupManager, false, nil
+	}
+	return adjustedRunCgroupManager(containerConfig)
 }
 
 func validateRunControlHost(controls RunControls) error {
@@ -38,7 +56,7 @@ func validateRunControlHost(controls RunControls) error {
 	}
 	needsCgroups := controls.Memory != 0 || controls.MemorySwap != 0 || controls.CPUPeriod != 0 || controls.CPUQuota != 0 || controls.CPUShares != 0 || controls.CPUSetCPUs != "" || controls.CPUSetMems != "" || controls.CgroupParent != ""
 	if needsCgroups && rootless && unified {
-		manager, unavailableSystemdSession, err := runCgroupManager()
+		manager, unavailableSystemdSession, err := runControlCgroupManager(controls)
 		if err != nil {
 			return fmt.Errorf("select cgroup manager for RUN resource limits: %w", err)
 		}
