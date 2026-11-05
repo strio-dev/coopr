@@ -12,6 +12,7 @@
 }:
 let
   libraryConsumer = pkgs.callPackage ./library.nix { inherit coopr; };
+  clientConsumer = pkgs.callPackage ./client.nix { inherit coopr; };
   testTags = coopr.tags ++ [
     "dockerintegration"
     "cosignintegration"
@@ -38,6 +39,10 @@ let
         export XDG_DATA_HOME="$TMPDIR/xdg-data"
         export XDG_CONFIG_HOME="$TMPDIR/xdg-config"
         export GOLANGCI_LINT_CACHE="$TMPDIR/golangci-lint"
+        # Keep direct tests/vet/lint within the runner's declared core budget.
+        export GOMAXPROCS="$NIX_BUILD_CORES"
+        export GOFLAGS="$GOFLAGS -p=$NIX_BUILD_CORES"
+        export GOMEMLIMIT=2GiB
         mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME/containers"
         # Private test registries publish unsigned fixtures.
         cat > "$XDG_CONFIG_HOME/containers/policy.json" <<'EOF'
@@ -78,6 +83,7 @@ in
 {
   build = coopr;
   library-consumer = libraryConsumer;
+  client-consumer = clientConsumer;
   sequoia-helper = pkgs.runCommand "coopr-sequoia-helper-check" { } ''
     test "$(${coopr-sequoia-signing}/bin/coopr-sequoia-signing --protocol-version)" = coopr-sequoia-signing/1
     test -s ${coopr-sequoia-signing}/share/licenses/coopr/native/rust/LICENSE-APACHE

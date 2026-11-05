@@ -1,10 +1,13 @@
 package buildah
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/planner"
 	upstream "go.podman.io/buildah"
 )
 
@@ -20,6 +23,56 @@ func TestReplaceCachedMetadataRetainsEmptyRun(t *testing.T) {
 	}
 	if !builder.OCIv1.History[1].EmptyLayer || !builder.Docker.History[1].EmptyLayer {
 		t.Fatal("empty RUN acquired a filesystem layer")
+	}
+}
+
+// Buildah deliberately omits all history when a nonempty base has no history.
+// Restoration must preserve that valid OCI representation, not invent ancestry.
+func TestReplaceCachedMetadataPreservesOmittedBaseHistory(t *testing.T) {
+	parent := digest.FromString("unrecorded-base")
+	for _, emptyRun := range []bool{false, true} {
+		t.Run(map[bool]string{false: "filesystem change", true: "empty RUN"}[emptyRun], func(t *testing.T) {
+			diffs := []digest.Digest{parent}
+			if !emptyRun {
+				diffs = append(diffs, digest.FromString("run-output"))
+			}
+			builder := &upstream.Builder{OCIv1: v1.Image{RootFS: v1.RootFS{Type: "layers", DiffIDs: diffs}}}
+			replacement := cachedMetadataReplacement{ParentDiffIDs: []digest.Digest{parent}, Pending: []v1.History{{CreatedBy: "ENV CURRENT=yes", EmptyLayer: true}}}
+			changed, err := replaceCachedMetadata(builder, replacement, "RUN test -s /payload")
+			if err != nil || changed {
+				t.Fatalf("omitted history = changed:%v, error:%v", changed, err)
+			}
+			if len(builder.OCIv1.History) != 0 || len(builder.Docker.History) != 0 {
+				t.Fatal("restoration invented missing history")
+			}
+		})
+	}
+}
+
+func TestReplaceCachedMetadataRejectsUnexpectedOmittedHistory(t *testing.T) {
+	parent := digest.FromString("base")
+	for _, test := range []struct {
+		name          string
+		parent        []digest.Digest
+		base, cached  []v1.History
+		dockerMissing bool
+	}{
+		{name: "scratch"},
+		{name: "recorded parent", parent: []digest.Digest{parent}, base: []v1.History{{CreatedBy: "COPY base /"}}},
+		{name: "metadata-only parent history", parent: []digest.Digest{parent}, base: []v1.History{{CreatedBy: "ENV X=yes", EmptyLayer: true}}},
+		{name: "only Docker history missing", parent: []digest.Digest{parent}, cached: []v1.History{{CreatedBy: "RUN true"}}, dockerMissing: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			diffs := append(append([]digest.Digest{}, test.parent...), digest.FromString("result"))
+			builder := &upstream.Builder{OCIv1: v1.Image{History: test.cached, RootFS: v1.RootFS{Type: "layers", DiffIDs: diffs}}}
+			if !test.dockerMissing {
+				builder.Docker.History = dockerHistory(test.cached)
+			}
+			_, err := replaceCachedMetadata(builder, cachedMetadataReplacement{ParentDiffIDs: test.parent, OCIBase: test.base, DockerBase: dockerHistory(test.base)}, "RUN true")
+			if err == nil {
+				t.Fatal("unexpected omitted instruction history accepted")
+			}
+		})
 	}
 }
 
@@ -78,6 +131,56 @@ func TestReplaceCachedMetadataRejectsUnrelatedRootfsAndMissingLayers(t *testing.
 			builder.Docker.History = dockerHistory(test.history)
 			if _, err := replaceCachedMetadata(builder, cachedMetadataReplacement{ParentDiffIDs: test.parent}, command); err == nil {
 				t.Fatal("malformed cached lineage/history accepted")
+			}
+		})
+	}
+}
+
+func TestCanonicalRunMountHistoryRetainsStrictInstructionChecks(t *testing.T) {
+	makeInput := func(selector string) instructionCacheInput {
+		mount := definition.Instruction{Name: "mount", Arguments: []string{"bind"}, Properties: map[string]string{"from": selector, "source": "/selected", "target": "/input", "readonly": "true"}}
+		input := instructionCacheTestInput(planner.Operation{Instruction: definition.Instruction{Name: "run", Arguments: []string{"cat /input/payload"}, Children: []definition.Instruction{mount}}})
+		input.ResolvedInputsComplete = true
+		input.ResolvedInputs = []instructionCacheResolvedInput{{Kind: "image-rootfs", Identity: digest.FromString("verified-filesystem").String()}}
+		return input
+	}
+	history := func(input instructionCacheInput) string {
+		t.Helper()
+		operation := canonicalInstructionCacheOperation(input.Operation, input.ResolvedInputs, input.ResolvedInputsComplete)
+		createdBy, ok := plannedOperationHistory(operation, nil)
+		if !ok {
+			t.Fatal("instruction history missing")
+		}
+		return createdBy
+	}
+	cold := history(makeInput("containers-storage:first"))
+	warm := history(makeInput("containers-storage:second"))
+	if cold != warm || !strings.Contains(cold, "from=resolved:image-rootfs:sha256:") {
+		t.Fatalf("history does not identify stable verified filesystem: %q / %q", cold, warm)
+	}
+	check := func(expected string) error {
+		builder := &upstream.Builder{OCIv1: v1.Image{History: []v1.History{{CreatedBy: cold, EmptyLayer: true}}}}
+		builder.Docker.History = dockerHistory(builder.OCIv1.History)
+		_, err := replaceCachedMetadata(builder, cachedMetadataReplacement{}, expected)
+		return err
+	}
+	if err := check(warm); err != nil {
+		t.Fatalf("equivalent mount history rejected: %v", err)
+	}
+	for name, change := range map[string]func(*instructionCacheInput){
+		"command":  func(v *instructionCacheInput) { v.Operation.Arguments = []string{"false"} },
+		"path":     func(v *instructionCacheInput) { v.Operation.Children[0].Properties["source"] = "/other" },
+		"readonly": func(v *instructionCacheInput) { v.Operation.Children[0].Properties["readonly"] = "false" },
+		"filesystem": func(v *instructionCacheInput) {
+			v.ResolvedInputs[0].Identity = digest.FromString("other-filesystem").String()
+		},
+		"incomplete": func(v *instructionCacheInput) { v.ResolvedInputsComplete = false },
+	} {
+		t.Run(name, func(t *testing.T) {
+			input := makeInput("containers-storage:second")
+			change(&input)
+			if err := check(history(input)); err == nil {
+				t.Fatal("incompatible cached instruction history accepted")
 			}
 		})
 	}

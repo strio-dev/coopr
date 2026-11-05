@@ -59,6 +59,7 @@ let
     subPackages = [
       "cmd/coopr"
       "internal/build"
+      "internal/apibackend"
       "internal/buildah"
       "internal/transfer"
       "internal/acceptance"
@@ -192,6 +193,22 @@ let
             ${pkgs.jq}/bin/jq -es '
               any(.[]; .Test == "TestPinnedAlwaysPlatformDiscoveryMatchesNativeFrontend" and .Action == "pass")
             ' "$HOME/build.test.json" >/dev/null
+          ''}
+          ${lib.optionalString (lib.elem "internal/apibackend" testPackages) ''
+            for required in \
+              TestAPIWorkersOverlapAndRecoverGraphCacheAcrossRestarts \
+              TestAPICancellationDrainsWorkerBeforeAcknowledgingAndDoesNotCacheRun \
+              TestNativeOperationProgressColdWarmAndFailure \
+              TestNativeDefinitionMetadataContainsOperationTimings \
+              TestNativeHandledFailureRetainsProgressTruncation \
+              TestPublicClientNativeConcurrentCacheInvalidationAndIntegrity \
+              TestPublicClientNativeCancellationWaitsForWorkerDrain \
+              TestPublicClientNativeBuildAndConcurrentPublication \
+              TestPublicClientBaleNestedPackageRelocationWithoutSourceRegistry; do
+              ${pkgs.jq}/bin/jq -es --arg required "$required" '
+                any(.[]; .Test == $required and .Action == "pass")
+              ' "$HOME/apibackend.test.json" >/dev/null
+            done
           ''}
           ${lib.optionalString (lib.elem "internal/transfer" testPackages) ''
             for required in \
@@ -352,6 +369,9 @@ let
         ${lib.optionalString (builtins.elem "internal/buildah" testPackages) ''
           machine.copy_from_machine("/home/coopr/buildah.test.json")
         ''}
+        ${lib.optionalString (builtins.elem "internal/apibackend" testPackages) ''
+          machine.copy_from_machine("/home/coopr/apibackend.test.json")
+        ''}
         ${lib.optionalString (builtins.elem "internal/transfer" testPackages) ''
           machine.copy_from_machine("/home/coopr/transfer.test.json")
         ''}
@@ -364,6 +384,7 @@ in
     packages = [
       "cmd/coopr"
       "internal/build"
+      "internal/apibackend"
       "internal/transfer"
     ];
   };

@@ -21,7 +21,9 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/strio-dev/coopr/api"
 	"github.com/strio-dev/coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/buildcontext"
 	"golang.org/x/sys/unix"
 )
 
@@ -44,13 +46,15 @@ type State struct {
 	Operations []Operation
 }
 
-// Source selects exactly one image reference or earlier state. Image "scratch"
+// Source selects an image, earlier state or named local COPY context. Image "scratch"
 // selects an empty filesystem. Inherited ONBUILD triggers are cleared without
 // execution; frontend instruction expansion is outside this API. An empty Copy
-// or bind-mount source uses ContextDir.
+// or bind-mount source uses ContextDir. Context selects a declared local named
+// input for COPY or RUN mounts; it cannot supply a state base.
 type Source struct {
-	Image string
-	State StateID
+	Context string
+	Image   string
+	State   StateID
 }
 
 // Operation is a supported typed build operation. Use value forms of Run, Copy,
@@ -86,12 +90,19 @@ type Workdir struct{ Path string }
 func (Workdir) operation() {}
 
 // Mount is a bind, cache or tmpfs RUN mount. Omitted cache IDs use native stable
-// program/platform/stage scope. Sharing is shared, private or locked. From applies only to bind mounts.
+// program/platform/stage scope. Sharing is shared or locked; the current
+// Buildah backend does not implement private sharing. From applies only to bind mounts.
 // ReadOnly false requests writable binds. Writable host-context binds use the
 // native disposable build-scoped context copy and side-effect-aware cache; the
 // caller context is preserved. Other mount types retain native defaults when
 // ReadOnly is false.
 type Mount struct {
+	// HostPath is an explicit live host directory for one bind RUN mount.
+	// It is exclusive with From and Source. Live mounts bypass result caching;
+	// ordinary context mounts retain their snapshotted semantics.
+	HostPath string
+	// Relabel explicitly opts a live host directory into native SELinux z/Z relabeling.
+	Relabel                           string
 	Type, Target, Source, ID, Sharing string
 	From                              Source
 	ReadOnly                          bool
@@ -111,11 +122,18 @@ type StoreOptions struct {
 type Output struct{ OCI, Filesystem string }
 
 // CacheOptions controls the optional portable instruction cache. LocalDir is a
-// caller-owned absolute OCI cache directory; empty disables portable caching.
+// caller-owned absolute OCI cache directory. RegistryFrom and RegistryTo select
+// bare registry repositories for reads and writes independently; they may be
+// combined with LocalDir. Leaving all locations empty disables portable caching.
 // Native local Buildah layer reuse is separate and is not counted by CacheStats.
 type CacheOptions struct {
-	LocalDir string
-	NoCache  bool
+	// MountDir selects the private persistent parent for native RUN cache mounts.
+	// Contents are disposable acceleration and are not hashed into build inputs.
+	MountDir     string
+	LocalDir     string
+	NoCache      bool
+	RegistryFrom []string
+	RegistryTo   []string
 }
 
 // RegistryOptions controls native image authentication and pull policy.
@@ -128,6 +146,13 @@ type RegistryOptions struct {
 // absolute directory. Jobs zero uses the backend default. Writers receive worker
 // output; callers sharing writers across concurrent calls must synchronize them.
 type Options struct {
+	// Progress receives bounded observations after supervised workers complete.
+	// Callers sharing a callback across concurrent Execute calls synchronize it.
+	Progress func(OperationProgress)
+	// Network selects the default RUN network; it does not restrict registry traffic.
+	Network string
+	// Contexts supplies named local COPY and RUN inputs independently of ContextDir.
+	Contexts                       map[string]string
 	Store                          StoreOptions
 	ContextDir, Runtime, Isolation string
 	Jobs                           int
@@ -144,7 +169,11 @@ type CacheStats struct{ Hits, Misses, Stored, Skipped, Errors int }
 type Result struct {
 	ImageID, ManifestDigest, Platform, OCI, Filesystem string
 	Cache                                              CacheStats
+	ProgressDropped                                    uint64
 }
+
+// OperationProgress is a backend-independent observation of execution work.
+type OperationProgress = api.OperationProgress
 
 var initialized atomic.Bool
 
@@ -176,12 +205,78 @@ func Execute(ctx context.Context, program Program, options Options) (result Resu
 	if !initialized.Load() {
 		return Result{}, errors.New("coopr.InitReexec must be called at the start of main before Execute")
 	}
+	network, _, err := buildah.NormalizeBuildNetworkOptions(options.Network, nil)
+	if err != nil {
+		return Result{}, fmt.Errorf("RUN network: %w", err)
+	}
+	options.Network = network
+	cacheFrom, err := buildah.RegistryCacheSpecs(options.Cache.RegistryFrom)
+	if err != nil {
+		return Result{}, fmt.Errorf("registry cache sources: %w", err)
+	}
+	cacheTo, err := buildah.RegistryCacheSpecs(options.Cache.RegistryTo)
+	if err != nil {
+		return Result{}, fmt.Errorf("registry cache destinations: %w", err)
+	}
 	options.Store.DriverOptions = slices.Clone(options.Store.DriverOptions)
 	if options.Registry.TLSVerify != nil {
 		value := *options.Registry.TLSVerify
 		options.Registry.TLSVerify = &value
 	}
-	plan, err := compile(program)
+	if options.Cache.MountDir != "" {
+		cacheRoot, err := canonicalResource(options.Cache.MountDir)
+		if err != nil {
+			return Result{}, fmt.Errorf("mount cache directory: %w", err)
+		}
+		for _, resource := range []string{options.ContextDir, options.Store.RunRoot, options.Store.GraphRoot, options.Cache.LocalDir, options.Output.OCI, options.Output.Filesystem} {
+			if resource == "" {
+				continue
+			}
+			normalized, err := canonicalResource(resource)
+			if err != nil {
+				return Result{}, err
+			}
+			if pathsOverlap(cacheRoot, normalized) {
+				return Result{}, errors.New("mount cache directory overlaps context, store, result cache or output")
+			}
+		}
+		options.Cache.MountDir = cacheRoot
+	}
+	contexts, err := localContextSpecs(options.Contexts)
+	if err != nil {
+		return Result{}, err
+	}
+	if err := validateContextResources(contexts, options); err != nil {
+		return Result{}, err
+	}
+	for _, state := range program.States {
+		for _, operation := range state.Operations {
+			if run, ok := operation.(Run); ok {
+				for _, mount := range run.Mounts {
+					if mount.HostPath == "" {
+						continue
+					}
+					host, err := canonicalResource(mount.HostPath)
+					if err != nil {
+						return Result{}, fmt.Errorf("live host bind: %w", err)
+					}
+					for _, resource := range []string{options.Store.RunRoot, options.Store.GraphRoot, options.Cache.LocalDir, options.Cache.MountDir, options.Output.OCI, options.Output.Filesystem} {
+						if resource == "" {
+							continue
+						}
+						normalized, err := canonicalResource(resource)
+						if err != nil {
+							return Result{}, err
+						}
+						if pathsOverlap(host, normalized) {
+							return Result{}, errors.New("live host bind overlaps store, cache or output")
+						}
+					}
+				}
+			}
+		}
+	}
+	plan, err := compile(program, contexts...)
 	if err != nil {
 		return Result{}, err
 	}
@@ -205,6 +300,20 @@ func Execute(ctx context.Context, program Program, options Options) (result Resu
 	if options.Output.Filesystem != "" && pathsOverlap(options.Output.OCI, options.Output.Filesystem) {
 		return Result{}, errors.New("output destinations must not overlap")
 	}
+	// A live host input is deliberately outside immutable build snapshots.
+	// Conservatively bypass every result cache in this invocation so neither a
+	// writable effect nor a changing read-only live view can be skipped.
+	for _, state := range program.States {
+		for _, operation := range state.Operations {
+			if run, ok := operation.(Run); ok {
+				for _, mount := range run.Mounts {
+					if mount.HostPath != "" {
+						options.Cache.NoCache = true
+					}
+				}
+			}
+		}
+	}
 	controls, err := buildah.ParseRunControls(buildah.RunControlInput{
 		HTTPProxy: true, Runtime: options.Runtime, Isolation: options.Isolation,
 	})
@@ -227,13 +336,14 @@ func Execute(ctx context.Context, program Program, options Options) (result Resu
 	native, err := buildah.BuildPlanSupervised(ctx, plan, buildah.SupervisedPlanOptions{
 		Store:      buildah.StoreOptions{RunRoot: options.Store.RunRoot, GraphRoot: options.Store.GraphRoot, GraphDriverName: options.Store.Driver, GraphDriverOptions: options.Store.DriverOptions},
 		ContextDir: options.ContextDir, ContextArtifacts: contextArtifacts, Runtime: options.Runtime, Isolation: options.Isolation, Jobs: options.Jobs, Output: out,
+		Network:       options.Network,
 		RunControls:   controls,
-		CacheLocalDir: options.Cache.LocalDir, NoCache: options.Cache.NoCache,
+		CacheMountDir: options.Cache.MountDir, CacheLocalDir: options.Cache.LocalDir, CacheFrom: cacheFrom, CacheTo: cacheTo, NoCache: options.Cache.NoCache,
 		AuthFile: options.Registry.AuthFile, CertDir: options.Registry.CertDir, Credentials: options.Registry.Credentials, TLSVerify: options.Registry.TLSVerify, PullPolicy: options.Registry.PullPolicy, SignaturePolicyPath: options.Registry.SignaturePolicyPath,
-		Stdout: options.Stdout, Stderr: options.Stderr,
+		Stdout: options.Stdout, Stderr: options.Stderr, Progress: options.Progress,
 	})
 	if err != nil {
-		return Result{}, err
+		return Result{ProgressDropped: native.ProgressDropped}, err
 	}
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
@@ -243,7 +353,7 @@ func Execute(ctx context.Context, program Program, options Options) (result Resu
 			return Result{}, fmt.Errorf("promote filesystem output: %w", err)
 		}
 	}
-	return Result{ImageID: native.ImageID, ManifestDigest: native.ManifestDigest, Platform: native.Platform, OCI: native.Layout, Filesystem: options.Output.Filesystem, Cache: CacheStats{Hits: native.CacheStats.Hits, Misses: native.CacheStats.Misses, Stored: native.CacheStats.Stored, Skipped: native.CacheStats.Skipped, Errors: native.CacheStats.Errors}}, nil
+	return Result{ImageID: native.ImageID, ManifestDigest: native.ManifestDigest, Platform: native.Platform, OCI: native.Layout, Filesystem: options.Output.Filesystem, ProgressDropped: native.ProgressDropped, Cache: CacheStats{Hits: native.CacheStats.Hits, Misses: native.CacheStats.Misses, Stored: native.CacheStats.Stored, Skipped: native.CacheStats.Skipped, Errors: native.CacheStats.Errors}}, nil
 }
 func freshOutput(path string) error {
 	if !filepath.IsAbs(path) {
@@ -274,4 +384,85 @@ func pathsOverlap(a, b string) bool {
 // Match the backend's output promotion: a concurrent creator retains its path.
 func promoteFilesystem(source, destination string) error {
 	return unix.Renameat2(unix.AT_FDCWD, source, unix.AT_FDCWD, destination, unix.RENAME_NOREPLACE)
+}
+
+// localContextSpecs snapshots the names and canonical directories before workers
+// start. Named input selection is explicit and never inferred from an image name.
+func localContextSpecs(contexts map[string]string) ([]buildcontext.Spec, error) {
+	names := make([]string, 0, len(contexts))
+	for name := range contexts {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	specs := make([]buildcontext.Spec, 0, len(names))
+	for _, name := range names {
+		directory := contexts[name]
+		if !filepath.IsAbs(directory) {
+			return nil, fmt.Errorf("named context %q directory must be absolute", name)
+		}
+		parsed, err := buildcontext.Parse([]string{name + "=" + directory})
+		if err != nil {
+			return nil, err
+		}
+		spec := parsed[0]
+		if spec.Name != name || name == "build" || spec.Kind != buildcontext.Local {
+			return nil, fmt.Errorf("invalid or reserved local context name %q", name)
+		}
+		spec.Path, err = filepath.EvalSymlinks(directory)
+		if err != nil {
+			return nil, fmt.Errorf("named context %q: %w", name, err)
+		}
+		info, err := os.Stat(spec.Path)
+		if err != nil {
+			return nil, err
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("named context %q must be a directory", name)
+		}
+		specs = append(specs, spec)
+	}
+	return specs, nil
+}
+
+func validateContextResources(contexts []buildcontext.Spec, options Options) error {
+	if len(contexts) == 0 {
+		return nil
+	}
+	for _, resource := range []string{options.Store.RunRoot, options.Store.GraphRoot, options.Cache.LocalDir, options.Cache.MountDir, options.Output.OCI, options.Output.Filesystem} {
+		if resource == "" {
+			continue
+		}
+		normalized, err := canonicalResource(resource)
+		if err != nil {
+			return err
+		}
+		for _, input := range contexts {
+			if pathsOverlap(input.Path, normalized) {
+				return fmt.Errorf("named context %q overlaps store, cache or output", input.Name)
+			}
+		}
+	}
+	return nil
+}
+
+func canonicalResource(path string) (string, error) {
+	if !filepath.IsAbs(path) {
+		return "", errors.New("execution resource must be absolute")
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		return resolved, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	parent := filepath.Dir(path)
+	if parent == path {
+		return "", err
+	}
+	resolved, err = canonicalResource(parent)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(resolved, filepath.Base(path)), nil
 }

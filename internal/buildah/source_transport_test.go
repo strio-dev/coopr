@@ -161,6 +161,37 @@ func TestResolveOCITransportKeepsConfigAndManifest(t *testing.T) {
 	if name, err := sourceBaseName(store, stored); err != nil || name != namedStorageReference {
 		t.Fatalf("native ID transport lost stored Docker name %q: %v", name, err)
 	}
+
+	graphName := graphResultNamePrefix + strings.Repeat("a", 64)
+	instructionName := instructionCacheNamePrefix + "sha256:" + strings.Repeat("b", 64)
+	for _, tc := range []struct {
+		name, reference, want string
+		names                 []string
+	}{
+		{name: "graph-retention-only", names: []string{graphName}},
+		{name: "instruction-retention-only", names: []string{instructionName}},
+		{name: "graph-retention-before-user", names: []string{graphName, namedStorageReference}, want: namedStorageReference},
+		{name: "instruction-retention-before-user", names: []string{instructionName, namedStorageReference}, want: namedStorageReference},
+		{name: "user-before-retention", names: []string{namedStorageReference, graphName, instructionName}, want: namedStorageReference},
+		{name: "native-graph-reference-fallback", reference: "containers-storage:" + graphName},
+		{name: "native-instruction-reference-fallback", reference: "containers-storage:" + instructionName},
+		{name: "native-user-reference-fallback", reference: "containers-storage:" + namedStorageReference, want: namedStorageReference},
+		{name: "native-user-reference-with-only-retention", reference: "containers-storage:" + namedStorageReference, names: []string{graphName, instructionName}, want: namedStorageReference},
+		{name: "registry-reference-with-retention", reference: "docker://" + namedStorageReference, names: []string{graphName, namedStorageReference}, want: namedStorageReference},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := store.SetNames(stored.ImageID, tc.names); err != nil {
+				t.Fatal(err)
+			}
+			source := stored
+			if tc.reference != "" {
+				source.Reference = tc.reference
+			}
+			if name, err := sourceBaseName(store, source); err != nil || name != tc.want {
+				t.Fatalf("base name = %q, want %q: %v", name, tc.want, err)
+			}
+		})
+	}
 }
 
 func TestFilesystemBaseRejectsEscapingLinks(t *testing.T) {

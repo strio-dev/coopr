@@ -6,29 +6,37 @@
 }:
 let
   inherit (pkgs) lib;
+  rootFiles = builtins.readDir ../.;
+  rootGo = map (name: ../. + "/${name}") (
+    lib.filter (name: rootFiles.${name} == "regular" && lib.hasSuffix ".go" name) (
+      builtins.attrNames rootFiles
+    )
+  );
   source = lib.fileset.toSource {
     root = ../.;
-    fileset = lib.fileset.unions [
-      ../.github
-      ../cmd
-      ../docs
-      ../examples
-      ../internal
-      ../coopr.go
-      ../plan.go
-      ../plan_test.go
-      ../nix
-      ../scripts
-      ../CONTRIBUTING.md
-      ../Justfile
-      ../LICENSE
-      ../README.md
-      ../flake.nix
-      ../flake.lock
-      ../go.mod
-      ../go.sum
-      ../zensical.toml
-    ];
+    fileset = lib.fileset.unions (
+      rootGo
+      ++ [
+        ../.github
+        ../cmd
+        ../docs
+        ../examples
+        ../internal
+        ../api
+        ../client
+        ../nix
+        ../scripts
+        ../CONTRIBUTING.md
+        ../Justfile
+        ../LICENSE
+        ../README.md
+        ../flake.nix
+        ../flake.lock
+        ../go.mod
+        ../go.sum
+        ../zensical.toml
+      ]
+    );
   };
   copyLibraries = lib.concatStringsSep "\n" (
     lib.mapAttrsToList (name: library: ''

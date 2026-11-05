@@ -24,7 +24,7 @@ func TestArtifactFileSelectionIsNotAnImageBinding(t *testing.T) {
 		{"from after copy", `from "scratch" as="helper" { copy "hello.txt" "/hello" from="` + ref + `" }
 from "` + ref + `" { copy "/hello" "/proof" from="helper" }`, true},
 		{"mount after copy", `from "scratch" { copy "hello.txt" "/hello" from="` + ref + `"
-run "true" { mount "bind" from="` + ref + `" target="/assets" } }`, true},
+run "true" { mount "bind" from="` + ref + `" target="/assets" } }`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			def, err := definition.Parse(strings.NewReader(tc.body))
@@ -119,7 +119,7 @@ func TestArtifactSelectionsRemainCoordinatorOwned(t *testing.T) {
 	}
 }
 
-func TestArtifactCopyLoweringPreservesOptionsAndRejectsMounts(t *testing.T) {
+func TestArtifactCopyAndRunLoweringPreserveInputIdentity(t *testing.T) {
 	const ref = "registry.invalid/assets:latest"
 	root := oci.Descriptor(v1.MediaTypeImageManifest, []byte("artifact"))
 	selected := ResolvedImageSource{Artifact: true, Reference: ref, Root: root, Selected: root}
@@ -143,9 +143,17 @@ copy "hello.txt" "/result/" from="`+ref+`" chmod=0o640 parents=#true {
 	plan = testPlan(t, `from "scratch" {
 run "true" { mount "bind" from="`+ref+`" target="/assets" }
 }`)
-	_, err = lowerPlannedGraphOperation(plan.Stages[0].Operations[0], nil, nil, nil, "linux/amd64", inputs, imageconfig.New(), nil)
-	if err == nil || !strings.Contains(err.Error(), "artifact") {
-		t.Fatalf("artifact accepted as RUN mount: %v", err)
+	mounted, err := lowerPlannedGraphOperation(plan.Stages[0].Operations[0], nil, nil, nil, "linux/amd64", inputs, imageconfig.New(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, ok := mounted[0].(Run)
+	if !ok || len(run.Mounts) != 1 || run.Mounts[0].Artifact == nil || run.Mounts[0].Artifact.Selected.Digest != root.Digest {
+		t.Fatalf("artifact RUN mount lost selection: %#v", mounted)
+	}
+	plan.Stages[0].Operations[0].Children[0].Properties["readonly"] = "false"
+	if _, err := lowerPlannedGraphOperation(plan.Stages[0].Operations[0], nil, nil, nil, "linux/amd64", inputs, imageconfig.New(), nil); err == nil {
+		t.Fatal("writable artifact mount accepted")
 	}
 }
 

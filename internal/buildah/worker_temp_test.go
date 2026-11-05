@@ -84,3 +84,66 @@ func TestSocketSafeWorkerTempUsesShortStableAlias(t *testing.T) {
 		t.Fatalf("alias target = %q, %v; want %q", target, err, longRoot)
 	}
 }
+
+func TestExplicitMountCacheParentSurvivesGraphRootChanges(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "mounts")
+	first, err := prepareWorkerTemp(filepath.Join(root, "first-graph"), parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(first, "volume"), []byte("retained"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	second, err := prepareWorkerTemp(filepath.Join(root, "second-graph"), parent)
+	if err != nil || second != first {
+		t.Fatalf("persistent parent changed: %q/%q %v", first, second, err)
+	}
+	data, err := os.ReadFile(filepath.Join(second, "volume"))
+	if err != nil || string(data) != "retained" {
+		t.Fatalf("native cache content lost: %q %v", data, err)
+	}
+	for _, resource := range []string{parent, filepath.Join(parent, "child"), root} {
+		if _, err := validateCacheMountParent(parent, resource); err == nil {
+			t.Fatalf("overlapping cache parent accepted: %q", resource)
+		}
+	}
+	if _, err := prepareWorkerTemp(filepath.Join(root, "graph"), "relative"); err == nil {
+		t.Fatal("relative mount cache parent accepted")
+	}
+}
+
+func TestPersistentCacheBridgeRejectsExistingConflictingLocation(t *testing.T) {
+	root := t.TempDir()
+	worker, err := prepareWorkerTemp(filepath.Join(root, "graph"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := filepath.Join(root, "mounts")
+	if err := preparePersistentCacheMounts(worker, parent); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(worker)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("native cache bridge: %v %v", entries, err)
+	}
+	link := filepath.Join(worker, entries[0].Name())
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(link, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparePersistentCacheMounts(worker, parent); err == nil {
+		t.Fatal("existing native cache directory was silently migrated")
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(root, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparePersistentCacheMounts(worker, parent); err == nil {
+		t.Fatal("conflicting native cache link was replaced")
+	}
+}

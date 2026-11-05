@@ -13,13 +13,17 @@ func TestSnapshotWritableBindFilePreservesMetadataAndDiscardsWrites(t *testing.T
 	if err := os.WriteFile(source, []byte("original"), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	path, cleanup, err := prepareRunBindFile(source, []string{"rw"})
+	jobDirectory := t.TempDir()
+	path, cleanup, err := prepareRunBindSource(source, []string{"rw"}, jobDirectory)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = cleanup() }()
 	if path == source {
 		t.Fatal("RUN bind snapshot aliases its source")
+	}
+	if filepath.Dir(filepath.Dir(path)) != jobDirectory {
+		t.Fatalf("snapshot %q is outside supervisor-owned job %q", path, jobDirectory)
 	}
 	before, err := os.Stat(source)
 	if err != nil {
@@ -62,7 +66,7 @@ func TestReadOnlyImageFileBindIsolatesMetadataChanges(t *testing.T) {
 			if err := os.WriteFile(source, []byte("original"), 0o640); err != nil {
 				t.Fatal(err)
 			}
-			path, cleanup, err := prepareRunBindFile(source, []string{"ro", "rbind", option})
+			path, cleanup, err := prepareRunBindSource(source, []string{"ro", "rbind", option})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -104,7 +108,7 @@ func TestReadOnlyImageFileBindWithoutMetadataChangesKeepsSource(t *testing.T) {
 	if err := os.WriteFile(source, []byte("original"), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	path, cleanup, err := prepareRunBindFile(source, []string{"ro", "rbind", "noexec", "nosuid"})
+	path, cleanup, err := prepareRunBindSource(source, []string{"ro", "rbind", "noexec", "nosuid"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,5 +120,51 @@ func TestReadOnlyImageFileBindWithoutMetadataChangesKeepsSource(t *testing.T) {
 	}
 	if _, err := os.Stat(source); err != nil {
 		t.Fatalf("readonly source removed by cleanup: %v", err)
+	}
+}
+
+func TestReadOnlyDirectoryBindSnapshotsPreserveRootMetadata(t *testing.T) {
+	jobDirectory := t.TempDir()
+	source := filepath.Join(t.TempDir(), "selected-directory")
+	if err := os.Mkdir(source, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "payload"), []byte("original"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	path, cleanup, err := prepareRunBindSource(source, []string{"ro", "Z"}, jobDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cleanup() }()
+	before, err := os.Stat(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(before, after) || before.Mode() != after.Mode() {
+		t.Fatalf("directory copy failed to isolate source or preserve mode: %v, %v", before, after)
+	}
+	beforeOwner, afterOwner := before.Sys().(*syscall.Stat_t), after.Sys().(*syscall.Stat_t)
+	if beforeOwner.Uid != afterOwner.Uid || beforeOwner.Gid != afterOwner.Gid {
+		t.Fatal("directory root ownership changed")
+	}
+	if filepath.Dir(filepath.Dir(path)) != jobDirectory {
+		t.Fatalf("snapshot %q outside owned job %q", path, jobDirectory)
+	}
+	if err := os.WriteFile(filepath.Join(path, "payload"), []byte("changed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if payload, err := os.ReadFile(filepath.Join(source, "payload")); err != nil || string(payload) != "original" {
+		t.Fatalf("source changed: %q %v", payload, err)
+	}
+	if err := cleanup(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("snapshot remains: %v", err)
 	}
 }

@@ -24,6 +24,9 @@
         "x86_64-linux"
         "aarch64-linux"
       ];
+      flake.overlays.default = import ./nix/overlay.nix {
+        inherit (inputs) nix2container;
+      };
       perSystem =
         {
           config,
@@ -43,7 +46,7 @@
             else
               "https://github.com/strio-dev/coopr/releases/download/${version}/coopr-sources.tar.gz";
           nix2container = (import inputs.nix2container { inherit pkgs; }).nix2container;
-          coopr = pkgs.callPackage ./nix/package.nix { inherit version; };
+          coopr = (pkgs.extend inputs.self.overlays.default).coopr;
           podman-sequoia = pkgs.callPackage ./nix/podman-sequoia.nix { };
           coopr-sequoia-signing = pkgs.callPackage ./nix/sequoia-helper.nix {
             inherit coopr podman-sequoia;
@@ -92,6 +95,9 @@
             release-source = release.sources;
             container-source = release.sourceImage;
             coopr-sequoia-signing-sources = coopr-sequoia-signing.sources;
+            nix-environment = import ./examples/nix/image.nix {
+              pkgs = pkgs.extend inputs.self.overlays.default;
+            };
           };
           apps = {
             default = config.apps.coopr;
@@ -107,20 +113,28 @@
               program = "${coopr}/bin/coopr";
             };
           };
-          checks = import ./nix/checks.nix {
-            inherit
-              pkgs
-              coopr
-              coopr-sequoia-signing
-              coopr-static
-              container
-              docs
-              release
-              container-archive
-              sourceUrl
-              ;
-            inherit (pkgs) lib;
-          };
+          checks =
+            (import ./nix/checks.nix {
+              inherit
+                pkgs
+                coopr
+                coopr-sequoia-signing
+                coopr-static
+                container
+                docs
+                release
+                container-archive
+                sourceUrl
+                ;
+              inherit (pkgs) lib;
+            })
+            // {
+              nix-image = import ./nix/tests/nix-image.nix {
+                inherit pkgs;
+                inherit (coopr) buildImage;
+              };
+              nix-composition = import ./nix/tests/nix-composition.nix { inherit pkgs; };
+            };
           formatter = pkgs.nixfmt-tree;
           devShells.default = pkgs.callPackage ./nix/devshell.nix { inherit coopr zensical; };
           devShells.runtime =

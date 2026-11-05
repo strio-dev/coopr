@@ -103,8 +103,11 @@ type Operation struct {
 	// InputContext identifies the root for copy/add without from. MountContexts
 	// uses the child index for bind mounts without from. Stage-backed inputs keep
 	// their from reference and have no context annotation.
-	InputContext        string         `json:"input_context,omitempty"`
-	MountContexts       map[int]string `json:"mount_contexts,omitempty"`
+	InputContext  string         `json:"input_context,omitempty"`
+	MountContexts map[int]string `json:"mount_contexts,omitempty"`
+	// HostMounts are explicit live host directories admitted by the typed API.
+	// They are not authored component inputs or snapshotted build contexts.
+	HostMounts          map[int]string `json:"host_mounts,omitempty"`
 	TransientMountCount int            `json:"transient_mount_count,omitempty"`
 }
 

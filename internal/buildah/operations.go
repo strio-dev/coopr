@@ -75,6 +75,7 @@ type Run struct {
 	sourceStore       storage.Store
 	cacheLockRoot     string
 	executionContext  context.Context
+	workerDirectory   string
 }
 
 func (operation Run) apply(builder operationBuilder, contextDir string) (retErr error) {
@@ -156,6 +157,61 @@ func (operation Run) apply(builder operationBuilder, contextDir string) (retErr 
 		defer func() { retErr = errors.Join(retErr, cleanup()) }()
 		directMounts = append(directMounts, specs.Mount{Source: directory, Destination: "/run/coopr-heredoc", Type: "bind", Options: []string{"ro", "bind", "exec", "Z"}})
 	}
+	for index, mount := range operation.Mounts {
+		if mount.HostPath != "" {
+			if err := validateLiveHostMount(mount); err != nil {
+				return err
+			}
+			readonly, _ := strconv.ParseBool(mount.Properties["readonly"])
+			access := "rw"
+			if readonly {
+				access = "ro"
+			}
+			options := []string{"bind", access, "rprivate"}
+			switch mount.Properties["relabel"] {
+			case "shared":
+				options = append(options, "z")
+			case "private":
+				options = append(options, "Z")
+			}
+			directMounts = append(directMounts, specs.Mount{Source: mount.HostPath, Destination: mount.Properties["target"], Type: "bind", Options: options})
+			runMounts[index] = ""
+			continue
+		}
+		if mount.Artifact == nil {
+			continue
+		}
+		root := mount.artifactRoot
+		if root == "" {
+			ctx := operation.executionContext
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			var cleanup func() error
+			var err error
+			root, cleanup, err = extractArtifactRunSource(ctx, operation.sourceStore, *mount.Artifact, operation.workerDirectory)
+			if err != nil {
+				return fmt.Errorf("materialize RUN artifact: %w", err)
+			}
+			defer func() { retErr = errors.Join(retErr, cleanup()) }()
+		}
+		if err := validateStageMountSource(mount.Properties["source"]); err != nil {
+			return err
+		}
+		source, err := copier.Eval(root, filepath.Join(root, strings.TrimLeft(mount.Properties["source"], "/")), copier.EvalOptions{})
+		if err != nil {
+			return fmt.Errorf("resolve RUN artifact path %q: %w", mount.Properties["source"], err)
+		}
+		info, err := os.Stat(source)
+		if err != nil {
+			return fmt.Errorf("RUN artifact path %q is unavailable: %w", mount.Properties["source"], err)
+		}
+		if !info.IsDir() && !info.Mode().IsRegular() {
+			return fmt.Errorf("RUN artifact path is not a directory or regular file")
+		}
+		directMounts = append(directMounts, specs.Mount{Source: source, Destination: mount.Properties["target"], Type: "bind", Options: []string{"bind", "ro", "rprivate", "Z"}})
+		runMounts[index] = ""
+	}
 	// Builder.Run cannot mark a context as an already-disposable build overlay
 	// (imagebuildah's StageMountDetails is internal). Bind our disposable copy
 	// directly so primary-context writes survive until the build ends.
@@ -180,7 +236,7 @@ func (operation Run) apply(builder operationBuilder, contextDir string) (retErr 
 			runMounts[index] = ""
 		}
 	}
-	if operation.sourceStore != nil {
+	if operation.sourceStore != nil && slices.ContainsFunc(operation.Mounts, func(mount RunMount) bool { return mount.Type == "bind" && mount.BoundFrom && mount.Artifact == nil }) {
 		native, ok := builder.(nativeBuilder)
 		if !ok {
 			return errors.New("stage-backed RUN mounts require a native Buildah builder")
@@ -194,7 +250,7 @@ func (operation Run) apply(builder operationBuilder, contextDir string) (retErr 
 			}
 		}()
 		for index, mount := range operation.Mounts {
-			if mount.Type != "bind" || !mount.BoundFrom {
+			if mount.Type != "bind" || !mount.BoundFrom || mount.Artifact != nil {
 				continue
 			}
 			imageID := mount.Properties["from"]
@@ -211,24 +267,29 @@ func (operation Run) apply(builder operationBuilder, contextDir string) (retErr 
 			if err != nil {
 				return fmt.Errorf("stat RUN source %q in stage image: %w", mount.Properties["source"], err)
 			}
-			if info.IsDir() {
-				continue
-			}
-			if !info.Mode().IsRegular() {
-				return fmt.Errorf("RUN stage bind source %q is neither a directory nor a regular file", mount.Properties["source"])
-			}
-			mountOptions := writableContextBindOptions(mount.Properties)
 			readonly := true
 			if value := mount.Properties["readonly"]; value != "" {
 				readonly, _ = strconv.ParseBool(value) // serializeRunMounts validated the value.
 			}
+			// Buildah's image-backed directory path creates a writable per-RUN
+			// overlay even for readonly inputs. Preserve that path for writable
+			// mounts, but enforce readonly using a direct bind below.
+			if info.IsDir() && !readonly {
+				continue
+			}
+			if !info.IsDir() && !info.Mode().IsRegular() {
+				return fmt.Errorf("RUN stage bind source %q is neither a directory nor a regular file", mount.Properties["source"])
+			}
+			mountOptions := writableContextBindOptions(mount.Properties)
 			if readonly {
 				mountOptions[0] = "ro"
 			}
 			mountOptions = slices.DeleteFunc(mountOptions, func(option string) bool { return option == "z" && mount.Properties["relabel"] == "" })
-			mountSource, cleanup, err := prepareRunBindFile(source, mountOptions)
+			// The copier preserves selected-root metadata while isolating
+			// pre-mount ownership/relabel changes from shared immutable images.
+			mountSource, cleanup, err := prepareRunBindSource(source, mountOptions, operation.workerDirectory)
 			if err != nil {
-				return fmt.Errorf("prepare RUN stage bind file %q: %w", mount.Properties["source"], err)
+				return fmt.Errorf("prepare RUN stage bind source %q: %w", mount.Properties["source"], err)
 			}
 			defer func() { retErr = errors.Join(retErr, cleanup()) }()
 			if mountSource != source && mount.Properties["relabel"] == "" {

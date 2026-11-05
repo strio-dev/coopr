@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"github.com/strio-dev/coopr/internal/buildah"
+	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/planner"
 )
 
 func TestLiteralProgramAndDependencies(t *testing.T) {
@@ -71,6 +73,31 @@ func TestExecuteCanceledBeforeValidation(t *testing.T) {
 	_, err := Execute(ctx, Program{}, Options{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestInvalidRegistryCachePrecedesFilesystemMutation(t *testing.T) {
+	wasInitialized := initialized.Swap(true)
+	defer initialized.Store(wasInitialized)
+	for _, direction := range []string{"from", "to"} {
+		t.Run(direction, func(t *testing.T) {
+			root := t.TempDir()
+			cache := CacheOptions{LocalDir: filepath.Join(root, "cache")}
+			if direction == "from" {
+				cache.RegistryFrom = []string{"registry.example/cache:tag"}
+			} else {
+				cache.RegistryTo = []string{"registry.example/cache:tag"}
+			}
+			options := Options{Store: StoreOptions{RunRoot: filepath.Join(root, "runroot"), GraphRoot: filepath.Join(root, "graphroot")}, Cache: cache, Output: Output{OCI: filepath.Join(root, "oci"), Filesystem: filepath.Join(root, "rootfs")}}
+			_, err := Execute(context.Background(), Program{Output: "out", States: []State{{ID: "out", From: Source{Image: "scratch"}}}}, options)
+			if err == nil || !strings.Contains(err.Error(), "registry cache") {
+				t.Fatalf("invalid %s cache: %v", direction, err)
+			}
+			entries, err := os.ReadDir(root)
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("cache preflight mutated resources: %v %v", entries, err)
+			}
+		})
 	}
 }
 
@@ -244,5 +271,89 @@ func TestExecuteRemovesFilesystemStagingAfterValidationFailure(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("failed execution left staging or outputs: %v", entries)
+	}
+}
+
+func TestNamedCopyContextClassifiedAndPruned(t *testing.T) {
+	assets := buildcontext.Spec{Name: "stoke-assets", Kind: buildcontext.Local, Path: t.TempDir()}
+	unused := buildcontext.Spec{Name: "unused", Kind: buildcontext.Local, Path: t.TempDir()}
+	literal := "scripts/$literal white space.sh"
+	program := Program{Output: "out", States: []State{
+		{ID: "unused-image", From: Source{Image: "stoke-assets"}, Operations: []Operation{Copy{Sources: []string{"unused"}, Destination: "/unused", From: Source{Context: "unused"}}}},
+		{ID: "out", From: Source{Image: "scratch"}, Operations: []Operation{
+			Copy{Sources: []string{literal}, Destination: "/check", From: Source{Context: "stoke-assets"}},
+			Copy{Sources: []string{"project.txt"}, Destination: "/project"},
+		}},
+	}}
+	plan, err := compile(program, unused, assets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Stages) != 1 || len(plan.Contexts) != 1 || len(plan.Inputs) != 1 || plan.Inputs[0].Kind != "context" || plan.Inputs[0].Reference != "stoke-assets" {
+		t.Fatalf("unused image/context retained or context unclassified: %#v", plan)
+	}
+	expected := planner.ContextInput{Spec: assets, Bindings: []planner.ContextBinding{{Role: "copy", StageID: "1", Operation: 0, MountIndex: -1}}}
+	if !reflect.DeepEqual(plan.Contexts[0], expected) {
+		t.Fatalf("context binding %#v", plan.Contexts[0])
+	}
+	ops := plan.Stages[0].Operations
+	if ops[0].InputContext != "stoke-assets" || ops[0].Properties["from"] != "stoke-assets" || ops[0].Arguments[0] != literal || ops[1].InputContext != "build" {
+		t.Fatalf("source roles/literals changed: %#v", ops)
+	}
+	_, err = buildah.BuildPlanSupervised(context.Background(), plan, buildah.SupervisedPlanOptions{})
+	if err == nil || !strings.Contains(err.Error(), "run root is required") {
+		t.Fatalf("native graph rejected named COPY before store validation: %v", err)
+	}
+}
+
+func TestNamedContextsRejectUnsupportedOrAmbiguousSources(t *testing.T) {
+	input := buildcontext.Spec{Name: "assets", Kind: buildcontext.Local, Path: t.TempDir()}
+	for _, source := range []Source{{Context: "missing"}, {Context: "assets", Image: "scratch"}, {Context: "assets", State: "base"}} {
+		p := Program{Output: "out", States: []State{{ID: "out", From: Source{Image: "scratch"}, Operations: []Operation{Copy{Sources: []string{"x"}, Destination: "/x", From: source}}}}}
+		if _, err := compile(p, input); err == nil {
+			t.Fatalf("accepted ambiguous/unknown COPY source %#v", source)
+		}
+	}
+	for _, program := range []Program{
+		{Output: "out", States: []State{{ID: "out", From: Source{Context: "assets"}}}},
+	} {
+		if _, err := compile(program, input); err == nil {
+			t.Fatal("named context accepted as a state base")
+		}
+	}
+}
+
+func TestLocalNamedContextDirectoriesAndResourceOwnership(t *testing.T) {
+	root := t.TempDir()
+	directory := filepath.Join(root, "assets")
+	if err := os.Mkdir(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, values := range []map[string]string{{"build": directory}, {"scratch": directory}, {"ASSETS": directory}, {"bad name": directory}, {"assets": "relative"}, {"assets": filepath.Join(root, "missing")}} {
+		if _, err := localContextSpecs(values); err == nil {
+			t.Fatalf("accepted named contexts %#v", values)
+		}
+	}
+	spec, err := localContextSpecs(map[string]string{"assets": directory, "overlap": directory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateContextResources(spec, Options{ContextDir: directory, Output: Output{OCI: filepath.Join(root, "out")}}); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(directory, alias); err != nil {
+		t.Fatal(err)
+	}
+	for _, resource := range []Options{
+		{Store: StoreOptions{RunRoot: filepath.Join(alias, "run")}},
+		{Store: StoreOptions{GraphRoot: directory}},
+		{Cache: CacheOptions{LocalDir: filepath.Join(alias, "cache")}},
+		{Output: Output{OCI: filepath.Join(alias, "image")}},
+		{Output: Output{Filesystem: filepath.Join(alias, "rootfs")}},
+	} {
+		if err := validateContextResources(spec, resource); err == nil {
+			t.Fatalf("accepted context/resource overlap %#v", resource)
+		}
 	}
 }

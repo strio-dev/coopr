@@ -32,8 +32,26 @@ func TestPruneRemovesUnusedImagesAndPreservesNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	cacheName := instructionCacheName(digest.FromString("tagged"))
-	tagged := createMaintenanceTestImage(t, lease.store, "", "localhost/app:latest", cacheName)
+	graphName := graphResultNamePrefix + digest.FromString("tagged-graph").Encoded()
+	tagged := createMaintenanceTestImage(t, lease.store, "", "localhost/app:latest", cacheName, graphName)
 	cache := createMaintenanceTestImage(t, lease.store, "", instructionCacheName(digest.FromString("unused")))
+	graphImage := createMaintenanceTestImage(t, lease.store, "", graphResultNamePrefix+digest.FromString("unused-graph").Encoded())
+	manifest, err := lease.store.ImageBigData(graphImage, storage.ImageDigestBigDataKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selectedManifest := storage.ImageDigestManifestBigDataNamePrefix + "-" + digest.FromBytes(manifest).String()
+	if err := lease.store.SetImageBigData(graphImage, selectedManifest, manifest, func(data []byte) (digest.Digest, error) { return digest.FromBytes(data), nil }); err != nil {
+		t.Fatal(err)
+	}
+	results := &instructionResultStorage{ctx: t.Context(), store: lease.store, dir: t.TempDir()}
+	graphResult, err := results.Save(&instructionSolverResult{Entry: instructionCacheEntry{ImageID: graphImage, ManifestDigest: digest.FromBytes(manifest)}}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !results.Exists(t.Context(), graphResult.ID) {
+		t.Fatal("saved graph result was unavailable before pruning")
+	}
 	foreign := createMaintenanceTestImage(t, lease.store, "")
 	if err := lease.Close(); err != nil {
 		t.Fatal(err)
@@ -42,7 +60,7 @@ func TestPruneRemovesUnusedImagesAndPreservesNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.RemovedImages != 2 {
+	if result.RemovedImages != 3 {
 		t.Fatalf("prune did not remove unused images: %+v", result)
 	}
 	lease, err = acquireStore(options)
@@ -50,12 +68,21 @@ func TestPruneRemovesUnusedImagesAndPreservesNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = lease.Close() }()
-	for _, id := range []string{cache, foreign} {
+	for _, id := range []string{cache, graphImage, foreign} {
 		if _, err := lease.store.Image(id); !errors.Is(err, storage.ErrImageUnknown) {
 			t.Fatalf("unused image %s remains: %v", id, err)
 		}
 	}
-	for _, name := range []string{"localhost/app:latest", cacheName} {
+	results.store = lease.store
+	if results.Exists(t.Context(), graphResult.ID) {
+		t.Fatal("pruned native image remained available through graph metadata")
+	}
+	if path, err := results.path(graphResult.ID); err != nil {
+		t.Fatal(err)
+	} else if _, err := os.Stat(path); err != nil {
+		t.Fatalf("fixture should retain metadata while native image is missing: %v", err)
+	}
+	for _, name := range []string{"localhost/app:latest", cacheName, graphName} {
 		image, err := lease.store.Image(name)
 		if err != nil || image.ID != tagged {
 			t.Fatalf("protected image name %s changed: %+v, %v", name, image, err)
@@ -504,6 +531,17 @@ func TestCacheLayerUsageReportsUnknownMetadataAndMappedRoots(t *testing.T) {
 				t.Fatalf("cache layer usage=%+v want known=%t bytes=%d", got, test.known, test.bytes)
 			}
 		})
+	}
+}
+
+func TestGraphResultAliasesCountAsCacheUsage(t *testing.T) {
+	name := graphResultNamePrefix + digest.FromString("usage").Encoded()
+	got := storeUsage([]storage.Image{{TopLayer: "a", Names: []string{name, "localhost/app:latest"}}}, []storage.Layer{{ID: "a", UncompressedSize: 17}}, nil)
+	if got.CacheImages != 1 || !got.CacheBytesKnown || got.CacheBytes != 17 {
+		t.Fatalf("graph cache usage: %+v", got)
+	}
+	if isInstructionCacheName("localhost/app:latest") {
+		t.Fatal("ordinary user tag classified as a private cache name")
 	}
 }
 

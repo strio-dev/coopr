@@ -32,6 +32,7 @@ const (
 )
 
 type stageWorkerRequest struct {
+	CaptureProgress       bool                              `json:"capture_progress,omitempty"`
 	ExecutableOrigin      string                            `json:"executable_origin,omitempty"`
 	RetainsCaller         bool                              `json:"retains_caller,omitempty"`
 	BaseRoot              *PackageRootMetadata              `json:"base_root,omitempty"`
@@ -75,11 +76,13 @@ type stageWorkerRequest struct {
 	ContextArtifacts      []string                          `json:"context_artifacts,omitempty"`
 	NoCache               bool                              `json:"no_cache,omitempty"`
 	CacheLocalDir         string                            `json:"cache_local_dir,omitempty"`
+	CacheMountDir         string                            `json:"cache_mount_dir,omitempty"`
 	CacheRepository       string                            `json:"cache_repository,omitempty"`
 	CacheFrom             []CacheSpec                       `json:"cache_from,omitempty"`
 	CacheTo               []CacheSpec                       `json:"cache_to,omitempty"`
 	ComponentRelay        string                            `json:"component_relay,omitempty"`
 	InstructionRelay      string                            `json:"instruction_relay,omitempty"`
+	GraphParent           *instructionVertexRelay           `json:"graph_parent,omitempty"`
 	Network               string                            `json:"network,omitempty"`
 	AddHosts              []string                          `json:"add_hosts,omitempty"`
 	ProxyArgs             map[string]string                 `json:"proxy_args,omitempty"`
@@ -116,6 +119,8 @@ type stageWorkerBase struct {
 }
 
 type stageWorkerResponse struct {
+	Progress              []OperationProgress             `json:"progress,omitempty"`
+	ProgressDropped       uint64                          `json:"progress_dropped,omitempty"`
 	RetainsCaller         bool                            `json:"retains_caller,omitempty"`
 	BaseImageID           string                          `json:"base_image_id,omitempty"`
 	ImageID               string                          `json:"image_id,omitempty"`
@@ -126,6 +131,8 @@ type stageWorkerResponse struct {
 	Root                  *PackageRootMetadata            `json:"root,omitempty"`
 	ComponentRelays       []componentCacheRelay           `json:"component_relays,omitempty"`
 	InstructionRelays     []portableInstructionCacheRelay `json:"instruction_relays,omitempty"`
+	GraphEndpoint         *instructionVertexRelay         `json:"graph_endpoint,omitempty"`
+	GraphRoots            []instructionGraphRootRelay     `json:"graph_roots,omitempty"`
 	ComponentCacheStats   CacheStats                      `json:"component_cache_stats"`
 	InstructionCacheStats CacheStats                      `json:"instruction_cache_stats"`
 	Error                 string                          `json:"error,omitempty"`
@@ -197,6 +204,7 @@ func (executor *graphExecutor) executeGraphStageIsolated(ctx context.Context, pl
 	}
 
 	request := stageWorkerRequest{
+		CaptureProgress:   executor.options.Progress != nil,
 		ExecutableOrigin:  executor.options.executableOrigin,
 		ProgressPrefix:    prepared.progressPrefix,
 		ProgressReference: executor.options.ProgressReference,
@@ -211,6 +219,7 @@ func (executor *graphExecutor) executeGraphStageIsolated(ctx context.Context, pl
 		BuildContexts:      executor.options.BuildContexts,
 		NoCache:            executor.options.NoCache,
 		CacheLocalDir:      executor.options.CacheLocalDir,
+		CacheMountDir:      executor.options.CacheMountDir,
 		CacheRepository:    executor.options.CacheRepository,
 		CacheFrom:          slices.Clone(executor.options.CacheFrom),
 		CacheTo:            slices.Clone(executor.options.CacheTo),
@@ -237,6 +246,10 @@ func (executor *graphExecutor) executeGraphStageIsolated(ctx context.Context, pl
 		request.TLSVerify = new(executor.system.DockerInsecureSkipTLSVerify == types.OptionalBoolFalse)
 	}
 	request.ComponentPins = cloneStringMap(prepared.componentPins)
+	request.GraphParent, err = encodeInstructionVertexRelay(prepared.graphEndpoint)
+	if err != nil {
+		return executedGraphStage{}, fmt.Errorf("encode stage %s graph parent: %w", prepared.stage.ID, err)
+	}
 	request.ComponentSources = cloneStringMap(prepared.componentSources)
 	request.ComponentSelections = cloneComponentSelections(prepared.componentSelections)
 	request.Delivery = prepared.delivery
@@ -303,6 +316,10 @@ func (executor *graphExecutor) executeGraphStageIsolated(ctx context.Context, pl
 		return executedGraphStage{}, errors.Join(ErrWorkerWaitIncomplete, processErr, fmt.Errorf("stage worker files retained at %s because process exit was not confirmed", jobDir))
 	}
 	response, responseErr := readStageWorkerResponse(request.ResultPath)
+	if responseErr == nil {
+		replayOperationProgress(executor.options.Progress, response.Progress)
+		executor.options.progressBuffer.addDropped(response.ProgressDropped)
+	}
 	if errors.Is(response.Failure, ErrWorkerWaitIncomplete) {
 		return executedGraphStage{}, errors.Join(response.Failure, WorkerSupervisionError(processErr), responseErr)
 	}
@@ -332,6 +349,14 @@ func (executor *graphExecutor) completeStageWorkerResponse(ctx context.Context, 
 	}
 	executor.stageRelayMu.Lock()
 	defer executor.stageRelayMu.Unlock()
+	endpoint, err := executor.instructionSolver.restoreInstructionVertexRelay(response.GraphEndpoint)
+	if err != nil {
+		return finished, fmt.Errorf("accept stage %s graph endpoint: %w", stageID, err)
+	}
+	if err := executor.instructionSolver.acceptInstructionGraphs(response.GraphRoots); err != nil {
+		return finished, fmt.Errorf("accept stage %s graph cache: %w", stageID, err)
+	}
+	finished.state.graphEndpoint = endpoint
 	if executor.componentCache != nil {
 		if err := executor.componentCache.acceptRelayedCandidates(response.ComponentRelays); err != nil {
 			return finished, fmt.Errorf("accept stage %s component cache: %w", stageID, err)
@@ -451,6 +476,15 @@ func executeStageWorker(requestPath string) error {
 }
 
 func executeStageWorkerRequestControlled(ctx context.Context, request stageWorkerRequest, control *stageWorkerControlClient) (response stageWorkerResponse, retErr error) {
+	var progressBuffer *operationProgressBuffer
+	if request.CaptureProgress {
+		progressBuffer = newOperationProgressBuffer()
+		ctx = withOperationProgress(ctx, progressBuffer.record)
+		defer func() {
+			response.Progress, response.ProgressDropped = progressBuffer.snapshot()
+			response.Result.ProgressDropped = response.ProgressDropped
+		}()
+	}
 	if request.Jobs < 1 {
 		request.Jobs = 1
 	}
@@ -499,17 +533,21 @@ func executeStageWorkerRequestControlled(ctx context.Context, request stageWorke
 		}
 	}
 	options := PlanOptions{
-		registryOptions:   request.RegistryOptions,
-		executableOrigin:  request.ExecutableOrigin,
-		ProgressReference: request.ProgressReference,
-		ProgressPrefix:    request.ProgressPrefix,
-		Store:             request.Store, ContextDir: request.ContextDir, SourcePolicyFile: request.SourcePolicyFile, SourcePolicy: request.SourcePolicy, IgnoreFile: request.IgnoreFile, ContextArtifacts: request.ContextArtifacts,
+		workerDirectory:      filepath.Dir(request.ResultPath),
+		eagerPortableImports: true,
+		progressBuffer:       progressBuffer,
+		registryOptions:      request.RegistryOptions,
+		executableOrigin:     request.ExecutableOrigin,
+		ProgressReference:    request.ProgressReference,
+		ProgressPrefix:       request.ProgressPrefix,
+		Store:                request.Store, ContextDir: request.ContextDir, SourcePolicyFile: request.SourcePolicyFile, SourcePolicy: request.SourcePolicy, IgnoreFile: request.IgnoreFile, ContextArtifacts: request.ContextArtifacts,
 		Isolation: request.Isolation, Runtime: request.Runtime, Output: request.ImageOutput, JobID: request.JobID,
 		ContextPrepared:    request.ContextPrepared,
 		TransientRunMounts: request.TransientRunMounts,
 		BuildContexts:      request.BuildContexts,
 		NoCache:            request.NoCache,
 		CacheLocalDir:      request.CacheLocalDir,
+		CacheMountDir:      request.CacheMountDir,
 		CacheRepository:    request.CacheRepository,
 		CacheFrom:          request.CacheFrom,
 		CacheTo:            request.CacheTo,
@@ -534,6 +572,9 @@ func executeStageWorkerRequestControlled(ctx context.Context, request stageWorke
 			SignaturePolicyPath: request.SignaturePolicy, BigFilesTemporaryDir: request.BigFilesTempDir,
 			AuthFilePath: request.AuthFile, DockerCertPath: request.CertDir,
 		},
+	}
+	if progressBuffer != nil {
+		options.Progress = progressBuffer.record
 	}
 	oci.ApplyTLSVerify(options.SystemContext, request.TLSVerify)
 	executor, err := newGraphExecutor(ctx, options)
@@ -563,9 +604,14 @@ func executeStageWorkerRequestControlled(ctx context.Context, request stageWorke
 			return response, fmt.Errorf("stage %s cache mount scope: %w", request.Stage.ID, err)
 		}
 	}
+	graphParent, err := executor.instructionSolver.restoreInstructionVertexRelay(request.GraphParent)
+	if err != nil {
+		return response, fmt.Errorf("restore stage %s graph parent: %w", request.Stage.ID, err)
+	}
 	finished, err := executor.executeGraphStage(ctx, &planner.Plan{Mode: request.Mode}, preparedGraphStage{
 		stage: request.Stage, base: request.Base, baseName: request.BaseName, baseRoot: request.BaseRoot, retainsCaller: request.RetainsCaller, preserveBaseImageAnnotations: request.PreserveBaseImageAnns, baseManifest: request.BaseManifest, logical: logical, baseLogical: baseLogical, operations: request.Operations,
 		cacheMountID: cacheMountID, cacheScope: request.CacheScope, progressPrefix: request.ProgressPrefix, delivery: request.Delivery,
+		graphEndpoint: graphParent,
 	}, request.Aliases, images, outputStageID(request), observedStage(request), true)
 	if err != nil {
 		return response, err
@@ -577,6 +623,14 @@ func executeStageWorkerRequestControlled(ctx context.Context, request stageWorke
 	response = stageWorkerResponse{
 		BaseImageID: finished.state.baseImageID, RetainsCaller: finished.state.retainsCaller, ImageID: finished.state.storageImageID, ManifestDigest: finished.state.manifestDigest, Config: config, CommandSet: finished.state.config.CommandSet(), Result: finished.result, Root: finished.root,
 		ComponentCacheStats: cacheStats(executor.componentCache), InstructionCacheStats: portableInstructionCacheStats(executor.instructionPortableCache),
+	}
+	response.GraphEndpoint, err = encodeInstructionVertexRelay(finished.state.graphEndpoint)
+	if err != nil {
+		return response, fmt.Errorf("relay stage %s graph endpoint: %w", request.Stage.ID, err)
+	}
+	response.GraphRoots, err = executor.instructionSolver.relayInstructionGraphs()
+	if err != nil {
+		return response, fmt.Errorf("relay stage %s graph cache: %w", request.Stage.ID, err)
 	}
 	if executor.componentCache != nil {
 		response.ComponentRelays, err = executor.componentCache.relayCandidates(request.ComponentRelay)
@@ -612,5 +666,9 @@ func readStageWorkerResponse(path string) (stageWorkerResponse, error) {
 	if err := readWorkerJSON(path, &response); err != nil {
 		return stageWorkerResponse{}, err
 	}
+	if err := validateOperationProgressBatch(response.Progress); err != nil {
+		return stageWorkerResponse{}, fmt.Errorf("invalid stage worker progress: %w", err)
+	}
+	response.Result.ProgressDropped = response.ProgressDropped
 	return response, nil
 }

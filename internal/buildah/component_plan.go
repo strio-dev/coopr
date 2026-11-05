@@ -127,7 +127,7 @@ func ResolveComponentPlan(ctx context.Context, request ComponentPlanRequest) (*R
 					return planner.StageBind{}, fmt.Errorf("named context %q requires a resolver", source.Source)
 				}
 				base, err = request.ResolveContext(ctx, *source.Context, basePlatform)
-			} else if source.Kind == planner.FromSourceCopyImage && source.Role == "copy" && request.ResolveFiles != nil {
+			} else if source.Kind == planner.FromSourceCopyImage && (source.Role == "copy" || source.Role == "run-mount") && request.ResolveFiles != nil {
 				base, err = request.ResolveFiles(ctx, source.Source, basePlatform)
 			} else {
 				base, err = request.ResolveBase(ctx, source.Source, basePlatform)
@@ -137,7 +137,7 @@ func ResolveComponentPlan(ctx context.Context, request ComponentPlanRequest) (*R
 			}
 			selectedBases.record(key, base)
 		}
-		if err := validateSelectedInput(base, source.Kind == planner.FromSourceCopyImage && source.Role == "copy"); err != nil {
+		if err := validateSelectedInput(base, source.Kind == planner.FromSourceCopyImage && (source.Role == "copy" || source.Role == "run-mount")); err != nil {
 			return planner.StageBind{}, fmt.Errorf("stage %s source %q: %w", source.StageID, source.Source, err)
 		}
 		if source.Kind == planner.FromSourceCopyImage {

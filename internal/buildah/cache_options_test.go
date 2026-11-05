@@ -5,12 +5,34 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/strio-dev/coopr/internal/cache"
 )
+
+func TestRegistryCacheSpecsUseNativeRepositoriesWithoutMutatingInputs(t *testing.T) {
+	repositories := []string{"example/cache", "localhost:5000/team/cache", "build-cache"}
+	specs, err := RegistryCacheSpecs(repositories)
+	want := []CacheSpec{
+		{Transport: "registry", Reference: "docker.io/example/cache"},
+		{Transport: "registry", Reference: "localhost:5000/team/cache"},
+		{Transport: "registry", Reference: "docker.io/library/build-cache"},
+	}
+	if err != nil || !reflect.DeepEqual(specs, want) {
+		t.Fatalf("specs=%+v err=%v", specs, err)
+	}
+	if !reflect.DeepEqual(repositories, []string{"example/cache", "localhost:5000/team/cache", "build-cache"}) {
+		t.Fatal("normalization mutated caller repository names")
+	}
+	for _, repository := range []string{"", "ghcr.io/team/cache:latest", "ghcr.io/team/cache@sha256:" + strings.Repeat("a", 64), "docker://ghcr.io/team/cache", "oci:/tmp/cache", "type=registry,ref=ghcr.io/team/cache", " bad/cache"} {
+		if _, err := RegistryCacheSpecs([]string{"valid.example/cache", repository}); err == nil {
+			t.Fatalf("invalid repository %q accepted", repository)
+		}
+	}
+}
 
 func TestCacheRecordFresh(t *testing.T) {
 	now := time.Unix(10_000, 0)

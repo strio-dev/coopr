@@ -16,6 +16,20 @@ type CacheSpec struct {
 	Reference string `json:"reference"`
 }
 
+// RegistryCacheSpecs validates bare repository names using the same native
+// normalization as frontend cache flags, without opening caches or stores.
+func RegistryCacheSpecs(repositories []string) ([]CacheSpec, error) {
+	var specs []CacheSpec
+	for _, repository := range repositories {
+		spec, err := normalizeCacheSpec(CacheSpec{Transport: "registry", Reference: repository})
+		if err != nil {
+			return nil, err
+		}
+		specs = append(specs, spec)
+	}
+	return specs, nil
+}
+
 func sameCacheStore(a, b any) bool {
 	left, right := reflect.ValueOf(a), reflect.ValueOf(b)
 	if !left.IsValid() || !right.IsValid() || left.Type() != right.Type() {

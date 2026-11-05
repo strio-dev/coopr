@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -19,6 +20,12 @@ func TestMain(m *testing.M) {
 	}
 	flag.Parse()
 	if !testing.Short() && flag.Lookup("test.list").Value.String() == "" {
+		// Rootless reexec needs containers/storage's cgo constructor. Without
+		// it, the child keeps its original UID and repeats the bootstrap.
+		if !testCGOEnabled {
+			fmt.Fprintln(os.Stderr, "live Buildah tests require CGO_ENABLED=1 for rootless namespace bootstrap; use -short for tests without native execution")
+			os.Exit(2)
+		}
 		if InitRootlessReexec() {
 			return
 		}

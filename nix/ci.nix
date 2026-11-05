@@ -25,6 +25,8 @@ let
         [
           "build"
           "container"
+          "nix-image"
+          "nix-composition"
           "release-binary"
           "sequoia-helper"
         ]

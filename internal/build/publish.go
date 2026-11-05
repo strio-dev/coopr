@@ -24,6 +24,8 @@ import (
 )
 
 type ComponentOptions struct {
+	Progress                       buildah.OperationProgressFunc
+	ProgressDropped                func(uint64)
 	Lifecycle                      buildah.LifecycleControls
 	Tags                           []string
 	MetadataFile                   string
@@ -67,6 +69,7 @@ type ComponentOptions struct {
 	Secrets, SSH                   []string
 	Allow                          []string
 	BuildContexts                  []buildcontext.Spec
+	CacheMountDir                  string
 	CacheLocalDir, CacheRepository string
 	CacheFrom, CacheTo             []buildah.CacheSpec
 }
@@ -74,6 +77,8 @@ type ComponentOptions struct {
 // BuildComponent builds the selected package graph into the component store
 // and optionally pushes its named OCI artifact to a registry.
 func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retErr error) {
+	var progressSnapshot func() ([]buildah.OperationProgress, uint64)
+	opts.Progress, progressSnapshot = captureBuildProgress(opts.MetadataFile != "", opts.Progress)
 	if opts.Jobs < 0 {
 		return "", errors.New("jobs must be nonnegative")
 	}
@@ -259,7 +264,8 @@ func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retEr
 			output = filepath.Join(filepath.Dir(layout), fmt.Sprintf("component-%d", i))
 		}
 		result, buildErr := buildah.PublishDefinitionSupervised(buildCtx, def, platformPlanning, buildah.SupervisedPlanOptions{
-			Store: buildStore, ContextDir: opts.Context, IgnoreFile: opts.IgnoreFile, ContextArtifacts: artifacts,
+			Progress: opts.Progress,
+			Store:    buildStore, ContextDir: opts.Context, IgnoreFile: opts.IgnoreFile, ContextArtifacts: artifacts,
 			Output: buildah.Output{Path: output}, ComponentStoreDir: opts.StoreDir,
 			Pull: opts.Pull, PullPolicy: opts.PullPolicy, SourcePolicyFile: opts.SourcePolicyFile, TransientRunMounts: opts.TransientRunMounts,
 			NoCache:     opts.NoCache,
@@ -276,10 +282,13 @@ func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retEr
 			Secrets:       opts.Secrets, SSH: opts.SSH,
 			AuthFile: opts.AuthFile, CertDir: opts.CertDir, TLSVerify: opts.TLSVerify,
 			Credentials: opts.Credentials, Retry: opts.Retry, RetrySet: opts.RetrySet, RetryDelay: opts.RetryDelay, DecryptionKeys: opts.DecryptionKeys, SignaturePolicyPath: opts.SignaturePolicyPath,
-			CacheLocalDir: opts.CacheLocalDir, CacheRepository: opts.CacheRepository,
+			CacheMountDir: opts.CacheMountDir, CacheLocalDir: opts.CacheLocalDir, CacheRepository: opts.CacheRepository,
 			CacheFrom: opts.CacheFrom, CacheTo: opts.CacheTo,
 			Stdin: opts.RunStdin, Stdout: platformStdout, Stderr: platformStderr,
 		})
+		if opts.ProgressDropped != nil {
+			opts.ProgressDropped(result.ProgressDropped)
+		}
 		if buildErr != nil {
 			return platformBuild{}, fmt.Errorf("component definition %s for %s: %w", definitionDisplayName(opts.File), targetPlatform, buildErr)
 		}
@@ -287,7 +296,7 @@ func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retEr
 		if parseErr != nil {
 			return platformBuild{}, parseErr
 		}
-		return platformBuild{variant: oci.IndexVariant{Layout: result.Layout, Manifest: result.Root, Platform: platform}}, nil
+		return platformBuild{variant: oci.IndexVariant{Layout: result.Layout, Manifest: result.Root, Platform: platform}, progressDropped: result.ProgressDropped}, nil
 	})
 	if err != nil {
 		return "", err
@@ -321,6 +330,7 @@ func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retEr
 	for i := range builds {
 		variants[i] = builds[i].variant
 	}
+	setBuildProgress(&report, progressSnapshot, builds)
 	if err := finishOutputs(opts.MetadataFile, "", root, variants, nil, report, publicationErr, "", ""); err != nil {
 		return "", err
 	}

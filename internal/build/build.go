@@ -35,6 +35,8 @@ import (
 )
 
 type Options struct {
+	Progress             buildah.OperationProgressFunc
+	ProgressDropped      func(uint64)
 	Lifecycle            buildah.LifecycleControls
 	Output               buildah.FilesystemOutput
 	Outputs              []buildah.FilesystemOutput
@@ -96,6 +98,8 @@ type Options struct {
 	LogRusage            bool
 	RusageLogFile        string
 	BuildStore           buildah.StoreOptions
+	ComponentStoreDir    string
+	CacheMountDir        string
 	CacheLocalDir        string
 	CacheRepository      string
 	CacheFrom            []buildah.CacheSpec
@@ -107,8 +111,9 @@ type Options struct {
 }
 
 type platformBuild struct {
-	selection oci.StoredSelection
-	variant   oci.ImageVariant
+	selection       oci.StoredSelection
+	variant         oci.ImageVariant
+	progressDropped uint64
 }
 
 type lockedWriter struct {
@@ -132,6 +137,8 @@ type Result struct {
 // Run builds each requested platform, stores the result locally as a manifest
 // or index, then applies the requested destinations through the shared transfer path.
 func Run(ctx context.Context, opts Options) (_ Result, retErr error) {
+	var progressSnapshot func() ([]buildah.OperationProgress, uint64)
+	opts.Progress, progressSnapshot = captureBuildProgress(opts.MetadataFile != "", opts.Progress)
 	if opts.Squash && opts.SquashAll {
 		return Result{}, errors.New("--squash and --squash-all are mutually exclusive")
 	}
@@ -294,9 +301,12 @@ func Run(ctx context.Context, opts Options) (_ Result, retErr error) {
 	}
 	opts.BuildStore = buildStore
 	storeRoots := buildah.ActivityRoots(buildStore, "")
-	componentStoreDir, err := componentstore.DefaultDir()
-	if err != nil {
-		return Result{}, err
+	componentStoreDir := opts.ComponentStoreDir
+	if componentStoreDir == "" {
+		componentStoreDir, err = componentstore.DefaultDir()
+		if err != nil {
+			return Result{}, err
+		}
 	}
 	if opts.AllPlatforms {
 		targets, err = discoverBuildPlatforms(ctx, def, planning, opts, componentStoreDir)
@@ -421,6 +431,7 @@ func Run(ctx context.Context, opts Options) (_ Result, retErr error) {
 			progressPrefix = "[" + targetPlatform + "] "
 		}
 		result, buildErr := buildah.BuildDefinitionSupervised(buildCtx, def, platformPlanning, buildah.SupervisedPlanOptions{
+			Progress:          opts.Progress,
 			ProgressPrefix:    progressPrefix,
 			ProgressReference: progressReference,
 			Store:             buildStore, ContextDir: opts.Context, IgnoreFile: opts.IgnoreFile, ContextArtifacts: contextArtifacts,
@@ -441,6 +452,7 @@ func Run(ctx context.Context, opts Options) (_ Result, retErr error) {
 			Allow:            opts.Allow,
 			BuildContexts:    opts.BuildContexts,
 			CacheLocalDir:    opts.CacheLocalDir,
+			CacheMountDir:    opts.CacheMountDir,
 			CacheRepository:  opts.CacheRepository,
 			CacheFrom:        opts.CacheFrom,
 			CacheTo:          opts.CacheTo,
@@ -449,6 +461,9 @@ func Run(ctx context.Context, opts Options) (_ Result, retErr error) {
 			Credentials: opts.Credentials, Retry: opts.Retry, RetrySet: opts.RetrySet, RetryDelay: opts.RetryDelay, DecryptionKeys: opts.DecryptionKeys, SignaturePolicyPath: opts.SignaturePolicyPath,
 			Stdin: opts.RunStdin, Stdout: platformStdout, Stderr: platformStderr,
 		})
+		if opts.ProgressDropped != nil {
+			opts.ProgressDropped(result.ProgressDropped)
+		}
 		if buildErr != nil {
 			return platformBuild{}, fmt.Errorf("build %s for %s: %w", definitionDisplayName(opts.File), targetPlatform, buildErr)
 		}
@@ -463,20 +478,22 @@ func Run(ctx context.Context, opts Options) (_ Result, retErr error) {
 		if readErr != nil {
 			return platformBuild{}, fmt.Errorf("read built image configuration for %s: %w", targetPlatform, readErr)
 		}
-		platform, readErr := platforms.Parse(result.Platform)
-		if readErr != nil {
-			return platformBuild{}, fmt.Errorf("parse built image platform %q: %w", result.Platform, readErr)
-		}
-		platform = platforms.Normalize(platform)
 		var configured v1.Image
 		if err := json.Unmarshal(rawConfig, &configured); err != nil {
 			return platformBuild{}, fmt.Errorf("decode built image platform metadata for %s: %w", targetPlatform, err)
 		}
-		platform.OSVersion = configured.OSVersion
+		// The requested default may be overridden by the final authored FROM.
+		// Identify the image we actually built, rather than relabeling it with
+		// the worker plan's default selection.
+		platform := platforms.Normalize(configured.Platform)
+		if platform.OS != "linux" || platform.Architecture == "" {
+			return platformBuild{}, fmt.Errorf("built image has invalid platform %q", platforms.Format(platform))
+		}
 		platform.OSFeatures = slices.Clone(configured.OSFeatures)
 		return platformBuild{
-			selection: oci.StoredSelection{Root: manifest, Manifest: manifest, ImageID: result.ImageID, ConfigData: rawConfig},
-			variant:   oci.ImageVariant{Layout: result.Layout, Manifest: manifest, Platform: platform},
+			selection:       oci.StoredSelection{Root: manifest, Manifest: manifest, ImageID: result.ImageID, ConfigData: rawConfig},
+			variant:         oci.ImageVariant{Layout: result.Layout, Manifest: manifest, Platform: platform},
+			progressDropped: result.ProgressDropped,
 		}, nil
 	})
 	if err != nil {
@@ -588,6 +605,7 @@ func Run(ctx context.Context, opts Options) (_ Result, retErr error) {
 			publicationErr = errors.Join(publicationErr, copyErr, stream.Close())
 		}
 	}
+	setBuildProgress(&report, progressSnapshot, builds)
 	if err := finishOutputs(opts.MetadataFile, opts.IIDFile, root, variants, selections, report, publicationErr, opts.IIDFileRaw, imageID); err != nil {
 		return Result{}, err
 	}

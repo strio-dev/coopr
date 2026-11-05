@@ -11,7 +11,7 @@ coopr build examples/first-image/image.coopr --tag hello:cached
 coopr build examples/first-image/image.coopr --tag hello:cached
 ```
 
-The second build reports `Using cache` for reused checkpoints. Coopr matches the input image state, arguments, platform, execution settings, and declared sources. Changed inputs can invalidate a result and the instructions that depend on it.
+The second build reports `Using cache` for reused checkpoints. Coopr matches operation definitions, their dependencies, arguments, platform, execution settings, and declared sources. Changed inputs can invalidate a result and the instructions that depend on it. Stored counters count successful artifact writes per destination; a warm run can reuse execution and still update explicitly writable caches.
 
 Local instruction snapshots live in the [native image store](storage.md). They work with the default `--layers=true`; `--layers=false` reruns filesystem instructions instead of reading those snapshots. See [layer and cache behavior](../reference/execution.md#layers-storage-and-copying).
 
@@ -53,6 +53,14 @@ Portable caches store eligible instruction snapshots, component outputs, and pac
 
 Portable instruction results include device-backed RUNs and remote ADD. HTTP sources are measured and Git refs resolved before an unpinned ADD can reuse a result. Dynamic bases and nested components still resolve their dependencies while reusing individual instructions. See [cache scopes](../reference/execution.md#cache-scopes) for whole-component, package and layer-group behavior.
 
+Coopr embeds BuildKit's generic dependency solver and cache manager, while Buildah executes operations and stores images. It runs inside the Coopr process; no BuildKit daemon or worker service is required. Eligible instruction keys describe operations and dependencies rather than the creation timestamps of newly generated parent layers. Source and opaque execution boundaries still identify their actual filesystem state.
+
+A logical key can retain several complete physical results. If a forced build creates another COPY result, an ordinary build can still select a previously cached downstream image with its original ancestors. Coopr restores that complete image and reapplies current authored metadata. It does not attach a cached layer to an unrelated parent. Ordinary COPY retains Buildah's timestamp behavior. Different physical layer counts and completed stage-worker boundaries can conservatively limit reuse.
+
+Portable artifacts carry BuildKit's dependency graph encoding alongside Coopr result metadata and complete image graphs. Coopr's transport, authentication and integrity checks remain in use. These artifacts are Coopr caches, not a promise of interchange with native BuildKit or Dagger caches. See the [cache adapter design](../development/buildkit-cache.md).
+
+Eligible plan invocations import only selected cache results into the native image store. Unselected historical variants remain available for later cache publication without native unpacking. Isolated parallel stage workers retain eager imports to preserve their existing ownership/relay behavior. All artifact blobs are still fetched and verified; fewer native imports do not imply fewer registry bytes or an elapsed-time speedup. Buildah and the shared Podman image store remain the execution/storage backend.
+
 Trust cache repositories as you would other build inputs. Intermediate results may contain files removed from the final image.
 
 ## Refresh deliberately
@@ -64,13 +72,13 @@ coopr build examples/first-image/image.coopr --no-cache
 coopr build examples/first-image/image.coopr --cache-ttl 24h
 ```
 
-`--no-cache` bypasses result reads and saves fresh results. It does not clear cache mounts or refresh a base image; use `--pull` to refresh registry image inputs. `--cache-ttl` limits reuse by cache-record age, not image timestamps. `--cache-ttl 0` disables result reads while saving fresh results.
+`--no-cache` forces instruction execution and saves fresh results. Portable graph records may still be imported to preserve earlier alternatives when updating a shared cache; these records cannot satisfy forced execution. It does not clear cache mounts or refresh a base image; use `--pull` to refresh registry image inputs. `--cache-ttl` limits reuse by cache-record age, not image timestamps. `--cache-ttl 0` disables result reuse while saving fresh results.
 
 Network responses, credential values, cache-mount contents, and mutable host-volume/device contents do not invalidate conventional results. Secret and SSH declarations do enter cache identity, but their contents do not. Use `--no-cache` or change a consumed build argument when these inputs must force a rebuild. A cache hit is not a reproducibility guarantee, and required entitlements are checked even on a hit.
 
 Writable primary-context bind mounts execute each time so their context changes remain visible to later instructions. Components using caller-context binds also bypass whole-component reuse. See [RUN mounts](../reference/execution.md#run-mounts) for context lifetime and measurement.
 
-Sources may still need resolution before a cache lookup, so a hit does not guarantee an offline build. Changing [output compression](../reference/execution.md#output-compression) changes portable-cache representation without invalidating instruction results.
+Sources may still need resolution before a cache lookup, so a hit does not guarantee an offline build. [Output compression](../reference/execution.md#output-compression) controls final image export; graph-cache snapshots preserve their selected immutable manifests.
 
 ## Cache mounts
 
