@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -106,7 +107,7 @@ type instructionCacheRecord struct {
 
 type instructionCacheEntry struct {
 	CommandSet     *bool
-	LogicalConfig  json.RawMessage
+	LogicalConfig  json.RawMessage `json:",omitempty"`
 	BaseImageID    string
 	RetainsCaller  *bool
 	ImageID        string
@@ -306,39 +307,6 @@ func portableInstructionParent(parent string) digest.Digest {
 	return digest.Digest(parent)
 }
 
-func portableInstructionKey(executor *graphExecutor, input instructionCacheInput, parentIdentity string) (cache.ImageKey, bool, error) {
-	if executor == nil || executor.instructionPortableCache == nil {
-		return cache.ImageKey{}, false, nil
-	}
-	parent := portableInstructionParent(parentIdentity)
-	if parent.Validate() != nil {
-		return cache.ImageKey{}, false, nil
-	}
-	instruction, cacheable, err := portableInstructionDigest(input, parent)
-	if err != nil || !cacheable {
-		return cache.ImageKey{}, false, err
-	}
-	modules, err := cacheModuleVersions()
-	if err != nil {
-		return cache.ImageKey{}, false, err
-	}
-	runtimeIdentity := executor.instructionRuntime
-	if runtimeIdentity == "" {
-		runtimeIdentity = "none"
-	}
-	semantics, err := componentCacheExecutorSemantics(upstreamdefine.Version, modules, executor.isolation.String(), executor.store.GraphDriverName(), executor.store.GraphOptions(), runtimeIdentity, executor.options.Output.Format)
-	if err != nil {
-		return cache.ImageKey{}, false, err
-	}
-	format, err := normalizedOutputFormat(executor.options.Output.Format)
-	if err != nil {
-		return cache.ImageKey{}, false, err
-	}
-	key := cache.ImageKey{Instruction: instruction, Parent: parent, Platform: input.Platform, Executor: semantics, Format: format}
-	_, err = key.Digest()
-	return key, err == nil, err
-}
-
 func portableInstructionDigest(input instructionCacheInput, parent digest.Digest) (digest.Digest, bool, error) {
 	if parent.Validate() != nil {
 		return "", false, nil
@@ -380,7 +348,7 @@ func (c *portableInstructionCache) lookupValidated(ctx context.Context, executor
 		}
 		baseImageID := ""
 		if record.BaseImage != nil {
-			baseImageID, err = ImportSelectedImage(ctx, executor.store, system, layout, *record.BaseImage)
+			baseImageID, err = importInstructionCacheImage(ctx, executor.store, system, layout, *record.BaseImage)
 			if err != nil {
 				packageCacheWarning("import cached base image", err)
 				_ = os.RemoveAll(layout)
@@ -388,7 +356,7 @@ func (c *portableInstructionCache) lookupValidated(ctx context.Context, executor
 				continue
 			}
 		}
-		imageID, err := ImportSelectedImage(ctx, executor.store, system, layout, record.Image)
+		imageID, err := importInstructionCacheImage(ctx, executor.store, system, layout, record.Image)
 		if err != nil {
 			packageCacheWarning("import instruction cache image", err)
 			_ = os.RemoveAll(layout)
@@ -458,6 +426,20 @@ func (c *portableInstructionCache) lookupValidated(ctx context.Context, executor
 	}
 	c.stats.Misses++
 	return instructionCacheEntry{}, nil
+}
+
+// Cache checkpoints promise the exact selected manifest. Native storage keeps
+// unpacked layers, so retain compressed representations before the verified
+// portable layout is removed; otherwise a later export can change its digest.
+func importInstructionCacheImage(ctx context.Context, store storage.Store, system *types.SystemContext, layout string, selected v1.Descriptor) (string, error) {
+	imageID, err := ImportSelectedImage(ctx, store, system, layout, selected)
+	if err != nil {
+		return "", err
+	}
+	if err := retainStoredLayoutLayers(store, imageID, layout, selected.Digest); err != nil {
+		return "", fmt.Errorf("retain selected instruction cache layers: %w", err)
+	}
+	return imageID, nil
 }
 
 func (c *portableInstructionCache) record(ctx context.Context, executor *graphExecutor, key cache.ImageKey, imageID string, manifest digest.Digest, root *PackageRootMetadata, system *types.SystemContext) {
@@ -611,10 +593,11 @@ func instructionCacheKey(input instructionCacheInput) (digest.Digest, bool, erro
 			return "", false, nil
 		}
 	}
+	operation := canonicalInstructionCacheOperation(input.Operation, input.ResolvedInputs, input.ResolvedInputsComplete)
 	document, err := json.Marshal(instructionCacheDocument{
 		CooprExecution: cooprExecutionRevision,
 		Schema:         instructionCacheSchema, BuildahVersion: upstreamdefine.Version,
-		ParentRootFS: input.ParentRootFS, ExecutionConfig: config, Operation: input.Operation,
+		ParentRootFS: input.ParentRootFS, ExecutionConfig: config, Operation: operation,
 		Platform: input.Platform, Isolation: input.Isolation, Runtime: input.Runtime, Format: format,
 		InputDigest: input.InputDigest, ResolvedInputs: input.ResolvedInputs,
 		RootMetadata: rootMetadata, Timestamp: input.Timestamp,
@@ -626,6 +609,44 @@ func instructionCacheKey(input instructionCacheInput) (digest.Digest, bool, erro
 		return "", false, fmt.Errorf("marshal instruction cache key: %w", err)
 	}
 	return digest.FromBytes(document), true, nil
+}
+
+// canonicalInstructionCacheOperation is shared by cache keys and persisted
+// instruction history. Runtime execution retains the authored operation.
+func canonicalInstructionCacheOperation(operation planner.Operation, inputs []instructionCacheResolvedInput, complete bool) planner.Operation {
+	if (operation.Name == "copy" || operation.Name == "add") && operation.Properties["from"] != "" {
+		// COPY/ADD cacheability requires the exact measured input stream. The
+		// delivery selector does not add filesystem semantics to those bytes;
+		// in particular, native image IDs can differ for configuration changes
+		// that COPY does not inherit. Paths, options and InputDigest stay keyed.
+		operation.Properties = maps.Clone(operation.Properties)
+		operation.Properties["from"] = "resolved:copy-input"
+	}
+	if operation.Name == "run" && len(operation.Children) != 0 && completeResolvedInstructionInputs(operation, inputs, complete) {
+		// A mounted filesystem does not inherit its source image's config.
+		// Its verified resolved identity supersedes temporary storage handles,
+		// while every authored path and mount option still participates.
+		operation.Children = slices.Clone(operation.Children)
+		resolvedIndex := 0
+		for index, child := range operation.Children {
+			if child.Name != "mount" {
+				continue
+			}
+			for inputs[resolvedIndex].Kind == "devices" {
+				resolvedIndex++
+			}
+			resolved := inputs[resolvedIndex]
+			resolvedIndex++
+			filesystem := resolved.Kind == "image-rootfs" || resolved.Kind == "artifact-files"
+			verified := digest.Digest(resolved.Identity).Validate() == nil || (resolved.Kind == "image-rootfs" && resolved.Identity == "empty")
+			if filesystem && verified && child.Properties["from"] != "" {
+				child.Properties = maps.Clone(child.Properties)
+				child.Properties["from"] = "resolved:" + resolved.Kind + ":" + resolved.Identity
+				operation.Children[index] = child
+			}
+		}
+	}
+	return operation
 }
 
 func instructionExecutionConfig(logical *imageconfig.Config) (instructionCacheExecutionConfig, error) {

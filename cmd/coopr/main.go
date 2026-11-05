@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/sirupsen/logrus"
 	"github.com/strio-dev/coopr"
@@ -13,5 +15,8 @@ func main() {
 	if coopr.InitReexec() {
 		return
 	}
-	os.Exit(runContextWithStorageNamespace(context.Background(), os.Args[1:], os.Stdout, os.Stderr, prepareStorageNamespace))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	code := runContextWithStorageNamespace(ctx, os.Args[1:], os.Stdout, os.Stderr, prepareStorageNamespace)
+	stop()
+	os.Exit(code)
 }

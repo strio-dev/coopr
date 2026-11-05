@@ -1,0 +1,8 @@
+arg "go" "/bin/go"
+
+from "coopr-nix" {
+    arg "go"
+    component "./go-component.coopr" {
+        arg "go" "${go}"
+    }
+}

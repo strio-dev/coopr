@@ -24,6 +24,15 @@ import (
 // PlanOptions supplies execution-only values which are intentionally absent
 // from planner.Plan.
 type PlanOptions struct {
+	// workerDirectory is supervisor-owned scratch removed after worker exit.
+	workerDirectory string
+	// Progress observes execution without changing output or cache identities.
+	Progress OperationProgressFunc
+	// progressBuffer belongs to a supervised invocation and accumulates child
+	// truncation counts alongside the observations delivered through Progress.
+	progressBuffer *operationProgressBuffer
+	// Isolated stage workers preserve their existing durable-import ownership.
+	eagerPortableImports bool
 	// ProgressPrefix attributes concurrent platform builds without affecting execution.
 	ProgressPrefix string
 	// ProgressReference is a display label, never an image annotation.
@@ -62,6 +71,7 @@ type PlanOptions struct {
 	// planner's deferred replan closure is also process-local.
 	ReplannedBaseDelta      func() map[ResolvedBaseKey]ResolvedImageSource
 	CacheLocalDir           string // Optional OCI layout for portable component states.
+	CacheMountDir           string // Private persistent native RUN cache parent.
 	CacheRepository         string // Optional caller-selected OCI registry repository.
 	CacheFrom               []CacheSpec
 	CacheTo                 []CacheSpec

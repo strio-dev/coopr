@@ -1,0 +1,27 @@
+version: 1
+tasks:
+  source-checks:
+    image: oci:environment:image
+    cache: false
+    outputs: {filesystem: false}
+    env:
+      GOCACHE: /cache/tests
+    mounts:
+      - type: cache
+        id: coopr-nix-stoke-tests
+        sharing: locked
+        target: /cache/tests
+    steps:
+      - run:
+          - /bin/bash
+          - -euc
+          - |
+            test "$COOPR_ENVIRONMENT" = nix-stoke
+            test "$(pwd)" = /workspace
+            test -x "$GO_COMMAND"
+            test ! -e /nix/var/nix/daemon-socket/socket
+            /usr/local/bin/stoke help
+            "$GO_COMMAND" version
+            printf 'STOKE_NIX_FRESH_TESTS_BEGIN\n'
+            "$GO_COMMAND" test -p=2 -count=1 -mod=vendor -short ./...
+            printf 'STOKE_NIX_FRESH_TESTS_PASSED\n'

@@ -59,7 +59,18 @@ Apply a shared definition with `component "./components/shared.coopr"`. [Share a
 
 For components you can distribute, follow the [reusable-components tutorial](docs/tutorials/reusable-components.md) to package two components and apply them to an image. Explore [the examples](examples/README.md) for cache mounts and published components, or read about [image storage and transfers](docs/guides/storage.md).
 
+## Application integrations
+
+Use the [Go execution library](docs/guides/library.md) to embed literal programs, or the [local Unix-socket API](docs/guides/api.md) to supervise a Coopr process with structured requests and results. The new API supports literal execution, native image/component builds and explicit artifact publication. It is an unreleased local implementation and is not present in published `0.5.0`; ordinary CLI operation remains daemonless.
+
+The [Go service client](docs/guides/client.md) shares public API types and builds with CGO disabled. It keeps transport and cancellation handling in Coopr while the application owns the service process. The separate `examples/client` module demonstrates independent consumption; see the [Stoke migration plan](docs/development/stoke-client-migration.md) for the later consumer change and release requirements.
+
 ## Development
+
+The development flake exposes `pkgs.coopr.buildImage`: Nix builds packages and
+closure-complete image inputs, then `nix run` invokes ordinary Coopr outside
+the build sandbox to compose components. See the [Nix guide](docs/guides/nix.md)
+and [Nix examples](examples/nix/README.md) for the unreleased interface.
 
 Development uses the pinned Nix environment. See [contributing](CONTRIBUTING.md) for source builds, tests, and documentation checks.
 

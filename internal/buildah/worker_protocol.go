@@ -51,6 +51,7 @@ func init() {
 // SupervisedPlanOptions contains the serializable execution settings for one
 // same-binary Buildah worker. The resolver is reconstructed in that worker.
 type SupervisedPlanOptions struct {
+	Progress            OperationProgressFunc
 	ProgressPrefix      string
 	ProgressReference   string
 	Lifecycle           LifecycleControls
@@ -68,6 +69,7 @@ type SupervisedPlanOptions struct {
 	Output              Output
 	ComponentStoreDir   string
 	CacheLocalDir       string
+	CacheMountDir       string
 	CacheRepository     string
 	CacheFrom           []CacheSpec
 	CacheTo             []CacheSpec
@@ -105,6 +107,7 @@ type SupervisedPlanOptions struct {
 }
 
 type planWorkerRequest struct {
+	CaptureProgress     bool                   `json:"capture_progress,omitempty"`
 	ExecutionRecipe     bool                   `json:"execution_recipe,omitempty"`
 	ExecutableOrigin    string                 `json:"executable_origin,omitempty"`
 	ProgressReference   string                 `json:"progress_reference,omitempty"`
@@ -130,6 +133,7 @@ type planWorkerRequest struct {
 	Output              Output                 `json:"output"`
 	ComponentStoreDir   string                 `json:"component_store_dir,omitempty"`
 	CacheLocalDir       string                 `json:"cache_local_dir,omitempty"`
+	CacheMountDir       string                 `json:"cache_mount_dir,omitempty"`
 	CacheRepository     string                 `json:"cache_repository,omitempty"`
 	CacheFrom           []CacheSpec            `json:"cache_from,omitempty"`
 	CacheTo             []CacheSpec            `json:"cache_to,omitempty"`
@@ -166,10 +170,12 @@ type planWorkerRequest struct {
 }
 
 type planWorkerResponse struct {
-	Result      Result            `json:"result"`
-	Publication PublicationResult `json:"publication"`
-	Error       string            `json:"error,omitempty"`
-	Failure     *workerError      `json:"failure,omitempty"`
+	Progress        []OperationProgress `json:"progress,omitempty"`
+	ProgressDropped uint64              `json:"progress_dropped,omitempty"`
+	Result          Result              `json:"result"`
+	Publication     PublicationResult   `json:"publication"`
+	Error           string              `json:"error,omitempty"`
+	Failure         *workerError        `json:"failure,omitempty"`
 }
 
 func (response planWorkerResponse) failure() error {
@@ -182,8 +188,9 @@ func (response planWorkerResponse) failure() error {
 // PublicationResult identifies a complete component OCI layout produced by a
 // supervised Buildah worker.
 type PublicationResult struct {
-	Layout string        `json:"layout"`
-	Root   v1.Descriptor `json:"root"`
+	Layout          string        `json:"layout"`
+	Root            v1.Descriptor `json:"root"`
+	ProgressDropped uint64        `json:"progress_dropped,omitempty"`
 }
 
 // BuildPlanSupervised runs a standalone plan inside a disposable Coopr
@@ -204,7 +211,7 @@ func BuildPlanSupervised(ctx context.Context, plan *planner.Plan, options Superv
 	}
 	response, err := runPlanSupervised(ctx, plan, options, "build")
 	if err != nil {
-		return Result{}, err
+		return Result{ProgressDropped: response.ProgressDropped}, err
 	}
 	response.Result.Layout = options.Output.Path
 	return response.Result, nil
@@ -228,7 +235,7 @@ func BuildDefinitionSupervised(ctx context.Context, def *definition.Definition, 
 	}
 	response, err := runDefinitionSupervised(ctx, def, planning, options, "build")
 	if err != nil {
-		return Result{}, err
+		return Result{ProgressDropped: response.ProgressDropped}, err
 	}
 	response.Result.Layout = options.Output.Path
 	return response.Result, nil
@@ -308,9 +315,10 @@ func PublishPlanSupervised(ctx context.Context, plan *planner.Plan, options Supe
 	}
 	response, err := runPlanSupervised(ctx, plan, options, "publish")
 	if err != nil {
-		return PublicationResult{}, err
+		return PublicationResult{ProgressDropped: response.ProgressDropped}, err
 	}
 	response.Publication.Layout = options.Output.Path
+	response.Publication.ProgressDropped = response.ProgressDropped
 	return response.Publication, nil
 }
 
@@ -332,9 +340,10 @@ func PublishDefinitionSupervised(ctx context.Context, def *definition.Definition
 	}
 	response, err := runDefinitionSupervised(ctx, def, planning, options, "publish")
 	if err != nil {
-		return PublicationResult{}, err
+		return PublicationResult{ProgressDropped: response.ProgressDropped}, err
 	}
 	response.Publication.Layout = options.Output.Path
+	response.Publication.ProgressDropped = response.ProgressDropped
 	return response.Publication, nil
 }
 
@@ -424,11 +433,21 @@ func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition
 		}
 	}()
 	// Buildah keeps RUN cache mounts below TMPDIR. Give them a stable location
-	// scoped to this execution store while keeping the request and result files
+	// scoped to this execution store. Only its native cache subtree may point
+	// at the caller's persistent mount cache. Keep request and result files
 	// in the disposable job directory.
+	options.CacheMountDir, err = validateCacheMountParent(options.CacheMountDir, options.ContextDir, options.Store.RunRoot, options.Store.GraphRoot, options.CacheLocalDir, options.ComponentStoreDir, options.Output.Path, options.Output.Filesystem.Path)
+	if err != nil {
+		return planWorkerResponse{}, err
+	}
 	workerTemp, err := prepareWorkerTemp(options.Store.GraphRoot)
 	if err != nil {
 		return planWorkerResponse{}, err
+	}
+	if options.CacheMountDir != "" {
+		if err := preparePersistentCacheMounts(workerTemp, options.CacheMountDir); err != nil {
+			return planWorkerResponse{}, err
+		}
 	}
 	workerTempAlias, err := socketSafeWorkerTemp(workerTemp)
 	if err != nil {
@@ -448,6 +467,7 @@ func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition
 	workerOutput.Path = filepath.Join(jobDir, "layout")
 	executableOrigin := currentRunSequenceOrigin()
 	request := planWorkerRequest{
+		CaptureProgress:  options.Progress != nil,
 		ExecutionRecipe:  len(executionRecipe) != 0 && executionRecipe[0],
 		ExecutableOrigin: executableOrigin,
 		Mode:             mode, ImageID: options.ImageID, ManifestDigest: options.ManifestDigest, ManifestDescriptor: options.ManifestDescriptor, JobID: jobID, Plan: plan, Definition: def, PlannerOptions: planning,
@@ -455,7 +475,7 @@ func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition
 		ContextArtifacts: append(append([]string(nil), options.ContextArtifacts...), jobDir, options.Store.ImageStore, options.ComponentStoreDir, options.CacheLocalDir, workerTemp, options.AuthFile, options.CertDir, options.RusageLogFile),
 		Isolation:        options.Isolation, Runtime: options.Runtime,
 		Output:            workerOutput,
-		ComponentStoreDir: options.ComponentStoreDir, CacheLocalDir: options.CacheLocalDir,
+		ComponentStoreDir: options.ComponentStoreDir, CacheLocalDir: options.CacheLocalDir, CacheMountDir: options.CacheMountDir,
 		CacheRepository:    options.CacheRepository,
 		CacheFrom:          slices.Clone(options.CacheFrom),
 		CacheTo:            slices.Clone(options.CacheTo),
@@ -508,8 +528,11 @@ func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition
 	if processErr != nil {
 		cleanupErr := error(nil)
 		response, readErr := readWorkerResponse(request.ResultPath)
+		if readErr == nil {
+			replayOperationProgress(options.Progress, response.Progress)
+		}
 		if errors.Is(response.Failure, ErrWorkerWaitIncomplete) {
-			return planWorkerResponse{}, errors.Join(response.failure(), WorkerSupervisionError(processErr), ctx.Err(), readErr)
+			return response, errors.Join(response.failure(), WorkerSupervisionError(processErr), ctx.Err(), readErr)
 		}
 		if options.Lifecycle.removeBuilder(true, ctx.Err() != nil) || readErr != nil || response.Error == "" {
 			cleanupErr = cleanupWorkerJob(request, jobDir, options.Stderr)
@@ -520,11 +543,11 @@ func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition
 		if readErr == nil && response.Error != "" {
 			supervisionErr := WorkerSupervisionError(processErr)
 			if ctx.Err() != nil {
-				return planWorkerResponse{}, errors.Join(ctx.Err(), fmt.Errorf("build worker exited after cleanup: %w", response.failure()), supervisionErr, cleanupErr)
+				return response, errors.Join(ctx.Err(), fmt.Errorf("build worker exited after cleanup: %w", response.failure()), supervisionErr, cleanupErr)
 			}
-			return planWorkerResponse{}, errors.Join(WorkerFailure(response.failure()), supervisionErr, cleanupErr)
+			return response, errors.Join(WorkerFailure(response.failure()), supervisionErr, cleanupErr)
 		}
-		return planWorkerResponse{}, errors.Join(processErr, cleanupErr)
+		return response, errors.Join(processErr, cleanupErr)
 	}
 	response, err := readWorkerResponse(request.ResultPath)
 	if err != nil {
@@ -534,15 +557,16 @@ func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition
 		}
 		return planWorkerResponse{}, errors.Join(err, cleanupErr)
 	}
+	replayOperationProgress(options.Progress, response.Progress)
 	if response.Error != "" {
-		return planWorkerResponse{}, response.failure()
+		return response, response.failure()
 	}
 	if err := ctx.Err(); err != nil {
-		return planWorkerResponse{}, err
+		return response, err
 	}
 	if mode != "verify" && mode != "import" {
 		if err := promoteCompleteOutput(request.Output.Path, options.Output.Path); err != nil {
-			return planWorkerResponse{}, fmt.Errorf("promote complete OCI output: %w", err)
+			return response, fmt.Errorf("promote complete OCI output: %w", err)
 		}
 	}
 	return response, nil
@@ -689,6 +713,11 @@ func executePlanWorker(requestPath string) error {
 	workerCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stopSignals()
 	response := planWorkerResponse{}
+	var progressBuffer *operationProgressBuffer
+	if request.CaptureProgress {
+		progressBuffer = newOperationProgressBuffer()
+		workerCtx = withOperationProgress(workerCtx, progressBuffer.record)
+	}
 	var resolver *oci.Resolver
 	var resolvedBases map[ResolvedBaseKey]ResolvedImageSource
 	var replannedBaseDelta func() map[ResolvedBaseKey]ResolvedImageSource
@@ -698,6 +727,8 @@ func executePlanWorker(requestPath string) error {
 			buildErr := fmt.Errorf("plan raw definition: %w", err)
 			response.Error = buildErr.Error()
 			response.Failure = WorkerFailure(buildErr)
+			response.Progress, response.ProgressDropped = progressBuffer.snapshot()
+			response.Result.ProgressDropped = response.ProgressDropped
 			if writeErr := writeWorkerJSON(request.ResultPath, response); writeErr != nil {
 				return errors.Join(buildErr, writeErr)
 			}
@@ -778,11 +809,14 @@ func executePlanWorker(requestPath string) error {
 		}
 	}
 	planOptions := PlanOptions{
+		workerDirectory:  filepath.Dir(request.ResultPath),
+		progressBuffer:   progressBuffer,
 		registryOptions:  oci.Options{Retry: request.Retry, RetrySet: request.RetrySet, RetryDelay: request.RetryDelay},
 		executableOrigin: request.ExecutableOrigin,
 		Store:            request.Store, ContextDir: request.ContextDir, SourcePolicyFile: request.SourcePolicyFile, SourcePolicy: request.SourcePolicy, IgnoreFile: request.IgnoreFile, ContextArtifacts: request.ContextArtifacts, Isolation: request.Isolation,
 		Runtime: request.Runtime, Output: request.Output, Resolver: resolver, ResolvedBases: resolvedBases, ReplannedBaseDelta: replannedBaseDelta,
 		CacheLocalDir:      request.CacheLocalDir,
+		CacheMountDir:      request.CacheMountDir,
 		CacheRepository:    request.CacheRepository,
 		CacheFrom:          request.CacheFrom,
 		CacheTo:            request.CacheTo,
@@ -814,6 +848,9 @@ func executePlanWorker(requestPath string) error {
 			DockerCertPath:       request.CertDir,
 		},
 		JobID: request.JobID,
+	}
+	if progressBuffer != nil {
+		planOptions.Progress = progressBuffer.record
 	}
 	oci.ApplyTLSVerify(planOptions.SystemContext, request.TLSVerify)
 	var buildErr error
@@ -861,6 +898,8 @@ func executePlanWorker(requestPath string) error {
 		response.Error = buildErr.Error()
 		response.Failure = WorkerFailure(buildErr)
 	}
+	response.Progress, response.ProgressDropped = progressBuffer.snapshot()
+	response.Result.ProgressDropped = response.ProgressDropped
 	if err := writeWorkerJSON(request.ResultPath, response); err != nil {
 		return err
 	}
@@ -1014,12 +1053,54 @@ func writeWorkerJSON(path string, value any) error {
 		return fmt.Errorf("encode build worker message: %w", err)
 	}
 	if len(data) > workerMaxJSON {
-		return errors.New("build worker message exceeds size limit")
+		// Observations must not displace required result data at the protocol
+		// limit. Retry once without the optional trace; requests are unchanged.
+		if reduced, ok := omitWorkerProgress(value); ok {
+			data, err = json.Marshal(reduced)
+			if err != nil {
+				return fmt.Errorf("encode build worker result: %w", err)
+			}
+		}
+		if len(data) > workerMaxJSON {
+			return errors.New("build worker message exceeds size limit")
+		}
 	}
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return fmt.Errorf("write build worker message: %w", err)
 	}
 	return nil
+}
+
+func omitWorkerProgress(value any) (any, bool) {
+	count := func(events []OperationProgress, dropped uint64) uint64 {
+		for _, event := range events {
+			if event.State == "started" && dropped != ^uint64(0) {
+				dropped++
+			}
+		}
+		return dropped
+	}
+	switch response := value.(type) {
+	case planWorkerResponse:
+		if len(response.Progress) == 0 {
+			return value, false
+		}
+		response.ProgressDropped = count(response.Progress, max(response.ProgressDropped, response.Result.ProgressDropped, response.Publication.ProgressDropped))
+		response.Progress = nil
+		response.Result.ProgressDropped = response.ProgressDropped
+		response.Publication.ProgressDropped = response.ProgressDropped
+		return response, true
+	case stageWorkerResponse:
+		if len(response.Progress) == 0 {
+			return value, false
+		}
+		response.ProgressDropped = count(response.Progress, max(response.ProgressDropped, response.Result.ProgressDropped))
+		response.Progress = nil
+		response.Result.ProgressDropped = response.ProgressDropped
+		return response, true
+	default:
+		return value, false
+	}
 }
 
 func readWorkerJSON(path string, value any) error {
@@ -1045,5 +1126,10 @@ func readWorkerResponse(path string) (planWorkerResponse, error) {
 	if err := readWorkerJSON(path, &response); err != nil {
 		return planWorkerResponse{}, err
 	}
+	if err := validateOperationProgressBatch(response.Progress); err != nil {
+		return planWorkerResponse{}, fmt.Errorf("invalid build worker progress: %w", err)
+	}
+	response.Result.ProgressDropped = response.ProgressDropped
+	response.Publication.ProgressDropped = response.ProgressDropped
 	return response, nil
 }

@@ -9,5 +9,6 @@
 | [Local components](local-components/README.md) | Share one local component between two image definitions. |
 | [Cache mount](cache-mount/README.md) | Reuse Go compiler cache across builds. |
 | [Published components](published-components/README.md) | Package files and a tool, then consume selected component outputs. |
+| [Nix-built environment](nix/README.md) | Assemble Nix package closures into an OCI image and consume it with Stoke. |
 
 Base-image pulls need registry access. Examples with package-installation steps also need access to the base distribution's package repositories. Local component examples need no component registry or publication.

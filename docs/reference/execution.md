@@ -32,7 +32,7 @@ Inside EXTEND, direct instructions modify the caller; nested FROM blocks own sep
 
 ### Dependencies
 
-COPY/ADD and RUN mounts with `from=` create input dependencies without changing base lineage. Sources can be named stages, packages, named contexts, or external images. COPY/ADD can also read [OCI artifact files](definition.md#copy-oci-artifact-files). External inputs resolve to immutable descriptors; image and artifact indexes select the stage's platform. Stage sources must precede their consuming FROM, COPY/ADD, or RUN mount. Nested FROM helpers become visible to later instructions inside EXTEND. Graphs must be acyclic and stage aliases unambiguous. Graph-affecting values must resolve before their consuming instruction executes; after a component returns, planning continues with its actual output environment.
+COPY/ADD and RUN mounts with `from=` create input dependencies without changing base lineage. Sources can be named stages, packages, named contexts, or external images. COPY/ADD and read-only bind RUN mounts can also read [OCI artifact files](definition.md#copy-oci-artifact-files). RUN mounts expose the same verified raw-blob filenames, with archives remaining files; `source` selects one path or defaults to the whole view. External inputs resolve to immutable descriptors; image and artifact indexes select the stage's platform. Stage sources must precede their consuming FROM, COPY/ADD, or RUN mount. Nested FROM helpers become visible to later instructions inside EXTEND. Graphs must be acyclic and stage aliases unambiguous. Graph-affecting values must resolve before their consuming instruction executes; after a component returns, planning continues with its actual output environment.
 
 Published components fix whether each FROM, COPY/ADD, and RUN mount source is a stage, `scratch`, or an external image. Invocation arguments cannot change that role or a stage dependency. Explicit [named build contexts](#named-contexts) can substitute a source without rewriting the published definition. Arguments may change an external reference while it remains external. Component references themselves may use caller ARG/ENV values resolved at invocation.
 
@@ -125,6 +125,8 @@ Argument values are strings and require valid UTF-8. Unset/undeclared ARG refere
 Unused supplied build arguments are ignored with a warning containing names only. Predefined proxy arguments (`HTTP_PROXY`, `HTTPS_PROXY`, `FTP_PROXY`, `NO_PROXY`, and lowercase forms) can reach RUN without ARG declarations and do not enter its argument/cache identity. Declaring one explicitly gives it normal ARG scope and cache behavior. Other names, including `ALL_PROXY`, require an ARG declaration. Host proxy forwarding is controlled by `--http-proxy`.
 
 ### Timestamps and cache age
+
+For regular COPY, destination directories created implicitly use the Unix epoch, and existing enclosing directories keep their previous timestamps. Source file and subdirectory timestamps remain intact. This rule also applies to cache probes and uncached execution, including COPY from named contexts or images. Linked COPY uses the native backend's linked-layer timestamp policy; ADD archive extraction keeps its native metadata behavior. Explicit timestamp policies below still apply to committed layers.
 
 `SOURCE_DATE_EPOCH` accepts a supplied Unix timestamp or global ARG default; empty clears it. It controls image/history creation and reaches RUN only after stage redeclaration. `--source-date-epoch` overrides the resolved value; `--source-date-epoch=` clears the environment default. An empty environment value is unset, and negative Unix timestamps are accepted. An explicit numeric build argument overrides an authored `context` default.
 
@@ -236,7 +238,9 @@ For generated image sources, FROM `after` names one earlier stage by alias or nu
 
 Authored mount children apply to their RUN. Repeatable `--mount` adds mounts to every executed RUN, including component and inherited RUNs, after the authored mounts. Mount `from` references participate in dependency planning and input identity; a self-dependency or cycle fails before execution.
 
-A writable bind of the primary context uses one filtered, disposable copy for the build. Changes persist across RUNs, stages, and component calls, so later file operations and generated image sources see them. The original context is unchanged. Writes to image or named-context bind mounts use disposable per-RUN overlays and do not persist to subsequent RUNs.
+OCI artifact RUN inputs are read-only private file views, never writable image overlays. The RUN view permits reads by inherited non-root users without altering shared stored blobs. Supervised views are removed with the owning worker job, including after forced worker exit.
+
+A writable bind of the primary context uses one filtered, disposable copy for the build. Changes persist across RUNs, stages, and component calls, so later file operations and generated image sources see them. The original context is unchanged. Writes to image or named-context bind mounts use disposable per-RUN overlays and do not persist to subsequent RUNs. RUN mount cache keys use the verified source filesystem or artifact digest, selected path, and mount options; equivalent filesystem views remain reusable when only a temporary storage handle or source-image creation metadata changes. Cacheable RUN instruction history uses the same verified `resolved:<input-kind>:<digest>` mount-source identity for cache validation; execution and progress logs retain the authored source. This history token describes the mounted immutable view rather than a runnable image reference. Read-only image, stage, and named-context directory mounts use read-only binds; they reject writes inside the RUN as well as protecting the original content. Explicit relabeling or ownership options operate on a private, job-owned snapshot rather than changing shared immutable image content.
 
 For example, these instructions inside a FROM write a file into that disposable context, then copy it into the image:
 
@@ -255,7 +259,7 @@ Image VOLUME paths exist in final filesystem exports. With `--compat-volumes`, e
 
 Reuse requires matching input state, arguments, platform, execution settings, and declared sources.
 
-Instruction keys use the ordered OCI filesystem layers rather than the image's creation time. Execution configuration and captured root metadata still participate. Repeated component builds can reuse instructions without timestamp flags; cached results retain the current caller's history, labels, and annotations.
+Eligible instruction keys describe operations and dependency edges through the embedded BuildKit generic solver. Execution configuration and measured sources participate; source and opaque boundaries identify their concrete filesystem state. Multiple complete physical results can remain associated with a key. Restoration selects a coherent complete image ancestry and reapplies current authored history, labels and annotations.
 
 | Cache | Reuses | Limits |
 | --- | --- | --- |
@@ -273,11 +277,11 @@ Package-result caching supports networked and device-backed RUN, bind/cache/tmpf
 
 Effective device names after entitlement aliases participate in cache identity, including whether an optional CDI device is present. Required devices and authorization are checked before reuse. Live device contents, network responses, credentials/SSH-agent state, cache-mount contents, clock, randomness, and undeclared host inputs do not invalidate conventional cache results. A cache hit is not a reproducibility guarantee. Required reusable files belong in packages. Cache repositories are trusted inputs and may contain intermediate files absent from final images; protect them accordingly.
 
-`--no-cache` bypasses instruction, component-state, and package-result reads, writes fresh results, and leaves cache mounts intact. `--cache-from` reads portable results; `--cache-to` writes them. Validated hits can seed another writable destination; read-only sources are never updated and write-only destinations are never queried. See the [caching guide](../guides/caching.md) for registry/local syntax and refresh commands.
+`--no-cache` forces instruction execution, bypasses component-state and package-result reuse, writes fresh results, and leaves cache mounts intact. Portable graph records may still be imported to preserve historical alternatives during export; their results cannot satisfy forced execution. `--cache-from` reads portable results; `--cache-to` writes them. Validated hits can seed another writable destination; read-only sources are never updated and write-only destinations are never queried. See the [caching guide](../guides/caching.md) for registry/local syntax and refresh commands.
 
 ### State identity and metadata limits
 
-Portable instruction cache identity includes the ordered filesystem layers and execution configuration, excluding creation time and non-execution history metadata. Equal flattened filesystems with different layer chains need not share a key.
+Portable instruction graphs preserve dependency associations, execution identities and complete selected image results. They use BuildKit's graph encoding with Coopr sidecars, rather than native BuildKit registry-cache interchange. Source boundaries can distinguish equal flattened filesystems with different layer chains. Intermediate generated parent layer timestamps do not replace logical dependency identity.
 
 Component-result cache identity also includes the input image chain. Restoration retains the selected output's image graph, configuration and root metadata; identity ignores the root directory's modification time. Metadata that the exporter cannot preserve can prevent portable reuse.
 
@@ -307,4 +311,4 @@ Pruning follows [storage lifecycle rules](../guides/storage.md#inspect-and-maint
 
 Image builds accept `--compression-format gzip|zstd|zstd:chunked`, `--compression-level`, and `--force-compression`. A specified format defaults force-compression to true unless explicitly disabled. Otherwise native `containers.conf` defaults apply. Docker-format manifests require compatible layer compression.
 
-These controls apply when exporting final image layers and portable instruction-cache images, including after cache hits and when the final stage is unchanged. They do not change instruction cache keys or force RUNs to execute. The native image store retains its normal filesystem/layer representation; filesystem and tar exports are not compressed image manifests.
+These controls apply when exporting final image layers, including after cache hits and when the final stage is unchanged. They do not change instruction cache keys or force RUNs to execute. Graph-cache snapshots preserve their selected immutable manifests. The native image store retains its normal filesystem/layer representation; filesystem and tar exports are not compressed image manifests.

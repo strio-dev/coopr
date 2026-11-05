@@ -44,7 +44,7 @@ func prepareBuildContext(plan *planner.Plan, options PlanOptions) (PlanOptions, 
 }
 
 func snapshotBuildContext(options PlanOptions) (PlanOptions, func(error) error, error) {
-	artifacts := append(slices.Clone(options.ContextArtifacts), options.Store.RunRoot, options.Store.GraphRoot, options.Store.ImageStore, options.Output.Path, options.CacheLocalDir)
+	artifacts := append(slices.Clone(options.ContextArtifacts), options.Store.RunRoot, options.Store.GraphRoot, options.Store.ImageStore, options.Output.Path, options.CacheLocalDir, options.CacheMountDir)
 	policy, err := prepareContextPolicyWithIgnore(options.ContextDir, artifacts, options.IgnoreFile)
 	if err != nil {
 		return options, nil, err
@@ -53,7 +53,7 @@ func snapshotBuildContext(options PlanOptions) (PlanOptions, func(error) error, 
 	if err != nil {
 		return options, nil, err
 	}
-	snapshot, cleanup, err := snapshotContext(contextOptions.ContextDir, contextOptions.Excludes, nil, nil)
+	snapshot, cleanup, err := snapshotContext(contextOptions.ContextDir, contextOptions.Excludes, nil, nil, options.workerDirectory)
 	if err != nil {
 		return options, nil, err
 	}
@@ -70,6 +70,11 @@ func snapshotBuildContext(options PlanOptions) (PlanOptions, func(error) error, 
 func prepareRunInput(ctx context.Context, builder operationBuilder, contextDir string, artifacts []string, operation Run) (_ preparedRunInput, retErr error) {
 	operation.executionContext = ctx
 	result := preparedRunInput{operation: operation, contextDir: contextDir, complete: true}
+	defer func() {
+		if retErr != nil && result.cleanup != nil {
+			retErr = errors.Join(retErr, result.cleanup())
+		}
+	}()
 	if operation.Stdin != nil {
 		return result, nil // A streamed stdin has no stable cache identity.
 	}
@@ -95,17 +100,12 @@ func prepareRunInput(ctx context.Context, builder operationBuilder, contextDir s
 		uidMap, gidMap := contextSnapshotIDMaps(builder)
 		snapshot, cleanup := options.ContextDir, func() error { return nil }
 		if !operation.contextPrepared {
-			snapshot, cleanup, err = snapshotContext(options.ContextDir, options.Excludes, uidMap, gidMap)
+			snapshot, cleanup, err = snapshotContext(options.ContextDir, options.Excludes, uidMap, gidMap, operation.workerDirectory)
 		}
 		if err != nil {
 			return preparedRunInput{}, err
 		}
 		result.contextDir, result.cleanup = snapshot, cleanup
-		defer func() {
-			if retErr != nil {
-				retErr = errors.Join(retErr, cleanup())
-			}
-		}()
 		digester := digest.Canonical.Digester()
 		if err := copier.Get(snapshot, snapshot, copier.GetOptions{}, []string{"."}, cacheContextWriter{ctx: ctx, writer: digester.Hash()}); err != nil {
 			return preparedRunInput{}, fmt.Errorf("hash filtered RUN context: %w", err)
@@ -113,7 +113,7 @@ func prepareRunInput(ctx context.Context, builder operationBuilder, contextDir s
 		contextIdentity = digester.Digest().String()
 		result.operation.Mounts = append([]RunMount(nil), operation.Mounts...)
 		for index := range result.operation.Mounts {
-			if result.operation.Mounts[index].Type == "bind" && !result.operation.Mounts[index].BoundFrom {
+			if result.operation.Mounts[index].Type == "bind" && !result.operation.Mounts[index].BoundFrom && result.operation.Mounts[index].HostPath == "" {
 				result.operation.Mounts[index].PrivateRelabel = !operation.contextPrepared
 				result.operation.Mounts[index].SharedRelabel = operation.contextPrepared
 			}
@@ -121,11 +121,29 @@ func prepareRunInput(ctx context.Context, builder operationBuilder, contextDir s
 	}
 	result.resolved = make([]instructionCacheResolvedInput, 0, len(operation.Mounts))
 	imageIdentities := make(map[string]string)
-	for _, mount := range operation.Mounts {
+	result.operation.Mounts = slices.Clone(result.operation.Mounts)
+	for index, mount := range operation.Mounts {
 		var identity instructionCacheResolvedInput
 		switch mount.Type {
 		case "bind":
-			if mount.BoundFrom {
+			if mount.Artifact != nil {
+				root, cleanup, err := extractArtifactRunSource(ctx, operation.sourceStore, *mount.Artifact, operation.workerDirectory)
+				if err != nil {
+					return preparedRunInput{}, fmt.Errorf("prepare RUN artifact input: %w", err)
+				}
+				previous := result.cleanup
+				result.cleanup = func() error {
+					var prior error
+					if previous != nil {
+						prior = previous()
+					}
+					return errors.Join(prior, cleanup())
+				}
+				result.operation.Mounts[index].artifactRoot = root
+				identity = instructionCacheResolvedInput{Kind: "artifact-files", Identity: mount.Artifact.Selected.Digest.String()}
+			} else if mount.HostPath != "" {
+				return preparedRunInput{}, errors.New("live host mounts are not cacheable")
+			} else if mount.BoundFrom {
 				imageID := mount.Properties["from"]
 				rootDigest, found := imageIdentities[imageID]
 				if !found {
@@ -232,7 +250,7 @@ func applyRunWithFilteredContext(builder operationBuilder, contextDir string, ar
 		return err
 	}
 	uidMap, gidMap := contextSnapshotIDMaps(builder)
-	snapshot, cleanup, err := snapshotContext(options.ContextDir, options.Excludes, uidMap, gidMap)
+	snapshot, cleanup, err := snapshotContext(options.ContextDir, options.Excludes, uidMap, gidMap, operation.workerDirectory)
 	if err != nil {
 		return err
 	}
@@ -250,14 +268,14 @@ func applyRunWithFilteredContext(builder operationBuilder, contextDir string, ar
 
 func hasContextBindMount(mounts []RunMount) bool {
 	for _, mount := range mounts {
-		if mount.Type == "bind" && !mount.BoundFrom {
+		if mount.Type == "bind" && !mount.BoundFrom && mount.HostPath == "" {
 			return true
 		}
 	}
 	return false
 }
 
-func snapshotContext(contextDir string, excludes []string, uidMap, gidMap []idtools.IDMap) (string, func() error, error) {
+func snapshotContext(contextDir string, excludes []string, uidMap, gidMap []idtools.IDMap, parents ...string) (string, func() error, error) {
 	if contextDir == "" {
 		return "", nil, errors.New("context snapshot requires a build context")
 	}
@@ -265,7 +283,11 @@ func snapshotContext(contextDir string, excludes []string, uidMap, gidMap []idto
 	if err != nil {
 		return "", nil, fmt.Errorf("inspect build context: %w", err)
 	}
-	temporaryRoot, err := os.MkdirTemp("", "coopr-context-")
+	temporaryParent := ""
+	if len(parents) == 1 {
+		temporaryParent = parents[0]
+	}
+	temporaryRoot, err := os.MkdirTemp(temporaryParent, "coopr-context-")
 	if err != nil {
 		return "", nil, fmt.Errorf("create context snapshot root: %w", err)
 	}
@@ -345,7 +367,7 @@ func contextSnapshotIDMaps(builder operationBuilder) ([]idtools.IDMap, []idtools
 // instruction image cache cannot replay them, so those RUNs must execute.
 func hasWritableContextBindMount(mounts []RunMount) bool {
 	for _, mount := range mounts {
-		if mount.Type == "bind" && !mount.BoundFrom && mount.Properties["from"] == "" {
+		if mount.Type == "bind" && !mount.BoundFrom && mount.HostPath == "" && mount.Properties["from"] == "" {
 			properties, err := normalizeRunMountProperties(mount.Type, mount.Properties)
 			if err == nil && properties["readonly"] == "false" {
 				return true
@@ -370,7 +392,10 @@ func planUsesWritableContext(plan *planner.Plan, mounts []RunMount) bool {
 			if operation.Name != "run" {
 				continue
 			}
-			for _, child := range operation.Children {
+			for index, child := range operation.Children {
+				if operation.HostMounts[index] != "" {
+					continue
+				}
 				if child.Name == "mount" && len(child.Arguments) == 1 && hasWritableContextBindMount([]RunMount{{Type: child.Arguments[0], Properties: child.Properties}}) {
 					return true
 				}

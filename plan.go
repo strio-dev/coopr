@@ -3,18 +3,31 @@ package coopr
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/containerd/platforms"
+	"github.com/strio-dev/coopr/internal/buildcontext"
 	"github.com/strio-dev/coopr/internal/definition"
 	"github.com/strio-dev/coopr/internal/planner"
 	dockerreference "go.podman.io/image/v5/docker/reference"
 )
 
 // compile adapts already-typed operations without definition parsing or expansion.
-func compile(program Program) (*planner.Plan, error) {
+func compile(program Program, contexts ...buildcontext.Spec) (*planner.Plan, error) {
+	contextSpecs := map[string]buildcontext.Spec{}
+	for _, spec := range contexts {
+		if spec.Name == "" || spec.Name == "build" || spec.Name == "scratch" || spec.Kind != buildcontext.Local {
+			return nil, fmt.Errorf("invalid local named context %q", spec.Name)
+		}
+		if _, exists := contextSpecs[spec.Name]; exists {
+			return nil, fmt.Errorf("duplicate named context %q", spec.Name)
+		}
+		contextSpecs[spec.Name] = spec
+	}
 	platform := platforms.DefaultSpec()
 	if program.Platform != "" {
 		var err error
@@ -42,6 +55,9 @@ func compile(program Program) (*planner.Plan, error) {
 		}
 		stage := planner.Stage{ID: strconv.Itoa(index), Kind: "from", Platform: normalized, InheritedOnBuildPlanned: true}
 		resolve := func(source Source, required bool) (string, error) {
+			if source.Context != "" {
+				return "", errors.New("named contexts are supported only as COPY sources")
+			}
 			if source.Image != "" && source.State != "" {
 				return "", errors.New("source must select either image or state")
 			}
@@ -101,26 +117,70 @@ func compile(program Program) (*planner.Plan, error) {
 					if mount.Type != "bind" && mount.Type != "cache" && mount.Type != "tmpfs" {
 						return nil, fmt.Errorf("unsupported mount type %q", mount.Type)
 					}
-					if mount.Sharing != "" && mount.Sharing != "shared" && mount.Sharing != "private" && mount.Sharing != "locked" {
+					if mount.Sharing == "private" {
+						return nil, errors.New("private cache sharing is not supported by the Buildah execution backend")
+					}
+					if mount.Sharing != "" && mount.Sharing != "shared" && mount.Sharing != "locked" {
 						return nil, errors.New("invalid cache sharing mode")
 					}
 					if mount.Type != "cache" && (mount.ID != "" || mount.Sharing != "") {
 						return nil, errors.New("ID and sharing apply only to cache mounts")
 					}
-					if mount.Type != "bind" && (mount.From != (Source{}) || mount.Source != "") {
+					if mount.Type != "bind" && (mount.From != (Source{}) || mount.Source != "" || mount.HostPath != "") {
 						return nil, errors.New("source applies only to bind mounts")
 					}
-					from, err := resolve(mount.From, false)
-					if err != nil {
-						return nil, err
+					if mount.Relabel != "" && (mount.HostPath == "" || (mount.Relabel != "shared" && mount.Relabel != "private")) {
+						return nil, errors.New("relabel requires a live host bind and shared or private mode")
+					}
+					from := ""
+					if mount.HostPath != "" {
+						if mount.From != (Source{}) || mount.Source != "" || !filepath.IsAbs(mount.HostPath) || strings.ContainsRune(mount.HostPath, 0) {
+							return nil, errors.New("live host bind requires an absolute directory, without another source")
+						}
+						host, err := filepath.EvalSymlinks(mount.HostPath)
+						if err != nil {
+							return nil, fmt.Errorf("live host bind %q is unavailable: %w", mount.HostPath, err)
+						}
+						info, err := os.Stat(host)
+						if err != nil {
+							return nil, fmt.Errorf("live host bind %q is unavailable: %w", mount.HostPath, err)
+						}
+						if !info.IsDir() {
+							return nil, fmt.Errorf("live host bind %q is not a directory", mount.HostPath)
+						}
+						if op.HostMounts == nil {
+							op.HostMounts = map[int]string{}
+						}
+						op.HostMounts[mountIndex] = host
+					} else if mount.From.Context != "" {
+						if mount.From.Image != "" || mount.From.State != "" {
+							return nil, errors.New("RUN mount source must select only one image, state or context")
+						}
+						if _, known := contextSpecs[mount.From.Context]; !known {
+							return nil, fmt.Errorf("unknown RUN context %q", mount.From.Context)
+						}
+						if op.MountContexts == nil {
+							op.MountContexts = map[int]string{}
+						}
+						op.MountContexts[mountIndex] = mount.From.Context
+						from = mount.From.Context
+					} else {
+						var err error
+						from, err = resolve(mount.From, false)
+						if err != nil {
+							return nil, err
+						}
 					}
 					props := map[string]string{"target": mount.Target}
+					if mount.Relabel != "" {
+						props["relabel"] = mount.Relabel
+					}
 					if mount.Source != "" {
 						props["source"] = mount.Source
 					}
 					if from != "" {
 						props["from"] = from
-					} else if mount.Type == "bind" {
+					} else if mount.Type == "bind" && mount.HostPath == "" {
 						if op.MountContexts == nil {
 							op.MountContexts = map[int]string{}
 						}
@@ -146,15 +206,27 @@ func compile(program Program) (*planner.Plan, error) {
 						return nil, errors.New("COPY source must not be empty")
 					}
 				}
-				from, err := resolve(value.From, false)
-				if err != nil {
-					return nil, err
-				}
+
 				op.Instruction = definition.Instruction{Name: "copy", Arguments: append(slices.Clone(value.Sources), value.Destination)}
 				op.InputContext = "build"
-				if from != "" {
-					op.Properties = map[string]string{"from": from}
-					op.InputContext = ""
+				if value.From.Context != "" {
+					if value.From.Image != "" || value.From.State != "" {
+						return nil, errors.New("COPY source must select only one image, state or context")
+					}
+					if _, known := contextSpecs[value.From.Context]; !known {
+						return nil, fmt.Errorf("unknown COPY context %q", value.From.Context)
+					}
+					op.InputContext = value.From.Context
+					op.Properties = map[string]string{"from": value.From.Context}
+				} else {
+					from, err := resolve(value.From, false)
+					if err != nil {
+						return nil, err
+					}
+					if from != "" {
+						op.Properties = map[string]string{"from": from}
+						op.InputContext = ""
+					}
 				}
 			case Env:
 				if value.Name == "" || strings.ContainsAny(value.Name, "=\x00") {
@@ -194,7 +266,7 @@ func compile(program Program) (*planner.Plan, error) {
 		stages = append(stages, stage)
 		usedImages[stage.Source] = true
 		for _, op := range stage.Operations {
-			if from := op.Properties["from"]; from != "" {
+			if from := op.Properties["from"]; from != "" && op.InputContext == "" {
 				usedImages[from] = true
 			}
 			for _, mount := range op.Children {
@@ -211,6 +283,30 @@ func compile(program Program) (*planner.Plan, error) {
 			retainedInputs = append(retainedInputs, input)
 		}
 	}
+
 	plan.Inputs = retainedInputs
+	bindings := map[string][]planner.ContextBinding{}
+	for _, stage := range plan.Stages {
+		for index, op := range stage.Operations {
+			if op.InputContext != "" && op.InputContext != "build" {
+				bindings[op.InputContext] = append(bindings[op.InputContext], planner.ContextBinding{Role: "copy", StageID: stage.ID, Operation: index, MountIndex: -1})
+			}
+			for child := range op.Children {
+				contextName := op.MountContexts[child]
+				if contextName != "" && contextName != "build" {
+					bindings[contextName] = append(bindings[contextName], planner.ContextBinding{Role: "run-mount", StageID: stage.ID, Operation: index, MountIndex: child})
+				}
+			}
+		}
+	}
+	names := make([]string, 0, len(bindings))
+	for name := range bindings {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		plan.Contexts = append(plan.Contexts, planner.ContextInput{Spec: contextSpecs[name], Bindings: bindings[name]})
+		plan.Inputs = append(plan.Inputs, planner.Input{Kind: "context", Reference: name})
+	}
 	return plan, nil
 }

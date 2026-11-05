@@ -254,32 +254,7 @@ from %q {
 	}
 	t.Logf("first build %s; second build with instruction cache hit %s", durations[0], durations[1])
 
-	lease, err := acquireStore(store)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if err := lease.Close(); err != nil {
-			t.Errorf("close cache store: %v", err)
-		}
-	}()
-	images, err := lease.store.Images()
-	if err != nil {
-		t.Fatal(err)
-	}
-	found := false
-	for _, image := range images {
-		for _, name := range image.BigDataNames {
-			if strings.HasPrefix(name, instructionCacheBigData+"/") {
-				found = true
-				break
-			}
-		}
-		if found {
-			break
-		}
-	}
-	if !found {
-		t.Fatal("persistent store has no instruction cache snapshot")
+	if count := instructionCacheRecordCount(t, store); count != 2 {
+		t.Fatalf("persistent store has %d durable instruction graph keys, want two RUN results", count)
 	}
 }

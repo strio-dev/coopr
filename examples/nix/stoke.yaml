@@ -1,0 +1,19 @@
+version: 1
+tasks:
+  check-environment:
+    image: oci:environment:image
+    cache: false
+    outputs: {filesystem: false}
+    steps:
+      - run:
+          - /bin/bash
+          - -euc
+          - |
+            test "$COOPR_ENVIRONMENT" = nix
+            test "$COOPR_COMPONENT_MESSAGE" = nix-and-coopr
+            test "$(cat /coopr-component-result)" = nix-and-coopr
+            test "$(pwd)" = /
+            test -L /bin/bash
+            printf 'Nix-built environment: '
+            /bin/bash --version | /bin/head -n 1
+            /bin/sha256sum --version | /bin/head -n 1

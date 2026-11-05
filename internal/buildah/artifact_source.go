@@ -288,7 +288,7 @@ func inspectArtifactFileSource(ctx context.Context, artifacts *libartifact.Artif
 
 // extractArtifactSource uses Podman's raw-blob naming and extraction, then
 // verifies the extracted files before Buildah can consume them.
-func extractArtifactSource(ctx context.Context, store storage.Store, selected ResolvedImageSource) (_ string, _ func() error, retErr error) {
+func extractArtifactSource(ctx context.Context, store storage.Store, selected ResolvedImageSource, parents ...string) (_ string, _ func() error, retErr error) {
 	if ctx == nil || store == nil || !selected.Artifact {
 		return "", nil, errors.New("invalid artifact file input selection")
 	}
@@ -336,7 +336,11 @@ func extractArtifactSource(ctx context.Context, store storage.Store, selected Re
 		}
 		seen[mount.Name] = artifact.Manifest.Layers[i].Digest
 	}
-	directory, err := os.MkdirTemp("", "coopr-artifact-files-")
+	temporaryParent := ""
+	if len(parents) == 1 {
+		temporaryParent = parents[0]
+	}
+	directory, err := os.MkdirTemp(temporaryParent, "coopr-artifact-files-")
 	if err != nil {
 		return "", nil, err
 	}

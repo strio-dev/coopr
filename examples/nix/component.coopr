@@ -1,0 +1,7 @@
+extend {
+    arg "message" "nix-and-coopr"
+    env COOPR_COMPONENT_MESSAGE="${message}"
+    run {
+        exec "/bin/bash" "-euc" "test \"$COOPR_ENVIRONMENT\" = nix; printf '%s\\n' \"$COOPR_COMPONENT_MESSAGE\" > /coopr-component-result"
+    }
+}

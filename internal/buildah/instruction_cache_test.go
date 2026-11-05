@@ -685,3 +685,120 @@ func TestInstructionCacheCandidateFailureWarnsWithCause(t *testing.T) {
 		t.Fatalf("candidate failure hidden: warning=%q stats=%+v", warning, c.stats)
 	}
 }
+
+func TestRunMountCacheKeyUsesVerifiedFilesystemInsteadOfStorageHandle(t *testing.T) {
+	for _, kind := range []string{"image-rootfs", "artifact-files"} {
+		t.Run(kind, func(t *testing.T) {
+			makeInput := func(selector string) instructionCacheInput {
+				mount := definition.Instruction{Name: "mount", Arguments: []string{"bind"}, Properties: map[string]string{"from": selector, "source": "/selected", "target": "/input", "readonly": "true"}}
+				input := instructionCacheTestInput(planner.Operation{Instruction: definition.Instruction{Name: "run", Arguments: []string{"cat /input/payload"}, Children: []definition.Instruction{mount}}})
+				input.ResolvedInputsComplete = true
+				input.ResolvedInputs = []instructionCacheResolvedInput{{Kind: kind, Identity: digest.FromString("verified-filesystem").String()}}
+				return input
+			}
+			key := func(input instructionCacheInput) digest.Digest {
+				t.Helper()
+				key, cacheable, err := instructionCacheKey(input)
+				if err != nil || !cacheable {
+					t.Fatalf("key = %s, %t, %v", key, cacheable, err)
+				}
+				return key
+			}
+			first := makeInput("containers-storage:first")
+			firstKey := key(first)
+			if second := key(makeInput("containers-storage:second")); second != firstKey {
+				t.Fatalf("equivalent verified filesystem missed cache: %s != %s", firstKey, second)
+			}
+			if first.Operation.Children[0].Properties["from"] != "containers-storage:first" {
+				t.Fatal("key construction mutated authored operation")
+			}
+			for name, change := range map[string]func(*instructionCacheInput){
+				"filesystem": func(v *instructionCacheInput) {
+					v.ResolvedInputs[0].Identity = digest.FromString("changed-filesystem").String()
+				},
+				"path":     func(v *instructionCacheInput) { v.Operation.Children[0].Properties["source"] = "/other" },
+				"readonly": func(v *instructionCacheInput) { v.Operation.Children[0].Properties["readonly"] = "false" },
+				"target":   func(v *instructionCacheInput) { v.Operation.Children[0].Properties["target"] = "/elsewhere" },
+			} {
+				t.Run(name, func(t *testing.T) {
+					changed := makeInput("containers-storage:first")
+					change(&changed)
+					if key(changed) == firstKey {
+						t.Fatal("relevant mount input did not invalidate cache")
+					}
+				})
+			}
+			incomplete := makeInput("containers-storage:first")
+			incomplete.ResolvedInputsComplete = false
+			if _, cacheable, err := instructionCacheKey(incomplete); err != nil || cacheable {
+				t.Fatalf("incomplete mount identity cacheable: %t %v", cacheable, err)
+			}
+			invalid := makeInput("containers-storage:first")
+			invalid.ResolvedInputs[0].Identity = "unverified"
+			otherInvalid := makeInput("containers-storage:second")
+			otherInvalid.ResolvedInputs[0].Identity = "unverified"
+			if key(invalid) == key(otherInvalid) {
+				t.Fatal("unverified identity normalized a storage handle")
+			}
+		})
+	}
+}
+
+func TestCopyAddCacheKeyUsesMeasuredInputInsteadOfStorageHandle(t *testing.T) {
+	for _, operation := range []string{"copy", "add"} {
+		t.Run(operation, func(t *testing.T) {
+			makeInput := func(selector string) instructionCacheInput {
+				input := instructionCacheTestInput(planner.Operation{Instruction: definition.Instruction{
+					Name: operation, Arguments: []string{"/source", "/destination"},
+					Properties: map[string]string{"from": selector},
+				}})
+				input.InputDigest = digest.FromString("same-measured-file-input")
+				return input
+			}
+			key := func(input instructionCacheInput) digest.Digest {
+				t.Helper()
+				key, cacheable, err := instructionCacheKey(input)
+				if err != nil || !cacheable {
+					t.Fatalf("key = %s, %t, %v", key, cacheable, err)
+				}
+				return key
+			}
+			first := makeInput("containers-storage:first")
+			original := first.Operation.Properties["from"]
+			firstKey := key(first)
+			if second := key(makeInput("containers-storage:second")); second != firstKey {
+				t.Fatalf("equivalent measured COPY input missed cache: %s != %s", firstKey, second)
+			}
+			if first.Operation.Properties["from"] != original {
+				t.Fatal("key construction mutated the authored source selector")
+			}
+			for name, change := range map[string]func(*instructionCacheInput){
+				"contents and metadata": func(v *instructionCacheInput) { v.InputDigest = digest.FromString("changed-measured-input") },
+				"selected path":         func(v *instructionCacheInput) { v.Operation.Arguments[0] = "/other" },
+				"destination":           func(v *instructionCacheInput) { v.Operation.Arguments[1] = "/other" },
+				"ownership":             func(v *instructionCacheInput) { v.Operation.Properties["chown"] = "1:2" },
+				"mode":                  func(v *instructionCacheInput) { v.Operation.Properties["chmod"] = "0755" },
+				"platform":              func(v *instructionCacheInput) { v.Platform.Architecture = "arm64" },
+				"caller config": func(v *instructionCacheInput) {
+					v.Logical = v.Logical.Clone()
+					if err := v.Logical.Apply(definition.Instruction{Name: "workdir", Arguments: []string{"/changed"}}); err != nil {
+						t.Fatal(err)
+					}
+				},
+			} {
+				t.Run(name, func(t *testing.T) {
+					changed := makeInput("containers-storage:first")
+					change(&changed)
+					if key(changed) == firstKey {
+						t.Fatal("relevant COPY/ADD input did not invalidate cache")
+					}
+				})
+			}
+			unmeasured := makeInput("containers-storage:first")
+			unmeasured.InputDigest = ""
+			if _, cacheable, err := instructionCacheKey(unmeasured); err != nil || cacheable {
+				t.Fatalf("unmeasured input cacheable: %t %v", cacheable, err)
+			}
+		})
+	}
+}

@@ -503,11 +503,28 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 	if err := adoptCommittedConfig(ctx, executor.store, callerImageID, builderOptions.SystemContext, logical); err != nil {
 		return nil, fmt.Errorf("reconcile component caller config: %w", err)
 	}
+	var callerGraphBoundary digest.Digest
+	_, callerRootPortable := cacheablePackageRootMetadata(rootBaseline)
+	if executor.instructionSolver != nil && !executor.options.Lifecycle.NoLayers && callerRootPortable {
+		raw, err := logical.MarshalJSON()
+		if err != nil {
+			return nil, err
+		}
+		var image v1.Image
+		if err := json.Unmarshal(raw, &image); err != nil {
+			return nil, err
+		}
+		callerGraphBoundary, err = instructionGraphBoundary(&upstream.Builder{FromImageID: callerImageID, OCIv1: image}, rootBaseline, platform)
+		if err != nil {
+			return nil, fmt.Errorf("identify component caller graph boundary: %w", err)
+		}
+	}
 	var componentImageID string
 	var componentManifest digest.Digest
 	var componentBaseImageID string
 	var componentConfig *imageconfig.Config
 	var componentRoot *PackageRootMetadata
+	var componentEndpoint *instructionVertex
 	var candidateKey *cache.Key
 	cacheHit := false
 	if len(resolved.Plan.Outputs) != 1 {
@@ -605,6 +622,11 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 					extendsCaller = retainsCaller
 				}
 			},
+			observeGraphEndpoint: func(id string, endpoint *instructionVertex) {
+				if id == outputID {
+					componentEndpoint = endpoint
+				}
+			},
 			progressStageTotal: stageTotal,
 			progressPrefix:     progress.prefix + "[component " + progressText(operation.Arguments[0]) + "] ",
 			caller:             stageState{storageImageID: callerImageID, manifestDigest: callerManifest, config: logical.Continue(), root: rootBaseline},
@@ -615,6 +637,9 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 				Parameters: maps.Clone(parameters),
 			},
 			replannedBaseDelta: resolved.replannedBaseDelta,
+		}
+		if len(adoption) != 0 {
+			bindings.caller.graphEndpoint = adoption[0].graphParent
 		}
 		observed := map[string]bool{outputID: true}
 		_, err = executor.executePlanGraph(ctx, resolved.Plan, resolved.Plan.Stages, "", observed, func(_ storage.Store, stage planner.Stage, imageID string, config *imageconfig.Config, root *PackageRootMetadata) error {
@@ -749,6 +774,49 @@ func (executor *graphExecutor) applyComponentOperation(ctx context.Context, call
 	}
 	if !extendsCaller && len(adoption) != 0 && adoption[0].lineage != nil {
 		*adoption[0].lineage = false
+	}
+	_, componentRootPortable := cacheablePackageRootMetadata(componentRoot)
+	if executor.instructionSolver != nil && !executor.options.Lifecycle.NoLayers && componentRootPortable {
+		boundary, err := instructionGraphBoundary(adopted, componentRoot, platform)
+		if err != nil {
+			return nil, fmt.Errorf("identify completed component graph boundary: %w", err)
+		}
+		var parent *instructionVertex
+		if len(adoption) != 0 {
+			parent = adoption[0].graphParent
+		}
+		metadataOnly := extendsCaller && boundary == callerGraphBoundary
+		if metadataOnly && (componentEndpoint == nil || componentEndpoint != parent) {
+			for _, stage := range resolved.Plan.Stages {
+				for _, operation := range stage.Operations {
+					if isPlannedFilesystemOperation(operation) {
+						metadataOnly = false
+					}
+				}
+			}
+		}
+		if metadataOnly && parent != nil {
+			componentEndpoint = parent
+		} else {
+			// Cold execution and an aggregate hit must expose the same
+			// completed filesystem boundary. Otherwise downstream instruction
+			// keys change merely because the component itself was cached.
+			force := executor.options.NoCache || !metadataOnly && !cacheHit && componentEndpoint == nil
+			for ancestor := componentEndpoint; ancestor != nil; ancestor = ancestor.parent {
+				force = force || ancestor.ignore
+			}
+			if extendsCaller {
+				for ancestor := parent; ancestor != nil; ancestor = ancestor.parent {
+					force = force || ancestor.ignore
+				}
+			}
+			componentEndpoint = executor.instructionSolver.source(boundary, instructionSolverResult{Entry: instructionCacheEntry{ImageID: componentImageID, ManifestDigest: componentManifest, RootMetadata: componentRoot}}, force)
+		}
+	} else {
+		componentEndpoint = nil
+	}
+	if len(adoption) != 0 && adoption[0].graphOutput != nil {
+		*adoption[0].graphOutput = componentEndpoint
 	}
 	keep = true
 	return adopted, nil
@@ -936,6 +1004,8 @@ func componentOutputExtendsCaller(plan *planner.Plan) bool {
 }
 
 type componentAdoptionContext struct {
+	graphParent   *instructionVertex
+	graphOutput   **instructionVertex
 	delivery      *oci.ComponentDelivery
 	lineage       *bool
 	effectiveBase *string

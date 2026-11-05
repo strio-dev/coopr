@@ -283,7 +283,7 @@ func (store instructionCachePruneStore) MultiList(options storage.MultiListOptio
 	snapshot.Images = slices.Clone(snapshot.Images)
 	for index := range snapshot.Images {
 		snapshot.Images[index].Names = slices.DeleteFunc(slices.Clone(snapshot.Images[index].Names), func(name string) bool {
-			return strings.HasPrefix(name, instructionCacheNamePrefix)
+			return isInstructionCacheName(name)
 		})
 	}
 	return snapshot, nil
@@ -329,9 +329,13 @@ func storeUsage(images []storage.Image, layers []storage.Layer, containers []sto
 func instructionCacheNames(names []string) []string {
 	var result []string
 	for _, name := range names {
-		if strings.HasPrefix(name, instructionCacheNamePrefix) {
+		if isInstructionCacheName(name) {
 			result = append(result, name)
 		}
 	}
 	return result
+}
+
+func isInstructionCacheName(name string) bool {
+	return strings.HasPrefix(name, instructionCacheNamePrefix) || strings.HasPrefix(name, graphResultNamePrefix)
 }

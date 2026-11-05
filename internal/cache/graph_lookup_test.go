@@ -1,0 +1,518 @@
+package cache
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"os"
+	"reflect"
+	"sync"
+	"testing"
+	"time"
+
+	digest "github.com/opencontainers/go-digest"
+	specs "github.com/opencontainers/image-spec/specs-go"
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/oci"
+	"oras.land/oras-go/v2"
+	orasoci "oras.land/oras-go/v2/content/oci"
+	"oras.land/oras-go/v2/errdef"
+)
+
+var errGraphLookupClose = errors.New("injected graph payload close failure")
+
+type graphLookupTarget struct {
+	oras.Target
+	mu        sync.Mutex
+	fetches   map[digest.Digest]int
+	read      map[digest.Digest]int64
+	opened    int
+	closed    int
+	alter     digest.Digest
+	failure   string
+	blocked   chan struct{}
+	blockOnce sync.Once
+}
+
+func (target *graphLookupTarget) Fetch(ctx context.Context, desc v1.Descriptor) (io.ReadCloser, error) {
+	target.mu.Lock()
+	target.fetches[desc.Digest]++
+	target.mu.Unlock()
+	if desc.Digest == target.alter && target.failure == "missing" {
+		return nil, errdef.ErrNotFound
+	}
+	stream, err := target.Target.Fetch(ctx, desc)
+	if err != nil {
+		return nil, err
+	}
+	if desc.Digest == target.alter && target.failure != "" && target.failure != "cancel" && target.failure != "close" {
+		data, err := io.ReadAll(stream)
+		closeErr := stream.Close()
+		if err := errors.Join(err, closeErr); err != nil {
+			return nil, err
+		}
+		switch target.failure {
+		case "corrupt":
+			data = bytes.Repeat([]byte("x"), len(data))
+		case "truncated":
+			data = data[:len(data)-1]
+		case "trailing":
+			data = append(data, 'x')
+		}
+		stream = io.NopCloser(bytes.NewReader(data))
+	}
+	target.mu.Lock()
+	target.opened++
+	target.mu.Unlock()
+	return &graphLookupReader{ReadCloser: stream, target: target, ctx: ctx, descriptor: desc}, nil
+}
+
+type graphLookupReader struct {
+	io.ReadCloser
+	target     *graphLookupTarget
+	ctx        context.Context
+	descriptor v1.Descriptor
+	closeOnce  sync.Once
+	closeErr   error
+}
+
+func (reader *graphLookupReader) Read(p []byte) (int, error) {
+	if reader.descriptor.Digest == reader.target.alter && reader.target.failure == "cancel" {
+		reader.target.blockOnce.Do(func() { close(reader.target.blocked) })
+		<-reader.ctx.Done()
+		return 0, reader.ctx.Err()
+	}
+	n, err := reader.ReadCloser.Read(p)
+	reader.target.mu.Lock()
+	reader.target.read[reader.descriptor.Digest] += int64(n)
+	reader.target.mu.Unlock()
+	return n, err
+}
+
+func (reader *graphLookupReader) Close() error {
+	reader.closeOnce.Do(func() {
+		reader.closeErr = reader.ReadCloser.Close()
+		if reader.descriptor.Digest == reader.target.alter && reader.target.failure == "close" {
+			reader.closeErr = errors.Join(reader.closeErr, errGraphLookupClose)
+		}
+		reader.target.mu.Lock()
+		reader.target.closed++
+		reader.target.mu.Unlock()
+	})
+	return reader.closeErr
+}
+
+// Build two physical image alternatives sharing one layer. Publish metadata
+// directly so malformed or nondistributable-layer fixtures reach LookupGraph
+// without PutGraph's independent validation/copy policy masking the case.
+func graphLookupFixture(t *testing.T, layerMediaType string, changeSecondLayer func(*v1.Descriptor)) (*OCIStore, GraphRecord, []v1.Descriptor, *graphLookupTarget) {
+	t.Helper()
+	return graphLookupCustomLayerFixture(t, layerMediaType, changeSecondLayer, nil)
+}
+
+func graphLookupCustomLayerFixture(t *testing.T, layerMediaType string, changeSecondLayer func(*v1.Descriptor), createLayer func(oras.Target, v1.Descriptor) v1.Descriptor) (*OCIStore, GraphRecord, []v1.Descriptor, *graphLookupTarget) {
+	t.Helper()
+	ctx := t.Context()
+	record, layout := graphFixture(t)
+	target, err := orasoci.New(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := imageGraphDescriptors(ctx, target, record.Results[0].Image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	layer := first[1]
+	layer.MediaType = layerMediaType
+	if createLayer != nil {
+		layer = createLayer(target, layer)
+	}
+	marshal := func(value any) []byte {
+		t.Helper()
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	push := func(mediaType string, data []byte) v1.Descriptor {
+		t.Helper()
+		desc := oci.Descriptor(mediaType, data)
+		if err := pushGraphBlob(ctx, target, desc, data); err != nil {
+			t.Fatal(err)
+		}
+		return desc
+	}
+	payloads := []v1.Descriptor{layer}
+	for i := range record.Results {
+		config := push(v1.MediaTypeImageConfig, marshal(v1.Image{
+			Platform: v1.Platform{OS: "linux", Architecture: "amd64"},
+			Config:   v1.ImageConfig{Labels: map[string]string{"variant": record.Results[i].ID}},
+			RootFS:   v1.RootFS{Type: "layers", DiffIDs: []digest.Digest{layer.Digest}},
+		}))
+		payloads = append(payloads, config)
+		imageLayer := layer
+		if i == 1 && changeSecondLayer != nil {
+			changeSecondLayer(&imageLayer)
+		}
+		record.Results[i].Image = push(v1.MediaTypeImageManifest, marshal(oci.VersionedManifest(config, []v1.Descriptor{imageLayer}, "")))
+	}
+	record.Results[1].BaseImage = &record.Results[0].Image
+	record = publishGraphLookupRecord(t, target, record)
+	counted := &graphLookupTarget{Target: target, fetches: map[digest.Digest]int{}, read: map[digest.Digest]int64{}}
+	return &OCIStore{target: counted, stagingDir: t.TempDir()}, record, payloads, counted
+}
+
+func publishGraphLookupRecord(t *testing.T, target oras.Target, record GraphRecord) GraphRecord {
+	t.Helper()
+	push := func(mediaType string, value any) v1.Descriptor {
+		t.Helper()
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		desc := oci.Descriptor(mediaType, data)
+		if err := pushGraphBlob(t.Context(), target, desc, data); err != nil {
+			t.Fatal(err)
+		}
+		return desc
+	}
+	layers := graphImages(record)
+	for i, result := range record.Results {
+		desc := push(GraphResultMediaType, result)
+		record.Config.Layers[i].Blob = desc.Digest
+		layers = append(layers, desc)
+	}
+	config := push(GraphConfigMediaType, record)
+	artifact := push(v1.MediaTypeImageManifest, oci.VersionedManifest(config, layers, GraphArtifactType))
+	if err := target.Tag(t.Context(), artifact, graphTag(record.Root)); err != nil {
+		t.Fatal(err)
+	}
+	return record
+}
+
+func assertGraphLookupCleaned(t *testing.T, store *OCIStore, target *graphLookupTarget) {
+	t.Helper()
+	entries, err := os.ReadDir(store.stagingDir)
+	if err != nil || len(entries) != 0 {
+		t.Errorf("failed lookup leaked staging files: entries=%v err=%v", entries, err)
+	}
+	target.mu.Lock()
+	defer target.mu.Unlock()
+	if target.opened != target.closed {
+		t.Errorf("lookup leaked readers: opened=%d closed=%d", target.opened, target.closed)
+	}
+}
+
+func TestGraphLookupFetchesSharedPayloadOnce(t *testing.T) {
+	store, record, payloads, target := graphLookupFixture(t, v1.MediaTypeImageLayer, nil)
+	got, path, err := store.LookupGraph(t.Context(), record.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(path) })
+	if !reflect.DeepEqual(*got, record) {
+		t.Fatal("lookup lost graph alternatives, dependency or restoration metadata")
+	}
+	images, err := orasoci.New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, image := range graphImages(record) {
+		if err := verifyImageGraph(t.Context(), images, image); err != nil {
+			t.Fatalf("incomplete restored physical alternative %s: %v", image.Digest, err)
+		}
+	}
+	target.mu.Lock()
+	defer target.mu.Unlock()
+	for _, payload := range payloads {
+		if target.fetches[payload.Digest] != 1 || target.read[payload.Digest] != payload.Size {
+			t.Errorf("payload %s fetched %d times / read %d bytes; want once / %d bytes", payload.Digest, target.fetches[payload.Digest], target.read[payload.Digest], payload.Size)
+		}
+	}
+	if target.opened != target.closed {
+		t.Errorf("lookup leaked readers: opened=%d closed=%d", target.opened, target.closed)
+	}
+}
+
+func TestGraphLookupRejectsInvalidPayloadAndCleansStaging(t *testing.T) {
+	for _, name := range []string{"layer", "config"} {
+		for _, failure := range []string{"corrupt", "truncated", "trailing", "missing", "close"} {
+			t.Run(name+"/"+failure, func(t *testing.T) {
+				store, record, payloads, target := graphLookupFixture(t, v1.MediaTypeImageLayer, nil)
+				index := 0
+				if name == "config" {
+					index = 1
+				}
+				target.alter, target.failure = payloads[index].Digest, failure
+				got, path, err := store.LookupGraph(t.Context(), record.Root)
+				if err == nil || got != nil || path != "" {
+					t.Fatalf("invalid payload accepted: record=%v path=%q err=%v", got, path, err)
+				}
+				if failure == "close" && !errors.Is(err, errGraphLookupClose) {
+					t.Fatalf("payload close error was lost: %v", err)
+				}
+				assertGraphLookupCleaned(t, store, target)
+			})
+		}
+	}
+}
+
+func TestGraphLookupRejectsSharedDescriptorConflictsAndExternalURLs(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		change func(*v1.Descriptor)
+	}{
+		{"size", func(desc *v1.Descriptor) { desc.Size++ }},
+		{"media type", func(desc *v1.Descriptor) { desc.MediaType = v1.MediaTypeImageLayerGzip }},
+		{"external URL", func(desc *v1.Descriptor) { desc.URLs = []string{"https://example.invalid/layer"} }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store, record, _, target := graphLookupFixture(t, v1.MediaTypeImageLayer, test.change)
+			got, path, err := store.LookupGraph(t.Context(), record.Root)
+			if err == nil || got != nil || path != "" {
+				t.Fatalf("invalid shared descriptor accepted: record=%v path=%q err=%v", got, path, err)
+			}
+			assertGraphLookupCleaned(t, store, target)
+		})
+	}
+}
+
+func TestGraphLookupRejectsPayloadAliasingNestedImageRoot(t *testing.T) {
+	store, record, _, target := graphLookupFixture(t, v1.MediaTypeImageLayer, nil)
+	push := func(mediaType string, value any) v1.Descriptor {
+		t.Helper()
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		desc := oci.Descriptor(mediaType, data)
+		if err := pushGraphBlob(t.Context(), target.Target, desc, data); err != nil {
+			t.Fatal(err)
+		}
+		return desc
+	}
+	imageManifest := func(desc v1.Descriptor) v1.Manifest {
+		t.Helper()
+		data, err := fetchVerified(t.Context(), target.Target, desc, maxImageRecordBytes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var manifest v1.Manifest
+		if err := json.Unmarshal(data, &manifest); err != nil {
+			t.Fatal(err)
+		}
+		return manifest
+	}
+	// Give the first root nested descendants that a false destination.Exists
+	// hit would omit. The later image then calls that root's bytes its config.
+	first := imageManifest(record.Results[0].Image)
+	index := push(v1.MediaTypeImageIndex, v1.Index{
+		Versioned: specs.Versioned{SchemaVersion: 2},
+		MediaType: v1.MediaTypeImageIndex,
+		Manifests: []v1.Descriptor{record.Results[0].Image},
+	})
+	first.Layers = []v1.Descriptor{index}
+	record.Results[0].Image = push(v1.MediaTypeImageManifest, first)
+	second := imageManifest(record.Results[1].Image)
+	second.Config = record.Results[0].Image
+	second.Config.MediaType = v1.MediaTypeImageConfig
+	record.Results[1].Image = push(v1.MediaTypeImageManifest, second)
+	record = publishGraphLookupRecord(t, target.Target, record)
+	got, path, err := store.LookupGraph(t.Context(), record.Root)
+	if err == nil || got != nil || path != "" {
+		t.Fatalf("image root/config descriptor conflict accepted: record=%v path=%q err=%v", got, path, err)
+	}
+	assertGraphLookupCleaned(t, store, target)
+}
+
+func graphLookupNestedLayer(t *testing.T, target oras.Target, childLayer v1.Descriptor, mediaType string) (v1.Descriptor, []v1.Descriptor) {
+	t.Helper()
+	push := func(mediaType string, value any) v1.Descriptor {
+		t.Helper()
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		desc := oci.Descriptor(mediaType, data)
+		if err := pushGraphBlob(t.Context(), target, desc, data); err != nil {
+			t.Fatal(err)
+		}
+		return desc
+	}
+	childLayer.MediaType = v1.MediaTypeImageLayer
+	config := push(v1.MediaTypeImageConfig, v1.Image{
+		Platform: v1.Platform{OS: "linux", Architecture: "amd64"},
+		Config:   v1.ImageConfig{Labels: map[string]string{"nested": "child"}},
+		RootFS:   v1.RootFS{Type: "layers", DiffIDs: []digest.Digest{childLayer.Digest}},
+	})
+	manifest := push(v1.MediaTypeImageManifest, oci.VersionedManifest(config, []v1.Descriptor{childLayer}, ""))
+	nested := []v1.Descriptor{childLayer, config, manifest}
+	if mediaType == v1.MediaTypeImageManifest {
+		return manifest, nested
+	}
+	index := push(v1.MediaTypeImageIndex, v1.Index{
+		Versioned: specs.Versioned{SchemaVersion: 2},
+		MediaType: v1.MediaTypeImageIndex,
+		Manifests: []v1.Descriptor{manifest},
+	})
+	return index, append(nested, index)
+}
+
+func TestGraphLookupNestedPayloadAliasKeepsRecursiveCopy(t *testing.T) {
+	var nested []v1.Descriptor
+	createLayer := func(target oras.Target, childLayer v1.Descriptor) v1.Descriptor {
+		var index v1.Descriptor
+		index, nested = graphLookupNestedLayer(t, target, childLayer, v1.MediaTypeImageIndex)
+		return index
+	}
+	store, record, _, target := graphLookupCustomLayerFixture(t, v1.MediaTypeImageIndex, nil, createLayer)
+	data, err := fetchVerified(t.Context(), target.Target, record.Results[1].Image, maxImageRecordBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var second v1.Manifest
+	if err := json.Unmarshal(data, &second); err != nil {
+		t.Fatal(err)
+	}
+	// A later config aliases a nested manifest, not a declared image root.
+	// Prepopulating it would make CopyGraph skip the nested manifest's children.
+	second.Config = nested[2]
+	second.Config.MediaType = v1.MediaTypeImageConfig
+	data, err = json.Marshal(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.Results[1].Image = oci.Descriptor(v1.MediaTypeImageManifest, data)
+	if err := pushGraphBlob(t.Context(), target.Target, record.Results[1].Image, data); err != nil {
+		t.Fatal(err)
+	}
+	record = publishGraphLookupRecord(t, target.Target, record)
+	_, path, err := store.LookupGraph(t.Context(), record.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(path) })
+	images, err := orasoci.New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, desc := range nested {
+		if _, err := fetchVerified(t.Context(), images, desc, maxImageRecordBytes); err != nil {
+			t.Fatalf("nested alias produced incomplete success: %s: %v", desc.Digest, err)
+		}
+	}
+}
+
+func TestGraphLookupRestoresNestedManifestAndIndexLayers(t *testing.T) {
+	for _, mediaType := range []string{v1.MediaTypeImageManifest, v1.MediaTypeImageIndex} {
+		t.Run(mediaType, func(t *testing.T) {
+			var nested []v1.Descriptor
+			createLayer := func(target oras.Target, childLayer v1.Descriptor) v1.Descriptor {
+				var layer v1.Descriptor
+				layer, nested = graphLookupNestedLayer(t, target, childLayer, mediaType)
+				return layer
+			}
+			store, record, _, target := graphLookupCustomLayerFixture(t, mediaType, nil, createLayer)
+			_, path, err := store.LookupGraph(t.Context(), record.Root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(path) })
+			images, err := orasoci.New(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, desc := range nested {
+				if _, err := fetchVerified(t.Context(), images, desc, maxImageRecordBytes); err != nil {
+					t.Fatalf("nested graph child %s missing or invalid: %v", desc.Digest, err)
+				}
+			}
+			target.mu.Lock()
+			defer target.mu.Unlock()
+			if target.opened != target.closed {
+				t.Errorf("lookup leaked nested graph readers: opened=%d closed=%d", target.opened, target.closed)
+			}
+		})
+	}
+}
+
+//nolint:staticcheck // Existing nondistributable cache payloads still require integrity checks.
+func TestGraphLookupRetainsNondistributablePayloadValidation(t *testing.T) {
+	for _, mediaType := range []string{
+		v1.MediaTypeImageLayerNonDistributable,
+		v1.MediaTypeImageLayerNonDistributableGzip,
+		v1.MediaTypeImageLayerNonDistributableZstd,
+		"application/vnd.docker.image.rootfs.foreign.diff.tar.gzip",
+	} {
+		for _, failure := range []string{"", "corrupt", "missing"} {
+			name := failure
+			if name == "" {
+				name = "intact"
+			}
+			t.Run(mediaType+"/"+name, func(t *testing.T) {
+				store, record, payloads, target := graphLookupFixture(t, mediaType, nil)
+				target.alter, target.failure = payloads[0].Digest, failure
+				got, path, err := store.LookupGraph(t.Context(), record.Root)
+				if failure != "" {
+					if err == nil || got != nil || path != "" {
+						t.Fatalf("invalid nondistributable payload accepted: record=%v path=%q err=%v", got, path, err)
+					}
+					assertGraphLookupCleaned(t, store, target)
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.RemoveAll(path) })
+				images, err := orasoci.New(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, image := range graphImages(*got) {
+					if err := verifyImageGraph(t.Context(), images, image); err != nil {
+						t.Fatalf("nondistributable layer missing from returned layout: %v", err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestGraphLookupCancellationClosesPayloadAndCleansStaging(t *testing.T) {
+	store, record, payloads, target := graphLookupFixture(t, v1.MediaTypeImageLayer, nil)
+	target.alter, target.failure, target.blocked = payloads[0].Digest, "cancel", make(chan struct{})
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	type result struct {
+		record *GraphRecord
+		path   string
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		got, path, err := store.LookupGraph(ctx, record.Root)
+		done <- result{got, path, err}
+	}()
+	select {
+	case <-target.blocked:
+	case got := <-done:
+		t.Fatalf("lookup ended before payload read: %+v", got)
+	case <-ctx.Done():
+		t.Fatal("lookup never reached payload read")
+	}
+	cancel()
+	drained := time.NewTimer(20 * time.Second)
+	defer drained.Stop()
+	select {
+	case got := <-done:
+		if !errors.Is(got.err, context.Canceled) || got.record != nil || got.path != "" {
+			t.Fatalf("canceled lookup: %+v", got)
+		}
+	case <-drained.C:
+		t.Fatal("canceled lookup did not drain")
+	}
+	assertGraphLookupCleaned(t, store, target)
+}

@@ -123,12 +123,13 @@ func keepEmptyFilesystemLayer(manifestType string) bool {
 
 // Result identifies the committed image.
 type Result struct {
-	ImageID        string
-	ManifestDigest string
-	Layout         string
-	Reference      string
-	Platform       string
-	CacheStats     CacheStats
+	ProgressDropped uint64
+	ImageID         string
+	ManifestDigest  string
+	Layout          string
+	Reference       string
+	Platform        string
+	CacheStats      CacheStats
 }
 
 // Build applies Operations in order and commits the result to an image layout.

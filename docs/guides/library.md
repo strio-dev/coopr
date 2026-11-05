@@ -1,174 +1,207 @@
-# Use the Go execution library
+# Use the Go service client
 
-Import `github.com/strio-dev/coopr` to execute a build graph from Go.
-Your application constructs typed states and operations directly. Coopr's CLI
-uses the same supervised native backend; the library does not invoke the CLI or
-parse a Coopr definition.
+Import `github.com/strio-dev/coopr/client` and the shared types in
+`github.com/strio-dev/coopr/api` to call a caller-owned Coopr service. The client
+uses the standard library and public API types. It does not import Buildah,
+native storage or Coopr's embedding library, and it builds with CGO disabled.
+The service executable still needs its normal native runtime prerequisites.
 
-The library requires Linux, CGO, GPGME and libseccomp at build time, and their
-shared libraries at runtime when dynamically linked. Build with the repository's
-Nix environment to use its pinned Go toolchain and native dependencies. The
-repository enables `exclude_graphdriver_btrfs`, `systemd` and `seccomp` Go build
-tags. RUN operations require an OCI runtime such as `crun`. Rootless execution
-also requires working user namespaces, subordinate UID/GID ranges and the
-corresponding mapping helpers. Host and nested-container policy can prevent
-these facilities; importing the library does not grant them.
+The client and service are unreleased. Coopr `0.5.0` contains neither this client
+nor the service API. Use the explicitly qualified development builds until a
+compatible module and executable release is authorized. Release work remains
+on hold; this guide does not select an unpublished version for a consumer.
 
-## Bootstrap your executable
+## Connect to an owned service
 
-Call `coopr.InitReexec()` before parsing flags, opening services or starting
-other application work, and return immediately when it returns true. The native
-backend starts workers by reexecuting your application's binary. Those workers
-need this dispatch entry point. A single `Run.Args` invocation does not require
-the separate `coopr-run-sequence` helper or an installed Coopr CLI.
+Create and supervise the private service as described in the
+[local API guide](api.md). The caller owns its process, parent-lifetime pipe,
+input paths, stores, caches and outputs. The client neither starts a process
+nor connects to an always-on daemon.
 
-The engine runs with your application's OS authority. Bootstrap dispatches
-helpers before normal argument checks; it does not authenticate requests.
-Installing the application setuid, granting it file capabilities, or exposing
-it through a restricted sudo rule can therefore bypass restrictions implemented
-by its CLI. The same concern applies to a security-domain transition that gives
-the executable additional permissions. The library provides no privilege
-separation for those deployments.
-Run it as the intended execution account, normally rootless. An operator may
-also run builds as root or through sudo with full engine authority. Services
-must authenticate build requests before calling `Execute`.
-
-`Execute` applies the native `containers.conf` execution defaults, including
-SELinux and seccomp settings, before starting workers. Invalid configured
-security profiles fail the request.
-
-The following program builds from UBI, runs a shell command, and exports both an
-OCI image layout and a filesystem tree. Choose fresh output paths before running
-it; their parent directory must already exist:
+Given an existing absolute socket path and a prepared `api.Request`:
 
 ```go
-package main
+package integration
 
 import (
     "context"
-    "log"
+    "os"
 
-    "github.com/strio-dev/coopr"
+    "github.com/strio-dev/coopr/api"
+    "github.com/strio-dev/coopr/client"
 )
 
-func main() {
-    if coopr.InitReexec() {
-        return
-    }
-    program := coopr.Program{
-        States: []coopr.State{{
-            ID:   "result",
-            From: coopr.Source{Image: "docker.io/redhat/ubi9:latest"},
-            Operations: []coopr.Operation{
-                coopr.Run{Args: []string{
-                    "sh", "-c", "printf 'hello\\n' > /message",
-                }},
-            },
-        }},
-        Output: "result",
-    }
-    result, err := coopr.Execute(context.Background(), program, coopr.Options{
-        Store: coopr.StoreOptions{
-            RunRoot:   "/tmp/library-run",
-            GraphRoot: "/tmp/library-graph",
-            Driver:    "vfs",
-        },
-        Runtime:   "crun",
-        Isolation: "rootless",
-        Output: coopr.Output{
-            OCI:        "/tmp/library-image",
-            Filesystem: "/tmp/library-filesystem",
-        },
-    })
+func invoke(ctx context.Context, socket string, request api.Request) (api.Result, error) {
+    connection, err := client.New(socket, client.Options{})
     if err != nil {
-        log.Fatal(err)
+        return api.Result{}, err
     }
-    log.Printf("image %s exported to %s", result.ManifestDigest, result.Filesystem)
+    defer connection.CloseIdleConnections()
+    return connection.Execute(ctx, request, client.StreamOptions{
+        Stdout: os.Stdout,
+        Stderr: os.Stderr,
+    })
 }
 ```
 
-`Source.Image` selects an image reference, including `scratch`. `Source.State`
-selects an earlier state. Specify exactly one. States must be in topological
-order, with unique IDs and an explicit final `Program.Output`. Independent
-states may run concurrently up to `Options.Jobs`; a state's source and `Copy`
-operations establish dependencies. An empty `Copy.From` uses `ContextDir`.
+`Execute` accepts the same request envelope for typed execution, native image
+builds, native components and explicit publication. It preserves Coopr's
+component/PACKAGE behavior and named contexts. It performs no workflow
+scheduling, definition generation, artifact relocation or automatic publication.
+See the [API reference](../reference/api.md) for paths and operation fields.
 
-Operations are the value types `Run`, `Copy`, `Env` and `Workdir`. Strings are
-literal: the library does not expand Coopr ARG or ENV expressions. `Run.Args`
-is an argument vector, so use an explicit shell when shell syntax is needed.
-Mounts support bind, cache and tmpfs. Cache mount IDs can be supplied explicitly
-or assigned by the native backend; sharing may be `shared`, `private` or `locked`. Coopr's frontend continues to own its
-component, package, extend, ARG, ENV and ONBUILD language semantics.
-
-## Own stores, cache and outputs
-
-The caller owns the context directory, native store roots, portable cache and
-successful output paths. Use absolute, distinct store roots. `Output.OCI` is
-required; `Output.Filesystem` is optional. Each output destination must be fresh
-and absolute, with an existing parent directory. The library never overwrites
-an existing output. Successful outputs are promoted individually; promoting
-both outputs is not one filesystem transaction.
-
-Private export staging is excluded from the build context. Files you leave in
-the context, including successful outputs from earlier builds, remain inputs.
-
-Set `Cache.LocalDir` to an absolute directory to enable portable instruction
-caching. `Result.Cache` reports portable hits, misses, stored entries, skips and
-errors. Native Buildah layer reuse is separate and is not counted there. Reusing
-a portable cache with a fresh native store demonstrates portable restoration.
-Writable bind mounts (`ReadOnly: false`) operate on a disposable build context,
-so later context copies can see their writes without changing the original host
-context. Select `ReadOnly: true` for a read-only bind.
-
-The cache mount contents themselves are disposable accelerators; programs must
-remain correct when those contents are absent.
-
-Use a cancellable `context.Context` to stop work. `Execute` owns its workers and
-staging paths, and waits for cancellation cleanup before returning. The caller
-remains responsible for its persistent store/cache directories and successful
-outputs. Writers supplied in `Options` receive worker output; synchronize them
-when sharing them across concurrent calls.
-
-`RegistryOptions` selects native authentication, certificate, TLS, pull and
-signature-policy behavior. Follow your deployment's image policy when using
-registry sources. The example above pulls `docker.io/redhat/ubi9:latest` using that native policy.
-
-## Run the independent consumer
-
-[`examples/library`](https://github.com/strio-dev/coopr/tree/main/examples/library)
-is a separate Go module named `example.com/library-consumer`. Its only Coopr
-import is the public `coopr` package. A checkout-local `replace` directive
-points at the repository root; an external application should require its
-selected Coopr version instead.
-
-From the repository root, enter the runtime development shell and run:
+The separate `examples/client` Go module contains a complete command:
 
 ```sh
-nix develop .#runtime
-cd examples/library
-go run . -busybox "$(command -v busybox)" -work "$PWD/proof"
+cd examples/client
+CGO_ENABLED=0 GOTOOLCHAIN=local go run . \
+  -socket /absolute/private/api.sock -request /absolute/request.json
 ```
 
-Choose a fresh absolute work directory. The consumer leaves its caller-owned
-stores, portable cache and exported outputs there for inspection. Its JSON
-report is printed only after all assertions pass:
+It reads one bounded request object, sends logs to stderr, writes the structured
+result to stdout and preserves a failing exit status even when a partial result
+exists. Its local module replacement checks this checkout; it is not a
+published module pin or a Stoke dependency change.
 
-- Two independent branches rendezvous through a shared cache mount before
-  either completes, proving overlap without an elapsed-time threshold.
-- A dependent copy joins their files and the exported filesystem contains the
-  expected result.
-- A second execution uses a fresh native store and requires portable cache hits.
-- A build copying the whole context exports inside it without copying private
-  staging.
-  After removing its successful outputs, a fresh-store repeat must hit the
-  portable cache with the same caller inputs.
-- A writable bind changes a disposable build context, a subsequent copy sees the
-  change, and the original host input remains unchanged. An environment value
-  containing `${literal}` also reaches the command unchanged.
-- Another execution is cancelled after worker readiness; the consumer checks
-  process termination, empty container records, absent cancelled outputs and
-  removal of disposable staging paths.
+## Negotiate capabilities
 
-The existing Nix Go checks build and test this separate module with its own
-vendor hash. The rootless native VM check runs the installed consumer under an
-ordinary user with subordinate IDs, using the existing OCI runtime fixtures.
+`Info(ctx)` reads and validates the service identity. `Negotiate(ctx, caps...)`
+checks the accepted identity, fetching Info if none has been accepted yet.
+Execution automatically requires the selected operation capability and only the
+optional request features it uses:
+
+| Request | Required capability |
+| --- | --- |
+| Typed program | Nonempty `Options.Network` on execution/build/component | `run-network` |
+| `execute` |
+| Native image definition | `build` |
+| Native component definition | `component` |
+| Nonempty native `build.platform` | `build-platform` |
+| Artifact publication | `publish` |
+| Nonempty registry cache source/destination lists | `registry-cache` |
+| Named local contexts or named-context sources | `named-contexts` |
+| RUN mount using `from.image`, `from.context` or `hostPath`; persistent `cache.mountDir` | `run-mounts-v2` |
+
+A RUN `from.image` can be an image or artifact reference, determined by the
+engine. The client conservatively requires `run-mounts-v2` for that union rather
+than resolving registry content itself. Ordinary programs without these features
+retain their existing capability requirements.
+
+API version `1` and the needed capabilities determine compatibility. The
+executable's version string is informational; compatible client/server releases
+do not need identical version numbers. Unknown optional response fields and
+capability names are accepted within the response limits. Unsupported API
+majors and missing features fail clearly before execution is posted.
+
+A client belongs to one service instance. Successful Info is cached, including
+during caller-owned readiness polling. Repeated negotiation and execution reuse
+that snapshot. `Info` explicitly refreshes it; an unsuccessful refresh clears
+the accepted snapshot. Construct a new client after replacing or restarting the
+service rather than relying on stale capabilities.
+
+Known v1 progress events are validated even with no callback. Observation is
+optional: ordinary requests do not require `operation-progress`. Call
+`Negotiate(ctx, api.CapabilityOperationProgress)` when observation support is
+itself a requirement. Future semantic event kinds require explicit negotiation
+or an API major revision; unknown discriminators are errors.
+
+## Results, errors and cancellation
+
+Always inspect both returned values. Native frontend results omit unavailable
+cache counters; the client leaves that pointer nil. Publication can return
+successful destination entries together with a structured failure for another
+destination. The client preserves those outcomes and `*api.Error` codes through
+`errors.As`; it does not convert them into zero results or ordinary log text.
+
+An `*client.ExecutionError` retains `ID`, `Cause` and `CleanupError`. Request
+preflight failures occur before POST and need no execution identity. Structured
+HTTP admission failures remain available as `*client.HTTPError` and, when
+present, `*api.Error`. Confirmed duplicate/capacity/shutdown refusals do not send
+DELETE, which could otherwise cancel a previously registered execution.
+
+After uncertain admission, connection loss, malformed/truncated events or a
+writer error, the client cancels its POST context and independently sends DELETE
+for that ID. It waits for a terminal, matching acknowledgement. The default
+independent timeout is thirty seconds; `Options.CancellationTimeout` selects
+another positive duration. POST is never automatically retried.
+
+`errors.Is(err, client.ErrCleanupFailed)` means cleanup failed or could not be
+confirmed. Preserve that distinction over ordinary context cancellation. An
+acknowledged failed execution alone is not failed cleanup. Use
+`CancelWait(ctx, execution.ID)` to retry reconciliation when an earlier
+acknowledgement failed; `Get(ctx, id)` observes status without canceling.
+Closing a connection or killing a service is not a cleanup acknowledgement.
+
+## Bound streams and ownership
+
+Requests are limited to 4 MiB and each NDJSON event to 1 MiB. Info responses are
+limited to 64 KiB; status responses allow the event limit plus 4 KiB of envelope
+headroom. Every response must contain the expected JSON object, without trailing
+values or ambiguous control fields. Mixed payloads, invalid known progress,
+unknown events, missing terminal results and post-terminal events are errors.
+Additive optional fields do not relax those checks.
+
+Stream writers and progress callbacks run synchronously, preserving order and
+backpressure without an unbounded queue. They must return; blocked caller code
+can delay cancellation return. Synchronize consumers shared by concurrent
+executions. `CloseIdleConnections` releases idle HTTP resources, without
+canceling jobs or shutting down the service.
+
+## Qualification and migration
+
+The independent `client-consumer` Nix check builds without Coopr's native inputs
+or build tags. Its package inspection allows only the standard library, the
+consumer, `api` and `client`, rejects CgoFiles and records `CGO_ENABLED=0`.
+This proves client package/build independence, rather than claiming the entire
+Coopr module manifest or service runtime is native-free.
+
+Compatibility fixtures and native Unix-socket tests qualify transport errors,
+cancellation, execution/publication concurrency, cache integrity and nested
+component relocation with the source registry unavailable. Final validation
+records distinguish those fresh results from the historical cache benchmarks.
+ARM execution and the inherited-SELinux/empty-mount-label configuration remain
+unqualified unless separately recorded otherwise.
+
+See the [Stoke migration plan](../development/stoke-client-migration.md) for the
+consumer changes that remain separate from this Coopr implementation, and the
+[follow-up decisions](../development/service-client-decisions.md) for deferred
+cache retrieval and renderer work. The existing [Go execution library](library.md)
+remains available with its original native bootstrap contract.
+
+## Restore a component archive
+
+`Client.LoadComponent(ctx, api.ComponentLoad{Archive: archivePath,
+ComponentStoreDir: storePath}, streams)` requires capability `component-load`.
+Both paths are absolute. It verifies and stores the existing component graph;
+it does not execute a build or extract package files into the caller context.
+The returned `ManifestDigest` is always the verified root digest. Set optional
+`Name` to a local component name to retain this archive's delivery selection; this
+requires capability `component-load-name` and returns a canonical
+`name:tag@sha256:...` `Reference`. Names use native component naming rules and
+cannot contain a digest. With an empty `Name`, `Reference` is the bare root digest,
+whose lookup remains ambiguous when several deliveries share that root. Native
+builds using the returned reference and component publication must select the
+same component store.
+The digest fixes content, while the local name selects delivery metadata. Own a
+distinct name for each delivery and do not reassign it while consumers use it;
+`name@digest` alone does not make mutable delivery metadata immutable. Stoke's
+exact imports use separate names within an invocation-private store.
+Archive import uses the existing execution stream and cancellation protocol.
+
+For execution and native build/component requests, `api.Options.Network` sets the
+existing native RUN network default. Nonempty values require `run-network`;
+empty preserves the native default. For example, `Network: "none"` selects no
+network for RUN operations without an authored explicit network override. It
+does not block registry image/component/cache traffic or provide an offline
+sandbox. `host` explicitly grants the native host-network entitlement, and
+`ns:/absolute/path` retains native namespace permissions and runtime checks.
+Publication and archive loading reject nonempty `Network`.
+
+The root Go execution library accepts `Options.Network` as the native RUN network
+default, for example `"none"` or `"host"`. Empty preserves the native default;
+validation uses the same network parser as the CLI before resources are created.
+Selecting `host` explicitly grants its existing native host-network entitlement;
+namespace modes retain native permission and runtime checks. This is a RUN
+default rather than sandbox or offline enforcement: registry image, component and
+cache traffic remains separate. Native definition/component RUN instructions
+with explicit network settings retain their override behavior.

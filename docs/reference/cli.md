@@ -43,6 +43,7 @@ Commands below follow `coopr`. Images use the [native container store](../guides
 | `login [REGISTRY]`, `logout [REGISTRY]` | Use the native containers authentication file and credential helpers. |
 | `manifest create`, `add`, `annotate`, `inspect`, `push`, `remove`, `rm`, `exists` | Manage [image manifest lists](#manifest-lists). |
 | `info` | Show host, runtime, version, and storage information; `--format` (`-f`) accepts JSON or a Go template. |
+| `system service --socket PATH [--parent-fd FD]` | Serve the unreleased local execution API on a private Unix socket; see [API guide](../guides/api.md). |
 | `system df`, `system prune` | Report storage usage or prune images and unnamed component content. |
 | `completion SHELL` | Generate [shell completion](#shell-completion). |
 
@@ -80,7 +81,7 @@ The first command uses the definition's parent directory as context; the second 
 | `--mount SPEC` | Add a comma-separated RUN mount specification to every RUN, after its authored mounts. Repeatable; stage sources create graph dependencies. |
 | `--stdin` | Pass command stdin to RUN; cannot also read the definition or context from stdin. |
 | `--source-date-epoch`, `--timestamp`, `--rewrite-timestamp` | Set creation time, force new-layer file times, or clamp newer times. Timestamp and a nonempty source date epoch are mutually exclusive. |
-| `--metadata-file` | Write result/platform/destination metadata. |
+| `--metadata-file` | Write result/platform/destination metadata and bounded operation timings. |
 | `--quiet`, `--logfile`, `--logsplit` | Suppress progress, redirect output to a file, or use one logfile per platform. See [build output](#build-output). |
 
 ### Image output controls
@@ -108,6 +109,23 @@ Scanner, signing, and confidential-workload options may require external tools, 
 `--iidfile PATH` writes the algorithm-prefixed native image ID, or native manifest-list ID for an aggregate output. `--iidfile-raw PATH` (alias `--raw-iidfile`) writes the image ID without its prefix and requires one platform. Neither adds a trailing newline. Either option suppresses the build's final ID line.
 
 Image-layer compression controls are `--compression-format gzip|zstd|zstd:chunked`, `--compression-level N`, and `--force-compression`. Specifying a format defaults force-compression to true; set `--force-compression=false` to permit reuse of compatible compressed blobs. See [output compression](execution.md#output-compression) for format and storage behavior.
+
+### Operation timings
+
+Successful build metadata includes `coopr.operation.progress`, a bounded list
+of phase observations, and `coopr.operation.progress.dropped`, the number of
+phases omitted from capture. For example:
+
+```sh
+coopr build examples/first-image/image.coopr --metadata-file result.json
+jq '."coopr.operation.progress"[] | select(.state == "completed") | {instruction, phase, cache, durationNanos}' result.json
+```
+
+Worker timestamps describe the actual work, although structured observations
+are collected through worker results after completion. Existing text logs still
+stream live. Lookup can include restore/checkpoint work, so durations overlap
+and must not be summed. Failed builds keep their existing metadata-publication
+behavior; a force-killed worker may provide no timing response.
 
 ### Named inputs
 
@@ -303,3 +321,9 @@ Repeatable `--filter label=KEY[=VALUE]`, `label!=KEY[=VALUE]`, and `until=TIME` 
 `system df --verbose` shows per-image usage, and `--format json` or a Go template formats the summary; format and verbose cannot be combined. Recursive pruning can remove additional parent images. See [storage](../guides/storage.md#inspect-and-maintain) for examples and cache-mount scope.
 
 Build-container cleanup, saved stages, volume compatibility, and `--layers` are covered in the [execution control index](execution.md#build-request-controls). These settings apply to both build commands.
+
+## Local execution service
+
+`coopr system service --socket ABSOLUTE_PATH` runs the versioned HTTP execution API on a Unix socket. The absent socket path must be inside a mode-0700 directory owned by the service account; the created socket is mode 0600. `--parent-fd FD` optionally supplies an inherited pipe descriptor numbered 3 or above; pipe EOF cancels active work and drains the service. SIGTERM also requests shutdown. No TCP listener or persistent daemon is required for ordinary CLI use.
+
+This command is an unreleased local implementation, absent from published `0.5.0`. See [the protocol reference](api.md) for execution requests, limits, cancellation acknowledgements and authority boundaries.

@@ -664,7 +664,7 @@ func newComponentRemoveCommand() *cobra.Command {
 
 func newSystemCommand() *cobra.Command {
 	cmd := &cobra.Command{Use: "system", Short: "Manage Coopr local storage", RunE: helpOnNoArgs}
-	cmd.AddCommand(newSystemDFCommand(), newPruneCommand(true))
+	cmd.AddCommand(newSystemDFCommand(), newPruneCommand(true), newSystemServiceCommand())
 	return cmd
 }
 

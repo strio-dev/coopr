@@ -1,0 +1,12 @@
+extend {
+    arg "go" "/bin/go"
+    env GO_COMMAND="${go}" CGO_ENABLED="0" GOTOOLCHAIN="local" GOPROXY="off" GOCACHE="/cache/build"
+    workdir "/workspace"
+    run {
+        mount "cache" id="coopr-nix-stoke-build" target="/cache/build" sharing="locked"
+        exec "/bin/bash" "-euc" "test \"$COOPR_ENVIRONMENT\" = nix-stoke; test -x \"$GO_COMMAND\"; mkdir -p /usr/local/bin; \"$GO_COMMAND\" version; \"$GO_COMMAND\" build -p=2 -trimpath -buildvcs=false -mod=vendor -o /usr/local/bin/stoke ./cmd/stoke; echo COOPR_NIX_GO_BUILD_EXECUTED"
+    }
+    cmd {
+        exec "/usr/local/bin/stoke" "help"
+    }
+}
