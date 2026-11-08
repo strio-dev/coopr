@@ -16,8 +16,8 @@ func TestPublishRejectsContainerDefinitionBeforeBuilder(t *testing.T) {
 `), 0600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := PublishComponent(context.Background(), PublishOptions{
-		File: file, Reference: "example.com/team/component:1",
+	_, err := BuildComponent(context.Background(), ComponentOptions{Push: true,
+		File: file, Tag: "example.com/team/component:1",
 	})
 	if err == nil || !strings.Contains(err.Error(), "component definition") {
 		t.Fatalf("container definition was not rejected before builder: %v", err)
@@ -34,8 +34,8 @@ func TestPublishCancelledCleansOwnedDirectories(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := PublishComponent(ctx, PublishOptions{
-		File: file, Reference: "example.com/team/component:1",
+	_, err := BuildComponent(ctx, ComponentOptions{Push: true,
+		File: file, Tag: "example.com/team/component:1",
 	})
 	if err == nil {
 		t.Fatal("cancelled publication succeeded")

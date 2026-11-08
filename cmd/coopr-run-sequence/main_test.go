@@ -163,7 +163,7 @@ func TestSignalAbortsSequenceEvenWhenChildHandlesIt(t *testing.T) {
 	if err := command.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = command.Process.Kill() }()
+	defer func() { _ = command.Process.Kill(); _ = command.Wait() }()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		if _, err := os.Stat(ready); err == nil {
@@ -219,7 +219,7 @@ func TestAbruptHelperDeathKillsDirectChild(t *testing.T) {
 	if err := command.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = command.Process.Kill() }()
+	defer func() { _ = command.Process.Kill(); _ = command.Wait() }()
 	pids := awaitPIDs(t, ready)
 	defer func() { _ = syscall.Kill(pids[0], syscall.SIGKILL) }()
 	if err := command.Process.Kill(); err != nil {
@@ -239,7 +239,7 @@ func TestChildrenRemainInSupervisorCleanupGroup(t *testing.T) {
 	if err := command.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL) }()
+	defer func() { _ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL); _ = command.Wait() }()
 	pids := awaitPIDs(t, ready)
 	for _, pid := range pids {
 		defer func() { _ = syscall.Kill(pid, syscall.SIGKILL) }()

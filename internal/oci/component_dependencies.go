@@ -61,7 +61,7 @@ func ComponentPackageBinds(metadata ComponentMetadata) (map[string]planner.Stage
 // prepareComponentDependencies reads only component metadata. Dependency
 // selectors remain mutable here; Bale resolves them when capturing a bundle.
 // Image roots and embedded package producers do not acquire declarations.
-func prepareComponentDependencies(ctx context.Context, source content.ReadOnlyStorage, root v1.Descriptor, repository string) (*bale.AttachRequest, bool, error) {
+func prepareComponentDependencies(ctx context.Context, source content.ReadOnlyStorage, root v1.Descriptor, repository string, policies map[string]bale.DependencyPolicy) (*bale.AttachRequest, bool, error) {
 	var dependencies []bale.DependencyReference
 	incomplete := false
 	inspected := make(map[digest.Digest]bool)
@@ -140,7 +140,8 @@ func prepareComponentDependencies(ctx context.Context, source content.ReadOnlySt
 				incomplete = true
 				continue
 			}
-			dependencies = append(dependencies, bale.DependencyReference{Ref: selector})
+			policy := policies[selector]
+			dependencies = append(dependencies, bale.DependencyReference{Ref: selector, Follow: policy.Follow, Select: policy.Select})
 		}
 		return true, nil
 	}

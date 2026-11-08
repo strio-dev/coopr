@@ -56,14 +56,7 @@ extend {
 			}
 		}
 	}
-	raw, err := json.Marshal(publication.Component)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var component PublishedComponent
-	if err := json.Unmarshal(raw, &component); err != nil {
-		t.Fatal(err)
-	}
+	component := roundTripPublished(t, publication.Component)
 	if _, err := ValidatePublished(&component); err != nil {
 		t.Fatal(err)
 	}

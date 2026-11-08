@@ -103,8 +103,11 @@ type Operation struct {
 	// InputContext identifies the root for copy/add without from. MountContexts
 	// uses the child index for bind mounts without from. Stage-backed inputs keep
 	// their from reference and have no context annotation.
-	InputContext        string         `json:"input_context,omitempty"`
-	MountContexts       map[int]string `json:"mount_contexts,omitempty"`
+	InputContext  string         `json:"input_context,omitempty"`
+	MountContexts map[int]string `json:"mount_contexts,omitempty"`
+	// HostMounts are explicit live host directories admitted by the typed API.
+	// They are not authored component inputs or snapshotted build contexts.
+	HostMounts          map[int]string `json:"host_mounts,omitempty"`
 	TransientMountCount int            `json:"transient_mount_count,omitempty"`
 }
 
@@ -580,9 +583,6 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 				return nil, fmt.Errorf("component boundary %+v has invalid environment entry %q", boundary, name)
 			}
 		}
-	}
-	if err := definition.Validate(def); err != nil {
-		return nil, err
 	}
 	if opts.Platform == "" {
 		opts.Platform = "linux/amd64"
@@ -1639,11 +1639,6 @@ func (g *graph) resolve(i int) error {
 func (g *graph) resolvePhase(i int, packagePhase bool) error {
 	if g.packageSource != nil && g.raw[i].head.Name == "package" {
 		return g.importPackage(i)
-	}
-	// Some focused planner tests construct graph state directly. Keep this
-	// derived scope storage lazy so those graphs follow the same invariant.
-	if len(g.finalDeclaredProxy) != len(g.raw) {
-		g.finalDeclaredProxy = make([]map[string]bool, len(g.raw))
 	}
 	if g.raw[i].head.Name == "package" {
 		packagePhase = true

@@ -80,7 +80,7 @@ func TestOnBuildMountTypedOptionsExecuteInChildScope(t *testing.T) {
     onbuild { arg "required" #true }
     onbuild { arg "permissions" "0400" }
     onbuild {
-        run "test \"$(/bin/busybox stat -c %%a /run/token)\" = 400; cat /run/token /run/global-input >/proof" {
+        run "set -e; test \"$(/bin/busybox stat -c %%a /run/token)\" = 400; cat /run/token /run/global-input >/proof" {
             mount "secret" id="token" target="/run/token" required="${required}" mode="${permissions}"
         }
     }

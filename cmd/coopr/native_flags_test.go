@@ -5,9 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/spf13/cobra"
+	buildahcli "go.podman.io/buildah/pkg/cli"
 )
 
 func TestBuildFlagContracts(t *testing.T) {
@@ -103,5 +105,23 @@ func TestNativeRunFlagsDeferConfigurationDefaultsAndRespectOverrides(t *testing.
 				t.Fatalf("effective controls = %+v", controls)
 			}
 		})
+	}
+}
+
+// The adapter must retain the native flag and its bound result field; native
+// pflag parsing itself does not need a second corpus for every selected option.
+func TestNativeFlagBinding(t *testing.T) {
+	var native buildahcli.BudResults
+	source := buildahcli.GetBudFlags(&native)
+	cmd := &cobra.Command{Use: "test"}
+	addNativeFlags(cmd, &source, buildahcli.GetBudFlagsCompletions(), "tag")
+	if cmd.Flags().Lookup("tag") != source.Lookup("tag") {
+		t.Fatal("adapter replaced the native flag")
+	}
+	if err := cmd.ParseFlags([]string{"--tag=one,two", "--tag=three"}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(native.Tag, []string{"one,two", "three"}) {
+		t.Fatalf("native result binding = %q", native.Tag)
 	}
 }

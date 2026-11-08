@@ -1,0 +1,8 @@
+arg "message" "nix-and-coopr"
+
+from "coopr-nix" {
+    arg "message"
+    component "./component.coopr" {
+        arg "message" "${message}"
+    }
+}

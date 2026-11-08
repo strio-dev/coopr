@@ -168,7 +168,7 @@ func TestParameterFileSignsNativeImageAndManifestWorkers(t *testing.T) {
 
 }
 
-func TestParameterSigningContextAndWorkerCredentials(t *testing.T) {
+func TestSigningContextAndWorkerCredentials(t *testing.T) {
 	parameters, _ := parameterSigningFixture(t)
 	paths, err := (SigningOptions{SigstoreParameterFile: parameters}).ContextArtifacts()
 	if err != nil {
@@ -180,45 +180,52 @@ func TestParameterSigningContextAndWorkerCredentials(t *testing.T) {
 		}
 	}
 	t.Setenv("COSIGN_PASSWORD", "worker-secret-value")
-	options, cleanup, err := storedTransferOptions("image", "", Options{BuildStore: nativeTestStore(t.TempDir()), Signing: SigningOptions{SigstoreParameterFile: parameters}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if err := cleanup(); err != nil {
-			t.Error(err)
-		}
-	}()
-	data, err := json.Marshal(options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(data), "worker-secret-value") {
-		t.Fatal("passphrase leaked to worker JSON")
-	}
-	var decoded buildah.StoredTransferOptions
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatal(err)
-	}
-	if decoded.SigstoreParameterFile != parameters {
-		t.Fatal("parameter path lost in worker JSON")
-	}
-	file, err := os.Stat(decoded.SigstorePassphraseFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if file.Mode().Perm() != 0600 {
-		t.Fatalf("passphrase mode = %v", file.Mode())
-	}
-	passphrase, err := os.ReadFile(decoded.SigstorePassphraseFile)
-	if err != nil || string(passphrase) != "worker-secret-value" {
-		t.Fatalf("passphrase file err=%v", err)
-	}
-	if err := cleanup(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(decoded.SigstorePassphraseFile); !os.IsNotExist(err) {
-		t.Fatalf("temporary passphrase survived cleanup: %v", err)
+	for name, signing := range map[string]SigningOptions{
+		"parameter-file": {SigstoreParameterFile: parameters},
+		"private-key":    {SigstorePrivateKeyFile: filepath.Join(filepath.Dir(parameters), "key")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			options, cleanup, err := storedTransferOptions("image", "", Options{BuildStore: nativeTestStore(t.TempDir()), Signing: signing})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if err := cleanup(); err != nil {
+					t.Error(err)
+				}
+			}()
+			data, err := json.Marshal(options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(data), "worker-secret-value") {
+				t.Fatal("passphrase leaked to worker JSON")
+			}
+			var decoded buildah.StoredTransferOptions
+			if err := json.Unmarshal(data, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			if decoded.SigstoreParameterFile != signing.SigstoreParameterFile || decoded.SigstorePrivateKeyFile != signing.SigstorePrivateKeyFile {
+				t.Fatal("signing selector lost in worker JSON")
+			}
+			file, err := os.Stat(decoded.SigstorePassphraseFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if file.Mode().Perm() != 0600 {
+				t.Fatalf("passphrase mode = %v", file.Mode())
+			}
+			passphrase, err := os.ReadFile(decoded.SigstorePassphraseFile)
+			if err != nil || string(passphrase) != "worker-secret-value" {
+				t.Fatalf("passphrase file err=%v", err)
+			}
+			if err := cleanup(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(decoded.SigstorePassphraseFile); !os.IsNotExist(err) {
+				t.Fatalf("temporary passphrase survived cleanup: %v", err)
+			}
+		})
 	}
 }
 

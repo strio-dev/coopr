@@ -30,10 +30,12 @@ func TestImageIOLoadSaveImplicitPlatformIndex(t *testing.T) {
 	layoutA, rootA, _ := maintenanceImageLayout(t, foreign, "explicit")
 	layoutB, rootB, _ := maintenanceImageLayout(t, native, "implicit")
 	layout := filepath.Join(t.TempDir(), "mixed")
-	root, data, err := oci.AssembleImageIndex(ctx, layout, []oci.ImageVariant{{Layout: layoutA, Manifest: rootA, Platform: foreign}, {Layout: layoutB, Manifest: rootB, Platform: native}}, "oci")
+	rootFixtureVariants := []oci.ImageVariant{{Layout: layoutA, Manifest: rootA, Platform: foreign}, {Layout: layoutB, Manifest: rootB, Platform: native}}
+	root, data, err := oci.ImageIndexDescriptor(rootFixtureVariants, "oci")
 	if err != nil {
 		t.Fatal(err)
 	}
+	writeImageIndexFixture(t, ctx, layout, root, data, rootFixtureVariants)
 	var index v1.Index
 	if err := json.Unmarshal(data, &index); err != nil {
 		t.Fatal(err)

@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sirupsen/logrus"
+	"go.podman.io/buildah/util"
 	"golang.org/x/sys/unix"
 )
 
@@ -20,6 +22,10 @@ const workerProcessKillWait = 5 * time.Second
 
 // ErrWorkerWaitIncomplete reports that worker completion has not been confirmed.
 var ErrWorkerWaitIncomplete = errors.New("build worker wait did not complete")
+
+// Local only: unlike relayed cleanup uncertainty, this means a Cmd.Wait owner
+// may still be running in this process. It must keep exclusive reaping rights.
+var errManagedWorkerWaitPending = errors.New("managed worker wait remains pending")
 
 // Workers receive signing passphrases only through an explicit private file;
 // never inherit the CLI's private-key password through the environment.
@@ -39,7 +45,7 @@ type workerProcessControl struct {
 // runWorkerProcess starts cmd in a new process group and waits for it exactly
 // once. Cancellation first gives the complete group a chance to clean up, then
 // kills the group after grace has elapsed. A leader's exit also closes its group:
-// no worker transfers a running descendant to the caller.
+// dedicated worker child scopes separately drain detached adopted descendants.
 func runWorkerProcess(ctx context.Context, cmd *exec.Cmd, grace time.Duration) error {
 	return runWorkerProcessControlled(ctx, cmd, grace, workerProcessControl{
 		signalGroup: syscall.Kill,
@@ -67,6 +73,9 @@ func runWorkerProcessControlled(ctx context.Context, cmd *exec.Cmd, grace time.D
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+
+	// Preserve caller filtering while forwarding Buildah's private reexec log level.
+	cmd.Env = util.MergeEnv(cmd.Environ(), []string{fmt.Sprintf("LOGLEVEL=%d", logrus.GetLevel())})
 
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
@@ -127,7 +136,7 @@ func runWorkerProcessControlled(ctx context.Context, cmd *exec.Cmd, grace time.D
 		}
 		waitErr := cmd.Wait()
 		if cmd.ProcessState == nil {
-			waitErr = errors.Join(ErrWorkerWaitIncomplete, waitErr)
+			waitErr = errors.Join(ErrWorkerWaitIncomplete, errManagedWorkerWaitPending, waitErr)
 		}
 		if observeErr == nil && cleanupErr == nil {
 			waited <- waitErr
@@ -200,7 +209,7 @@ func awaitWorkerProcess(waited <-chan error, timeout time.Duration) error {
 		return err
 	case <-timer.C:
 		// The wait pipeline retains ownership and will reap a later exit.
-		return errors.Join(ErrWorkerWaitIncomplete, errors.New("timed out waiting for build worker exit"))
+		return errors.Join(ErrWorkerWaitIncomplete, errManagedWorkerWaitPending, errors.New("timed out waiting for build worker exit"))
 	}
 }
 

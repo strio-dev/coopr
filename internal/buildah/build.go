@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"time"
 
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -18,7 +17,6 @@ import (
 	"go.podman.io/buildah/copier"
 	"go.podman.io/buildah/define"
 	"go.podman.io/buildah/pkg/blobcache"
-	"go.podman.io/buildah/pkg/parse"
 	nettypes "go.podman.io/common/libnetwork/types"
 	commonconfig "go.podman.io/common/pkg/config"
 	imagecopy "go.podman.io/image/v5/copy"
@@ -41,31 +39,6 @@ type StoreOptions struct {
 	// Native preserves effective containers/storage settings which do not have
 	// dedicated Coopr CLI overrides.
 	Native storage.StoreOptions
-}
-
-// Request is one ordered, single-stage build.
-type Request struct {
-	Lifecycle          LifecycleControls
-	Store              StoreOptions
-	Base               string
-	TransientRunMounts []RunMount
-	ContextDir         string
-	ContextArtifacts   []string
-	IgnoreFile         string
-	Isolation          string
-	Runtime            string
-	Operations         []Operation
-	Secrets            []string
-	SSH                []string
-	Allow              []string
-	AddHosts           []string
-	RunControls        RunControls
-	ImageControls      ImageControls
-	Output             Output
-	Timestamp          *int64
-	SourceDateEpoch    *int64
-	RewriteTimestamp   bool
-	CacheTTL           *time.Duration
 }
 
 // Output selects an image-layout destination. Format is "oci" by default or
@@ -123,192 +96,13 @@ func keepEmptyFilesystemLayer(manifestType string) bool {
 
 // Result identifies the committed image.
 type Result struct {
-	ImageID        string
-	ManifestDigest string
-	Layout         string
-	Reference      string
-	Platform       string
-	CacheStats     CacheStats
-}
-
-// Build applies Operations in order and commits the result to an image layout.
-func Build(ctx context.Context, request Request) (result Result, retErr error) {
-	if err := validateRequest(request); err != nil {
-		return Result{}, err
-	}
-	if err := validateRunControls(request.RunControls); err != nil {
-		return Result{}, err
-	}
-	if err := validateRunControlHost(request.RunControls); err != nil {
-		return Result{}, err
-	}
-	if err := ConfigureRuntimeConfig(request.RunControls); err != nil {
-		return Result{}, err
-	}
-	if err := authorizeOperations(request.Operations, request.Allow); err != nil {
-		return Result{}, err
-	}
-	requestedIsolation := request.Isolation
-	if request.RunControls.Isolation != "" {
-		requestedIsolation = request.RunControls.Isolation
-	}
-	isolation, err := parse.IsolationOption(requestedIsolation)
-	if err != nil {
-		return Result{}, fmt.Errorf("select Buildah isolation: %w", err)
-	}
-	for index, operation := range request.Operations {
-		var network string
-		switch run := operation.(type) {
-		case Run:
-			network = run.Network
-		case *Run:
-			network = run.Network
-		default:
-			continue
-		}
-		if err := validateRunNetworkIsolation(network, isolation); err != nil {
-			return Result{}, fmt.Errorf("operation %d: %w", index+1, err)
-		}
-	}
-	capabilities := rootCapabilities()
-	storeLease, err := acquireStore(request.Store)
-	if err != nil {
-		return Result{}, fmt.Errorf("open isolated containers/storage: %w", err)
-	}
-	defer func() {
-		if closeErr := storeLease.Close(); closeErr != nil {
-			retErr = errors.Join(retErr, fmt.Errorf("close containers/storage: %w", closeErr))
-		}
-	}()
-	store := storeLease.store
-	policy := timestampPolicy{timestamp: request.Timestamp, sourceDateEpoch: request.SourceDateEpoch, rewriteTimestamp: request.RewriteTimestamp}
-
-	network, err := newNetworkInterfaceWithControls(store, request.RunControls)
-	if err != nil {
-		return Result{}, err
-	}
-	base := request.Base
-	if base == "" {
-		base = "scratch"
-	}
-	addHosts, err := normalizeAddHosts(request.AddHosts)
-	if err != nil {
-		return Result{}, err
-	}
-	builderOptions, err := newBuilderOptionsWithHosts(base, isolation, capabilities, network, os.TempDir(), request.Output.Format, addHosts, request.RunControls)
-	if err != nil {
-		return Result{}, err
-	}
-	builder, err := upstream.NewBuilder(ctx, store, builderOptions)
-	if err != nil {
-		return Result{}, fmt.Errorf("create Buildah builder from %q: %w", base, err)
-	}
-	defer func() {
-		if builder != nil && request.Lifecycle.removeBuilder(retErr != nil, ctx.Err() != nil) {
-			retErr = errors.Join(retErr, builder.Delete())
-		}
-	}()
-	if err := prepareBuilderImageControls(builder, request.ImageControls); err != nil {
-		return Result{}, err
-	}
-	request.Operations = slices.Clone(request.Operations)
-	writableContext := false
-	for index, operation := range request.Operations {
-		if run, ok := operation.(Run); ok {
-			run.Mounts = append(slices.Clone(run.Mounts), request.TransientRunMounts...)
-			writableContext = writableContext || hasWritableContextBindMount(run.Mounts)
-			request.Operations[index] = run
-		}
-	}
-	contextIgnoreFile := request.IgnoreFile
-	if writableContext {
-		prepared, cleanup, err := snapshotBuildContext(PlanOptions{ContextDir: request.ContextDir, ContextArtifacts: request.ContextArtifacts, IgnoreFile: request.IgnoreFile, Store: request.Store, Output: request.Output})
-		if err != nil {
-			return Result{}, err
-		}
-		defer func() { retErr = cleanup(retErr) }()
-		request.ContextDir, contextIgnoreFile = prepared.ContextDir, prepared.IgnoreFile
-	}
-	for index, operation := range request.Operations {
-		switch operation := operation.(type) {
-		case Run:
-			operation.contextPrepared = writableContext
-			operation.cacheLockRoot = store.GraphRoot()
-			if contextIgnoreFile != "" {
-				operation.ContextIgnoreFile = contextIgnoreFile
-			}
-			request.Operations[index] = operation
-		case Copy:
-			if contextIgnoreFile != "" {
-				operation.IgnoreFile = contextIgnoreFile
-				request.Operations[index] = operation
-			}
-		case Add:
-			if contextIgnoreFile != "" {
-				operation.IgnoreFile = contextIgnoreFile
-				request.Operations[index] = operation
-			}
-		}
-	}
-
-	artifacts := append(slices.Clone(request.ContextArtifacts), request.Store.RunRoot, request.Store.GraphRoot, request.Store.ImageStore, request.Output.Path)
-	if writableContext {
-		artifacts = nil
-	}
-	linked := false
-	for _, operation := range request.Operations {
-		if linkedCopyOrAdd(operation) {
-			linked = true
-			break
-		}
-	}
-	if !linked {
-		adapter := nativeBuilder{Builder: builder, systemContext: builderOptions.SystemContext, isolation: builderOptions.Isolation, runtime: effectiveRuntime(request.Runtime, request.RunControls), runtimeArgs: slices.Clone(request.RunControls.RuntimeFlags), secretSpecs: request.Secrets, sshSpecs: request.SSH, cgroupManager: request.RunControls.CgroupManager, cgroupManagerSet: request.RunControls.CgroupManagerSet, compatVolumes: request.Lifecycle.CompatVolumes, noLayers: true, runControls: request.RunControls}
-		if err := applyOperationsWithArtifacts(ctx, adapter, request.ContextDir, artifacts, request.Operations); err != nil {
-			return Result{}, err
-		}
-		if err := applyBuilderOutputControls(builder, request.ImageControls, policy); err != nil {
-			return Result{}, err
-		}
-		return commitOutput(ctx, store, builder, request.Output, builderOptions.SystemContext, false, policy, request.ImageControls)
-	}
-	uncommitted := false
-	for index, operation := range request.Operations {
-		if linkedCopyOrAdd(operation) && uncommitted {
-			if err := applyBuilderCheckpointControls(builder, request.ImageControls, policy); err != nil {
-				return Result{}, err
-			}
-			replacement, _, checkpointErr := checkpoint(ctx, store, builder, builderOptions, false, policy)
-			if checkpointErr != nil {
-				return Result{}, fmt.Errorf("checkpoint before linked operation %d: %w", index+1, checkpointErr)
-			}
-			builder = replacement
-		}
-		adapter := nativeBuilder{Builder: builder, systemContext: builderOptions.SystemContext, isolation: builderOptions.Isolation, runtime: effectiveRuntime(request.Runtime, request.RunControls), runtimeArgs: slices.Clone(request.RunControls.RuntimeFlags), secretSpecs: request.Secrets, sshSpecs: request.SSH, cgroupManager: request.RunControls.CgroupManager, cgroupManagerSet: request.RunControls.CgroupManagerSet, compatVolumes: request.Lifecycle.CompatVolumes, noLayers: true, runControls: request.RunControls}
-		if err := applyOperationsWithArtifacts(ctx, adapter, request.ContextDir, artifacts, []Operation{operation}); err != nil {
-			return Result{}, fmt.Errorf("operation %d: %w", index+1, err)
-		}
-		uncommitted = true
-		if linkedCopyOrAdd(operation) && index < len(request.Operations)-1 {
-			if err := applyBuilderCheckpointControls(builder, request.ImageControls, policy); err != nil {
-				return Result{}, err
-			}
-			replacement, _, checkpointErr := checkpoint(ctx, store, builder, builderOptions, true, policy)
-			if checkpointErr != nil {
-				return Result{}, fmt.Errorf("checkpoint linked operation %d: %w", index+1, checkpointErr)
-			}
-			builder = replacement
-			uncommitted = false
-		}
-	}
-	if err := applyBuilderOutputControls(builder, request.ImageControls, policy); err != nil {
-		return Result{}, err
-	}
-	return commitOutput(ctx, store, builder, request.Output, builderOptions.SystemContext, linkedCopyOrAdd(request.Operations[len(request.Operations)-1]), policy, request.ImageControls)
-}
-
-func newBuilderOptions(base string, isolation define.Isolation, capabilities []string, network nettypes.ContainerNetwork, temporaryDir, outputFormat string) (upstream.BuilderOptions, error) {
-	return newBuilderOptionsWithHosts(base, isolation, capabilities, network, temporaryDir, outputFormat, nil, RunControls{})
+	ProgressDropped uint64
+	ImageID         string
+	ManifestDigest  string
+	Layout          string
+	Reference       string
+	Platform        string
+	CacheStats      CacheStats
 }
 
 func newBuilderOptionsWithHosts(base string, isolation define.Isolation, capabilities []string, network nettypes.ContainerNetwork, temporaryDir, outputFormat string, addHosts []string, controls RunControls) (upstream.BuilderOptions, error) {
@@ -472,7 +266,7 @@ func copyStoredOutputCompressed(ctx context.Context, store storage.Store, imageI
 	if err != nil {
 		return Result{}, fmt.Errorf("create compressed-output destination: %w", err)
 	}
-	policyContext, err := signature.NewPolicyContext(&signature.Policy{Default: signature.PolicyRequirements{signature.NewPRInsecureAcceptAnything()}, Transports: map[string]signature.PolicyTransportScopes{}})
+	policyContext, err := signature.NewPolicyContext(oci.PreparedImagePolicy(source))
 	if err != nil {
 		return Result{}, err
 	}
@@ -571,38 +365,32 @@ func optionalDigest(value digest.Digest) *digest.Digest {
 	return &selected
 }
 
-func validateRequest(request Request) error {
-	if err := validateStoreOptions(request.Store); err != nil {
+func validateBuildInputs(store StoreOptions, contextDir string, output Output) error {
+	if err := validateStoreOptions(store); err != nil {
 		return err
 	}
-	if _, err := normalizedOutputFormat(request.Output.Format); err != nil {
+	if _, err := normalizedOutputFormat(output.Format); err != nil {
 		return err
 	}
-	if err := validateFinalizationOutput(request.Output); err != nil {
+	if err := validateFinalizationOutput(output); err != nil {
 		return err
 	}
-	if err := request.ImageControls.Validate(); err != nil {
-		return err
-	}
-	if err := validateTimestampOptions(request.Timestamp, request.SourceDateEpoch, request.RewriteTimestamp); err != nil {
-		return err
-	}
-	if request.Output.Path == "" {
+	if output.Path == "" {
 		return errors.New("OCI layout output is required")
 	}
-	if !filepath.IsAbs(request.Output.Path) {
-		return fmt.Errorf("OCI layout output must be absolute: %q", request.Output.Path)
+	if !filepath.IsAbs(output.Path) {
+		return fmt.Errorf("OCI layout output must be absolute: %q", output.Path)
 	}
-	if request.ContextDir != "" {
-		if !filepath.IsAbs(request.ContextDir) {
-			return fmt.Errorf("build context must be absolute: %q", request.ContextDir)
+	if contextDir != "" {
+		if !filepath.IsAbs(contextDir) {
+			return fmt.Errorf("build context must be absolute: %q", contextDir)
 		}
-		info, err := os.Stat(request.ContextDir)
+		info, err := os.Stat(contextDir)
 		if err != nil {
 			return fmt.Errorf("inspect build context: %w", err)
 		}
 		if !info.IsDir() {
-			return fmt.Errorf("build context is not a directory: %s", request.ContextDir)
+			return fmt.Errorf("build context is not a directory: %s", contextDir)
 		}
 	}
 	return nil

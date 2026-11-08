@@ -39,9 +39,9 @@ func makePlan(t *testing.T, source string, options Options) *Plan {
 	return p
 }
 
-func invokePublished(t *testing.T, publication *Plan, options Options) *Plan {
+func roundTripPublished(t *testing.T, component *PublishedComponent) PublishedComponent {
 	t.Helper()
-	data, err := json.Marshal(publication.Component)
+	data, err := json.Marshal(component)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,6 +49,12 @@ func invokePublished(t *testing.T, publication *Plan, options Options) *Plan {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatal(err)
 	}
+	return decoded
+}
+
+func invokePublished(t *testing.T, publication *Plan, options Options) *Plan {
+	t.Helper()
+	decoded := roundTripPublished(t, publication.Component)
 	p, err := Instantiate(&decoded, options)
 	if err != nil {
 		t.Fatal(err)
@@ -839,15 +845,8 @@ extend as="discarded" {}
 				opts.Target = "used"
 			}
 			publish := makePlan(t, tc.source, opts)
-			encoded, err := json.Marshal(publish.Component)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var decoded PublishedComponent
-			if err := json.Unmarshal(encoded, &decoded); err != nil {
-				t.Fatal(err)
-			}
-			_, err = Instantiate(&decoded, Options{Arguments: map[string]string{"source": tc.override}})
+			decoded := roundTripPublished(t, publish.Component)
+			_, err := Instantiate(&decoded, Options{Arguments: map[string]string{"source": tc.override}})
 			if err == nil || !strings.Contains(err.Error(), tc.message) {
 				t.Fatalf("want %q, got %v", tc.message, err)
 			}

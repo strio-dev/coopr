@@ -130,20 +130,26 @@ from "scratch" {
 }
 
 func TestEnvironmentAlwaysShadowsRedeclaredArguments(t *testing.T) {
-	for _, declaration := range []string{`arg "value"`, `arg "value" "default"`} {
+	for _, declaration := range []struct{ before, after string }{
+		{after: `arg "value"`},
+		{after: `arg "value" "default"`},
+		{before: `arg "value" "argument"`},
+		{before: `arg "value" "argument"`, after: `arg "value"`},
+	} {
 		for _, supplied := range []map[string]string{nil, {"value": "cli"}} {
 			plan := makePlan(t, `from "scratch" {
+    `+declaration.before+`
     env value="environment"
-    `+declaration+`
+    `+declaration.after+`
     env result="${value}"
     run "echo $value"
 }
 `, Options{Arguments: supplied})
 			if got := plan.Stages[0].Operations[1].Properties["result"]; got != "environment" {
-				t.Fatalf("%s args=%v result=%q", declaration, supplied, got)
+				t.Fatalf("%+v args=%v result=%q", declaration, supplied, got)
 			}
 			if _, exists := plan.Stages[0].Operations[2].ArgumentsInScope["value"]; exists {
-				t.Fatalf("%s args=%v RUN includes shadowed ARG", declaration, supplied)
+				t.Fatalf("%+v args=%v RUN includes shadowed ARG", declaration, supplied)
 			}
 		}
 	}

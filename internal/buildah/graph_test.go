@@ -22,6 +22,7 @@ import (
 	buildkitsystem "github.com/moby/buildkit/util/system"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/image/v5/types"
+	"go.podman.io/storage"
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
 
@@ -570,4 +571,8 @@ func testPlanWithTarget(t *testing.T, source, target string) *planner.Plan {
 		t.Fatal(err)
 	}
 	return plan
+}
+
+func lowerGraphOperations(planned []planner.Operation, aliases map[string]string, images map[string]stageState, store storage.Store, shell []string, cacheMountID CacheMountIDResolver) ([]Operation, error) {
+	return lowerGraphOperationsWithSelectedImages(planned, aliases, images, store, shell, cacheMountID, nil)
 }

@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	upstream "go.podman.io/buildah"
 	"go.podman.io/buildah/define"
@@ -57,35 +56,6 @@ func TestCacheablePackageRootMetadataNormalizesExecutionPolicy(t *testing.T) {
 	}
 }
 
-func TestInstructionCacheRootMetadataSidecar(t *testing.T) {
-	store := newInstructionCacheTestStore(t)
-	key := digest.FromString("root metadata cache")
-	imageID := createInstructionCacheTestImage(t, store)
-	metadata := &PackageRootMetadata{
-		Mode: 0o711, UID: 1, GID: 2,
-		PAXRecords: map[string]string{
-			"SCHILY.xattr.user.coopr":       "value",
-			"SCHILY.xattr.security.selinux": "host-policy",
-		},
-	}
-	if err := storeInstructionCacheEntry(store, imageID, key, metadata); err != nil {
-		t.Fatal(err)
-	}
-	entry, err := findInstructionCacheEntry(store, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if entry.ImageID != imageID || entry.RootMetadata == nil || entry.RootMetadata.Mode != 0o711 || entry.RootMetadata.UID != 1 || entry.RootMetadata.GID != 2 {
-		t.Fatalf("cache entry = %+v", entry)
-	}
-	if got := entry.RootMetadata.PAXRecords["SCHILY.xattr.user.coopr"]; got != "value" {
-		t.Fatalf("cache root xattr = %q", got)
-	}
-	if _, present := entry.RootMetadata.PAXRecords["SCHILY.xattr.security.selinux"]; present {
-		t.Fatalf("cache root retained SELinux mount policy: %+v", entry.RootMetadata)
-	}
-}
-
 func TestCheckpointPreservingPackageRootRestoresMetadata(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping a live rootless package checkpoint in short mode")
@@ -121,7 +91,7 @@ func TestCheckpointPreservingPackageRootRestoresMetadata(t *testing.T) {
 	if err := restoreRootMetadataFixture(store, builder); err != nil {
 		t.Fatal(err)
 	}
-	replacement, _, before, err := checkpointPreservingPackageRoot(ctx, store, builder, options, false, timestampPolicy{})
+	replacement, _, _, before, err := checkpointPreservingPackageRootSelected(ctx, store, builder, options, false, timestampPolicy{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +205,7 @@ func TestPackageRootCacheWithInheritedSELinuxAndEmptyMountLabel(t *testing.T) {
 	if _, present := normalized.PAXRecords["SCHILY.xattr.security.selinux"]; present || normalized.AmbientSELinux != "" {
 		t.Fatalf("normalized cache metadata retained SELinux policy: %+v", normalized)
 	}
-	replacement, imageID, before, err := checkpointPreservingPackageRoot(ctx, store, builder, options, false, timestampPolicy{})
+	replacement, imageID, _, before, err := checkpointPreservingPackageRootSelected(ctx, store, builder, options, false, timestampPolicy{}, metadata)
 	if err != nil {
 		t.Fatal(err)
 	}

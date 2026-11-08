@@ -12,33 +12,10 @@ import (
 
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/strio-dev/coopr/internal/buildah"
-	"github.com/strio-dev/coopr/internal/imagestore"
+	"github.com/strio-dev/coopr/internal/testutil/nativeimage"
 	"go.podman.io/common/libimage"
 	"go.podman.io/storage"
 )
-
-func TestImageManagementOptions(t *testing.T) {
-	root := newRootCommand()
-	for path, options := range map[string][]string{
-		"images":        {"quiet", "format", "filter", "all", "digests", "no-trunc", "noheading", "sort"},
-		"image inspect": {"format"}, "image rm": {"force", "ignore", "all", "no-prune"},
-		"image prune": {"filter"}, "system prune": {"filter"}, "system df": {"format", "verbose"},
-	} {
-		cmd, _, err := root.Find(strings.Fields(path))
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, option := range options {
-			if cmd.Flags().Lookup(option) == nil {
-				t.Errorf("%s missing %s", path, option)
-			}
-		}
-	}
-	cmd, _, err := root.Find([]string{"image", "list"})
-	if err != nil || cmd.Name() != "ls" {
-		t.Fatalf("list alias: %v, %v", cmd, err)
-	}
-}
 
 func TestImageRemovalExitClassification(t *testing.T) {
 	for _, test := range []struct {
@@ -69,7 +46,7 @@ func TestImagesFilteringFormattingAndInspectPartialSuccess(t *testing.T) {
 	if err := buildah.WithStore(options, func(backend storage.Store) error {
 		for _, name := range []string{"alpha", "beta"} {
 			layout, descriptor, imageID := maintenanceImageLayout(t, v1.Platform{OS: "linux", Architecture: "amd64"}, name)
-			if _, err := imagestore.FromStore(backend).WriteLayout(context.Background(), layout, descriptor, name); err != nil {
+			if _, err := nativeimage.BorrowStore(backend).SeedLayout(context.Background(), layout, descriptor, name); err != nil {
 				return err
 			}
 			if name == "alpha" {

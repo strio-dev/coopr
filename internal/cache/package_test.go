@@ -122,4 +122,38 @@ func TestPackageStoreRegistrySeedsIndependentLocalLayout(t *testing.T) {
 	if seeded.Stage != record.Stage || !content.Equal(seeded.Descriptor, record.Descriptor) || !bytes.Equal(seeded.Config, record.Config) {
 		t.Fatalf("seeded package record = %+v, want %+v", seeded, record)
 	}
+
+	for _, corrupt := range []bool{false, true} {
+		t.Run(map[bool]string{false: "valid", true: "corrupt"}[corrupt], func(t *testing.T) {
+			backing, release, err := local.operationTarget(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer release()
+			target := &graphLookupTarget{
+				Target: backing, alter: record.Descriptor.Digest,
+				fetches: map[digest.Digest]int{}, read: map[digest.Digest]int64{},
+				closeFailure: errGraphLookupClose,
+			}
+			if corrupt {
+				target.failure = "corrupt"
+			}
+			staging := t.TempDir()
+			lookup := &OCIStore{target: target, stagingDir: staging}
+			got, path, err := lookup.LookupPackage(ctx, key)
+			if !errors.Is(err, errGraphLookupClose) || got != nil || path != "" {
+				t.Fatalf("failed payload close admitted result: record=%+v path=%q err=%v", got, path, err)
+			}
+			if corrupt && !errors.Is(err, content.ErrMismatchedDigest) {
+				t.Fatalf("payload verification error lost on close failure: %v", err)
+			}
+			if target.opened != target.closed || target.fetches[record.Descriptor.Digest] != 1 {
+				t.Fatalf("payload reread or leaked streams: fetches=%v opened=%d closed=%d", target.fetches, target.opened, target.closed)
+			}
+			entries, err := os.ReadDir(staging)
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("failed payload retained staging data: entries=%v err=%v", entries, err)
+			}
+		})
+	}
 }

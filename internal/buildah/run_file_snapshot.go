@@ -11,23 +11,27 @@ import (
 	"go.podman.io/buildah/copier"
 )
 
-// prepareRunBindFile isolates writes and pre-mount ownership/label changes from
+// prepareRunBindSource isolates writes and pre-mount ownership/label changes from
 // an immutable stage or image. Readonly affects the later bind mount, not native
 // runtime setup, so U/z/Z also require a disposable source.
-func prepareRunBindFile(source string, options []string) (string, func() error, error) {
+func prepareRunBindSource(source string, options []string, parents ...string) (string, func() error, error) {
 	info, err := os.Stat(source)
 	if err != nil {
 		return "", nil, err
 	}
-	if !info.Mode().IsRegular() {
-		return "", nil, fmt.Errorf("RUN bind source %q is not a regular file", source)
+	if !info.IsDir() && !info.Mode().IsRegular() {
+		return "", nil, fmt.Errorf("RUN bind source %q is neither a directory nor a regular file", source)
 	}
 	if !slices.ContainsFunc(options, func(option string) bool {
 		return option == "rw" || option == "U" || option == "z" || option == "Z"
 	}) {
 		return source, func() error { return nil }, nil
 	}
-	root, err := os.MkdirTemp("", "coopr-run-bind-file-")
+	temporaryParent := ""
+	if len(parents) == 1 {
+		temporaryParent = parents[0]
+	}
+	root, err := os.MkdirTemp(temporaryParent, "coopr-run-bind-file-")
 	if err != nil {
 		return "", nil, fmt.Errorf("create RUN bind snapshot: %w", err)
 	}
@@ -41,7 +45,7 @@ func prepareRunBindFile(source string, options []string) (string, func() error, 
 	reader, writer := io.Pipe()
 	got := make(chan error, 1)
 	go func() {
-		copyErr := copier.Get(parent, parent, copier.GetOptions{}, []string{name}, writer)
+		copyErr := copier.Get(parent, parent, copier.GetOptions{KeepDirectoryNames: info.IsDir()}, []string{name}, writer)
 		got <- errors.Join(copyErr, writer.CloseWithError(copyErr))
 	}()
 	putErr := copier.Put(root, root, copier.PutOptions{}, reader)

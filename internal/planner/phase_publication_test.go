@@ -1,7 +1,6 @@
 package planner
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/strio-dev/coopr/internal/buildcontext"
@@ -128,21 +127,11 @@ extend { from "helper" {}; }
 			if publication.Component.SourceStageIDs["1"] != "0" {
 				t.Fatalf("package was not reindexed: %+v", publication.Component.SourceStageIDs)
 			}
-			if _, err := InstantiateDemandDriven(publication.Component, Options{}, nil, func(FromSource) (StageBind, error) {
-				t.Fatal("unexpected invocation resolver")
-				return StageBind{}, nil
-			}); err != nil {
+			if _, err := InstantiateDemandDriven(publication.Component, Options{}, nil, unexpectedBindResolver(t)); err != nil {
 				t.Fatal(err)
 			}
 			for _, mutation := range []string{"missing", "target", "ordinal", "numeric"} {
-				data, err := json.Marshal(publication.Component)
-				if err != nil {
-					t.Fatal(err)
-				}
-				var corrupt PublishedComponent
-				if err := json.Unmarshal(data, &corrupt); err != nil {
-					t.Fatal(err)
-				}
+				corrupt := roundTripPublished(t, publication.Component)
 				index := -1
 				for i, ref := range corrupt.StageReferences {
 					if ref.Origin == "local-onbuild" {
@@ -190,10 +179,7 @@ extend { from "helper" {}; }
 			if _, err := ValidatePublished(publication.Component); err != nil {
 				t.Fatal(err)
 			}
-			invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, func(FromSource) (StageBind, error) {
-				t.Fatal("unexpected invocation resolver")
-				return StageBind{}, nil
-			})
+			invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, unexpectedBindResolver(t))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -221,10 +207,7 @@ extend { from "helper" {}; }
 	if len(publication.Stages) != 1 || publication.Stages[0].Name != "assets" {
 		t.Fatalf("potential runtime ONBUILD input was pruned: %+v", publication.Stages)
 	}
-	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, func(FromSource) (StageBind, error) {
-		t.Fatal("unexpected invocation resolver")
-		return StageBind{}, nil
-	})
+	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
 	}

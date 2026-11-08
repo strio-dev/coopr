@@ -85,30 +85,128 @@ func TestPrepareContextPolicyMergesDockerignoreInstructionAndArtifacts(t *testin
 
 func TestPrepareContextPolicyProtectsArtifactAliasesAndSpecialNames(t *testing.T) {
 	contextDir := t.TempDir()
-	artifact := filepath.Join(contextDir, "cache[1]")
-	if err := os.Mkdir(artifact, 0o700); err != nil {
+	protectedNames := []string{"cache[1]", " cache ", "cache+(1){x}^$|", "#cache", "!cache", "\tcache\u00a0", `cache*?\[a]`}
+	artifacts := make([]string, 0, len(protectedNames))
+	for _, name := range protectedNames {
+		artifact := filepath.Join(contextDir, name)
+		if err := os.Mkdir(artifact, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(artifact, "private"), []byte("protected"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		artifacts = append(artifacts, artifact)
+	}
+	artifact := artifacts[0]
+	neighbors := []string{"cache", "cache1", "cacheee1x", "public"}
+	for _, name := range neighbors {
+		if err := os.WriteFile(filepath.Join(contextDir, name), []byte(name), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(artifact, filepath.Join(contextDir, "cache-alias")); err != nil {
 		t.Fatal(err)
 	}
-	alias := filepath.Join(contextDir, "cache-alias")
-	if err := os.Symlink(artifact, alias); err != nil {
+	if err := os.WriteFile(filepath.Join(contextDir, "selected"), []byte("first"), 0600); err != nil {
 		t.Fatal(err)
 	}
-
-	policy, err := prepareContextPolicy(contextDir, []string{artifact})
+	if err := os.WriteFile(filepath.Join(contextDir, ".dockerignore"), []byte("ignored-first\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(t.TempDir(), "active")
+	if err := os.Symlink(contextDir, root); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := prepareContextPolicy(root, artifacts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	options, err := policy.apply(upstream.AddAndCopyOptions{})
-	if err != nil {
+	next := t.TempDir()
+	if err := os.WriteFile(filepath.Join(next, "selected"), []byte("second"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{`cache\[1\]`, "cache-alias"}
-	if !reflect.DeepEqual(options.Excludes, want) {
-		t.Fatalf("artifact excludes = %#v, want %#v", options.Excludes, want)
+	if err := os.WriteFile(filepath.Join(next, ".dockerignore"), []byte("ignored-second\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(next, root+"-next"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(root+"-next", root); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"first", "second"} {
+		options, err := policy.apply(upstream.AddAndCopyOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot, cleanup, err := snapshotContext(t.Context(), options.ContextDir, options.Excludes, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := cleanup(); err != nil {
+				t.Error(err)
+			}
+		})
+		if data, err := os.ReadFile(filepath.Join(snapshot, "selected")); err != nil || string(data) != want {
+			t.Fatalf("policy root payload=%q err=%v want=%q", data, err, want)
+		}
+		if data, err := os.ReadFile(options.IgnoreFile); err != nil || string(data) != "ignored-"+want+"\n" {
+			t.Fatalf("policy ignore content=%q err=%v", data, err)
+		}
+		if want == "first" {
+			prepared, captured, err := captureBuildContext(t.Context(), PlanOptions{ContextDir: options.ContextDir, ContextArtifacts: artifacts}, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := captured.cleanup(); err != nil {
+					t.Error(err)
+				}
+			})
+			roundtrip, err := prepareContextPolicyWithIgnore(prepared.ContextDir, nil, prepared.IgnoreFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			matcher, err := fileutils.NewPatternMatcher(roundtrip.authoredExcludes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range append(protectedNames, "cache-alias") {
+				if _, err := os.Lstat(filepath.Join(snapshot, name)); !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("protected artifact %q survived capture: %v", name, err)
+				}
+				if excluded, err := matcher.IsMatch(name + "/private"); err != nil || !excluded {
+					t.Errorf("serialized policy lost artifact %q: excluded=%t err=%v", name, excluded, err)
+				}
+			}
+			for _, name := range neighbors {
+				if got, err := os.ReadFile(filepath.Join(snapshot, name)); err != nil || string(got) != name {
+					t.Errorf("unprotected neighbor %q changed: %q %v", name, got, err)
+				}
+				if excluded, err := matcher.IsMatch(name); err != nil || excluded {
+					t.Errorf("serialized policy excluded neighbor %q: excluded=%t err=%v", name, excluded, err)
+				}
+			}
+			policy, err = prepareContextPolicy(root, artifacts)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 }
 
 func TestPrepareContextPolicyRejectsUnsafeOrUnsupportedPolicy(t *testing.T) {
+	for _, name := range []string{"cache\nprivate", "cache\xff"} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			_, err := prepareContextPolicy(root, []string{filepath.Join(root, name)})
+			if err == nil || !strings.Contains(err.Error(), "literal context exclusion") {
+				t.Fatalf("unrepresentable protected path error = %v", err)
+			}
+		})
+	}
+
 	t.Run("artifact covers context", func(t *testing.T) {
 		parent := t.TempDir()
 		contextDir := filepath.Join(parent, "context")
@@ -203,7 +301,7 @@ func TestContextPolicyKeepsDockerignoreAndCopyExcludeNegationsIndependent(t *tes
 		}
 	}
 
-	snapshot, cleanup, err := snapshotContext(options.ContextDir, options.Excludes, nil, nil)
+	snapshot, cleanup, err := snapshotContext(t.Context(), options.ContextDir, options.Excludes, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,27 +486,31 @@ func TestCooprIgnoreLocalComponentAndPackageIdentity(t *testing.T) {
 	if _, _, err := readLocalComponent(context.Background(), PlanOptions{ContextDir: root}, "./visible.coopr"); err != nil {
 		t.Fatal(err)
 	}
-	before, err := packageContextIdentity(context.Background(), root, nil, "")
-	if err != nil {
-		t.Fatal(err)
+	identity := func() string {
+		t.Helper()
+		_, capture, err := captureBuildContext(t.Context(), PlanOptions{ContextDir: root}, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := capture.cleanup(); err != nil {
+				t.Error(err)
+			}
+		}()
+		return capture.identity.String()
 	}
+	before := identity()
 	if err := os.WriteFile(filepath.Join(root, "secret"), []byte("after"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	after, err := packageContextIdentity(context.Background(), root, nil, "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	after := identity()
 	if before != after {
 		t.Fatal("ignored payload changed package identity")
 	}
 	if err := os.WriteFile(filepath.Join(root, "visible.coopr"), []byte("extend\n# changed"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	changed, err := packageContextIdentity(context.Background(), root, nil, "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	changed := identity()
 	if changed == after {
 		t.Fatal("visible payload did not change package identity")
 	}

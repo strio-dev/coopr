@@ -40,7 +40,7 @@ func ImportPackageSnapshot(ctx context.Context, store storage.Store, system *typ
 	if platform.OS != "linux" || platform.Architecture == "" {
 		return "", nil, errors.New("package platform must specify Linux and architecture")
 	}
-	if pkg.Descriptor.MediaType != oci.ComponentPackageType || pkg.Descriptor.Digest.Algorithm() != digest.SHA256 || pkg.Descriptor.Digest.Validate() != nil || pkg.Descriptor.Size < 0 {
+	if pkg.Descriptor.MediaType != oci.ComponentPackageType || pkg.Descriptor.Digest.Validate() != nil || pkg.Descriptor.Digest.Algorithm() != digest.SHA256 || pkg.Descriptor.Size < 0 {
 		return "", nil, errors.New("package has an invalid snapshot descriptor")
 	}
 	if len(pkg.Config) == 0 || len(pkg.Config) > maxPackageConfigSize {

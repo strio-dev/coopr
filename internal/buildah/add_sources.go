@@ -484,7 +484,8 @@ func remoteAddOptions(builder any, options upstream.AddAndCopyOptions) upstream.
 
 func configuredRemoteAddHTTPClient(builder any, options upstream.AddAndCopyOptions) (*http.Client, error) {
 	options = remoteAddOptions(builder, options)
-	// Use the same TLS defaults and public certificate loader as native Buildah ADD.
+	// Preserve native Buildah ADD's Go-default TLS minimum and certificate policy.
+	// nosemgrep: cache.semgrep-rules.go.lang.security.audit.crypto.missing-ssl-minversion
 	configuration := &tls.Config{CipherSuites: tlsconfig.ClientDefault().CipherSuites}
 	if err := tlsclientconfig.SetupCertificates(options.CertPath, configuration); err != nil {
 		return nil, err

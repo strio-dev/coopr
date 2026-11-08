@@ -48,7 +48,7 @@ func TestCommandHelpUsesOptionsAndHidesInternalOptions(t *testing.T) {
 }
 
 func TestHelpSubcommandAndBareGroups(t *testing.T) {
-	for _, args := range [][]string{{"help", "component", "build"}, {"image"}, {"component"}, {"manifest"}, {"system"}} {
+	for _, args := range [][]string{nil, {"--help"}, {"help", "component", "build"}, {"image"}, {"component"}, {"manifest"}, {"system"}} {
 		var out, errOut bytes.Buffer
 		if status := run(args, &out, &errOut); status != 0 || errOut.Len() != 0 {
 			t.Fatalf("%v status=%d stderr=%q", args, status, errOut.String())

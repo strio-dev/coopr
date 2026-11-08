@@ -97,9 +97,7 @@ func PublishPlan(ctx context.Context, plan *planner.Plan, options PublicationOpt
 		defer func() { retErr = RemoveWorkerDirectory(temporary, retErr) }()
 		validationOutput = filepath.Join(temporary, "unused.oci")
 	}
-	if err := validateRequest(Request{
-		Store: options.Store, ContextDir: options.ContextDir, Output: Output{Path: validationOutput},
-	}); err != nil {
+	if err := validateBuildInputs(options.Store, options.ContextDir, Output{Path: validationOutput}); err != nil {
 		return nil, err
 	}
 
@@ -108,7 +106,7 @@ func PublishPlan(ctx context.Context, plan *planner.Plan, options PublicationOpt
 	// ONBUILD) for later FROM stages in the invocation graph.
 	planOptions.Output = Output{Path: validationOutput, Format: outputFormatDocker}
 	planOptions.ContextArtifacts = append(slices.Clone(planOptions.ContextArtifacts), paths...)
-	planOptions, cleanupContext, err := prepareBuildContext(plan, planOptions)
+	planOptions, cleanupContext, err := prepareBuildContext(ctx, plan, planOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -139,22 +137,36 @@ func PublishPlan(ctx context.Context, plan *planner.Plan, options PublicationOpt
 			retErr = errors.Join(retErr, fmt.Errorf("close package cache: %w", closeErr))
 		}
 	}()
-	cacheArtifacts := append(slices.Clone(planOptions.ContextArtifacts), planOptions.Store.RunRoot, planOptions.Store.GraphRoot, planOptions.Output.Path, planOptions.CacheLocalDir)
-	if planOptions.ContextPrepared {
-		// Original artifacts were already filtered from the disposable context.
-		// Its retained ignore policy governs both cache identity and later COPY.
-		cacheArtifacts = nil
+	var input *capturedContext
+	if needsContext, eligible := packageCacheEligibility(stages, planOptions.RunControls); packageCache != nil && len(outputs) != 0 && needsContext && eligible {
+		// Aggregate lookup and execution must consume the same owned input
+		// version. Keep the existing filtered copier capture until both finish;
+		// ContextPrepared may still be mutable. Hashing a temporary copy and
+		// executing that caller's tree could publish bytes under the wrong key.
+		var captured capturedContext
+		planOptions, captured, err = captureBuildContext(ctx, planOptions, true)
+		if err != nil {
+			return nil, err
+		}
+		input = &captured
+		defer func() { retErr = RemoveWorkerDirectory(filepath.Dir(captured.directory), retErr) }()
 	}
 	var packageKeys map[string]cache.PackageKey
 	if packageCache != nil && len(outputs) != 0 {
 		var eligible bool
-		packageKeys, eligible, err = packageCacheKeys(ctx, planOptions, plan, stages, outputs, cacheArtifacts)
+		packageKeys, eligible, err = packageCacheKeys(ctx, planOptions, plan, stages, outputs, input)
 		if err != nil {
 			return nil, fmt.Errorf("prepare package cache: %w", err)
 		}
 		if eligible {
 			if !planOptions.NoCache {
-				hits, complete, err := packageCache.lookupAll(ctx, packageKeys)
+				lookupCtx, finishLookup := startOperationProgress(ctx, planOptions.Progress, OperationProgress{Stage: planOptions.ProgressPrefix, Instruction: "package", Phase: "cache_lookup"})
+				hits, complete, err := packageCache.lookupAll(lookupCtx, packageKeys)
+				cacheState := "miss"
+				if complete {
+					cacheState = "hit"
+				}
+				finishLookup(cacheState, err)
 				if err != nil {
 					return nil, err
 				}
@@ -241,8 +253,8 @@ func PublishPlan(ctx context.Context, plan *planner.Plan, options PublicationOpt
 	if executor.componentCache != nil {
 		err = errors.Join(err, executor.componentCache.publish(ctx))
 	}
-	if executor.instructionPortableCache != nil {
-		err = errors.Join(err, executor.instructionPortableCache.publish(ctx))
+	if executor.ownsInstructionSolver {
+		err = errors.Join(err, executor.instructionSolver.publishPortable(ctx))
 	}
 	if err != nil {
 		return nil, err

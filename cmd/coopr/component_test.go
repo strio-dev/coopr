@@ -30,6 +30,11 @@ func TestComponentBuildCommandValidation(t *testing.T) {
 		{"removed lock flag", []string{"component", "build", file, "--frozen"}, "unknown flag"},
 		{"removed builder address", []string{"component", "build", file, "--builder-address", ""}, "unknown flag"},
 		{"missing network namespace", []string{"component", "build", file, "--network", filepath.Join(t.TempDir(), "missing-netns")}, "checking network namespace"},
+		{"bundle inputs require output", []string{"component", "build", file, "--input-bundle", t.TempDir()}, "require --bundle-output"},
+		{"malformed child selection", []string{"component", "build", file, "--input-component", "not-a-binding", "--bundle-output", filepath.Join(t.TempDir(), "bundle")}, "requires IMMUTABLE_REF=LOCAL_NAME"},
+		{"existing bundle output", []string{"component", "build", file, "--bundle-output", t.TempDir()}, "bundle output already exists"},
+		{"invalid bundle origin", []string{"component", "build", file, "--bundle-output", filepath.Join(t.TempDir(), "bundle"), "--bundle-origin", "unqualified:tag"}, "bundle-origin"},
+		{"selected child cannot push alone", []string{"component", "build", file, "--tag", "parent", "--push", "--bundle-output", filepath.Join(t.TempDir(), "bundle"), "--input-component", "coopr.invalid/child@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=child"}, "require complete Bale delivery"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var output, stderr bytes.Buffer
@@ -283,4 +288,8 @@ extend as="base" {
 	if info, err := os.Stat(secondArchive); err != nil || info.Size() == 0 {
 		t.Fatalf("second invocation did not produce an OCI archive: %v", err)
 	}
+}
+
+func newComponentBuildCommand() *cobra.Command {
+	return newComponentBuildCommandWithGlobals(true)
 }

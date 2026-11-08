@@ -12,8 +12,8 @@ import (
 	"testing"
 
 	"github.com/strio-dev/coopr/internal/buildah"
-	"github.com/strio-dev/coopr/internal/imagestore"
 	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/testutil/nativeimage"
 	"github.com/strio-dev/coopr/internal/transfer"
 
 	"github.com/google/go-containerregistry/pkg/registry"
@@ -26,11 +26,11 @@ func TestManifestInlineOverridesAndNamedMember(t *testing.T) {
 	ctx := context.Background()
 	options := maintenanceStoreOptions(t.TempDir())
 	layout, child, _ := maintenanceImageLayout(t, v1.Platform{OS: "linux", Architecture: runtime.GOARCH}, "overrides")
-	store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(options))
+	store, err := nativeimage.NewStore(buildah.NativeStoreOptions(options))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.WriteLayout(ctx, layout, child, "member"); err != nil {
+	if _, err := store.SeedLayout(ctx, layout, child, "member"); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
@@ -80,15 +80,17 @@ func TestManifestRemoteInspectAndPushRemoval(t *testing.T) {
 	options := maintenanceStoreOptions(t.TempDir())
 	layout, child, _ := maintenanceImageLayout(t, v1.Platform{OS: "linux", Architecture: runtime.GOARCH}, "remote-inspect")
 	indexLayout := filepath.Join(t.TempDir(), "layout")
-	index, _, err := oci.AssembleImageIndex(ctx, indexLayout, []oci.ImageVariant{{Layout: layout, Manifest: child, Platform: v1.Platform{OS: "linux", Architecture: runtime.GOARCH}}}, "oci")
+	indexFixtureVariants := []oci.ImageVariant{{Layout: layout, Manifest: child, Platform: v1.Platform{OS: "linux", Architecture: runtime.GOARCH}}}
+	index, indexFixtureData, err := oci.ImageIndexDescriptor(indexFixtureVariants, "oci")
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(options))
+	writeImageIndexFixture(t, ctx, indexLayout, index, indexFixtureData, indexFixtureVariants)
+	store, err := nativeimage.NewStore(buildah.NativeStoreOptions(options))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.WriteIndexLayout(ctx, indexLayout, index, "list"); err != nil {
+	if _, err := store.SeedIndex(ctx, indexLayout, index, "list"); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {

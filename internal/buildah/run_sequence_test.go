@@ -22,14 +22,14 @@ func TestRunSequenceLowersToOneOperation(t *testing.T) {
         exec "/tool" "second" "$literal"
     }
 }`)
-	request, err := RequestFromPlan(plan, PlanOptions{})
+	operations, err := lowerGraphOperations((plan).Stages[0].Operations, nil, nil, nil, []string{"/bin/sh", "-c"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(request.Operations) != 1 {
-		t.Fatalf("lowered %d operations", len(request.Operations))
+	if len(operations) != 1 {
+		t.Fatalf("lowered %d operations", len(operations))
 	}
-	run := request.Operations[0].(Run)
+	run := operations[0].(Run)
 	want := [][]string{{"/tool", "first"}, {"/tool", "second", "$literal"}}
 	if !reflect.DeepEqual(run.Commands, want) || len(run.Command) != 0 || len(run.Mounts) != 1 {
 		t.Fatalf("RUN = %+v", run)

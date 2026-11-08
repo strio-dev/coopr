@@ -102,6 +102,8 @@ class InstallerTests(unittest.TestCase):
     def test_latest_install_and_repeat(self):
         self.run_installer()
         prefix = self.root / "system"
+        # write_assets() authors this fixed program in the private test installation.
+        # nosemgrep: cache.semgrep-rules.python.lang.security.audit.dangerous-subprocess-use-audit
         self.assertEqual(subprocess.check_output([prefix / "bin/coopr"], text=True), "coopr fixture\n")
         self.assertEqual((prefix / "share/licenses/coopr/LICENSE").read_text(), "MIT license fixture\n")
         helper = prefix / "libexec/coopr/coopr-run-sequence"

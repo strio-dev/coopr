@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	digest "github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -18,6 +19,7 @@ import (
 	imagestorage "go.podman.io/image/v5/storage"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/storage"
+	"golang.org/x/sys/unix"
 	"oras.land/oras-go/v2/content"
 )
 
@@ -41,10 +43,10 @@ type nativePullError struct{ err error }
 func (e *nativePullError) Error() string { return e.err.Error() }
 func (e *nativePullError) Unwrap() error { return e.err }
 
-// SelectImageSource resolves immutable image metadata without opening
-// containers/storage. Remote selections are imported only if execution is
-// actually required; local native selections are verified at that same point.
-func SelectImageSource(ctx context.Context, resolver *oci.Resolver, reference string, platform v1.Platform) (ResolvedImageSource, error) {
+// SelectImageSource resolves immutable image metadata through a native store
+// lease. Remote selections are imported only if execution is actually required;
+// local native selections are verified at that same point.
+func SelectImageSource(ctx context.Context, resolver *oci.Resolver, reference string, platform v1.Platform) (_ ResolvedImageSource, retErr error) {
 	if resolver == nil {
 		return ResolvedImageSource{}, errors.New("nil OCI resolver")
 	}
@@ -60,7 +62,7 @@ func SelectImageSource(ctx context.Context, resolver *oci.Resolver, reference st
 	if err != nil {
 		return ResolvedImageSource{}, err
 	}
-	defer func() { _ = lease.Close() }()
+	defer func() { retErr = errors.Join(retErr, lease.Close()) }()
 	return selectImageSource(ctx, resolver, reference, platform, lease.store)
 }
 
@@ -108,7 +110,12 @@ func selectImageSource(ctx context.Context, resolver *oci.Resolver, reference st
 	}
 	var cached *ResolvedImageSource
 	if resolver.PullPolicy() != oci.PullAlways {
+		unlockAlias, err := lockNativePullAlias(ctx, store, canonical.String())
+		if err != nil {
+			return ResolvedImageSource{}, err
+		}
 		stored, err := oci.ResolveStoredImage(ctx, store, reference, platform)
+		unlockAlias()
 		if err == nil {
 			selected := ResolvedImageSource{ImageID: stored.StorageImageID, Root: stored.Root, Selected: stored.Selected, SourceManifest: stored.SourceManifest, ConfigData: append(json.RawMessage(nil), stored.ConfigData...), Reference: canonical.String()}
 			if resolver.PullPolicy() != oci.PullNewer {
@@ -271,6 +278,14 @@ func materializeImageSource(ctx context.Context, resolver *oci.Resolver, referen
 	if registryOptions.RetryDelay != 0 {
 		pullOptions.RetryDelay = &registryOptions.RetryDelay
 	}
+	// Native pulls publish through a mutable alias even though their source is
+	// digest-pinned. Keep that publication and its verified per-name origin
+	// association atomic with respect to other Coopr pulls and cached readers.
+	unlockAlias, err := lockNativePullAlias(ctx, store, destinationName.String())
+	if err != nil {
+		return ResolvedImageSource{}, err
+	}
+	defer unlockAlias()
 	images, err := runtime.Pull(ctx, registryReference, libconfig.PullPolicyAlways, pullOptions)
 	if err != nil {
 		err = &nativePullError{err: err}
@@ -425,9 +440,58 @@ func validateSelectedInput(source ResolvedImageSource, allowArtifact bool) error
 		return errors.New("artifact input must select its flat root manifest")
 	}
 	for _, descriptor := range []v1.Descriptor{source.Root, source.Selected} {
-		if descriptor.MediaType != v1.MediaTypeImageManifest || descriptor.Digest.Algorithm() != digest.SHA256 || descriptor.Digest.Validate() != nil || descriptor.Size < 0 {
+		if descriptor.MediaType != v1.MediaTypeImageManifest || descriptor.Digest.Validate() != nil || descriptor.Digest.Algorithm() != digest.SHA256 || descriptor.Size < 0 {
 			return errors.New("artifact input has an invalid immutable manifest")
 		}
 	}
 	return nil
+}
+
+// This domain is distinct from native manifest and per-image origin locks.
+const nativePullAliasLockPrefix = "coopr native image pull alias\x00"
+
+func lockNativePullAlias(ctx context.Context, store storage.Store, reference string) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	name, err := dockerreference.ParseDockerRef(reference)
+	if err != nil {
+		return nil, err
+	}
+	if _, pinned := name.(dockerreference.Digested); pinned {
+		name = dockerreference.TagNameOnly(dockerreference.TrimNamed(name))
+	}
+	lock, err := store.GetDigestLock(digest.FromString(nativePullAliasLockPrefix + name.String()))
+	if err != nil {
+		return nil, fmt.Errorf("open native image alias lock: %w", err)
+	}
+	try, ok := lock.(interface{ TryLock() error })
+	if !ok {
+		return nil, errors.New("native image alias lock does not support cancelable acquisition")
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		err := try.TryLock()
+		if err == nil {
+			if err := ctx.Err(); err != nil {
+				lock.Unlock()
+				return nil, err
+			}
+			return lock.Unlock, nil
+		}
+		// The pinned native lockfile returns EAGAIN for cross-process
+		// contention, but an unwrapped text error for its in-process mutex.
+		if !errors.Is(err, unix.EAGAIN) && err.Error() != "resource temporarily unavailable" {
+			return nil, fmt.Errorf("lock native image alias: %w", err)
+		}
+		timer := time.NewTimer(25 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
 }

@@ -18,58 +18,6 @@ import (
 	"go.podman.io/buildah/docker"
 )
 
-func TestApplyOperationsPreservesOrderAndOptions(t *testing.T) {
-	fake := &recordingBuilder{}
-	contextDir := t.TempDir()
-	operations := []Operation{
-		Env{Name: "mode", Value: "test"},
-		Copy{Sources: []string{"one", "two"}, Destination: "/data", Chown: "12:34", Chmod: "0640", Excludes: []string{"*.tmp"}},
-		Add{Sources: []string{"archive.tar"}, Destination: "/opt", Checksum: "sha256:abc"},
-		Run{Command: []string{"/bin/sh", "-c", "touch /done"}, Env: []string{"LOCAL=yes"}, WorkingDir: "/data", User: "12:34", cacheLockRoot: contextDir, Mounts: []RunMount{
-			{Type: "bind", Properties: map[string]string{"source": "input", "target": "/input", "readonly": "true"}},
-			{Type: "cache", Properties: map[string]string{"id": "compile", "target": "/cache", "sharing": "locked"}},
-			{Type: "tmpfs", Properties: map[string]string{"target": "/tmp", "size": "64m"}},
-		}},
-		Label{Name: "org.example.ready", Value: "yes"}, WorkDir("/work"), User("1000"),
-		Cmd{"serve"}, Entrypoint{"/entry"}, Shell{"/bin/bash", "-c"}, StopSignal("SIGTERM"),
-		Healthcheck(imageconfig.Healthcheck{Test: []string{"CMD-SHELL", "true"}, Interval: 30 * time.Second, Retries: 3}),
-		OnBuild("RUN make generated"),
-	}
-	if err := applyOperations(context.Background(), fake, contextDir, operations); err != nil {
-		t.Fatal(err)
-	}
-	want := []string{
-		"env:mode=test",
-		"copy:false:" + contextDir + ":/data:12:34:0640:*.tmp,one/*.tmp,two/*.tmp:one,two",
-		"copy:true:" + contextDir + ":/opt::::archive.tar:sha256:abc",
-		"run:/bin/sh,-c,touch /done:LOCAL=yes:/data:12:34",
-		"label:org.example.ready=yes", "mkdir:/work:", "workdir:/work", "user:1000", "cmd:serve",
-		"entrypoint:/entry", "shell:/bin/bash,-c", "stop:SIGTERM",
-		"healthcheck:CMD-SHELL,true:30s:3", "onbuild:RUN make generated",
-	}
-	if !reflect.DeepEqual(fake.events, want) {
-		t.Fatalf("events = %#v, want %#v", fake.events, want)
-	}
-	wantMounts := []string{
-		"type=bind,relabel=private,readonly,source=input,target=/input",
-		"type=cache,id=compile,sharing=locked,target=/cache",
-		"type=tmpfs,tmpfs-size=64m,target=/tmp",
-	}
-	if !reflect.DeepEqual(fake.runMounts, wantMounts) || fake.runContext == contextDir || fake.runContext == "" {
-		t.Fatalf("RUN mounts = %#v context = %q, want %#v filtered snapshot", fake.runMounts, fake.runContext, wantMounts)
-	}
-}
-
-func TestApplyOperationsStopsAtCancellation(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	fake := &recordingBuilder{}
-	err := applyOperations(ctx, fake, "", []Operation{Env{Name: "unreached", Value: "yes"}})
-	if err != context.Canceled || len(fake.events) != 0 {
-		t.Fatalf("applyOperations() = %v, events %#v", err, fake.events)
-	}
-}
-
 func TestDockerMetadataOperationsRejectMalformedValues(t *testing.T) {
 	tests := []struct {
 		operation Operation
@@ -82,7 +30,7 @@ func TestDockerMetadataOperationsRejectMalformedValues(t *testing.T) {
 	}
 	for _, test := range tests {
 		fake := &recordingBuilder{}
-		err := applyOperations(context.Background(), fake, "", []Operation{test.operation})
+		err := applyOperationWithContextContext(context.Background(), fake, "", nil, test.operation)
 		if err == nil || !strings.Contains(err.Error(), test.message) || len(fake.events) != 0 {
 			t.Errorf("apply(%#v) error = %v, events = %v", test.operation, err, fake.events)
 		}
@@ -92,7 +40,7 @@ func TestDockerMetadataOperationsRejectMalformedValues(t *testing.T) {
 func TestOnBuildOperationAcceptsHeredoc(t *testing.T) {
 	trigger := "RUN <<EOF\necho inherited > /marker\nEOF"
 	fake := &recordingBuilder{}
-	if err := applyOperations(context.Background(), fake, "", []Operation{OnBuild(trigger)}); err != nil {
+	if err := applyOperationWithContextContext(context.Background(), fake, "", nil, OnBuild(trigger)); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(fake.events, []string{"onbuild:" + trigger}) {
@@ -102,7 +50,7 @@ func TestOnBuildOperationAcceptsHeredoc(t *testing.T) {
 
 func TestOnBuildOperationAcceptsSurroundingWhitespace(t *testing.T) {
 	fake := &recordingBuilder{}
-	if err := applyOperations(context.Background(), fake, "", []Operation{OnBuild("  RUN true  ")}); err != nil {
+	if err := applyOperationWithContextContext(context.Background(), fake, "", nil, OnBuild("  RUN true  ")); err != nil {
 		t.Fatal(err)
 	}
 	if len(fake.onBuild) != 1 || fake.onBuild[0] != "  RUN true  " {
@@ -112,9 +60,7 @@ func TestOnBuildOperationAcceptsSurroundingWhitespace(t *testing.T) {
 
 func TestCopyRejectsRemoteSourceBeforeCallingBuilder(t *testing.T) {
 	fake := &recordingBuilder{}
-	err := applyOperations(context.Background(), fake, t.TempDir(), []Operation{
-		Copy{Sources: []string{"http://example.invalid/file"}, Destination: "/file"},
-	})
+	err := applyOperationWithContextContext(context.Background(), fake, t.TempDir(), nil, Copy{Sources: []string{"http://example.invalid/file"}, Destination: "/file"})
 	if err == nil || !strings.Contains(err.Error(), "COPY source must be local") || len(fake.events) != 0 {
 		t.Fatalf("COPY remote source = %v, builder events = %v", err, fake.events)
 	}
@@ -122,12 +68,11 @@ func TestCopyRejectsRemoteSourceBeforeCallingBuilder(t *testing.T) {
 
 func TestCopyAndAddPassParentsToBuildah(t *testing.T) {
 	fake := &recordingBuilder{}
-	err := applyOperations(context.Background(), fake, t.TempDir(), []Operation{
-		Copy{Sources: []string{"source/./nested/file"}, Destination: "/copy", Parents: true},
-		Add{Sources: []string{"archive/./nested/file"}, Destination: "/add", Parents: true},
-	})
-	if err != nil {
-		t.Fatal(err)
+	for _, operation := range []Operation{Copy{Sources: []string{"source/./nested/file"}, Destination: "/copy", Parents: true},
+		Add{Sources: []string{"archive/./nested/file"}, Destination: "/add", Parents: true}} {
+		if err := applyOperationWithContextContext(context.Background(), fake, t.TempDir(), nil, operation); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if len(fake.addOptions) != 2 || !fake.addOptions[0].Parents || !fake.addOptions[1].Parents {
 		t.Fatalf("Buildah add/copy options = %#v, want Parents enabled for both operations", fake.addOptions)
@@ -143,7 +88,7 @@ func TestCopyAndAddPassLinkToBuildah(t *testing.T) {
 					operation = Add{Sources: []string{"source"}, Destination: "/add", Link: linked}
 				}
 				fake := &recordingBuilder{}
-				if err := applyOperations(context.Background(), fake, t.TempDir(), []Operation{operation}); err != nil {
+				if err := applyOperationWithContextContext(context.Background(), fake, t.TempDir(), nil, operation); err != nil {
 					t.Fatal(err)
 				}
 				if len(fake.addOptions) != 1 || fake.addOptions[0].Link != linked {
@@ -156,11 +101,13 @@ func TestCopyAndAddPassLinkToBuildah(t *testing.T) {
 
 func TestWorkDirResolvesAgainstBaseAndCreatesAsCurrentUser(t *testing.T) {
 	fake := &recordingBuilder{workDir: "/base", user: "1000:1000"}
-	err := applyOperations(context.Background(), fake, "", []Operation{
-		WorkDir(""), WorkDir("nested"), WorkDir("../next"), WorkDir("/absolute"),
-	})
-	if err != nil {
-		t.Fatal(err)
+	for _, operation := range []Operation{WorkDir(""),
+		WorkDir("nested"),
+		WorkDir("../next"),
+		WorkDir("/absolute")} {
+		if err := applyOperationWithContextContext(context.Background(), fake, "", nil, operation); err != nil {
+			t.Fatal(err)
+		}
 	}
 	want := []string{
 		"mkdir:/base:1000:1000", "workdir:/base",
@@ -175,13 +122,12 @@ func TestWorkDirResolvesAgainstBaseAndCreatesAsCurrentUser(t *testing.T) {
 
 func TestRunNetworkPolicy(t *testing.T) {
 	fake := &recordingBuilder{}
-	err := applyOperations(context.Background(), fake, "", []Operation{
-		Run{Command: []string{"/bin/true"}},
+	for _, operation := range []Operation{Run{Command: []string{"/bin/true"}},
 		Run{Command: []string{"/bin/true"}, Network: "none"},
-		Run{Command: []string{"/bin/true"}, Network: "host"},
-	})
-	if err != nil {
-		t.Fatal(err)
+		Run{Command: []string{"/bin/true"}, Network: "host"}} {
+		if err := applyOperationWithContextContext(context.Background(), fake, "", nil, operation); err != nil {
+			t.Fatal(err)
+		}
 	}
 	want := []define.NetworkConfigurationPolicy{define.NetworkEnabled, define.NetworkDisabled, define.NetworkEnabled}
 	if !reflect.DeepEqual(fake.runPolicies, want) {
@@ -190,6 +136,54 @@ func TestRunNetworkPolicy(t *testing.T) {
 	host := fake.runOptions[2].NamespaceOptions.Find("network")
 	if host == nil || !host.Host || host.Path != "" {
 		t.Fatalf("RUN host network namespace = %#v", host)
+	}
+}
+
+func TestRunDirectMountTargetsFollowWorkDir(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "file"), []byte("artifact payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{"artifact directory", "artifact file", "live host", "writable context"} {
+		for _, test := range []struct{ workDir, target, want string }{
+			{"/work/tree", "files", "/work/tree/files"},
+			{"/work/tree", "../files", "/work/files"},
+			{"", "files", "/files"},
+			{"/", "./files", "/files"},
+			{"/work/tree", "/fixed", "/fixed"},
+		} {
+			t.Run(kind+"/"+test.workDir+"/"+test.target, func(t *testing.T) {
+				mount := RunMount{Type: "bind", Properties: map[string]string{"target": test.target}}
+				wantSource := root
+				switch kind {
+				case "artifact directory", "artifact file":
+					mount.Artifact = &ResolvedImageSource{Artifact: true}
+					mount.artifactRoot = root
+					mount.BoundFrom = true
+					mount.Properties["from"] = strings.Repeat("a", 64)
+					if kind == "artifact file" {
+						mount.Properties["source"] = "file"
+						wantSource = filepath.Join(root, "file")
+					}
+				case "live host":
+					mount.HostPath = root
+				case "writable context":
+					mount.Properties["readonly"] = "false"
+				}
+				builder := &recordingBuilder{workDir: test.workDir}
+				operation := Run{Command: []string{"true"}, Mounts: []RunMount{mount}, contextPrepared: kind == "writable context"}
+				if err := operation.apply(builder, root); err != nil {
+					t.Fatal(err)
+				}
+				options := builder.runOptions[0]
+				if len(options.RunMounts) != 0 || len(options.Mounts) != 1 || options.Mounts[0].Destination != test.want || options.Mounts[0].Source != wantSource {
+					t.Fatalf("direct mount = %#v, want source %q at %q", options, wantSource, test.want)
+				}
+				if mount.Properties["target"] != test.target || builder.WorkDir() != test.workDir {
+					t.Fatal("mount normalization mutated authored target or builder working directory")
+				}
+			})
+		}
 	}
 }
 
@@ -221,7 +215,7 @@ func TestRunPassesResolvedCDIDevicesToBuildah(t *testing.T) {
 
 func TestRunKeepsNativeRuntimeSelection(t *testing.T) {
 	fake := &recordingBuilder{}
-	if err := applyOperations(context.Background(), fake, "", []Operation{Run{Command: []string{"/bin/true"}}}); err != nil {
+	if err := applyOperationWithContextContext(context.Background(), fake, "", nil, Run{Command: []string{"/bin/true"}}); err != nil {
 		t.Fatal(err)
 	}
 	if len(fake.runOptions) != 1 || fake.runOptions[0].Runtime != "" || len(fake.runOptions[0].Args) != 0 {
@@ -231,12 +225,11 @@ func TestRunKeepsNativeRuntimeSelection(t *testing.T) {
 
 func TestRunMountsAreScopedToOneRun(t *testing.T) {
 	fake := &recordingBuilder{}
-	err := applyOperations(context.Background(), fake, "/context", []Operation{
-		Run{Command: []string{"/bin/true"}, Mounts: []RunMount{{Type: "tmpfs", Properties: map[string]string{"target": "/tmp"}}}},
-		Run{Command: []string{"/bin/true"}},
-	})
-	if err != nil {
-		t.Fatal(err)
+	for _, operation := range []Operation{Run{Command: []string{"/bin/true"}, Mounts: []RunMount{{Type: "tmpfs", Properties: map[string]string{"target": "/tmp"}}}},
+		Run{Command: []string{"/bin/true"}}} {
+		if err := applyOperationWithContextContext(context.Background(), fake, "/context", nil, operation); err != nil {
+			t.Fatal(err)
+		}
 	}
 	want := [][]string{{"type=tmpfs,target=/tmp"}, {}}
 	if !reflect.DeepEqual(fake.runMountHistory, want) {
@@ -252,20 +245,19 @@ func TestRunSecretAndSSHInputsReachBuildah(t *testing.T) {
 	}
 	defer func() { _ = listener.Close() }()
 	fake := &recordingBuilder{}
-	err = applyOperations(context.Background(), fake, "", []Operation{
-		Run{
-			Command: []string{"/bin/true"},
-			Mounts: []RunMount{
-				{Type: "secret", Properties: map[string]string{"id": "token", "required": "true"}},
-				{Type: "ssh", Properties: map[string]string{"id": "default", "required": "true"}},
-			},
-			SecretSpecs: []string{"id=token,env=COOPR_TEST_SECRET"},
-			SSHSpecs:    []string{"default=" + listener.Addr().String()},
+	for _, operation := range []Operation{Run{
+		Command: []string{"/bin/true"},
+		Mounts: []RunMount{
+			{Type: "secret", Properties: map[string]string{"id": "token", "required": "true"}},
+			{Type: "ssh", Properties: map[string]string{"id": "default", "required": "true"}},
 		},
-		Run{Command: []string{"/bin/true"}},
-	})
-	if err != nil {
-		t.Fatal(err)
+		SecretSpecs: []string{"id=token,env=COOPR_TEST_SECRET"},
+		SSHSpecs:    []string{"default=" + listener.Addr().String()},
+	},
+		Run{Command: []string{"/bin/true"}}} {
+		if err := applyOperationWithContextContext(context.Background(), fake, "", nil, operation); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if len(fake.runOptions) != 2 {
 		t.Fatalf("RUN options = %d, want 2", len(fake.runOptions))
@@ -295,14 +287,14 @@ func TestRunSSHSourceWithoutPathUsesAgentEnvironment(t *testing.T) {
 	defer func() { _ = second.Close() }()
 	t.Setenv("SSH_AUTH_SOCK", second.Addr().String())
 	fake := &recordingBuilder{}
-	err = applyOperations(context.Background(), fake, "", []Operation{Run{
+	err = applyOperationWithContextContext(context.Background(), fake, "", nil, Run{
 		Command: []string{"/bin/true"},
 		Mounts: []RunMount{
 			{Type: "ssh", Properties: map[string]string{"id": "ci"}},
 			{Type: "ssh", Properties: map[string]string{"id": "default"}},
 		},
 		SSHSpecs: []string{"ci=" + first.Addr().String(), "default"},
-	}})
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +318,7 @@ func TestRunRepeatedCredentialIDsUseLastSource(t *testing.T) {
 	t.Setenv("COOPR_FIRST_SECRET", "first")
 	t.Setenv("COOPR_LAST_SECRET", "last")
 	fake := &recordingBuilder{}
-	err = applyOperations(context.Background(), fake, "", []Operation{Run{
+	err = applyOperationWithContextContext(context.Background(), fake, "", nil, Run{
 		Command: []string{"/bin/true"},
 		Mounts: []RunMount{
 			{Type: "secret", Properties: map[string]string{"id": "token"}},
@@ -334,7 +326,7 @@ func TestRunRepeatedCredentialIDsUseLastSource(t *testing.T) {
 		},
 		SecretSpecs: []string{"id=token,env=COOPR_FIRST_SECRET", "id=token,env=COOPR_LAST_SECRET"},
 		SSHSpecs:    []string{"default=" + first.Addr().String(), "default=" + last.Addr().String()},
-	}})
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -364,9 +356,9 @@ func TestRunMountValidation(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			err := applyOperations(context.Background(), &recordingBuilder{}, test.context, []Operation{Run{
+			err := applyOperationWithContextContext(context.Background(), &recordingBuilder{}, test.context, nil, Run{
 				Command: []string{"/bin/true"}, Mounts: []RunMount{test.mount},
-			}})
+			})
 			if err == nil || !strings.Contains(err.Error(), test.message) {
 				t.Fatalf("want %q, got %v", test.message, err)
 			}
@@ -477,17 +469,18 @@ func TestRunMountOptionAliasesRejectConflictsAndInvalidReadwrite(t *testing.T) {
 	}
 }
 
-func TestValidateRequestRequiresIsolatedAbsoluteRoots(t *testing.T) {
-	request := Request{Store: StoreOptions{RunRoot: "/tmp/run", GraphRoot: "/tmp/graph"}, Output: Output{Path: "/tmp/out"}}
-	if err := validateRequest(request); err != nil {
+func TestValidateBuildInputsRequiresIsolatedAbsoluteRoots(t *testing.T) {
+	store := StoreOptions{RunRoot: "/tmp/run", GraphRoot: "/tmp/graph"}
+	output := Output{Path: "/tmp/out"}
+	if err := validateBuildInputs(store, "", output); err != nil {
 		t.Fatal(err)
 	}
-	request.Store.GraphRoot = "relative"
-	if err := validateRequest(request); err == nil {
+	store.GraphRoot = "relative"
+	if err := validateBuildInputs(store, "", output); err == nil {
 		t.Fatal("relative graph root accepted")
 	}
-	request.Store.GraphRoot = request.Store.RunRoot
-	if err := validateRequest(request); err == nil {
+	store.GraphRoot = store.RunRoot
+	if err := validateBuildInputs(store, "", output); err == nil {
 		t.Fatal("shared run and graph root accepted")
 	}
 }

@@ -477,11 +477,7 @@ extend as="output" {
 		t.Fatalf("package production closure = %v, want %v", got, want)
 	}
 
-	graph := demandGraphForTest(t, def, Options{Mode: Publish, Target: "output"}, resolver)
-	if err := graph.resolve(graph.aliases["output"]); err != nil {
-		t.Fatal(err)
-	}
-	if got := graph.finalEnvironments[2]["CHILD_VALUE"]; got != "from-onbuild" {
+	if got := plan.Stages[2].Operations[0].Properties["CHILD_VALUE"]; got != "from-onbuild" {
 		t.Fatalf("active local child retained stale base environment: CHILD_VALUE=%q", got)
 	}
 }
@@ -520,60 +516,19 @@ extend as="output" {
 			Name: "env", Arguments: []string{"flag", "promoted"},
 		}}}, nil
 	}
-	if _, err := CreateDemandDriven(def, Options{Mode: Publish, Target: "output"}, resolver); err != nil {
+	plan, err := CreateDemandDriven(def, Options{Mode: Publish, Target: "output"}, resolver)
+	if err != nil {
 		t.Fatal(err)
 	}
-
-	graph := demandGraphForTest(t, def, Options{Mode: Publish, Target: "output"}, resolver)
-	if err := graph.resolve(graph.aliases["output"]); err != nil {
-		t.Fatal(err)
+	if got, want := stageIDs(plan), []string{"0", "1", "2", "3"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("package production closure = %v, want %v", got, want)
 	}
-	if graph.states[1] != 2 {
-		t.Fatalf("reset local child state = %d, want resolved", graph.states[1])
-	}
-	if graph.states[2] != 2 {
-		t.Fatalf("completed consumer state = %d, want resolved", graph.states[2])
-	}
-	if got := graph.finalEnvironments[1]["CHILD_VALUE"]; got != "promoted" {
+	if got := plan.Stages[1].Operations[0].Properties["CHILD_VALUE"]; got != "promoted" {
 		t.Fatalf("replanned child environment = %q", got)
 	}
-	if got, want := graph.deps[2], []int{1}; !reflect.DeepEqual(got, want) {
+	if got, want := plan.Stages[2].Dependencies, []string{"1"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("consumer dependencies = %v, want %v", got, want)
 	}
-}
-
-func demandGraphForTest(t *testing.T, def *definition.Definition, opts Options, resolver StageBindResolver) *graph {
-	t.Helper()
-	if opts.Platform == "" {
-		opts.Platform = "linux/amd64"
-	}
-	g := &graph{
-		opts: opts, globals: scope{}, automatic: automaticPlatformScope(opts),
-		aliases: map[string]int{}, declared: map[string]bool{}, bindResolver: resolver,
-	}
-	if err := g.split(def); err != nil {
-		t.Fatal(err)
-	}
-	n := len(g.raw)
-	g.stages = make([]Stage, n)
-	g.states = make([]int, n)
-	g.finalScopes = make([]scope, n)
-	g.finalEnvironments = make([]map[string]string, n)
-	g.finalShadows = make([]map[string]bool, n)
-	g.finalOnBuild = make([][]string, n)
-	g.dynamicConfig = make([]bool, n)
-	g.verifiedConfig = make([]bool, n)
-	g.packageDerived = make([]bool, n)
-	g.inheritedOperations = make([]int, n)
-	g.packageResolved = make([]bool, n)
-	g.resolutionEpoch = make([]uint64, n)
-	g.scopes = make([]scope, n)
-	g.deps = make([][]int, n)
-	g.bases = make([]int, n)
-	for i := range g.bases {
-		g.bases[i] = -1
-	}
-	return g
 }
 
 func unexpectedBindResolver(t *testing.T) StageBindResolver {

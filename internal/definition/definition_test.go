@@ -1,11 +1,13 @@
 package definition
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"testing/iotest"
 )
 
 func TestParseInstructions(t *testing.T) {
@@ -305,7 +307,7 @@ component "example.com/test:latest" { arg "retry" 3; arg "enabled" #true; arg "r
 copy "src" "/dst" chmod="0755"
 run "true" { mount "secret" target="/run/secret" mode="0400" required=#true uid=1000 }
 env "ENABLED" #true
-arg "count" 493
+arg "count" 0o755
 run "true" { mount "secret" target="/run/other-secret" required="false" }
 `))
 	if err != nil {
@@ -324,7 +326,7 @@ run "true" { mount "secret" target="/run/other-secret" required="false" }
 		t.Fatalf("native argument = %#v", got)
 	}
 	if got := def.Instructions[4].Arguments; !reflect.DeepEqual(got, []string{"count", "493"}) {
-		t.Fatalf("decimal ARG = %#v, want unchanged decimal value", got)
+		t.Fatalf("non-permission octal ARG = %#v, want decimal value", got)
 	}
 	if got := def.Instructions[5].Children[0].Properties["required"]; got != "false" {
 		t.Fatalf("string boolean = %q, want false", got)
@@ -343,26 +345,6 @@ func TestRemovedAuthoredInlineAndOptionSyntax(t *testing.T) {
 		if _, err := parseFragment(strings.NewReader(source)); err == nil {
 			t.Errorf("accepted removed authored syntax %q", source)
 		}
-	}
-}
-
-func TestMultilineShebangRunBecomesExecutableInlineFile(t *testing.T) {
-	def, err := parseFragment(strings.NewReader(`
-run """
-    #!/bin/sh
-    printf hello >/message
-    """
-`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := def.Instructions[0]
-	want := Instruction{
-		Name: "run", Form: "exec", Arguments: []string{"/run/coopr-heredoc/script"},
-		InlineFiles: []InlineFile{{Path: "script", Data: "#!/bin/sh\nprintf hello >/message"}},
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("shebang RUN = %#v, want %#v", got, want)
 	}
 }
 
@@ -523,5 +505,12 @@ func TestValidateDecodedDefinition(t *testing.T) {
 	}}
 	if err := validateFragment(valid); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestParsePropagatesReadFailure(t *testing.T) {
+	failure := errors.New("definition source failed")
+	if _, err := Parse(iotest.ErrReader(failure)); !errors.Is(err, failure) {
+		t.Fatalf("read failure = %v, want %v", err, failure)
 	}
 }

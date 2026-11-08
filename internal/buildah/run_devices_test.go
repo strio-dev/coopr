@@ -1,6 +1,7 @@
 package buildah
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -35,7 +36,17 @@ func TestResolveRunDeviceSpecsMatchesBuildKitSelectors(t *testing.T) {
 }
 
 func TestResolveRunDeviceSpecsRejectsMissingRequiredDevice(t *testing.T) {
-	_, err := resolveRunDeviceSpecs(testCDICache(t), []runDeviceRequest{{
+	optional, err := resolveRunDeviceSpecs(testCDICache(t), []runDeviceRequest{{
+		Name: "vendor.example/device=missing",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(optional)
+	if err != nil || string(encoded) != "[]" {
+		t.Fatalf("optional missing device cache identity = %s, error %v; want []", encoded, err)
+	}
+	_, err = resolveRunDeviceSpecs(testCDICache(t), []runDeviceRequest{{
 		Name:     "vendor.example/device=missing",
 		Required: true,
 	}})

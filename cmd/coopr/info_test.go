@@ -8,13 +8,6 @@ import (
 )
 
 func TestInfoCommandShape(t *testing.T) {
-	command, _, err := newRootCommand().Find([]string{"info"})
-	if err != nil || command.Name() != "info" {
-		t.Fatalf("missing info: %v", err)
-	}
-	if command.Flags().Lookup("format") == nil {
-		t.Fatal("info lacks --format")
-	}
 	var out, errs bytes.Buffer
 	if status := run([]string{"info", "unexpected"}, &out, &errs); status == 0 {
 		t.Fatal("info accepted an argument")

@@ -7,10 +7,12 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	registryserver "github.com/google/go-containerregistry/pkg/registry"
@@ -71,6 +73,97 @@ func TestNativeImageResolutionAcceptsTagWithDigest(t *testing.T) {
 	resolved, err := resolver.ResolveRemoteImage(context.Background(), host+"/coopr/test:unused-tag@"+manifest.Digest.String(), platform)
 	if err != nil || resolved.Selected.Digest != manifest.Digest {
 		t.Fatalf("tag and digest resolution=%+v err=%v", resolved, err)
+	}
+}
+
+func TestNativeImageResolutionVerifiesRequestedDigest(t *testing.T) {
+	for _, target := range []string{"manifest", "index", "child"} {
+		t.Run(target, func(t *testing.T) {
+			ctx := t.Context()
+			platform := v1.Platform{OS: "linux", Architecture: "amd64"}
+			registry := registryserver.New()
+			var armed atomic.Bool
+			var substituted atomic.Uint64
+			var requested v1.Descriptor
+			var replacement []byte
+			_, repo, resolver, name := testRepository(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if armed.Load() && r.Method == http.MethodGet && r.URL.Path == "/v2/coopr/test/manifests/"+requested.Digest.String() {
+					substituted.Add(1)
+					w.Header().Set("Content-Type", requested.MediaType)
+					w.Header().Set("Docker-Content-Digest", requested.Digest.String())
+					_, _ = w.Write(replacement)
+					return
+				}
+				registry.ServeHTTP(w, r)
+			}))
+			trusted, _ := imageManifest(t, repo, platform, "trusted")
+			changed, _ := imageManifest(t, repo, platform, "changed")
+			root, requested, wrong := trusted, trusted, changed
+			if target != "manifest" {
+				trusted.Platform, changed.Platform = &platform, &platform
+				root = pushIndex(t, repo, "pinned", trusted)
+				if target == "index" {
+					requested = root
+					wrong = pushIndex(t, repo, "changed", changed)
+				}
+			} else if err := repo.Tag(ctx, root, "pinned"); err != nil {
+				t.Fatal(err)
+			}
+			var err error
+			replacement, err = fetchMetadata(ctx, repo, wrong)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if wrong.Digest == requested.Digest || int64(len(replacement)) != requested.Size {
+				t.Fatal("fixture must substitute different, same-size content")
+			}
+			readers := []struct {
+				name string
+				read func(string) error
+			}{
+				{"image", func(ref string) error {
+					_, err := resolver.ResolveRemoteImage(ctx, ref, platform)
+					return err
+				}},
+				{"file-input", func(ref string) error {
+					_, err := resolver.ResolveRemoteFileInput(ctx, ref, platform)
+					return err
+				}},
+				{"platforms", func(ref string) error {
+					_, err := resolver.ImagePlatforms(ctx, ref)
+					return err
+				}},
+			}
+			if target != "child" {
+				readers = append(readers, struct {
+					name string
+					read func(string) error
+				}{"manifest", func(ref string) error {
+					_, _, err := resolver.RemoteImageManifest(ctx, ref)
+					return err
+				}})
+			}
+			for _, reader := range readers {
+				for _, suffix := range []string{"@" + root.Digest.String(), ":unused@" + root.Digest.String(), ":pinned"} {
+					if err := reader.read(name + suffix); err != nil {
+						t.Fatalf("matching %s %s: %v", reader.name, suffix, err)
+					}
+				}
+			}
+			armed.Store(true)
+			for _, reader := range readers {
+				for _, suffix := range []string{"@" + root.Digest.String(), ":unused@" + root.Digest.String()} {
+					before := substituted.Load()
+					err := reader.read(name + suffix)
+					if err == nil || !strings.Contains(err.Error(), "digest") {
+						t.Errorf("substituted %s %s: expected digest rejection, got %v", reader.name, suffix, err)
+					}
+					if substituted.Load() == before {
+						t.Errorf("substituted %s %s: hostile response was not read", reader.name, suffix)
+					}
+				}
+			}
+		})
 	}
 }
 

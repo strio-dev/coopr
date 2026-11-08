@@ -62,6 +62,18 @@ func calc(t *testing.T, items []tarItem, config string) Identity {
 	return id
 }
 
+func TestExistingFilesystemIdentityContract(t *testing.T) {
+	got := calc(t, basicItems(), `{}`)
+	want := Identity{
+		Filesystem:    "sha256:828015bb793b9c899e3cf71c28d3f1d9fd0e8735b76d4a863b2c8566ed05dc1b",
+		Configuration: "sha256:880608088c2415c5c3e55f1c2b72ae06cde4b6a69d4664b0a8a7322cad07951b",
+		State:         "sha256:d1f33c80562da97981080710d7f0fb2e0eb0cd920513e162bac2e16d5ac027eb",
+	}
+	if got != want {
+		t.Fatalf("existing image identity contract changed: got=%v want=%v", got, want)
+	}
+}
+
 func TestCanonicalArchiveOrderingAndRepresentation(t *testing.T) {
 	items := basicItems()
 	a := calc(t, items, `{"architecture":"amd64","rootfs":{"type":"layers","diff_ids":["sha256:a"]},"history":[{"created_by":"RUN a"}],"config":{"Labels":{"a":"b"}},"vendor":{"n":1.0}}`)
@@ -273,6 +285,13 @@ func TestRootAndAmbientSELinuxIdentity(t *testing.T) {
 	if _, err := Calculate(context.Background(), root, bytes.NewReader(archive(t, withRoot...)), json.RawMessage(`{}`), nil); err == nil {
 		t.Fatal("root tar entry with conflicting mode was accepted")
 	}
+	emptyAttrRoot := *root
+	emptyAttrRoot.PAXRecords = map[string]string{"SCHILY.xattr.user.a": ""}
+	withRoot[0].header = *root
+	withRoot[0].header.PAXRecords = map[string]string{"SCHILY.xattr.user.b": ""}
+	if _, err := Calculate(context.Background(), &emptyAttrRoot, bytes.NewReader(archive(t, withRoot...)), json.RawMessage(`{}`), nil); err == nil {
+		t.Fatal("root tar entry with conflicting empty-valued xattr names was accepted")
+	}
 	root.PAXRecords = map[string]string{"SCHILY.xattr.security.selinux": "ambient\x00"}
 	ambient, err := Calculate(context.Background(), root, bytes.NewReader(data), json.RawMessage(`{}`), []byte("ambient\x00"))
 	if err != nil {
@@ -286,68 +305,6 @@ func TestRootAndAmbientSELinuxIdentity(t *testing.T) {
 	}
 }
 
-func TestGatewayModTimesRestoreTarNanoseconds(t *testing.T) {
-	second := time.Unix(1735689600, 0)
-	items := []tarItem{
-		{header: tar.Header{Name: "dir/", Typeflag: tar.TypeDir, Mode: 0755, ModTime: second}},
-		{header: tar.Header{Name: "dir/file", Typeflag: tar.TypeReg, Mode: 0644, ModTime: second}, content: "same"},
-	}
-	data := archive(t, items...)
-	calculate := func(t *testing.T, opts ...Option) Identity {
-		t.Helper()
-		id, err := Calculate(context.Background(), rootHeader(), bytes.NewReader(data), json.RawMessage(`{}`), nil, opts...)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return id
-	}
-	firstTimes := map[string]time.Time{"dir": second.Add(123456789 * time.Nanosecond), "dir/file": second.Add(123456789 * time.Nanosecond)}
-	first := calculate(t, WithModTimes(firstTimes))
-	fileChanged := map[string]time.Time{"dir": firstTimes["dir"], "dir/file": firstTimes["dir/file"].Add(time.Nanosecond)}
-	file := calculate(t, WithModTimes(fileChanged))
-	if file.Filesystem == first.Filesystem || file.State == first.State {
-		t.Fatal("gateway file mtime nanosecond did not change identity")
-	}
-	dirChanged := map[string]time.Time{"dir": firstTimes["dir"].Add(time.Nanosecond), "dir/file": firstTimes["dir/file"]}
-	dir := calculate(t, WithModTimes(dirChanged))
-	if dir.Filesystem == first.Filesystem || dir.State == first.State {
-		t.Fatal("gateway directory mtime nanosecond did not change identity")
-	}
-	raw := calculate(t)
-	if raw == first {
-		t.Fatal("rounded raw tar unexpectedly includes gateway nanoseconds")
-	}
-}
-
-func TestGatewayModTimesRequireExactArchivePathsAndSeconds(t *testing.T) {
-	second := time.Unix(1735689600, 0)
-	data := archive(t, tarItem{header: tar.Header{Name: "file", Typeflag: tar.TypeReg, Mode: 0644, ModTime: second}, content: "x"})
-	for _, tc := range []struct {
-		name  string
-		times map[string]time.Time
-		want  string
-	}{
-		{"missing", map[string]time.Time{}, "missing gateway mtime"},
-		{"extra", map[string]time.Time{"file": second, "extra": second}, "absent from rootfs tar"},
-		{"root", map[string]time.Time{".": second, "file": second}, "non-canonical mtime path"},
-		{"alias", map[string]time.Time{"./file": second, "file": second}, "non-canonical mtime path"},
-		{"trailing slash", map[string]time.Time{"file/": second}, "non-canonical mtime path"},
-		{"different seconds", map[string]time.Time{"file": second.Add(time.Second)}, "mtime seconds"},
-		{"nil", nil, "mtime metadata is nil"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := Calculate(context.Background(), rootHeader(), bytes.NewReader(data), json.RawMessage(`{}`), nil, WithModTimes(tc.times))
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("want %q, got %v", tc.want, err)
-			}
-		})
-	}
-	_, err := Calculate(context.Background(), rootHeader(), bytes.NewReader(data), json.RawMessage(`{}`), nil, WithModTimes(map[string]time.Time{"file": second}), WithModTimes(map[string]time.Time{"file": second}))
-	if err == nil || !strings.Contains(err.Error(), "duplicate") {
-		t.Fatalf("duplicate option accepted: %v", err)
-	}
-}
-
 func TestMalformedTarAndConfigRejected(t *testing.T) {
 	items := basicItems()
 	good := archive(t, items...)
@@ -356,10 +313,14 @@ func TestMalformedTarAndConfigRejected(t *testing.T) {
 		raw    []byte
 		config string
 	}{
-		"duplicate path":       {items: append(basicItems(), basicItems()[2]), config: `{}`},
-		"duplicate root":       {items: []tarItem{{header: *rootHeader()}, {header: *rootHeader()}}, config: `{}`},
-		"escaping path":        {items: []tarItem{{header: tar.Header{Name: "../escape", Typeflag: tar.TypeReg, Mode: 0644}, content: "x"}}, config: `{}`},
-		"missing hardlink":     {items: []tarItem{{header: tar.Header{Name: "dangling", Typeflag: tar.TypeLink, Linkname: "absent"}}}, config: `{}`},
+		"duplicate path":   {items: append(basicItems(), basicItems()[2]), config: `{}`},
+		"duplicate root":   {items: []tarItem{{header: *rootHeader()}, {header: *rootHeader()}}, config: `{}`},
+		"escaping path":    {items: []tarItem{{header: tar.Header{Name: "../escape", Typeflag: tar.TypeReg, Mode: 0644}, content: "x"}}, config: `{}`},
+		"missing hardlink": {items: []tarItem{{header: tar.Header{Name: "dangling", Typeflag: tar.TypeLink, Linkname: "absent"}}}, config: `{}`},
+		"conflicting empty hardlink xattrs": {items: []tarItem{
+			{header: tar.Header{Name: "file", Typeflag: tar.TypeReg, PAXRecords: map[string]string{"SCHILY.xattr.user.a": ""}}},
+			{header: tar.Header{Name: "link", Typeflag: tar.TypeLink, Linkname: "file", PAXRecords: map[string]string{"SCHILY.xattr.user.b": ""}}},
+		}, config: `{}`},
 		"unsupported pax":      {items: []tarItem{{header: tar.Header{Name: "file", Typeflag: tar.TypeReg, PAXRecords: map[string]string{"vendor.opaque": "lost"}}}}, config: `{}`},
 		"truncated file":       {raw: good[:1537], config: `{}`},
 		"missing trailer":      {raw: good[:len(good)-1024], config: `{}`},

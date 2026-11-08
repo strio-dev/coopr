@@ -204,7 +204,7 @@ func artifactLockTestStart(t *testing.T, operation func() error) <-chan error {
 		done <- operation()
 		close(done)
 	}()
-	t.Cleanup(func() { <-done })
+	t.Cleanup(func() { <-done }) //nolint:errcheck // The test consumes the result; cleanup only joins.
 	return done
 }
 

@@ -28,7 +28,7 @@ func (executor *graphExecutor) startLayerGroup(ctx context.Context, current *ups
 	if err != nil {
 		return nil, options, "", nil, err
 	}
-	next, id, manifest, root, err := checkpointPreservingPackageRootSelected(ctx, executor.store, current, options, !changed, timestampPolicyFromOptions(executor.options), executor.options.Lifecycle.KeepIntermediate)
+	next, id, manifest, root, err := checkpointPreservingPackageRootSelected(ctx, executor.store, current, options, !changed, timestampPolicyFromOptions(executor.options), nil, executor.options.Lifecycle.KeepIntermediate)
 	if err != nil {
 		return nil, options, "", nil, fmt.Errorf("start layer group: %w", err)
 	}
@@ -108,7 +108,7 @@ func (executor *graphExecutor) finishLayerGroup(ctx context.Context, current *up
 	if err != nil {
 		return current, options, "", nil, err
 	}
-	next, id, manifest, root, err := checkpointPreservingPackageRootSelected(ctx, executor.store, combined, options, !changed, timestampPolicyFromOptions(executor.options), executor.options.Lifecycle.KeepIntermediate)
+	next, id, manifest, root, err := checkpointPreservingPackageRootSelected(ctx, executor.store, combined, options, !changed, timestampPolicyFromOptions(executor.options), nil, executor.options.Lifecycle.KeepIntermediate)
 	if err != nil {
 		return current, options, "", nil, fmt.Errorf("commit layer group: %w", err)
 	}

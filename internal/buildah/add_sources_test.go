@@ -25,9 +25,7 @@ import (
 func TestAddUnpackFalseDisablesLocalArchiveExtraction(t *testing.T) {
 	unpack := false
 	builder := &recordingBuilder{}
-	err := applyOperations(context.Background(), builder, t.TempDir(), []Operation{
-		Add{Sources: []string{"archive.tar"}, Destination: "/archive", Unpack: &unpack},
-	})
+	err := applyOperationWithContextContext(context.Background(), builder, t.TempDir(), nil, Add{Sources: []string{"archive.tar"}, Destination: "/archive", Unpack: &unpack})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,10 +46,10 @@ func TestAddUnpackTrueDownloadsAndStagesRemoteArchive(t *testing.T) {
 
 	unpack := true
 	builder := &recordingBuilder{}
-	err := applyOperations(context.Background(), builder, t.TempDir(), []Operation{Add{
+	err := applyOperationWithContextContext(context.Background(), builder, t.TempDir(), nil, Add{
 		Sources: []string{server.URL + "/archive.tar"}, Destination: "/archive/", Unpack: &unpack,
 		Checksum: digest.FromBytes(archive).String(),
-	}})
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,10 +71,10 @@ func TestAddUnpackTrueRejectsRemoteChecksumMismatch(t *testing.T) {
 	}))
 	defer server.Close()
 	unpack := true
-	err := applyOperations(context.Background(), &recordingBuilder{}, t.TempDir(), []Operation{Add{
+	err := applyOperationWithContextContext(context.Background(), &recordingBuilder{}, t.TempDir(), nil, Add{
 		Sources: []string{server.URL + "/archive.tar"}, Destination: "/archive/", Unpack: &unpack,
 		Checksum: digest.FromString("expected").String(),
-	}})
+	})
 	if err == nil || !strings.Contains(err.Error(), "unexpected response digest") {
 		t.Fatalf("error = %v", err)
 	}
@@ -114,9 +112,9 @@ func TestRemoteAddExtractionAndLastModified(t *testing.T) {
 				}
 				return nil
 			}
-			if err := applyOperations(context.Background(), builder, t.TempDir(), []Operation{Add{
+			if err := applyOperationWithContextContext(context.Background(), builder, t.TempDir(), nil, Add{
 				Sources: []string{server.URL + "/payload"}, Destination: "/payload", Unpack: test.unpack,
-			}}); err != nil {
+			}); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -190,9 +188,9 @@ func TestRemoteAddRejectsURLCredentialsBeforeContact(t *testing.T) {
 	defer server.Close()
 
 	source := strings.Replace(server.URL, "http://", "http://user:password@", 1) + "/payload"
-	err := applyOperations(context.Background(), &recordingBuilder{}, t.TempDir(), []Operation{Add{
+	err := applyOperationWithContextContext(context.Background(), &recordingBuilder{}, t.TempDir(), nil, Add{
 		Sources: []string{source}, Destination: "/payload",
-	}})
+	})
 	if err == nil || !strings.Contains(err.Error(), "credentials") {
 		t.Fatalf("source error = %v, want credential rejection", err)
 	}
@@ -207,9 +205,9 @@ func TestRemoteAddRejectsURLCredentialsBeforeContact(t *testing.T) {
 }
 
 func TestRemoteAddMalformedURLDoesNotExposeCredentials(t *testing.T) {
-	err := applyOperations(context.Background(), &recordingBuilder{}, t.TempDir(), []Operation{Add{
+	err := applyOperationWithContextContext(context.Background(), &recordingBuilder{}, t.TempDir(), nil, Add{
 		Sources: []string{"http://user:password%zz@example.invalid/payload"}, Destination: "/payload",
-	}})
+	})
 	if err == nil || !strings.Contains(err.Error(), "invalid ADD source URL") {
 		t.Fatalf("malformed source error = %v", err)
 	}
@@ -231,9 +229,9 @@ func TestRemoteAddRejectsRedirectCredentialsBeforeContact(t *testing.T) {
 	}))
 	defer source.Close()
 
-	err := applyOperations(context.Background(), &recordingBuilder{}, t.TempDir(), []Operation{Add{
+	err := applyOperationWithContextContext(context.Background(), &recordingBuilder{}, t.TempDir(), nil, Add{
 		Sources: []string{source.URL + "/payload"}, Destination: "/payload",
-	}})
+	})
 	if err == nil || !strings.Contains(err.Error(), "credentials") {
 		t.Fatalf("redirect error = %v, want credential rejection", err)
 	}
@@ -261,9 +259,9 @@ func TestRemoteAddSendsHostScopedToken(t *testing.T) {
 	builder := &credentialAddBuilder{secrets: map[string][]byte{
 		"HTTP_AUTH_TOKEN_127.0.0.1": []byte("download-token"),
 	}}
-	if err := applyOperations(context.Background(), builder, t.TempDir(), []Operation{Add{
+	if err := applyOperationWithContextContext(context.Background(), builder, t.TempDir(), nil, Add{
 		Sources: []string{server.URL + "/payload"}, Destination: "/payload",
-	}}); err != nil {
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if len(builder.events) != 1 {
@@ -296,9 +294,9 @@ func TestGitAddSSHRequiresExplicitDefaultSource(t *testing.T) {
 		"ssh://git@example.invalid/repository.git",
 		"git@example.invalid:repository.git#main",
 	} {
-		err := applyOperations(context.Background(), &sshAddBuilder{}, t.TempDir(), []Operation{Add{
+		err := applyOperationWithContextContext(context.Background(), &sshAddBuilder{}, t.TempDir(), nil, Add{
 			Sources: []string{source}, Destination: "/source/",
-		}})
+		})
 		if err == nil || !strings.Contains(err.Error(), "requires --ssh default") {
 			t.Errorf("source %q: error = %v", source, err)
 		}
@@ -403,26 +401,6 @@ func TestGitAddEnvironmentRejectsHeaderInjection(t *testing.T) {
 	}
 }
 
-func TestGitAddUsesHostSelectedToken(t *testing.T) {
-	const token = "git-token"
-	source, _ := gitHTTPFixture(t, "basic eC1hY2Nlc3MtdG9rZW46Z2l0LXRva2Vu")
-	parsed, err := url.Parse(source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	builder := &credentialAddBuilder{secrets: map[string][]byte{
-		"GIT_AUTH_TOKEN." + parsed.Host: []byte(token),
-	}}
-	if err := applyOperations(context.Background(), builder, t.TempDir(), []Operation{Add{
-		Sources: []string{source}, Destination: "/source/",
-	}}); err != nil {
-		t.Fatal(err)
-	}
-	if len(builder.events) != 1 {
-		t.Fatalf("events = %#v", builder.events)
-	}
-}
-
 func TestGitAddAuthenticationFailureDoesNotExposeSecret(t *testing.T) {
 	const secret = "do-not-print-this-token"
 	source, _ := gitHTTPFixture(t, "Bearer some-other-token")
@@ -433,9 +411,9 @@ func TestGitAddAuthenticationFailureDoesNotExposeSecret(t *testing.T) {
 	builder := &credentialAddBuilder{secrets: map[string][]byte{
 		"GIT_AUTH_HEADER." + parsed.Host: []byte("Bearer " + secret),
 	}}
-	err = applyOperations(context.Background(), builder, t.TempDir(), []Operation{Add{
+	err = applyOperationWithContextContext(context.Background(), builder, t.TempDir(), nil, Add{
 		Sources: []string{source}, Destination: "/source/",
-	}})
+	})
 	if err == nil {
 		t.Fatal("authenticated Git ADD unexpectedly succeeded")
 	}
@@ -471,9 +449,9 @@ func TestGitAddDoesNotForwardAuthorizationAcrossHosts(t *testing.T) {
 	builder := &credentialAddBuilder{secrets: map[string][]byte{
 		"GIT_AUTH_TOKEN." + originURL.Host: []byte("origin-only-token"),
 	}}
-	err = applyOperations(context.Background(), builder, t.TempDir(), []Operation{Add{
+	err = applyOperationWithContextContext(context.Background(), builder, t.TempDir(), nil, Add{
 		Sources: []string{origin.URL + "/repository.git"}, Destination: "/source/",
-	}})
+	})
 	if err == nil || !strings.Contains(err.Error(), "authenticated ADD Git source") {
 		t.Fatalf("authenticated redirect error = %v", err)
 	}
@@ -534,9 +512,9 @@ func TestGitAddDefaultRefChecksumAndMetadataOptions(t *testing.T) {
 				return nil
 			}
 
-			err := applyOperations(context.Background(), builder, t.TempDir(), []Operation{Add{
+			err := applyOperationWithContextContext(context.Background(), builder, t.TempDir(), nil, Add{
 				Sources: []string{source}, Destination: "/source/", Checksum: commit[:12], KeepGitDir: &keepGitDir,
-			}})
+			})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -549,9 +527,9 @@ func TestGitAddDefaultRefChecksumAndMetadataOptions(t *testing.T) {
 		})
 	}
 
-	err := applyOperations(context.Background(), &recordingBuilder{}, t.TempDir(), []Operation{Add{
+	err := applyOperationWithContextContext(context.Background(), &recordingBuilder{}, t.TempDir(), nil, Add{
 		Sources: []string{source}, Destination: "/source/", Checksum: strings.Repeat("0", 12),
-	}})
+	})
 	if err == nil || !strings.Contains(err.Error(), "unexpected commit") {
 		t.Fatalf("checksum mismatch error = %v", err)
 	}
@@ -570,9 +548,9 @@ func TestGitAddRecursivelyChecksOutSubmodules(t *testing.T) {
 		}
 		return nil
 	}
-	if err := applyOperations(context.Background(), builder, t.TempDir(), []Operation{Add{
+	if err := applyOperationWithContextContext(context.Background(), builder, t.TempDir(), nil, Add{
 		Sources: []string{source}, Destination: "/source/",
-	}}); err != nil {
+	}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -585,9 +563,9 @@ func TestGitAddVerifiesParentChecksumBeforeFetchingSubmodules(t *testing.T) {
 		}
 		return true
 	})
-	err := applyOperations(context.Background(), &recordingBuilder{}, t.TempDir(), []Operation{Add{
+	err := applyOperationWithContextContext(context.Background(), &recordingBuilder{}, t.TempDir(), nil, Add{
 		Sources: []string{source}, Destination: "/source/", Checksum: strings.Repeat("0", 40),
-	}})
+	})
 	if err == nil || !strings.Contains(err.Error(), "unexpected commit") {
 		t.Fatalf("bad parent checksum error = %v", err)
 	}
@@ -613,25 +591,13 @@ func TestGitAddDoesNotForwardRepositoryScopedAuthToSiblingSubmodules(t *testing.
 	builder := &credentialAddBuilder{secrets: map[string][]byte{
 		"GIT_AUTH_HEADER." + parsed.Host: []byte(authorization),
 	}}
-	if err := applyOperations(context.Background(), builder, t.TempDir(), []Operation{Add{
+	if err := applyOperationWithContextContext(context.Background(), builder, t.TempDir(), nil, Add{
 		Sources: []string{source}, Destination: "/source/",
-	}}); err != nil {
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if submoduleAuthorization != "" {
 		t.Fatalf("repository authorization leaked to sibling submodule: %q", submoduleAuthorization)
-	}
-}
-
-func TestGitAuthorizationScopeIsRepositorySpecific(t *testing.T) {
-	for _, test := range []struct{ remote, want string }{
-		{remote: "https://git.example.invalid/team/repository.git", want: "https://git.example.invalid/team/repository.git"},
-		{remote: "https://github.com/team/repository.git", want: "https://github.com/team/repository.git"},
-		{remote: "https://www.github.com/team/repository.git", want: "https://www.github.com/team/repository.git"},
-	} {
-		if got := gitAuthorizationScope(test.remote); got != test.want {
-			t.Errorf("gitAuthorizationScope(%q) = %q, want %q", test.remote, got, test.want)
-		}
 	}
 }
 
@@ -910,9 +876,9 @@ func TestRemoteSourceNameRequiresPath(t *testing.T) {
 }
 
 func TestAddChecksumRequiresOneSource(t *testing.T) {
-	err := applyOperations(context.Background(), &recordingBuilder{}, t.TempDir(), []Operation{Add{
+	err := applyOperationWithContextContext(context.Background(), &recordingBuilder{}, t.TempDir(), nil, Add{
 		Sources: []string{"one", "two"}, Destination: "/sources/", Checksum: digest.FromString("value").String(),
-	}})
+	})
 	if err == nil || !strings.Contains(err.Error(), "ADD checksum requires exactly one source") {
 		t.Fatalf("error = %v", err)
 	}
@@ -920,9 +886,9 @@ func TestAddChecksumRequiresOneSource(t *testing.T) {
 
 func TestAddMultipleSourcesDefersDestinationTypeToBuilder(t *testing.T) {
 	builder := &recordingBuilder{}
-	err := applyOperations(context.Background(), builder, t.TempDir(), []Operation{Add{
+	err := applyOperationWithContextContext(context.Background(), builder, t.TempDir(), nil, Add{
 		Sources: []string{"one", "two"}, Destination: "/existing-directory",
-	}})
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

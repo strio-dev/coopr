@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/containerd/platforms"
+	"github.com/strio-dev/bale"
 	"github.com/strio-dev/coopr/internal/buildah"
 	"github.com/strio-dev/coopr/internal/buildcontext"
 	"github.com/strio-dev/coopr/internal/componentstore"
@@ -24,6 +25,9 @@ import (
 )
 
 type ComponentOptions struct {
+	Bundle                         *oci.ComponentBundleOptions
+	Progress                       buildah.OperationProgressFunc
+	ProgressDropped                func(uint64)
 	Lifecycle                      buildah.LifecycleControls
 	Tags                           []string
 	MetadataFile                   string
@@ -67,6 +71,7 @@ type ComponentOptions struct {
 	Secrets, SSH                   []string
 	Allow                          []string
 	BuildContexts                  []buildcontext.Spec
+	CacheMountDir                  string
 	CacheLocalDir, CacheRepository string
 	CacheFrom, CacheTo             []buildah.CacheSpec
 }
@@ -74,11 +79,34 @@ type ComponentOptions struct {
 // BuildComponent builds the selected package graph into the component store
 // and optionally pushes its named OCI artifact to a registry.
 func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retErr error) {
+	var progressSnapshot func() ([]buildah.OperationProgress, uint64)
+	opts.Progress, progressSnapshot = captureBuildProgress(opts.MetadataFile != "", opts.Progress)
 	if opts.Jobs < 0 {
 		return "", errors.New("jobs must be nonnegative")
 	}
 	if opts.Timestamp != nil && opts.SourceDateEpoch != nil {
 		return "", errors.New("timestamp and source-date-epoch are mutually exclusive")
+	}
+	if opts.Bundle != nil {
+		if opts.Bundle.Reference != "" {
+			return "", errors.New("component build bundle cannot select another local parent")
+		}
+		if opts.Bundle.Output == "" {
+			return "", errors.New("component bundle output path is required")
+		}
+		if opts.Bundle.Origin != "" {
+			if _, err := bale.NormalizeRecipe(bale.Recipe{Include: []bale.Selection{{Ref: opts.Bundle.Origin}}}); err != nil {
+				return "", fmt.Errorf("bundle-origin: %w", err)
+			}
+		}
+		if opts.Push && len(opts.Bundle.Components) != 0 {
+			return "", errors.New("selected local children require complete Bale delivery; --push would publish the component alone")
+		}
+		if _, err := os.Lstat(opts.Bundle.Output); err == nil {
+			return "", fmt.Errorf("component bundle output already exists: %s", opts.Bundle.Output)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
 	}
 	var err error
 	opts.LogFile, err = normalizeBuildLog(opts.LogFile, opts.LogSplit)
@@ -135,6 +163,14 @@ func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retEr
 	if err != nil {
 		return "", err
 	}
+	if opts.Bundle != nil {
+		bundlePath, err := filepath.Abs(opts.Bundle.Output)
+		if err != nil {
+			return "", err
+		}
+		opts.Bundle = &oci.ComponentBundleOptions{Origin: opts.Bundle.Origin, Output: bundlePath, Inputs: opts.Bundle.Inputs, Components: opts.Bundle.Components}
+		outputArtifacts = append(outputArtifacts, bundlePath)
+	}
 	if opts.LogFile != "" {
 		if opts.LogSplit {
 			for _, target := range targets {
@@ -147,7 +183,11 @@ func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retEr
 	if opts.RusageLogFile != "" {
 		outputArtifacts = append(outputArtifacts, opts.RusageLogFile)
 	}
-	if err := validateArtifactOverlaps(outputArtifacts, []string{opts.File}); err != nil {
+	protectedInputs := []string{opts.File}
+	if opts.Bundle != nil {
+		protectedInputs = append(protectedInputs, opts.Bundle.Inputs...)
+	}
+	if err := validateArtifactOverlaps(outputArtifacts, protectedInputs); err != nil {
 		return "", err
 	}
 	if opts.StoreDir == "" {
@@ -161,7 +201,9 @@ func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retEr
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", definitionDisplayName(opts.File), err)
 	}
-	defer func() { _ = cleanupPrimary() }()
+	defer func() {
+		retErr = cleanupBuildFiles(primary.Path, func() { _ = cleanupPrimary() }, retErr)
+	}()
 	opts.File, opts.Context = definitionFile, primary.Path
 	resolvedFiles := make([]string, 0, len(files))
 	for i, file := range files {
@@ -196,7 +238,7 @@ func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retEr
 	if err != nil {
 		return "", err
 	}
-	defer cleanup()
+	defer func() { retErr = cleanupBuildFiles(filepath.Dir(layout), cleanup, retErr) }()
 	artifacts := append([]string{filepath.Dir(layout)}, outputArtifacts...)
 	if opts.StoreDir != "" {
 		artifacts = append(artifacts, opts.StoreDir)
@@ -259,7 +301,8 @@ func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retEr
 			output = filepath.Join(filepath.Dir(layout), fmt.Sprintf("component-%d", i))
 		}
 		result, buildErr := buildah.PublishDefinitionSupervised(buildCtx, def, platformPlanning, buildah.SupervisedPlanOptions{
-			Store: buildStore, ContextDir: opts.Context, IgnoreFile: opts.IgnoreFile, ContextArtifacts: artifacts,
+			Progress: opts.Progress,
+			Store:    buildStore, ContextDir: opts.Context, IgnoreFile: opts.IgnoreFile, ContextArtifacts: artifacts,
 			Output: buildah.Output{Path: output}, ComponentStoreDir: opts.StoreDir,
 			Pull: opts.Pull, PullPolicy: opts.PullPolicy, SourcePolicyFile: opts.SourcePolicyFile, TransientRunMounts: opts.TransientRunMounts,
 			NoCache:     opts.NoCache,
@@ -276,10 +319,13 @@ func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retEr
 			Secrets:       opts.Secrets, SSH: opts.SSH,
 			AuthFile: opts.AuthFile, CertDir: opts.CertDir, TLSVerify: opts.TLSVerify,
 			Credentials: opts.Credentials, Retry: opts.Retry, RetrySet: opts.RetrySet, RetryDelay: opts.RetryDelay, DecryptionKeys: opts.DecryptionKeys, SignaturePolicyPath: opts.SignaturePolicyPath,
-			CacheLocalDir: opts.CacheLocalDir, CacheRepository: opts.CacheRepository,
+			CacheMountDir: opts.CacheMountDir, CacheLocalDir: opts.CacheLocalDir, CacheRepository: opts.CacheRepository,
 			CacheFrom: opts.CacheFrom, CacheTo: opts.CacheTo,
 			Stdin: opts.RunStdin, Stdout: platformStdout, Stderr: platformStderr,
 		})
+		if opts.ProgressDropped != nil {
+			opts.ProgressDropped(result.ProgressDropped)
+		}
 		if buildErr != nil {
 			return platformBuild{}, fmt.Errorf("component definition %s for %s: %w", definitionDisplayName(opts.File), targetPlatform, buildErr)
 		}
@@ -287,7 +333,7 @@ func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retEr
 		if parseErr != nil {
 			return platformBuild{}, parseErr
 		}
-		return platformBuild{variant: oci.IndexVariant{Layout: result.Layout, Manifest: result.Root, Platform: platform}}, nil
+		return platformBuild{variant: oci.IndexVariant{Layout: result.Layout, Manifest: result.Root, Platform: platform}, progressDropped: result.ProgressDropped}, nil
 	})
 	if err != nil {
 		return "", err
@@ -317,10 +363,30 @@ func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retEr
 		ComponentStoreDir: opts.StoreDir, AuthFile: opts.AuthFile, CertDir: opts.CertDir, TLSVerify: opts.TLSVerify,
 		Credentials: opts.Credentials, Retry: opts.Retry, RetrySet: opts.RetrySet, RetryDelay: opts.RetryDelay, DecryptionKeys: opts.DecryptionKeys, SignaturePolicyPath: opts.SignaturePolicyPath,
 	})
+	if opts.Bundle != nil {
+		report.Bundle = &bundleOutputResult{Path: opts.Bundle.Output}
+		if publicationErr == nil {
+			resolver, bundleErr := oci.NewResolver(oci.Options{ComponentStoreDir: opts.StoreDir})
+			if bundleErr == nil {
+				result, err := resolver.BundleComponentLayout(ctx, outputLayout, root, *opts.Bundle)
+				bundleErr = err
+				if result.LayoutPath != "" {
+					report.Bundle.Descriptor = &result.Descriptor
+				}
+			}
+			if bundleErr != nil {
+				report.Bundle.Error = bundleErr.Error()
+				publicationErr = fmt.Errorf("component retained as %s; complete bundle: %w", root.Digest, bundleErr)
+			}
+		} else {
+			report.Bundle.Error = "not created because an earlier output failed"
+		}
+	}
 	variants := make([]oci.IndexVariant, len(builds))
 	for i := range builds {
 		variants[i] = builds[i].variant
 	}
+	setBuildProgress(&report, progressSnapshot, builds)
 	if err := finishOutputs(opts.MetadataFile, "", root, variants, nil, report, publicationErr, "", ""); err != nil {
 		return "", err
 	}
@@ -343,24 +409,4 @@ func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retEr
 		return "", err
 	}
 	return ref, nil
-}
-
-type PublishOptions struct {
-	File, Context, Reference string
-	Platform, Target         string
-	Args                     map[string]string
-	TLSVerify                *bool
-	Pull                     bool
-	NoCache                  bool
-	BuildContexts            []buildcontext.Spec
-}
-
-// PublishComponent is kept for internal callers while the command surface
-// migrates to BuildComponent.
-func PublishComponent(ctx context.Context, opts PublishOptions) (string, error) {
-	return BuildComponent(ctx, ComponentOptions{
-		File: opts.File, Context: opts.Context, Tag: opts.Reference, Push: true, Pull: opts.Pull, NoCache: opts.NoCache,
-		Platform: opts.Platform, Target: opts.Target,
-		Args: opts.Args, TLSVerify: opts.TLSVerify, BuildContexts: opts.BuildContexts,
-	})
 }

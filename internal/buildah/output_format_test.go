@@ -11,8 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/strio-dev/coopr/internal/oci"
+	"go.podman.io/image/v5/types"
+	"go.podman.io/storage"
 )
 
 func TestOutputFormatValidation(t *testing.T) {
@@ -128,7 +131,18 @@ func TestBuildPlanSupervisedPreservesOutputManifestFormat(t *testing.T) {
 			}
 
 			copied := filepath.Join(root, test.name+"-copy")
-			copyResult, err := ExportStoredImageSupervised(context.Background(), store, result.ImageID, copied)
+			var copyResult Result
+			err = WithStore(store, func(backend storage.Store) error {
+				ctx := context.Background()
+				system := &types.SystemContext{BigFilesTemporaryDir: root}
+				selected := digest.Digest(result.ManifestDigest)
+				if err := approveStoredImageExport(ctx, backend, result.ImageID, system, &selected); err != nil {
+					return err
+				}
+				var exportErr error
+				copyResult, exportErr = exportStoredImageVariantRaw(ctx, backend, result.ImageID, Output{Path: copied}, system, &selected)
+				return exportErr
+			})
 			if err != nil {
 				t.Fatal(err)
 			}

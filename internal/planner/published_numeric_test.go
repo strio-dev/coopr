@@ -122,11 +122,7 @@ from "scratch" {}
 			t.Fatal(err)
 		}
 		for _, invalid := range []string{"-1", "+2", "02", "x", ""} {
-			data, _ := json.Marshal(publication.Component)
-			var component PublishedComponent
-			if err := json.Unmarshal(data, &component); err != nil {
-				t.Fatal(err)
-			}
+			component := roundTripPublished(t, publication.Component)
 			if operation == "from" {
 				binding := component.FromBindings["2"]
 				binding.SourceIndex = invalid
@@ -138,9 +134,7 @@ from "scratch" {}
 				t.Fatalf("%s provenance %q accepted", operation, invalid)
 			}
 		}
-		data, _ := json.Marshal(publication.Component)
-		var component PublishedComponent
-		_ = json.Unmarshal(data, &component)
+		component := roundTripPublished(t, publication.Component)
 		if operation == "from" {
 			delete(component.FromBindings, "2")
 		} else {
@@ -189,10 +183,7 @@ from "payload" as="selected" {
     copy "/authored" "/result" from="selected"
 }
 `
-	publication, err := CreateDemandDriven(parse(t, source), Options{Mode: Publish}, func(FromSource) (StageBind, error) {
-		t.Fatal("unexpected external resolution")
-		return StageBind{}, nil
-	})
+	publication, err := CreateDemandDriven(parse(t, source), Options{Mode: Publish}, unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
 	}

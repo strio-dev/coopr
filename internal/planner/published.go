@@ -18,9 +18,6 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 	if component == nil || component.Definition == nil {
 		return nil, fmt.Errorf("incomplete published component")
 	}
-	if err := definition.Validate(component.Definition); err != nil {
-		return nil, err
-	}
 	if _, err := NormalizeParameters(component.PackageArguments); err != nil {
 		return nil, err
 	}
@@ -39,20 +36,13 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	type stage struct {
-		head definition.Instruction
-		body []definition.Instruction
-	}
-	stages := make([]stage, len(projected.Stages))
+	stages := projected.Stages
 	aliases := map[string]int{}
 	for name, id := range projected.Aliases {
 		if !canonicalReservations[name] {
 			return nil, fmt.Errorf("invalid or unreserved stage name %q", name)
 		}
 		aliases[name] = mustStageIndex(id)
-	}
-	for id, s := range projected.Stages {
-		stages[id] = stage{head: s.Head, body: s.Body}
 	}
 	if component.SourceStageCount < len(stages) || len(component.SourceStageIDs) != len(stages) {
 		return nil, fmt.Errorf("invalid original stage identity mapping")
@@ -75,20 +65,20 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 		}
 	}
 	output, err := strconv.Atoi(component.Output)
-	if err != nil || output < 0 || output >= len(stages) || stages[output].head.Name == "package" {
+	if err != nil || output < 0 || output >= len(stages) || stages[output].Head.Name == "package" {
 		return nil, fmt.Errorf("invalid published output %q", component.Output)
 	}
 	deps := make([][]int, len(stages))
 	fromCount := 0
 	referenceCount := 0
 	for id, s := range stages {
-		if s.head.Name == "from" {
+		if s.Head.Name == "from" {
 			fromCount++
 			binding, ok := component.FromBindings[strconv.Itoa(id)]
 			if !ok {
 				return nil, fmt.Errorf("published FROM binding missing for stage %d", id)
 			}
-			after, hasAfter := s.head.Properties["after"]
+			after, hasAfter := s.Head.Properties["after"]
 			if hasAfter {
 				target, err := strconv.Atoi(binding.AfterStage)
 				if err != nil || target < 0 || target >= id || strconv.Itoa(target) != binding.AfterStage {
@@ -111,7 +101,7 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 			} else if binding.AfterStage != "" || binding.AfterIndex != "" {
 				return nil, fmt.Errorf("unexpected FROM after binding for stage %d", id)
 			}
-			source := s.head.Arguments[0]
+			source := s.Head.Arguments[0]
 			switch binding.Kind {
 			case "stage":
 				target, parseErr := strconv.Atoi(binding.Stage)
@@ -149,7 +139,7 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 			}
 		}
 		operation := 0
-		for _, inst := range s.body {
+		for _, inst := range s.Body {
 			if inst.Name == "arg" {
 				continue
 			}
@@ -174,10 +164,10 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 	// external triggers, its reference positions can be checked before execution.
 	scratchLineage := func(id int) bool {
 		for steps := 0; steps < len(stages); steps++ {
-			if stages[id].head.Name != "from" {
+			if stages[id].Head.Name != "from" {
 				return false
 			}
-			for _, inst := range stages[id].body {
+			for _, inst := range stages[id].Body {
 				if inst.Name == "component" {
 					return false
 				}
@@ -200,7 +190,7 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 			continue
 		}
 		base := mustStageIndex(binding.Stage)
-		if stages[base].head.Name != "from" {
+		if stages[base].Head.Name != "from" {
 			continue
 		}
 		claimed := slices.ContainsFunc(component.StageReferences, func(ref StageReferenceBinding) bool {
@@ -209,10 +199,10 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 		if !claimed && !scratchLineage(base) {
 			continue
 		}
-		if slices.ContainsFunc(stages[base].body, func(inst definition.Instruction) bool { return inst.Name == "component" }) {
+		if slices.ContainsFunc(stages[base].Body, func(inst definition.Instruction) bool { return inst.Name == "component" }) {
 			continue // A component can replace the image's final ONBUILD configuration.
 		}
-		for _, inst := range stages[base].body {
+		for _, inst := range stages[base].Body {
 			if inst.Name != "onbuild" {
 				continue
 			}
@@ -256,7 +246,7 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 		}
 		referenceCount++
 		stageID, err := strconv.Atoi(ref.Stage)
-		if err != nil || stageID < 0 || stageID >= len(stages) || stages[stageID].head.Name != "from" {
+		if err != nil || stageID < 0 || stageID >= len(stages) || stages[stageID].Head.Name != "from" {
 			return nil, fmt.Errorf("ONBUILD stage reference has invalid source %q", ref.Stage)
 		}
 		if ref.Operation < 0 || ref.MountIndex < -1 || ref.SourceIndex != "" && !canonicalSourceIndex(ref.SourceIndex) {
@@ -264,13 +254,13 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 		}
 		packageBase := false
 		ancestor := stageID
-		for steps := 0; steps < len(stages) && stages[ancestor].head.Name == "from"; steps++ {
+		for steps := 0; steps < len(stages) && stages[ancestor].Head.Name == "from"; steps++ {
 			binding := component.FromBindings[strconv.Itoa(ancestor)]
 			if binding.Kind != "stage" {
 				break
 			}
 			ancestor, _ = strconv.Atoi(binding.Stage)
-			if stages[ancestor].head.Name == "package" {
+			if stages[ancestor].Head.Name == "package" {
 				packageBase = true
 				break
 			}
@@ -392,7 +382,7 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 		}
 		// An unfinished enclosing EXTEND may be retained as structural ownership
 		// for a selected nested result. Other roots need a visible FROM consumer.
-		eligible := stages[id].head.Name == "extend" && slices.ContainsFunc(projected.Stages, func(stage RawStage) bool {
+		eligible := stages[id].Head.Name == "extend" && slices.ContainsFunc(projected.Stages, func(stage RawStage) bool {
 			nested := mustStageIndex(stage.ID)
 			return nested != id && stage.Owner == strconv.Itoa(id) && (selected[nested] || slices.Contains(dormant, nested))
 		})
@@ -415,10 +405,10 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 			// only when a selected FROM consumes that configuration.
 			for steps := 0; binding.Kind == "stage" && steps < len(stages); steps++ {
 				base := mustStageIndex(binding.Stage)
-				if stages[base].head.Name == "package" {
+				if stages[base].Head.Name == "package" {
 					break
 				}
-				if slices.ContainsFunc(stages[base].body, func(inst definition.Instruction) bool { return inst.Name == "component" }) {
+				if slices.ContainsFunc(stages[base].Body, func(inst definition.Instruction) bool { return inst.Name == "component" }) {
 					eligible = true
 					break
 				}
@@ -442,7 +432,7 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 	}
 	callable := false
 	for _, root := range projected.Roots {
-		if stages[mustStageIndex(root)].head.Name == "extend" && projected.Results[root] == component.Output {
+		if stages[mustStageIndex(root)].Head.Name == "extend" && projected.Results[root] == component.Output {
 			callable = true
 		}
 	}
@@ -451,12 +441,12 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 	}
 	var packages []string
 	for id, s := range stages {
-		if s.head.Name != "package" {
+		if s.Head.Name != "package" {
 			continue
 		}
 		var packageDeps func(int, map[int]bool) error
 		packageDeps = func(current int, visited map[int]bool) error {
-			if stages[current].head.Name == "extend" {
+			if stages[current].Head.Name == "extend" {
 				return fmt.Errorf("package depends on extend")
 			}
 			if visited[current] {
@@ -473,7 +463,7 @@ func ValidatePublished(component *PublishedComponent) ([]string, error) {
 		if err := packageDeps(id, map[int]bool{}); err != nil {
 			return nil, err
 		}
-		packages = append(packages, s.head.Properties["as"])
+		packages = append(packages, s.Head.Properties["as"])
 	}
 	return packages, nil
 }

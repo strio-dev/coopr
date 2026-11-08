@@ -214,7 +214,7 @@ func (s *nativeImageStorage) getManifest(ctx context.Context, instance *digest.D
 			return err
 		}
 		defer func() { attemptErr = errors.Join(attemptErr, source.Close()) }()
-		data, mediaType, err = source.GetManifest(ctx, instance)
+		data, mediaType, err = imageapi.UnparsedInstance(source, instance).Manifest(ctx)
 		return err
 	}, s.retryOptions)
 	return data, mediaType, err

@@ -59,6 +59,10 @@ Apply a shared definition with `component "./components/shared.coopr"`. [Share a
 
 For components you can distribute, follow the [reusable-components tutorial](docs/tutorials/reusable-components.md) to package two components and apply them to an image. Explore [the examples](examples/README.md) for cache mounts and published components, or read about [image storage and transfers](docs/guides/storage.md).
 
+## Application integrations
+
+Embed builds with the [Go execution library](docs/guides/library.md), or use the [Go service client](docs/guides/client.md) to call Coopr over a private Unix socket. The client supports typed programs, image and component builds, and artifact transfers without importing native engine libraries.
+
 ## Development
 
 Development uses the pinned Nix environment. See [contributing](CONTRIBUTING.md) for source builds, tests, and documentation checks.

@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -36,28 +37,25 @@ func TestBuildMultipleCopyAndAddSourcesUseNativeDestinationSemantics(t *testing.
 	}
 	store := cacheTestStore(root)
 	layout := filepath.Join(root, "layout")
-	_, err := Build(ctx, Request{
-		Store: store, Base: "scratch", ContextDir: contextDir, Isolation: "rootless",
-		Operations: []Operation{
-			WorkDir("/copy-dot"),
-			Copy{Sources: []string{"one", "two"}, Destination: "."},
-			WorkDir("/add-dot"),
-			Add{Sources: []string{"one", "two"}, Destination: "."},
-			WorkDir("/copy-existing"), WorkDir("/"),
-			Copy{Sources: []string{"one", "two"}, Destination: "/copy-existing"},
-			WorkDir("/add-existing"), WorkDir("/"),
-			Add{Sources: []string{"one", "two"}, Destination: "/add-existing"},
-		},
-		Output: Output{Path: layout, Reference: "multi-source-destinations"},
+	_, err := BuildPlan(ctx, testPlan(t, `from "scratch" {
+ workdir "/copy-dot"
+ copy "one" "two" "."
+ workdir "/add-dot"
+ add "one" "two" "."
+ workdir "/copy-existing"
+ workdir "/"
+ copy "one" "two" "/copy-existing"
+ workdir "/add-existing"
+ workdir "/"
+ add "one" "two" "/add-existing"
+}`), PlanOptions{
+		Store: store, ContextDir: contextDir, Isolation: "rootless",
+		Output: Output{Path: layout, Filesystem: FilesystemOutput{Type: "tar", Path: filepath.Join(root, "rootfs.tar")}, Reference: "multi-source-destinations"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifest, _ := readPlanImage(t, layout)
-	if len(manifest.Layers) != 1 {
-		t.Fatalf("layers = %d, want 1", len(manifest.Layers))
-	}
-	layer := filepath.Join(layout, "blobs", "sha256", manifest.Layers[0].Digest.Encoded())
+	layer := filepath.Join(root, "rootfs.tar")
 	for _, directory := range []string{"copy-dot", "add-dot", "copy-existing", "add-existing"} {
 		for _, name := range []string{"one", "two"} {
 			if got := readLayerFile(t, layer, directory+"/"+name); got != name+"\n" {
@@ -66,20 +64,13 @@ func TestBuildMultipleCopyAndAddSourcesUseNativeDestinationSemantics(t *testing.
 		}
 	}
 
-	for _, test := range []struct {
-		name      string
-		operation Operation
-	}{
-		{name: "copy", operation: Copy{Sources: []string{"one", "two"}, Destination: "/target"}},
-		{name: "add", operation: Add{Sources: []string{"one", "two"}, Destination: "/target"}},
-	} {
+	for _, test := range []struct{ name string }{{"copy"}, {"add"}} {
 		t.Run(test.name+" rejects existing file", func(t *testing.T) {
-			_, err := Build(ctx, Request{
-				Store: store, Base: "scratch", ContextDir: contextDir, Isolation: "rootless",
-				Operations: []Operation{
-					Copy{Sources: []string{"one"}, Destination: "/target"},
-					test.operation,
-				},
+			_, err := BuildPlan(ctx, testPlan(t, fmt.Sprintf(`from "scratch" {
+ copy "one" "/target"
+ %s "one" "two" "/target"
+}`, test.name)), PlanOptions{
+				Store: store, ContextDir: contextDir, Isolation: "rootless",
 				Output: Output{Path: filepath.Join(root, "invalid-"+test.name), Reference: "invalid-" + test.name},
 			})
 			if err == nil {
@@ -111,34 +102,36 @@ func TestBuildSplitMultipleSourcesUseNativeDestinationSemantics(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := cacheTestStore(root)
-	remoteSources := []string{server.URL + "/remote-one", server.URL + "/remote-two"}
-	mixedCopy := func(destination string) Copy {
-		return Copy{
-			Sources: []string{"local"}, Destination: destination,
-			InlineFiles: []definition.InlineFile{{Path: "inline", Data: "inline\n"}},
+	plan := testPlan(t, fmt.Sprintf(`from "scratch" {
+ workdir "/mixed-dot"
+ copy "local" "."
+ workdir "/remote-dot"
+ add %q %q "."
+ workdir "/mixed-existing"
+ workdir "/"
+ copy "local" "/mixed-existing"
+ workdir "/remote-existing"
+ workdir "/"
+ add %q %q "/remote-existing"
+ user "1000"
+ copy "local" "/owner-default"
+ copy "local" "/owner-explicit" chown="12:34"
+}`, server.URL+"/remote-one", server.URL+"/remote-two", server.URL+"/remote-one", server.URL+"/remote-two"))
+	for index := range plan.Stages[0].Operations {
+		operation := &plan.Stages[0].Operations[index]
+		if operation.Name == "copy" {
+			operation.InlineFiles = []definition.InlineFile{{Path: "inline", Data: "inline\n"}}
 		}
 	}
 	layout := filepath.Join(root, "split-layout")
-	_, err := Build(ctx, Request{
-		Store: store, Base: "scratch", ContextDir: contextDir, Isolation: "rootless",
-		Operations: []Operation{
-			WorkDir("/mixed-dot"), mixedCopy("."),
-			WorkDir("/remote-dot"), Add{Sources: remoteSources, Destination: "."},
-			WorkDir("/mixed-existing"), WorkDir("/"), mixedCopy("/mixed-existing"),
-			WorkDir("/remote-existing"), WorkDir("/"), Add{Sources: remoteSources, Destination: "/remote-existing"},
-			User("1000"), mixedCopy("/owner-default"),
-			Copy{
-				Sources: []string{"local"}, Destination: "/owner-explicit", Chown: "12:34",
-				InlineFiles: []definition.InlineFile{{Path: "inline", Data: "inline\n"}},
-			},
-		},
-		Output: Output{Path: layout, Reference: "split-multi-source-destinations"},
+	_, err := BuildPlan(ctx, plan, PlanOptions{
+		Store: store, ContextDir: contextDir, Isolation: "rootless",
+		Output: Output{Path: layout, Filesystem: FilesystemOutput{Type: "tar", Path: filepath.Join(root, "rootfs.tar")}, Reference: "split-multi-source-destinations"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifest, _ := readPlanImage(t, layout)
-	layer := filepath.Join(layout, "blobs", "sha256", manifest.Layers[0].Digest.Encoded())
+	layer := filepath.Join(root, "rootfs.tar")
 	for path, want := range map[string]string{
 		"mixed-dot/local":            "local\n",
 		"mixed-dot/inline":           "inline\n",
@@ -160,20 +153,23 @@ func TestBuildSplitMultipleSourcesUseNativeDestinationSemantics(t *testing.T) {
 		t.Fatalf("explicit destination owner = %d:%d, want 12:34", header.Uid, header.Gid)
 	}
 
-	for _, test := range []struct {
-		name      string
-		operation Operation
-	}{
-		{name: "mixed-copy", operation: mixedCopy("/target")},
-		{name: "remote-add", operation: Add{Sources: remoteSources, Destination: "/target"}},
-	} {
+	for _, test := range []struct{ name string }{{"mixed-copy"}, {"remote-add"}} {
 		t.Run(test.name+" rejects existing file", func(t *testing.T) {
-			_, err := Build(ctx, Request{
-				Store: store, Base: "scratch", ContextDir: contextDir, Isolation: "rootless",
-				Operations: []Operation{
-					Copy{Sources: []string{"local"}, Destination: "/target"},
-					test.operation,
-				},
+			plan := testPlan(t, `from "scratch" {
+ copy "local" "/target"
+ copy "local" "/target"
+}`)
+			if test.name == "mixed-copy" {
+				plan.Stages[0].Operations[1].InlineFiles = []definition.InlineFile{{Path: "inline", Data: "inline\n"}}
+			} else {
+				plan = testPlan(t, fmt.Sprintf(`from "scratch" {
+ copy "local" "/target"
+ add %q %q "/target"
+}`, server.URL+"/remote-one", server.URL+"/remote-two"))
+			}
+
+			_, err := BuildPlan(ctx, plan, PlanOptions{
+				Store: store, ContextDir: contextDir, Isolation: "rootless",
 				Output: Output{Path: filepath.Join(root, "split-invalid-"+test.name), Reference: "split-invalid-" + test.name},
 			})
 			if err == nil {
@@ -419,22 +415,21 @@ func TestBuildRemoteRootURLUsesNativeDestinationTyping(t *testing.T) {
 			if err := os.Mkdir(contextDir, 0700); err != nil {
 				t.Fatal(err)
 			}
-			operations := []Operation{}
+			source := "from \"scratch\" {\n"
 			if tc.directory {
-				operations = append(operations, WorkDir("/directory"), WorkDir("/"))
+				source += "workdir \"/directory\"\nworkdir \"/\"\n"
 			}
 			if tc.existingFile {
 				if err := os.WriteFile(filepath.Join(contextDir, "initial"), []byte("before"), 0600); err != nil {
 					t.Fatal(err)
 				}
-				operations = append(operations, Copy{Sources: []string{"initial"}, Destination: tc.destination})
+				source += fmt.Sprintf("copy \"initial\" %q\n", tc.destination)
 			}
 			if tc.workdir != "" {
-				operations = append(operations, WorkDir(tc.workdir))
+				source += fmt.Sprintf("workdir %q\n", tc.workdir)
 			}
-			operations = append(operations, Add{Sources: []string{server.URL + "/"}, Destination: tc.destination})
 			layout := filepath.Join(root, "layout")
-			_, err := Build(ctx, Request{Store: cacheTestStore(root), Base: "scratch", ContextDir: contextDir, Isolation: "rootless", Operations: operations, Output: Output{Path: layout, Reference: "root-url"}})
+			_, err := BuildPlan(ctx, testPlan(t, source+fmt.Sprintf("add %q %q\n}\n", server.URL+"/", tc.destination)), PlanOptions{Store: cacheTestStore(root), ContextDir: contextDir, Isolation: "rootless", Output: Output{Path: layout, Reference: "root-url"}})
 			if tc.want == "" {
 				if err == nil || !strings.Contains(err.Error(), "has no filename") {
 					t.Fatalf("directory error=%v", err)
@@ -445,7 +440,7 @@ func TestBuildRemoteRootURLUsesNativeDestinationTyping(t *testing.T) {
 				t.Fatal(err)
 			}
 			manifest, _ := readPlanImage(t, layout)
-			layer := filepath.Join(layout, "blobs", "sha256", manifest.Layers[0].Digest.Encoded())
+			layer := filepath.Join(layout, "blobs", "sha256", manifest.Layers[len(manifest.Layers)-1].Digest.Encoded())
 			if got := readLayerFile(t, layer, tc.want); got != "download\n" {
 				t.Fatalf("payload=%q", got)
 			}
@@ -463,43 +458,13 @@ func TestBuildRemoteAddMissingLastModifiedCopiesEpoch(t *testing.T) {
 	defer cancel()
 	root := t.TempDir()
 	layout := filepath.Join(root, "layout")
-	_, err := Build(ctx, Request{Store: cacheTestStore(root), Base: "scratch", ContextDir: root, Isolation: "rootless", Operations: []Operation{Add{Sources: []string{server.URL + "/payload"}, Destination: "/payload"}}, Output: Output{Path: layout, Reference: "epoch"}})
+	_, err := BuildPlan(ctx, testPlan(t, fmt.Sprintf(`from "scratch" { add %q "/payload"; }`, server.URL+"/payload")), PlanOptions{Store: cacheTestStore(root), ContextDir: root, Isolation: "rootless", Output: Output{Path: layout, Reference: "epoch"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	manifest, _ := readPlanImage(t, layout)
-	file, err := os.Open(filepath.Join(layout, "blobs", "sha256", manifest.Layers[0].Digest.Encoded()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if err := file.Close(); err != nil {
-			t.Errorf("close layer: %v", err)
-		}
-	}()
-	reader, err := storagearchive.DecompressStream(file)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if err := reader.Close(); err != nil {
-			t.Errorf("close layer reader: %v", err)
-		}
-	}()
-	archive := tar.NewReader(reader)
-	for {
-		header, err := archive.Next()
-		if err == io.EOF {
-			t.Fatal("copied payload absent")
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if strings.TrimPrefix(header.Name, "./") == "payload" {
-			if !header.ModTime.Equal(time.Unix(0, 0)) {
-				t.Fatalf("copied mtime=%v", header.ModTime)
-			}
-			return
-		}
+	header := readLayerHeader(t, filepath.Join(layout, "blobs", "sha256", manifest.Layers[0].Digest.Encoded()), "payload")
+	if !header.ModTime.Equal(time.Unix(0, 0)) {
+		t.Fatalf("copied mtime=%v", header.ModTime)
 	}
 }

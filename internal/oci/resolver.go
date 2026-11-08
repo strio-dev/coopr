@@ -589,7 +589,7 @@ func fetchMetadata(ctx context.Context, source content.ReadOnlyStorage, desc v1.
 }
 
 func checkDescriptor(desc v1.Descriptor) error {
-	if desc.MediaType == "" || desc.Size < 0 || desc.Digest.Algorithm() != digest.SHA256 || desc.Digest.Validate() != nil {
+	if desc.MediaType == "" || desc.Size < 0 || desc.Digest.Validate() != nil || desc.Digest.Algorithm() != digest.SHA256 {
 		return fmt.Errorf("invalid descriptor media type, size, or digest")
 	}
 	return nil

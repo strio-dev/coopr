@@ -265,9 +265,17 @@ func writePackageTar(ctx context.Context, destination io.Writer, source io.Reade
 		if err := writer.WriteHeader(header); err != nil {
 			return counter.count, err
 		}
+		// Native snapshot tar is uncompressed; entry reads also check cancellation.
+		// nosemgrep: cache.semgrep-rules.go.lang.security.potential-dos-via-decompression-bomb
 		if _, err := io.Copy(writer, contextReader{ctx: ctx, reader: reader}); err != nil {
 			return counter.count, err
 		}
+	}
+	// Tar EOF precedes stream EOF, which joins the archive producer and reports its exit error.
+	// Drain the original uncompressed native pipe, not the tar reader; no decompression occurs.
+	// nosemgrep: cache.semgrep-rules.go.lang.security.potential-dos-via-decompression-bomb
+	if _, err := io.Copy(io.Discard, contextReader{ctx: ctx, reader: source}); err != nil {
+		return counter.count, err
 	}
 	if root != nil && !rootWritten {
 		return counter.count, errors.New("package archive omitted root directory metadata")
@@ -329,7 +337,7 @@ func packageImageConfigSelected(ctx context.Context, store storage.Store, imageI
 	if !validManifest || !validDeclaredManifest || manifest.SchemaVersion != 2 || !validConfig {
 		return nil, fmt.Errorf("package image %q has unsupported manifest or config media types %q and %q", imageID, mediaType, manifest.Config.MediaType)
 	}
-	if manifest.Config.Size < 0 || manifest.Config.Size > maxPackageConfigSize || manifest.Config.Digest.Algorithm() != digest.SHA256 || manifest.Config.Digest.Validate() != nil {
+	if manifest.Config.Size < 0 || manifest.Config.Size > maxPackageConfigSize || manifest.Config.Digest.Validate() != nil || manifest.Config.Digest.Algorithm() != digest.SHA256 {
 		return nil, fmt.Errorf("package image %q has invalid config descriptor", imageID)
 	}
 	stream, reportedSize, err := source.GetBlob(ctx, types.BlobInfo{

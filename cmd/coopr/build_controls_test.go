@@ -6,32 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/strio-dev/coopr/internal/oci"
-	buildahcli "go.podman.io/buildah/pkg/cli"
 )
-
-func TestBuildControlFlagsUseConventionalDefaultsAndParsing(t *testing.T) {
-	cmd := newBuildCommand()
-	for _, setting := range []struct{ name, value string }{
-		{"dns", "2001:0db8::1"}, {"dns-search", "Example.TEST"}, {"dns-option", "ndots:2"},
-		{"memory", "64m"}, {"memory-swap", "128m"}, {"cpu-period", "10000"}, {"cpu-quota", "5000"},
-		{"cpu-shares", "256"}, {"shm-size", "32m"}, {"ulimit", "nofile=1024:2048"}, {"jobs", "3"},
-	} {
-		if err := cmd.Flags().Set(setting.name, setting.value); err != nil {
-			t.Fatalf("set --%s: %v", setting.name, err)
-		}
-	}
-	if flag := cmd.Flags().Lookup("http-proxy"); flag == nil || flag.DefValue != "true" {
-		t.Fatalf("--http-proxy default = %#v", flag)
-	}
-	for _, name := range []string{"authfile", "cert-dir", "tls-verify"} {
-		if cmd.Flags().Lookup(name) == nil {
-			t.Fatalf("missing --%s", name)
-		}
-	}
-	if flag := cmd.Flags().Lookup("tls-verify"); flag.DefValue != "true" {
-		t.Fatalf("--tls-verify default = %q", flag.DefValue)
-	}
-}
 
 func TestBuildLifecycleDefaultsMatchPodman(t *testing.T) {
 	for _, value := range []string{"", "false", "FALSE", "0", "true", "1", "other"} {
@@ -51,15 +26,21 @@ func TestBuildLifecycleDefaultsMatchPodman(t *testing.T) {
 }
 
 func TestBuildControlParserPreservesNativeDNSValues(t *testing.T) {
-	flags := buildControlFlags{
-		FromAndBudResults: buildahcli.FromAndBudResults{HTTPProxy: true, DNSServers: []string{"2001:0db8::1", "2001:db8::1"}, DNSSearch: []string{"Example.TEST"}, Memory: "64m", MemorySwap: "128m", Ulimit: []string{"nofile=1024:2048"}},
+	cmd := &cobra.Command{Use: "test"}
+	var flags buildControlFlags
+	flags.addTo(cmd)
+	if err := cmd.ParseFlags([]string{"--dns=2001:0db8::1", "--dns=2001:db8::1", "--dns-search=Example.TEST", "--memory=64m", "--memory-swap=128m", "--cpu-period=10000", "--cpu-quota=5000", "--cpu-shares=256", "--shm-size=32m"}); err != nil {
+		t.Fatal(err)
 	}
 	controls, err := flags.controls()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(controls.DNSServers, []string{"2001:0db8::1", "2001:db8::1"}) || !reflect.DeepEqual(controls.DNSSearch, []string{"Example.TEST"}) {
-		t.Fatalf("native DNS controls = %+v", controls)
+	if !controls.HTTPProxy || !reflect.DeepEqual(controls.DNSServers, []string{"2001:0db8::1", "2001:db8::1"}) || !reflect.DeepEqual(controls.DNSSearch, []string{"Example.TEST"}) {
+		t.Fatalf("native DNS/proxy controls = %+v", controls)
+	}
+	if controls.Memory != 64<<20 || controls.MemorySwap != 128<<20 || controls.CPUPeriod != 10000 || controls.CPUQuota != 5000 || controls.CPUShares != 256 || controls.ShmSize != 32<<20 {
+		t.Fatalf("native resource controls = %+v", controls)
 	}
 }
 
@@ -74,24 +55,6 @@ func TestBuildCommandsExposePodmanRunControlFlags(t *testing.T) {
 		} {
 			if command.Flags().Lookup(name) == nil {
 				t.Errorf("%s missing --%s", command.CommandPath(), name)
-			}
-		}
-	}
-}
-
-func TestRegistryFlagsAreSharedByBuildComponentAndPush(t *testing.T) {
-	commands := []struct {
-		name string
-		cmd  *cobra.Command
-	}{
-		{"build", newBuildCommand()},
-		{"component build", newComponentBuildCommand()},
-		{"push", newImagePushCommand()},
-	}
-	for _, command := range commands {
-		for _, name := range []string{"authfile", "cert-dir", "tls-verify"} {
-			if command.cmd.Flags().Lookup(name) == nil {
-				t.Errorf("%s missing --%s", command.name, name)
 			}
 		}
 	}
@@ -148,8 +111,8 @@ func TestPullPolicyFlagsUseMissingByDefault(t *testing.T) {
 			if err := test.cmd.ParseFlags([]string{"--pull=" + policy}); err != nil {
 				t.Fatalf("%s --pull=%s: %v", test.name, policy, err)
 			}
-			if flag.Value.String() != policy {
-				t.Fatalf("%s --pull=%s became %q", test.name, policy, flag.Value.String())
+			if got, err := resolveBuildPullPolicy(test.cmd); err != nil || got != policy {
+				t.Fatalf("%s --pull=%s became %q: %v", test.name, policy, got, err)
 			}
 		}
 		if err := test.cmd.ParseFlags([]string{"--pull=invalid"}); err != nil {

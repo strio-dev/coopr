@@ -1,10 +1,8 @@
 package main
 
 import (
-	"fmt"
 	"github.com/spf13/cobra"
 	"github.com/strio-dev/coopr/internal/oci"
-	"go.podman.io/buildah/define"
 	buildahparse "go.podman.io/buildah/pkg/parse"
 )
 
@@ -24,20 +22,6 @@ func resolveBuildPullPolicy(command *cobra.Command) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return nativePullPolicyString(policy)
-}
-
-func nativePullPolicyString(policy define.PullPolicy) (string, error) {
-	switch policy {
-	case define.PullAlways:
-		return string(oci.PullAlways), nil
-	case define.PullNever:
-		return string(oci.PullNever), nil
-	case define.PullIfMissing:
-		return string(oci.PullMissing), nil
-	case define.PullIfNewer:
-		return string(oci.PullNewer), nil
-	default:
-		return "", fmt.Errorf("unsupported native pull policy %d", policy)
-	}
+	normalized, err := oci.NormalizePullPolicy(policy.String(), false)
+	return string(normalized), err
 }

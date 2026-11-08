@@ -1,14 +1,12 @@
 package componentstore
 
 import (
-	"archive/tar"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
-	"os"
 
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/strio-dev/coopr/internal/localstore"
@@ -55,32 +53,14 @@ func WriteArchiveTo(ctx context.Context, source content.ReadOnlyStorage, root v1
 
 // ArchiveRoots reads only the OCI index, without extracting archive paths.
 func ArchiveRoots(path string) ([]v1.Descriptor, error) {
-	file, err := os.Open(path)
+	index, err := localstore.ReadArchiveIndex(path)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = file.Close() }()
-	reader := tar.NewReader(file)
-	for {
-		header, err := reader.Next()
-		if err != nil {
-			return nil, fmt.Errorf("OCI archive has no index.json: %w", err)
-		}
-		if header.Name != "index.json" && header.Name != "./index.json" {
-			continue
-		}
-		if header.Size < 0 || header.Size > maxArchiveMetadata {
-			return nil, errors.New("OCI index is too large")
-		}
-		var index v1.Index
-		if err := json.NewDecoder(io.LimitReader(reader, header.Size)).Decode(&index); err != nil {
-			return nil, fmt.Errorf("decode OCI index: %w", err)
-		}
-		if index.SchemaVersion != 2 || len(index.Manifests) == 0 || index.MediaType != "" && index.MediaType != v1.MediaTypeImageIndex {
-			return nil, errors.New("invalid OCI archive index")
-		}
-		return index.Manifests, nil
+	if index.SchemaVersion != 2 || len(index.Manifests) == 0 || index.MediaType != "" && index.MediaType != v1.MediaTypeImageIndex {
+		return nil, errors.New("invalid OCI archive index")
 	}
+	return index.Manifests, nil
 }
 
 // ArchiveRoot selects one subjectless component graph; its auxiliaries must be

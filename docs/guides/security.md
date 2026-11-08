@@ -12,7 +12,13 @@ Configure your host with [Podman's rootless setup](https://github.com/podman-con
 
 Memory and CPU limits need cgroup v2 with the required controllers delegated to your user. Unsupported limits fail explicitly.
 
+Ordinary builds do not require systemd.
+
 Run Coopr and Podman as the same user with the same storage settings to share images. See [host setup](../getting-started/index.md#set-up-your-host) for a basic check.
+
+## Cancellation and cleanup
+
+Cancel builds normally so Coopr can stop workers and clean up. If Coopr reports `cleanup_failed`, keep input paths available until cleanup is confirmed; private execution files are retained and outputs are not promoted. Force-killing the engine can leave workloads or storage behind.
 
 ## Embedding in an application
 

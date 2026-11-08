@@ -8,6 +8,7 @@ import (
 	"slices"
 
 	"github.com/opencontainers/go-digest"
+	"github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/strio-dev/coopr/internal/buildah"
 	"github.com/strio-dev/coopr/internal/imagestore"
@@ -100,7 +101,6 @@ func appendManifest(ctx context.Context, name, format string, store buildah.Stor
 			keys = append(keys, key)
 		}
 		slices.Sort(keys)
-		native := manifests.Create()
 		mediaType := v1.MediaTypeImageIndex
 		switch format {
 		case "", "oci":
@@ -112,9 +112,8 @@ func appendManifest(ctx context.Context, name, format string, store buildah.Stor
 		if len(result) == 0 {
 			return errors.New("image index requires at least one variant")
 		}
-		// Native mutation emits the requested list
-		// format. Existing descriptor occurrences are retained separately: the
-		// resident selection map is a lookup, not an ordered descriptor list.
+		// Preserve exact descriptor occurrences: the resident selection map is a
+		// lookup, not an ordered descriptor list.
 		for _, key := range keys {
 			selection := selections[key]
 			platform, err := selection.Platform()
@@ -128,19 +127,11 @@ func appendManifest(ctx context.Context, name, format string, store buildah.Stor
 				selection.Manifest.Platform = &platform
 			}
 			result[key] = selection
-			if err := native.AddInstance(selection.Manifest.Digest, selection.Manifest.Size, selection.Manifest.MediaType, platform.OS, platform.Architecture, platform.OSVersion, platform.OSFeatures, platform.Variant, nil, nil); err != nil {
-				return err
-			}
 		}
-		data, err = native.Serialize(mediaType)
-		if err != nil {
-			return err
+		combinedIndex := v1.Index{
+			Versioned: specs.Versioned{SchemaVersion: 2},
+			MediaType: mediaType,
 		}
-		var combinedIndex v1.Index
-		if err := json.Unmarshal(data, &combinedIndex); err != nil {
-			return err
-		}
-		combinedIndex.Manifests = nil
 		if previousIndex != nil {
 			for _, member := range previousIndex.Manifests {
 				replaced := false

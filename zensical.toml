@@ -18,10 +18,13 @@ nav = [
   { "Guides" = [
     { "Build images" = "guides/builds.md" },
     { "Use the Go execution library" = "guides/library.md" },
+    { "Use the local execution API" = "guides/api.md" },
+    { "Use the Go service client" = "guides/client.md" },
     { "Package components" = "guides/components.md" },
     { "Image and component storage" = "guides/storage.md" },
     { "Caching" = "guides/caching.md" },
     { "Run Coopr in a container" = "guides/container.md" },
+    { "Build images from Nix packages" = "guides/nix.md" },
     { "Security and rootless builds" = "guides/security.md" },
   ] },
   { "Concepts" = [
@@ -31,6 +34,7 @@ nav = [
   { "Reference" = [
     { "Definition syntax" = "reference/definition.md" },
     { "CLI" = "reference/cli.md" },
+    { "Local execution API" = "reference/api.md" },
     { "Execution" = "reference/execution.md" },
     { "Configuration" = "reference/configuration.md" },
   ] },

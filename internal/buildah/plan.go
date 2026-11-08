@@ -2,7 +2,6 @@ package buildah
 
 import (
 	"fmt"
-	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -24,6 +23,15 @@ import (
 // PlanOptions supplies execution-only values which are intentionally absent
 // from planner.Plan.
 type PlanOptions struct {
+	// workerDirectory is supervisor-owned scratch removed after worker exit.
+	workerDirectory string
+	// Progress observes execution without changing output or cache identities.
+	Progress OperationProgressFunc
+	// progressBuffer belongs to a supervised invocation and accumulates child
+	// truncation counts alongside the observations delivered through Progress.
+	progressBuffer *operationProgressBuffer
+	// Isolated stage workers preserve their existing durable-import ownership.
+	eagerPortableImports bool
 	// ProgressPrefix attributes concurrent platform builds without affecting execution.
 	ProgressPrefix string
 	// ProgressReference is a display label, never an image annotation.
@@ -62,6 +70,7 @@ type PlanOptions struct {
 	// planner's deferred replan closure is also process-local.
 	ReplannedBaseDelta      func() map[ResolvedBaseKey]ResolvedImageSource
 	CacheLocalDir           string // Optional OCI layout for portable component states.
+	CacheMountDir           string // Private persistent native RUN cache parent.
 	CacheRepository         string // Optional caller-selected OCI registry repository.
 	CacheFrom               []CacheSpec
 	CacheTo                 []CacheSpec
@@ -108,118 +117,6 @@ type ResolvedBaseKey struct {
 }
 
 type CacheMountIDResolver func(operation planner.Operation, mountIndex int) (string, error)
-
-// RequestFromPlan lowers the currently supported standalone-plan subset into
-// direct Buildah operations. It accepts exactly one scratch stage and never
-// renders a Containerfile.
-func RequestFromPlan(plan *planner.Plan, options PlanOptions) (Request, error) {
-	var err error
-	options, err = normalizePlanOptions(options)
-	if err != nil {
-		return Request{}, err
-	}
-	sourceDateEpoch := plan.SourceDateEpoch
-	if options.SourceDateEpochOverride != nil {
-		sourceDateEpoch = options.SourceDateEpochOverride
-	}
-	if err := validateTimestampOptions(options.Timestamp, sourceDateEpoch, options.RewriteTimestamp); err != nil {
-		return Request{}, err
-	}
-	stage, err := standaloneScratchStage(plan)
-	if err != nil {
-		return Request{}, err
-	}
-	resolved, err := resolveAndValidateBuildNetwork([]planner.Stage{stage}, options.Network, options.RunControls, options.Isolation)
-	if err != nil {
-		return Request{}, err
-	}
-	stage = resolved[0]
-	operations, err := lowerOperationsWithCacheMountIDs(stage.Operations, options.CacheMountID)
-	if err != nil {
-		return Request{}, fmt.Errorf("stage %s: %w", stage.ID, err)
-	}
-	type runProxyScope struct{ declared, shadowed []string }
-	runScopes := make([]runProxyScope, 0)
-	for _, planned := range stage.Operations {
-		if planned.Name == "run" {
-			runScopes = append(runScopes, runProxyScope{planned.DeclaredProxyArguments, planned.ShadowedProxyArguments})
-		}
-	}
-	runIndex := 0
-	for index, operation := range operations {
-		if run, ok := operation.(Run); ok {
-			run.ContextIgnoreFile = options.IgnoreFile
-			run.SecretSpecs = slices.Clone(options.Secrets)
-			run.SSHSpecs = slices.Clone(options.SSH)
-			if runIndex < len(runScopes) {
-				run.Env = mergePredefinedProxyEnvironment(run.Env, options.ProxyArgs, runScopes[runIndex].declared, runScopes[runIndex].shadowed)
-			}
-			runIndex++
-			operations[index] = run
-		} else if copied, ok := operation.(Copy); ok {
-			copied.IgnoreFile = options.IgnoreFile
-			operations[index] = copied
-		} else if added, ok := operation.(Add); ok {
-			added.IgnoreFile = options.IgnoreFile
-			operations[index] = added
-		}
-	}
-	return Request{
-		Store: options.Store, Base: "scratch", ContextDir: options.ContextDir, ContextArtifacts: slices.Clone(options.ContextArtifacts), IgnoreFile: options.IgnoreFile,
-		Isolation: options.Isolation, Runtime: options.Runtime,
-		// Planner globals are already present in lowered RUN operations. Direct
-		// Request globals are appended only for callers that bypass planning.
-		Operations: operations, Secrets: slices.Clone(options.Secrets), SSH: slices.Clone(options.SSH), Allow: slices.Clone(options.Allow), AddHosts: slices.Clone(options.AddHosts), RunControls: options.RunControls, Lifecycle: options.Lifecycle, ImageControls: options.ImageControls, Output: options.Output,
-		Timestamp: options.Timestamp, SourceDateEpoch: sourceDateEpoch, RewriteTimestamp: options.RewriteTimestamp, CacheTTL: options.CacheTTL,
-	}, nil
-}
-
-func standaloneScratchStage(plan *planner.Plan) (planner.Stage, error) {
-	if plan == nil {
-		return planner.Stage{}, fmt.Errorf("plan is nil")
-	}
-	if plan.Mode != planner.Build || plan.DefinitionType != "container" {
-		return planner.Stage{}, fmt.Errorf("direct Buildah adapter requires a standalone container build plan")
-	}
-	if len(plan.Stages) != 1 || len(plan.Outputs) != 1 {
-		return planner.Stage{}, fmt.Errorf("direct Buildah adapter requires exactly one stage and one output")
-	}
-	stage := plan.Stages[0]
-	if plan.Outputs[0] != stage.ID {
-		return planner.Stage{}, fmt.Errorf("output %q does not select stage %q", plan.Outputs[0], stage.ID)
-	}
-	if stage.Kind != "from" || !strings.EqualFold(stage.Source, "scratch") {
-		return planner.Stage{}, fmt.Errorf("stage %s must be from scratch, got %s %q", stage.ID, stage.Kind, stage.Source)
-	}
-	if len(stage.Dependencies) != 0 || len(plan.Inputs) != 0 {
-		return planner.Stage{}, fmt.Errorf("scratch stage must not have stage or external inputs")
-	}
-	platform := runtime.GOOS + "/" + runtime.GOARCH
-	if plan.Platform != platform || stage.Platform != platform {
-		return planner.Stage{}, fmt.Errorf("direct Buildah adapter currently requires native platform %q, got plan %q stage %q", platform, plan.Platform, stage.Platform)
-	}
-	return stage, nil
-}
-
-func lowerOperationsWithCacheMountIDs(planned []planner.Operation, resolve CacheMountIDResolver) ([]Operation, error) {
-	result := make([]Operation, 0, len(planned))
-	shell := []string{"/bin/sh", "-c"}
-	for index, operation := range planned {
-		lowered, nextShell, err := lowerOperationWithCacheMountIDs(operation, shell, resolve, nil)
-		if err != nil {
-			return nil, fmt.Errorf("operation %d %q: %w", index+1, operation.Name, err)
-		}
-		result = append(result, lowered...)
-		if nextShell != nil {
-			shell = nextShell
-		}
-	}
-	return result, nil
-}
-
-func lowerOperation(operation planner.Operation, shell []string) ([]Operation, []string, error) {
-	return lowerOperationWithCacheMountIDs(operation, shell, nil, nil)
-}
 
 func lowerOperationWithCacheMountIDs(operation planner.Operation, shell []string, resolve CacheMountIDResolver, boundMountSources map[int]string) ([]Operation, []string, error) {
 	instruction := operation.Instruction

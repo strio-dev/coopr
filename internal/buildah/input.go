@@ -59,6 +59,9 @@ func ImportSelectedImage(ctx context.Context, store storage.Store, system *types
 	if manifest.Config.MediaType != v1.MediaTypeImageConfig && manifest.Config.MediaType != "application/vnd.docker.container.image.v1+json" {
 		return "", fmt.Errorf("selected image config has unsupported media type %q", manifest.Config.MediaType)
 	}
+	if err := manifest.Config.Digest.Validate(); err != nil {
+		return "", fmt.Errorf("selected image config has invalid digest %q: %w", manifest.Config.Digest, err)
+	}
 	if manifest.Config.Digest.Algorithm() != digest.SHA256 {
 		return "", fmt.Errorf("containers/storage image config must use sha256, got %s", manifest.Config.Digest.Algorithm())
 	}

@@ -15,7 +15,7 @@ import (
 
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/strio-dev/coopr/internal/buildah"
-	"github.com/strio-dev/coopr/internal/imagestore"
+	"github.com/strio-dev/coopr/internal/testutil/nativeimage"
 	commonconfig "go.podman.io/common/pkg/config"
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
@@ -23,7 +23,7 @@ import (
 
 func nativeDefaultsImage(t *testing.T, options buildah.StoreOptions, names ...string) {
 	t.Helper()
-	store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(options))
+	store, err := nativeimage.NewStore(buildah.NativeStoreOptions(options))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func nativeDefaultsImage(t *testing.T, options buildah.StoreOptions, names ...st
 	}()
 	for _, name := range names {
 		layout, desc, _ := maintenanceImageLayout(t, v1.Platform{OS: "linux", Architecture: runtime.GOARCH}, name)
-		if _, err := store.WriteLayout(context.Background(), layout, desc, name); err != nil {
+		if _, err := store.SeedLayout(context.Background(), layout, desc, name); err != nil {
 			t.Fatal(err)
 		}
 	}

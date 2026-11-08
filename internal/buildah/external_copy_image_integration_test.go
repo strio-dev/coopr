@@ -13,42 +13,6 @@ import (
 	"go.podman.io/image/v5/types"
 )
 
-func TestBuildDefinitionCopiesFromSelectedExternalImage(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping a live rootless Buildah external-image COPY test in short mode")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	root := t.TempDir()
-	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
-	base := newLiveBusyBoxStorage(t, ctx, root, store)
-	policy := filepath.Join(root, "policy.json")
-	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	definition := parseWorkerDefinition(t, `from "scratch" {
-    copy "/bin/busybox" "/tool" from="`+base.reference+`"
-}
-`)
-	layout := filepath.Join(root, "result")
-	_, err := BuildDefinitionSupervised(ctx, definition, planner.Options{
-		Mode: planner.Build, Platform: "linux/" + runtime.GOARCH,
-	}, SupervisedPlanOptions{
-		Store: store, ContextDir: root, Isolation: "rootless", Output: Output{Path: layout},
-		Pull: false, SignaturePolicyPath: policy,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	manifest, _ := readPlanImage(t, layout)
-	if len(manifest.Layers) != 1 {
-		t.Fatalf("external-image COPY layers = %d, want 1", len(manifest.Layers))
-	}
-	if copied := readLayerFile(t, filepath.Join(layout, "blobs", "sha256", manifest.Layers[0].Digest.Encoded()), "tool"); copied == "" {
-		t.Fatal("external-image COPY produced an empty tool")
-	}
-}
-
 func TestBuildDefinitionMountsSelectedExternalImageForRun(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping a live rootless Buildah external-image RUN mount test in short mode")

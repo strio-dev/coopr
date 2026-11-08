@@ -1,7 +1,6 @@
 package oci
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/localstore"
 	"oras.land/oras-go/v2"
 	"oras.land/oras-go/v2/content"
 	orasoci "oras.land/oras-go/v2/content/oci"
@@ -38,7 +38,7 @@ func (r *Resolver) PublishComponent(ctx context.Context, target string, meta Com
 	if err := checkTargetDigest(ref.Reference, root.Digest); err != nil {
 		return v1.Descriptor{}, err
 	}
-	declaration, incomplete, err := prepareComponentDependencies(ctx, repo, root, ref.Registry+"/"+ref.Repository)
+	declaration, incomplete, err := prepareComponentDependencies(ctx, repo, root, ref.Registry+"/"+ref.Repository, nil)
 	if err != nil {
 		return root, fmt.Errorf("prepare component dependencies: %w", err)
 	}
@@ -174,7 +174,7 @@ func (r *Resolver) PublishLayout(ctx context.Context, target, layout string, roo
 	if err := verifyArchiveGraph(ctx, source, root); err != nil {
 		return "", fmt.Errorf("invalid OCI graph: %w", err)
 	}
-	declaration, incomplete, err := prepareComponentDependencies(ctx, source, root, ref.Registry+"/"+ref.Repository)
+	declaration, incomplete, err := prepareComponentDependencies(ctx, source, root, ref.Registry+"/"+ref.Repository, nil)
 	if err != nil {
 		return "", fmt.Errorf("prepare component dependencies: %w", err)
 	}
@@ -326,37 +326,19 @@ func (r *contextReader) Read(p []byte) (int, error) {
 // archiveRoot reads only the OCI layout's small index file. ORAS owns all
 // content access and graph transfer after this selection.
 func archiveRoot(path string) (v1.Descriptor, error) {
-	file, err := os.Open(path)
+	index, err := localstore.ReadArchiveIndex(path)
 	if err != nil {
 		return v1.Descriptor{}, err
 	}
-	defer func() { _ = file.Close() }()
-	reader := tar.NewReader(file)
-	for {
-		header, err := reader.Next()
-		if err != nil {
-			return v1.Descriptor{}, fmt.Errorf("OCI archive has no index.json: %w", err)
-		}
-		if header.Name != "index.json" && header.Name != "./index.json" {
-			continue
-		}
-		if header.Size < 0 || header.Size > maxMetadataBytes {
-			return v1.Descriptor{}, fmt.Errorf("OCI index is too large")
-		}
-		var index v1.Index
-		if err := json.NewDecoder(io.LimitReader(reader, header.Size)).Decode(&index); err != nil {
-			return v1.Descriptor{}, fmt.Errorf("decode OCI index: %w", err)
-		}
-		if index.SchemaVersion != 2 || len(index.Manifests) != 1 {
-			return v1.Descriptor{}, fmt.Errorf("OCI archive must contain exactly one root manifest")
-		}
-		root := index.Manifests[0]
-		if root.MediaType != v1.MediaTypeImageManifest && root.MediaType != v1.MediaTypeImageIndex && root.MediaType != dockerManifestType && root.MediaType != dockerIndexType {
-			return v1.Descriptor{}, fmt.Errorf("unsupported OCI archive root media type %q", root.MediaType)
-		}
-		if err := checkDescriptor(root); err != nil {
-			return v1.Descriptor{}, err
-		}
-		return root, nil
+	if index.SchemaVersion != 2 || len(index.Manifests) != 1 {
+		return v1.Descriptor{}, fmt.Errorf("OCI archive must contain exactly one root manifest")
 	}
+	root := index.Manifests[0]
+	if root.MediaType != v1.MediaTypeImageManifest && root.MediaType != v1.MediaTypeImageIndex && root.MediaType != dockerManifestType && root.MediaType != dockerIndexType {
+		return v1.Descriptor{}, fmt.Errorf("unsupported OCI archive root media type %q", root.MediaType)
+	}
+	if err := checkDescriptor(root); err != nil {
+		return v1.Descriptor{}, err
+	}
+	return root, nil
 }

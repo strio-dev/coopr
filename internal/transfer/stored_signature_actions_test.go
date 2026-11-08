@@ -220,7 +220,11 @@ func TestLocalSignatureRemovalPreservesSiblingManifest(t *testing.T) {
 	key, _ := generateGPGKey(t, ctx, home, "Sibling removal <sibling@example.invalid>", "")
 	path, older, newer := selectedSigningSharedConfigLayoutFixture(t, ctx)
 	for _, selected := range []oci.StoredSelection{older, newer} {
-		if _, err := buildah.ImportLayoutSupervised(ctx, st, path, selected.Manifest); err != nil {
+		if err := buildah.WithStore(st, func(backend storage.Store) error {
+			var importErr error
+			_, importErr = buildah.ImportSelectedImage(ctx, backend, &types.SystemContext{BigFilesTemporaryDir: t.TempDir()}, path, selected.Manifest)
+			return importErr
+		}); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -79,9 +79,14 @@ extend {
 	denyLayers.Store(true)
 	planningStore := cacheTestStore(filepath.Join(root, "planning"))
 	_, _, selected, err := planDefinitionInWorker(ctx, planWorkerRequest{
-		Mode: "publish", Definition: component, PlannerOptions: &options, Store: planningStore,
-		ResultPath: filepath.Join(root, "planning-result.json"), ContextDir: root,
-		TLSVerify: new(false), SignaturePolicyPath: policy, RetrySet: true,
+		workerExecutionOptions: workerExecutionOptions{
+			Store:      planningStore,
+			ContextDir: root,
+			TLSVerify:  new(false),
+		},
+		Mode: "publish", Definition: component, PlannerOptions: &options,
+		ResultPath:          filepath.Join(root, "planning-result.json"),
+		SignaturePolicyPath: policy, RetrySet: true,
 	})
 	if err != nil {
 		t.Fatalf("metadata selection with unavailable layers: %v", err)
@@ -147,10 +152,13 @@ extend { copy "/payload" "/payload" from="bundle" }
 `)
 	options := planner.Options{Mode: planner.Publish, Platform: runtime.GOOS + "/" + runtime.GOARCH}
 	_, _, selected, err := planDefinitionInWorker(ctx, planWorkerRequest{
+		workerExecutionOptions: workerExecutionOptions{
+			Store:      StoreOptions{GraphRoot: store.GraphRoot(), RunRoot: store.RunRoot(), GraphDriverName: "vfs"},
+			PullPolicy: "never",
+		},
 		Mode: "publish", Definition: component, PlannerOptions: &options,
-		Store:      StoreOptions{GraphRoot: store.GraphRoot(), RunRoot: store.RunRoot(), GraphDriverName: "vfs"},
-		PullPolicy: "never", SignaturePolicyPath: system.SignaturePolicyPath,
-		ResultPath: filepath.Join(t.TempDir(), "result.json"),
+		SignaturePolicyPath: system.SignaturePolicyPath,
+		ResultPath:          filepath.Join(t.TempDir(), "result.json"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -173,9 +181,12 @@ extend { copy "/payload" "/payload" from="bundle" }
 `)
 	options := planner.Options{Mode: planner.Publish, Platform: runtime.GOOS + "/" + runtime.GOARCH}
 	_, _, _, err := planDefinitionInWorker(t.Context(), planWorkerRequest{
+		workerExecutionOptions: workerExecutionOptions{
+			Store:            cacheTestStore(root),
+			SourcePolicyFile: policy, PullPolicy: "never",
+		},
 		Mode: "publish", Definition: component, PlannerOptions: &options,
-		Store: cacheTestStore(root), ResultPath: filepath.Join(root, "result.json"),
-		SourcePolicyFile: policy, PullPolicy: "never",
+		ResultPath: filepath.Join(root, "result.json"),
 	})
 	if err == nil || !strings.Contains(err.Error(), "source policy denied image") {
 		t.Fatalf("publication file source policy error = %v", err)

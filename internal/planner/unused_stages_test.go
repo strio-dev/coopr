@@ -13,10 +13,7 @@ from "scratch" as="target" {}
 from "unavailable.example/later" as="later" {}
 `)
 	for _, includeUnused := range []bool{false, true} {
-		plan, err := CreateDemandDriven(def, Options{Mode: Build, Target: "target", BuildUnusedStages: includeUnused}, func(source FromSource) (StageBind, error) {
-			t.Fatalf("resolved stage beyond selected target: %+v", source)
-			return StageBind{}, nil
-		})
+		plan, err := CreateDemandDriven(def, Options{Mode: Build, Target: "target", BuildUnusedStages: includeUnused}, unexpectedBindResolver(t))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -67,10 +64,7 @@ package as="later" {
 extend as="other" {}
 `)
 	for _, includeUnused := range []bool{false, true} {
-		plan, err := CreateDemandDriven(def, Options{Mode: Publish, Target: "target", BuildUnusedStages: includeUnused}, func(source FromSource) (StageBind, error) {
-			t.Fatalf("unexpected external source: %+v", source)
-			return StageBind{}, nil
-		})
+		plan, err := CreateDemandDriven(def, Options{Mode: Publish, Target: "target", BuildUnusedStages: includeUnused}, unexpectedBindResolver(t))
 		if err != nil {
 			t.Fatal(err)
 		}

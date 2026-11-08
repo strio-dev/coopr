@@ -20,10 +20,10 @@ import (
 func TestCheckpointValidatesInputs(t *testing.T) {
 	ctx := context.Background()
 	// This deliberately tests Checkpoint's nil-context guard.
-	if _, _, err := Checkpoint(nil, nil, nil, upstream.BuilderOptions{}); err == nil || !strings.Contains(err.Error(), "context") { //nolint:staticcheck
+	if _, _, _, err := checkpointSelected(nil, nil, nil, upstream.BuilderOptions{}, false, timestampPolicy{}); err == nil || !strings.Contains(err.Error(), "context") { //nolint:staticcheck
 		t.Fatalf("nil context error = %v", err)
 	}
-	if _, _, err := Checkpoint(ctx, nil, nil, upstream.BuilderOptions{}); err == nil || !strings.Contains(err.Error(), "store") {
+	if _, _, _, err := checkpointSelected(ctx, nil, nil, upstream.BuilderOptions{}, false, timestampPolicy{}); err == nil || !strings.Contains(err.Error(), "store") {
 		t.Fatalf("nil store error = %v", err)
 	}
 }
@@ -90,7 +90,7 @@ func TestCheckpointCreatesOneLayerPerFilesystemOperation(t *testing.T) {
 	if err := builder.Add("/first", false, upstream.AddAndCopyOptions{ContextDir: contextDir}, "first"); err != nil {
 		t.Fatal(err)
 	}
-	builder, firstImageID, err := Checkpoint(ctx, store, builder, builderOptions)
+	builder, firstImageID, _, err := checkpointSelected(ctx, store, builder, builderOptions, false, timestampPolicy{})
 	if err != nil {
 		t.Fatal(err)
 	}

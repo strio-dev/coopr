@@ -155,7 +155,7 @@ from %q%s {
 			}
 		}
 	}
-	if err := VerifyStoredImageSupervised(ctx, store, configDescriptor.Digest.Encoded()); err != nil {
+	if err := VerifyStoredImageSelectedSupervised(ctx, store, configDescriptor.Digest.Encoded(), v1.Descriptor{}); err != nil {
 		t.Fatalf("borrowed transport image removed: %v", err)
 	}
 	upstreamRoot := filepath.Join(root, "upstream")

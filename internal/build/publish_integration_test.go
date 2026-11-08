@@ -37,8 +37,8 @@ extend as="base" {
 	if err := os.WriteFile(source, []byte("published from source\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	immutable, err := PublishComponent(context.Background(), PublishOptions{
-		File: component, Reference: ref, Platform: "linux/amd64", TLSVerify: new(false),
+	immutable, err := BuildComponent(context.Background(), ComponentOptions{Push: true,
+		File: component, Tag: ref, Platform: "linux/amd64", TLSVerify: new(false),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -128,8 +128,8 @@ func TestPublishComponentDoesNotRunInvocationSteps(t *testing.T) {
 `), 0600); err != nil {
 		t.Fatal(err)
 	}
-	immutable, err := PublishComponent(context.Background(), PublishOptions{
-		File: component, Reference: ref, Platform: "linux/amd64", TLSVerify: new(false),
+	immutable, err := BuildComponent(context.Background(), ComponentOptions{Push: true,
+		File: component, Tag: ref, Platform: "linux/amd64", TLSVerify: new(false),
 	})
 	if err != nil {
 		t.Fatalf("publication executed invocation RUN: %v", err)
@@ -167,7 +167,7 @@ extend as="base" {
 			t.Fatal(err)
 		}
 	}
-	immutable, err := PublishComponent(context.Background(), PublishOptions{File: file, Reference: ref, Platform: "linux/amd64", TLSVerify: new(false)})
+	immutable, err := BuildComponent(context.Background(), ComponentOptions{Push: true, File: file, Tag: ref, Platform: "linux/amd64", TLSVerify: new(false)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ extend as="base" {
 	if err := os.WriteFile(filepath.Join(dir, "marker"), []byte("authored\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := PublishComponent(context.Background(), PublishOptions{File: component, Reference: ref, Platform: "linux/amd64", TLSVerify: new(false)}); err != nil {
+	if _, err := BuildComponent(context.Background(), ComponentOptions{Push: true, File: component, Tag: ref, Platform: "linux/amd64", TLSVerify: new(false)}); err != nil {
 		t.Fatal(err)
 	}
 	resolver, err := oci.NewResolver(oci.Options{TLSVerify: new(false)})

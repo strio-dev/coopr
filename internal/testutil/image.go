@@ -18,6 +18,7 @@ func ReadImage(t testing.TB, ctx context.Context, archive string) (v1.Manifest, 
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _ = f.Close() }() // Also close when a fatal fixture assertion exits.
 	r := tar.NewReader(f)
 	var index v1.Index
 	for {

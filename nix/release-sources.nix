@@ -6,29 +6,40 @@
 }:
 let
   inherit (pkgs) lib;
+  nixExporter = pkgs.callPackage ./exporter.nix { };
+  rootFiles = builtins.readDir ../.;
+  rootGo = map (name: ../. + "/${name}") (
+    lib.filter (name: rootFiles.${name} == "regular" && lib.hasSuffix ".go" name) (
+      builtins.attrNames rootFiles
+    )
+  );
   source = lib.fileset.toSource {
     root = ../.;
-    fileset = lib.fileset.unions [
-      ../.github
-      ../cmd
-      ../docs
-      ../examples
-      ../internal
-      ../coopr.go
-      ../plan.go
-      ../plan_test.go
-      ../nix
-      ../scripts
-      ../CONTRIBUTING.md
-      ../Justfile
-      ../LICENSE
-      ../README.md
-      ../flake.nix
-      ../flake.lock
-      ../go.mod
-      ../go.sum
-      ../zensical.toml
-    ];
+    fileset = lib.fileset.unions (
+      rootGo
+      ++ [
+        ../.github
+        ../cmd
+        ../docs
+        ../examples
+        ../internal
+        ../api
+        ../client
+        ../nix
+        # Keep generated Python bytecode out of corresponding source without
+        # deleting local caches or relying on Git's tracked-file selection.
+        (lib.fileset.fileFilter (file: !(file.hasExt "pyc" || file.hasExt "pyo")) ../scripts)
+        ../CONTRIBUTING.md
+        ../Justfile
+        ../LICENSE
+        ../README.md
+        ../flake.nix
+        ../flake.lock
+        ../go.mod
+        ../go.sum
+        ../zensical.toml
+      ]
+    );
   };
   copyLibraries = lib.concatStringsSep "\n" (
     lib.mapAttrsToList (name: library: ''
@@ -84,6 +95,7 @@ pkgs.runCommand "coopr-release-sources" { } ''
   mkdir -p "$out/build-inputs" "$out/sources"
   cp -r ${source} "$out/coopr"
   cp -r ${coopr-static.goModules} "$out/vendor"
+  cp -r ${nixExporter.goModules} "$out/nix-exporter-vendor"
   cp -r ${container.licenseSources}/. "$out/"
   ${copyLibraries}
   ${copyInputs}

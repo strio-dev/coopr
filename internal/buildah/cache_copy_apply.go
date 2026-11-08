@@ -5,41 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"sync/atomic"
 
 	"github.com/opencontainers/go-digest"
 	upstream "go.podman.io/buildah"
 )
-
-type copyAddDigestObservation func(dryRun bool)
-
-var copyAddDigestObserver atomic.Pointer[copyAddDigestObservation]
-
-// copyAddProbeEligible reports whether Buildah can compute the exact input
-// stream digest without introducing work or state that makes a preflight more
-// expensive or observably different from the real operation. Remote ADD would
-// fetch its source twice on a miss. Buildah's --link path records a linked
-// layer even with DryRun, so linked operations retain the apply-first path.
-func copyAddProbeEligible(operation Operation) bool {
-	switch copied := operation.(type) {
-	case Copy:
-		return !copied.Link
-	case Add:
-		if copied.Link {
-			return false
-		}
-		for _, source := range copied.Sources {
-			if isHTTPAddSource(source) || isGitAddSource(source) {
-				return false
-			}
-		}
-		return true
-	case copyFromImageOperation:
-		return !copied.options.Link
-	default:
-		return false
-	}
-}
 
 // pinnedHTTPAddInputDigest returns the authored content identity for a remote
 // HTTP ADD. The response mtime affects the copied file but, as with other ADD
@@ -60,32 +29,11 @@ func pinnedHTTPAddInputDigest(operation Operation) (digest.Digest, bool, error) 
 	return expected, true, nil
 }
 
-// probeCopyAddDigest computes the exact stream digest Buildah would consume
-// without writing file payloads into the destination rootfs.
-func probeCopyAddDigest(builder operationBuilder, contextDir string, artifacts []string, operation Operation) (digest.Digest, error) {
-	return probeCopyAddDigestContext(context.Background(), builder, contextDir, artifacts, operation)
-}
-
-func probeCopyAddDigestContext(ctx context.Context, builder operationBuilder, contextDir string, artifacts []string, operation Operation) (digest.Digest, error) {
-	if !copyAddProbeEligible(operation) {
-		return "", fmt.Errorf("operation %T is not eligible for COPY/ADD cache probing", operation)
-	}
-	return copyAddWithDigest(ctx, builder, contextDir, artifacts, operation, true)
-}
-
-// applyCopyAddWithDigest applies a lowered COPY or ADD exactly once and
+// applyCopyAddWithDigestContext applies a lowered COPY or ADD exactly once and
 // returns the digest of the content stream that Buildah consumed.
-func applyCopyAddWithDigest(builder operationBuilder, contextDir string, artifacts []string, operation Operation) (digest.Digest, error) {
-	return applyCopyAddWithDigestContext(context.Background(), builder, contextDir, artifacts, operation)
-}
-
 func applyCopyAddWithDigestContext(ctx context.Context, builder operationBuilder, contextDir string, artifacts []string, operation Operation) (digest.Digest, error) {
-	return copyAddWithDigest(ctx, builder, contextDir, artifacts, operation, false)
-}
-
-func copyAddWithDigest(ctx context.Context, builder operationBuilder, contextDir string, artifacts []string, operation Operation, dryRun bool) (digest.Digest, error) {
-	if observer := copyAddDigestObserver.Load(); observer != nil {
-		(*observer)(dryRun)
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
 	digester := digest.SHA256.Digester()
 	hasher := digester.Hash()
@@ -116,47 +64,28 @@ func copyAddWithDigest(ctx context.Context, builder operationBuilder, contextDir
 
 	switch copied := operation.(type) {
 	case Copy:
-		if len(copied.Sources) == 0 && len(copied.InlineFiles) == 0 || copied.Destination == "" {
-			return "", errors.New("COPY requires at least one source and a destination")
-		}
-		if err := addInlineData(builder, copied.Destination, copied.InlineFiles, upstream.AddAndCopyOptions{Chown: copied.Chown, Chmod: copied.Chmod, Link: copied.Link, Hasher: hasher, DryRun: dryRun}); err != nil {
-			return "", err
-		}
+		var policy contextPolicy
 		if len(copied.Sources) != 0 {
-			if err := requireLocalCopySources(copied.Sources); err != nil {
-				return "", err
-			}
-			policy, err := prepareContextPolicyWithIgnore(contextDir, artifacts, copied.IgnoreFile)
+			var err error
+			policy, err = prepareContextPolicyWithIgnore(contextDir, artifacts, copied.IgnoreFile)
 			if err != nil {
 				return "", err
 			}
-			options, sources, err := policy.applyLocalCopy(upstream.AddAndCopyOptions{Chown: copied.Chown, Chmod: copied.Chmod, Link: copied.Link, Parents: copied.Parents, Excludes: slices.Clone(copied.Excludes), Hasher: hasher, DryRun: dryRun}, copied.Sources)
-			if err != nil {
-				return "", err
-			}
-			if err := builder.add(copied.Destination, false, options, sources...); err != nil {
-				return "", err
-			}
+		}
+		if err := copied.applyWithPolicy(builder, policy, hasher); err != nil {
+			return "", err
 		}
 	case Add:
-		if len(copied.Sources) == 0 && len(copied.InlineFiles) == 0 || copied.Destination == "" {
-			return "", errors.New("ADD requires at least one source and a destination")
-		}
-		if err := addInlineData(builder, copied.Destination, copied.InlineFiles, upstream.AddAndCopyOptions{Chown: copied.Chown, Chmod: copied.Chmod, Link: copied.Link, Hasher: hasher, DryRun: dryRun}); err != nil {
-			return "", err
-		}
+		var policy contextPolicy
 		if len(copied.Sources) != 0 {
-			policy, err := prepareContextPolicyWithIgnore(contextDir, artifacts, copied.IgnoreFile)
+			var err error
+			policy, err = prepareContextPolicyWithIgnore(contextDir, artifacts, copied.IgnoreFile)
 			if err != nil {
 				return "", err
 			}
-			if err := applyAddSources(ctx, builder, policy, copied, upstream.AddAndCopyOptions{
-				Chown: copied.Chown, Chmod: copied.Chmod, Checksum: copied.Checksum,
-				Link: copied.Link, Parents: copied.Parents, Excludes: slices.Clone(copied.Excludes),
-				Hasher: hasher, DryRun: dryRun,
-			}); err != nil {
-				return "", err
-			}
+		}
+		if err := copied.applyWithPolicy(ctx, builder, policy, hasher); err != nil {
+			return "", err
 		}
 	case copyFromImageOperation:
 		native, ok := builder.(nativeBuilder)
@@ -166,7 +95,7 @@ func copyAddWithDigest(ctx context.Context, builder operationBuilder, contextDir
 		options := copied.options
 		options.Excludes = slices.Clone(copied.options.Excludes)
 		options.Hasher = hasher
-		options.DryRun = dryRun
+		options.DryRun = false
 		if err := addInlineData(builder, copied.destination, copied.inlineFiles, inlineCopyOptions(options)); err != nil {
 			return "", err
 		}
@@ -179,6 +108,9 @@ func copyAddWithDigest(ctx context.Context, builder operationBuilder, contextDir
 		return "", fmt.Errorf("operation %T is not COPY or ADD", operation)
 	}
 
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if nativeDigest {
 		kind, input := native.ContentDigester.Digest()
 		if input == "" {

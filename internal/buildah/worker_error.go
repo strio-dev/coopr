@@ -57,3 +57,12 @@ func workerFailureReported(err error) bool {
 	var reported reportedWorkerError
 	return errors.As(err, &reported)
 }
+
+// requireWorkerCleanup gates result use on the dedicated worker's final child
+// drain. A missing or invalid response is not evidence of completed cleanup.
+func requireWorkerCleanup(complete bool, responseErr error) error {
+	if complete && responseErr == nil {
+		return nil
+	}
+	return errors.Join(ErrWorkerWaitIncomplete, errors.New("worker did not confirm descendant cleanup"), responseErr)
+}

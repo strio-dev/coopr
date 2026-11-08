@@ -5,10 +5,12 @@ points at the checkout root. Run from a shell with the repository's native
 libraries, Go build tags, a static BusyBox, `crun`, and working rootless namespaces:
 
 ```sh
-nix develop .#runtime
+nix develop --no-update-lock-file path:.#runtime
 cd examples/library
-go run . -busybox "$(command -v busybox)" -work "$PWD/proof"
+go run . -busybox "$(command -v busybox)" -network none -work "$PWD/proof"
 ```
+
+`-network none` disables RUN networking; registry access is separate.
 
 `proof` must not already exist. The consumer leaves its stores, cache and exported
 files there for inspection. It verifies independent branch overlap through a

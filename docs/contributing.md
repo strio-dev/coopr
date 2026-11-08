@@ -76,8 +76,11 @@ For checks on your host, configure [rootless containers](guides/security.md) fir
 | `just docker-acceptance` | Docker transfers using a disposable daemon started through Podman; no existing Docker daemon is needed. |
 | `just examples-acceptance` | Publish and consume example components through a temporary local registry, then run the image. Requires network access for upstream inputs, not a registry account. |
 | `just benchmark` | Coopr/Podman timing measurements. |
+| `just api-service-acceptance` | Source-built API service execution and shutdown. |
 
 `just cosign-acceptance` verifies a registry signature with an external `cosign` executable on `PATH`. Skipped integration tests do not establish runtime support.
+
+To run only the Pasta networking VM check, use `nix build path:.#checks.x86_64-linux.rootless-pasta`. Like the other VM checks, it requires KVM.
 
 ## Releases
 

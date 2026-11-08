@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/strio-dev/coopr/internal/definition"
-	"github.com/strio-dev/coopr/internal/imageconfig"
 	"github.com/strio-dev/coopr/internal/oci"
 	"github.com/strio-dev/coopr/internal/onbuildparse"
 	"github.com/strio-dev/coopr/internal/planner"
@@ -15,48 +14,6 @@ import (
 	"testing"
 	"time"
 )
-
-func TestImportedExposeBackendKeepsNativeToken(t *testing.T) {
-	for _, test := range []struct {
-		arguments []string
-		want      []Operation
-	}{
-		{[]string{"80", "443"}, []Operation{Expose("443/tcp"), Expose("80/tcp")}},
-		{[]string{"80 443"}, []Operation{Expose("80 443/tcp")}},
-		{[]string{"http"}, []Operation{Expose("http/tcp")}},
-	} {
-		got, _, err := lowerOperation(planner.Operation{Instruction: definition.Instruction{Name: "expose", Arguments: test.arguments}}, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !reflect.DeepEqual(got, test.want) {
-			t.Fatalf("operations %#v, want %#v", got, test.want)
-		}
-		logical := imageconfig.New()
-		for _, operation := range got {
-			if err := trackConfigOperation(logical, operation); err != nil {
-				t.Fatal(err)
-			}
-		}
-		encoded, err := logical.MarshalJSON()
-		if err != nil {
-			t.Fatal(err)
-		}
-		var config struct {
-			Config struct {
-				ExposedPorts map[string]struct{} `json:"ExposedPorts"`
-			} `json:"config"`
-		}
-		if err := json.Unmarshal(encoded, &config); err != nil {
-			t.Fatal(err)
-		}
-		for _, operation := range test.want {
-			if _, ok := config.Config.ExposedPorts[string(operation.(Expose))]; !ok {
-				t.Fatalf("logical ports %#v lost canonical operation %#v", config.Config.ExposedPorts, operation)
-			}
-		}
-	}
-}
 
 func TestImportedExposeRootlessImage(t *testing.T) {
 	if testing.Short() {

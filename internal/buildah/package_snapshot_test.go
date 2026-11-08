@@ -5,12 +5,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/strio-dev/coopr/internal/oci"
@@ -24,6 +26,127 @@ import (
 	"go.podman.io/storage"
 	"golang.org/x/sys/unix"
 )
+
+func TestWritePackageTarWaitsForProducerCompletion(t *testing.T) {
+	archive, root := packageStreamFixture(t)
+	for _, cancelDrain := range []bool{false, true} {
+		name := "delayed EOF"
+		if cancelDrain {
+			name = "canceled drain"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			defer close(release)
+			tail := packageStreamReadFunc(func(buffer []byte) (int, error) {
+				close(entered)
+				select {
+				case <-release:
+					return 0, io.EOF
+				case <-ctx.Done():
+					// Let the blocked read finish, then require contextReader to
+					// reject the next read rather than accepting archive success.
+					buffer[0] = 0
+					return 1, nil
+				}
+			})
+			done := make(chan error, 1)
+			go func() {
+				_, err := writePackageTar(ctx, io.Discard, io.MultiReader(bytes.NewReader(archive), tail), root, nil, nil)
+				done <- err
+			}()
+			select {
+			case <-entered:
+			case err := <-done:
+				t.Fatalf("returned before producer completion: %v", err)
+			case <-time.After(5 * time.Second):
+				t.Fatal("did not read beyond tar EOF")
+			}
+			select {
+			case err := <-done:
+				t.Fatalf("returned while producer was still pending: %v", err)
+			default:
+			}
+			var want error
+			if cancelDrain {
+				want = context.Canceled
+				cancel()
+			} else {
+				release <- struct{}{}
+			}
+			select {
+			case err := <-done:
+				if !errors.Is(err, want) {
+					t.Fatalf("producer completion = %v, want %v", err, want)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("producer completion was not observed")
+			}
+		})
+	}
+}
+
+func TestWritePackageTarPropagatesProducerError(t *testing.T) {
+	archive, root := packageStreamFixture(t)
+	want := errors.New("archive producer failed after tar EOF")
+	for _, metadata := range []*tar.Header{nil, root} {
+		source := io.MultiReader(bytes.NewReader(archive), iotest.ErrReader(want))
+		if _, err := writePackageTar(context.Background(), io.Discard, source, metadata, nil, nil); !errors.Is(err, want) {
+			t.Fatalf("producer error with root rewrite %t = %v, want %v", metadata != nil, err, want)
+		}
+	}
+}
+
+func TestWritePackageTarPaddingPreservesOutput(t *testing.T) {
+	archive, root := packageStreamFixture(t)
+	padded := append(bytes.Clone(archive), make([]byte, 8192)...)
+	for _, metadata := range []*tar.Header{nil, root} {
+		var expected bytes.Buffer
+		if _, err := writePackageTar(context.Background(), &expected, bytes.NewReader(archive), metadata, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if metadata == nil {
+			expected.Write(make([]byte, 8192))
+		}
+		source := bytes.NewReader(padded)
+		var actual bytes.Buffer
+		size, err := writePackageTar(context.Background(), &actual, source, metadata, nil, nil)
+		if err != nil || size != int64(actual.Len()) || !bytes.Equal(actual.Bytes(), expected.Bytes()) {
+			t.Fatalf("padding changed output with root rewrite %t: size=%d, bytes=%d, err=%v", metadata != nil, size, actual.Len(), err)
+		}
+		if source.Len() != 0 {
+			t.Fatalf("left %d producer bytes unread", source.Len())
+		}
+	}
+}
+
+type packageStreamReadFunc func([]byte) (int, error)
+
+func (read packageStreamReadFunc) Read(buffer []byte) (int, error) { return read(buffer) }
+
+func packageStreamFixture(t *testing.T) ([]byte, *tar.Header) {
+	t.Helper()
+	var archive bytes.Buffer
+	writer := tar.NewWriter(&archive)
+	root := &tar.Header{Name: ".", Typeflag: tar.TypeDir, Mode: 0o755}
+	if err := writer.WriteHeader(root); err != nil {
+		t.Fatal(err)
+	}
+	payload := "package payload\n"
+	if err := writer.WriteHeader(&tar.Header{Name: "artifact", Mode: 0o640, Size: int64(len(payload))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(writer, payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	root.Mode = 0o711
+	return archive.Bytes(), root
+}
 
 func TestSnapshotPackageValidatesRequestBeforeWriting(t *testing.T) {
 	output := filepath.Join(t.TempDir(), "package.tar")

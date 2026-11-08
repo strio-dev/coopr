@@ -64,7 +64,7 @@ func CopySelectedImage(ctx context.Context, dir string, source content.ReadOnlyS
 }
 
 func validateImageSourceDescriptor(desc v1.Descriptor) error {
-	if desc.MediaType == "" || desc.Size < 0 || desc.Digest.Algorithm() != digest.SHA256 || desc.Digest.Validate() != nil {
+	if desc.MediaType == "" || desc.Size < 0 || desc.Digest.Validate() != nil || desc.Digest.Algorithm() != digest.SHA256 {
 		return errors.New("descriptor requires a media type, non-negative size, and sha256 digest")
 	}
 	return nil

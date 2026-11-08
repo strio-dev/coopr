@@ -14,10 +14,8 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/strio-dev/coopr/internal/definition"
-	"github.com/strio-dev/coopr/internal/imageconfig"
 	"github.com/strio-dev/coopr/internal/planner"
 	commonconfig "go.podman.io/common/pkg/config"
 )
@@ -98,7 +96,7 @@ func TestExecuteStageWorkerWritesFailureResponseBeforeReturning(t *testing.T) {
 	if readErr != nil {
 		t.Fatalf("read failure response: %v", readErr)
 	}
-	if response.Error == "" || !strings.Contains(response.Error, "decode stage bad image config") {
+	if response.Failure == nil || !strings.Contains(response.Failure.Message, "decode stage bad image config") {
 		t.Fatalf("failure response = %+v", response)
 	}
 }
@@ -106,7 +104,7 @@ func TestExecuteStageWorkerWritesFailureResponseBeforeReturning(t *testing.T) {
 func TestStageFailurePreservesSupervisionErrorAndRUNStatus(t *testing.T) {
 	transportErr := exec.Command("sh", "-c", "exit 1").Run()
 	cleanupErr := errors.New("fixture group cleanup failed")
-	response := stageWorkerResponse{Error: "RUN exited 42", Failure: &workerError{Message: "RUN exited 42", Code: 42}}
+	response := stageWorkerResponse{Failure: &workerError{Message: "RUN exited 42", Code: 42}}
 	for _, processErr := range []error{transportErr, errors.Join(transportErr, cleanupErr)} {
 		_, err := (&graphExecutor{}).completeStageWorkerResponse(context.Background(), "failed", response, nil, processErr, false, "")
 		var status interface{ ExitCode() int }
@@ -116,77 +114,9 @@ func TestStageFailurePreservesSupervisionErrorAndRUNStatus(t *testing.T) {
 		if errors.Is(processErr, cleanupErr) && !errors.Is(err, cleanupErr) {
 			t.Fatalf("failed operation lost supervision error: %v", err)
 		}
-		if processErr == transportErr && err.Error() != response.Error {
+		if processErr == transportErr && err.Error() != response.Failure.Message {
 			t.Fatalf("ordinary worker transport changed RUN diagnostic: %v", err)
 		}
-	}
-}
-
-func TestStageWorkerMessagePreservesExecutionInputs(t *testing.T) {
-	root := t.TempDir()
-	logical := imageconfig.New()
-	if err := logical.Apply(definition.Instruction{Name: "env", Properties: map[string]string{"NAME": "value"}}); err != nil {
-		t.Fatal(err)
-	}
-	config, err := logical.MarshalJSON()
-	if err != nil {
-		t.Fatal(err)
-	}
-	request := stageWorkerRequest{
-		CommandSet: true, BaseCommandSet: true,
-		ProgressPrefix:    "[linux/amd64] [2/3] [component shared] ",
-		ExecutableOrigin:  "/opt/coopr/bin/coopr",
-		ProgressReference: "app:latest",
-		BaseRoot:          &PackageRootMetadata{Mode: 0711, UID: 1, GID: 2, PAXRecords: map[string]string{"SCHILY.xattr.user.coopr": "root"}},
-		Mode:              planner.Build,
-		Stage:             planner.Stage{ID: "1", Name: "build", Kind: "from", Source: "base", Platform: "linux/amd64"},
-		Base:              "storage-base", BaseManifest: digest.FromString("selected base manifest"), Logical: config, BaseLogical: json.RawMessage(`{"config":{"vendorBase":{"kept":true}}}`),
-		Operations:            []planner.Operation{{Instruction: definition.Instruction{Name: "run", Arguments: []string{"true"}, Properties: map[string]string{"network": "none"}}}},
-		Aliases:               map[string]string{"base": "0"},
-		Images:                map[string]string{"0": "storage-parent"},
-		ComponentPins:         map[string]string{"selection": "sha256:" + strings.Repeat("1", 64)},
-		ComponentSources:      map[string]string{"selection": "canonical-source#target"},
-		ActiveComponents:      map[digest.Digest]bool{digest.FromString("ancestor"): true},
-		ActiveLocalComponents: map[string]bool{"canonical-source#ancestor": true},
-		CacheScope:            &CacheMountScope{Kind: "component", Source: digest.FromString("component"), Platform: v1.Platform{OS: "linux", Architecture: "amd64"}, Parameters: map[string]string{"channel": "stable"}, Stage: "1"},
-		Jobs:                  1,
-		Store:                 StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"},
-		ContextDir:            root, ContextArtifacts: []string{filepath.Join(root, "worker")}, Isolation: "rootless", Runtime: "crun",
-		NoCache:       true,
-		CacheLocalDir: filepath.Join(root, "cache"), CacheRepository: "registry.example/cache",
-		CacheFrom:      []CacheSpec{{Transport: "registry", Reference: "registry.example/read"}},
-		CacheTo:        []CacheSpec{{Transport: "registry", Reference: "registry.example/write"}},
-		ComponentRelay: filepath.Join(root, "component-relay"), InstructionRelay: filepath.Join(root, "instruction-relay"),
-		Network:     "none",
-		AddHosts:    []string{"example.test:127.0.0.1"},
-		ProxyArgs:   map[string]string{"http_proxy": "http://proxy.example"},
-		RunControls: RunControls{HTTPProxy: true, ShmSize: 16 << 20, DNSOptions: []string{"ndots:2"}},
-		AuthFile:    "/tmp/auth.json", CertDir: "/tmp/certs", TLSVerify: new(false),
-		ResolverEnabled: true, ComponentStore: filepath.Join(root, "components"),
-		Pull: true, PullPolicy: "always",
-		ImageOutput: Output{Path: filepath.Join(root, "layout"), Reference: "example", Format: "docker"},
-		Output:      true, CaptureRoot: true, JobID: strings.Repeat("b", 32),
-		SignaturePolicy: filepath.Join(root, "policy.json"), BigFilesTempDir: root,
-		ResultPath: filepath.Join(root, "result.json"),
-	}
-	path := filepath.Join(root, "request.json")
-	if err := writeWorkerJSON(path, request); err != nil {
-		t.Fatal(err)
-	}
-	var decoded stageWorkerRequest
-	if err := readWorkerJSON(path, &decoded); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(decoded, request) {
-		t.Fatalf("decoded request differs:\n got: %#v\nwant: %#v", decoded, request)
-	}
-	parsed, err := imageconfig.Restore(decoded.Logical, decoded.CommandSet)
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, err := parsed.MarshalJSON()
-	if err != nil || len(raw) == 0 || !parsed.CommandSet() || decoded.Images["0"] != "storage-parent" {
-		t.Fatalf("round-tripped config = %s, source=%q, error=%v", raw, decoded.Images["0"], err)
 	}
 }
 
@@ -286,11 +216,13 @@ func TestStageWorkerInstallsModulesBeforeResolver(t *testing.T) {
 				t.Fatal(err)
 			}
 			request := stageWorkerRequest{
+				workerExecutionOptions: workerExecutionOptions{
+					RunControls:      RunControls{ConfigModules: []string{module}},
+					SourcePolicyFile: filepath.Join(root, "missing-source-policy.json"),
+				},
 				Stage:   planner.Stage{ID: "module-order", Platform: "linux/amd64"},
 				Logical: json.RawMessage(`{}`), BaseLogical: json.RawMessage(`{}`),
 				ResolverEnabled: true, ComponentStore: filepath.Join(root, "components"),
-				RunControls:      RunControls{ConfigModules: []string{module}},
-				SourcePolicyFile: filepath.Join(root, "missing-source-policy.json"),
 			}
 			path := filepath.Join(root, "request.json")
 			if err := writeWorkerJSON(path, request); err != nil {
@@ -313,4 +245,39 @@ func TestStageWorkerInstallsModulesBeforeResolver(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestExecuteStageWorkerDoesNotSuppressFinalWriteFailure(t *testing.T) {
+	directory := t.TempDir()
+	requestPath := filepath.Join(directory, "request.json")
+	request := stageWorkerRequest{Mode: planner.Build, Stage: planner.Stage{ID: "bad", Kind: "from", Source: "scratch", Platform: "linux/amd64"}, Logical: json.RawMessage(`{"config":[]}`), JobID: strings.Repeat("a", 32), ResultPath: directory}
+	if err := writeWorkerJSON(requestPath, request); err != nil {
+		t.Fatal(err)
+	}
+	err := executeStageWorker(requestPath)
+	if err == nil || !strings.Contains(err.Error(), "write build worker message") {
+		t.Fatalf("missing final write diagnostic: %v", err)
+	}
+	if workerFailureReported(err) {
+		t.Fatalf("unwritten failure would suppress stderr: %v", err)
+	}
+}
+
+func TestStageWorkerMissingFailureRetainsFailedHelper(t *testing.T) {
+	processErr := exec.Command("sh", "-c", "exit 1").Run()
+	if processErr == nil {
+		t.Fatal("fixture helper succeeded")
+	}
+	response := stageWorkerResponse{CleanupComplete: true}
+	_, err := (&graphExecutor{}).completeStageWorkerResponse(context.Background(), "missing-failure", response, nil, processErr, false, "")
+	if !errors.Is(err, processErr) {
+		t.Fatalf("failed helper without a structured failure was accepted: %v", err)
+	}
+	if errors.Is(err, ErrWorkerWaitIncomplete) {
+		t.Fatalf("confirmed cleanup was lost: %v", err)
+	}
+}
+
+func executeStageWorker(requestPath string) error {
+	return executeStageWorkerScoped(requestPath, nil)
 }

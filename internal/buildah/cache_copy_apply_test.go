@@ -1,39 +1,46 @@
 package buildah
 
 import (
-	"reflect"
+	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/opencontainers/go-digest"
-	"github.com/strio-dev/coopr/internal/definition"
 	upstream "go.podman.io/buildah"
 )
 
-func TestCopyAddProbeEligibility(t *testing.T) {
-	inline := []definition.InlineFile{{Path: "inline", Data: "contents"}}
-	tests := []struct {
-		name      string
-		operation Operation
-		want      bool
-	}{
-		{name: "copy", operation: Copy{Sources: []string{"file"}}, want: true},
-		{name: "inline copy", operation: Copy{InlineFiles: inline}, want: true},
-		{name: "local add", operation: Add{Sources: []string{"archive.tar"}}, want: true},
-		{name: "inline add", operation: Add{InlineFiles: inline}, want: true},
-		{name: "remote add", operation: Add{Sources: []string{"https://example.invalid/archive.tar"}}},
-		{name: "git add", operation: Add{Sources: []string{"https://example.invalid/repository.git#main"}}},
-		{name: "SSH git add", operation: Add{Sources: []string{"git@example.invalid:repository.git#main"}}},
-		{name: "linked copy", operation: Copy{Sources: []string{"file"}, Link: true}},
-		{name: "linked add", operation: Add{Sources: []string{"file"}, Link: true}},
-		{name: "image copy", operation: copyFromImageOperation{}, want: true},
-		{name: "linked image copy", operation: copyFromImageOperation{options: upstream.AddAndCopyOptions{Link: true}}},
-		{name: "other", operation: Env{Name: "A", Value: "B"}},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if got := copyAddProbeEligible(test.operation); got != test.want {
-				t.Fatalf("copyAddProbeEligible(%T) = %v, want %v", test.operation, got, test.want)
+type cancelingCopyBuilder struct {
+	recordingBuilder
+	cancel context.CancelFunc
+}
+
+func (builder *cancelingCopyBuilder) add(destination string, extract bool, options upstream.AddAndCopyOptions, sources ...string) error {
+	err := builder.recordingBuilder.add(destination, extract, options, sources...)
+	builder.cancel()
+	return err
+}
+
+func TestApplyCopyAddDigestCancellation(t *testing.T) {
+	for _, before := range []bool{true, false} {
+		t.Run(fmt.Sprint("before=", before), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			builder := &cancelingCopyBuilder{cancel: cancel}
+			if before {
+				cancel()
+			}
+			input, err := applyCopyAddWithDigestContext(ctx, builder, t.TempDir(), nil, Copy{Sources: []string{"selected"}, Destination: "/selected"})
+			if !errors.Is(err, context.Canceled) || input != "" {
+				t.Fatalf("cancelled COPY returned input %q, error %v", input, err)
+			}
+			want := 1
+			if before {
+				want = 0
+			}
+			if len(builder.addOptions) != want {
+				t.Fatalf("native calls = %d, want %d", len(builder.addOptions), want)
 			}
 		})
 	}
@@ -62,38 +69,6 @@ func TestPinnedHTTPAddInputDigest(t *testing.T) {
 		Sources: []string{"https://example.invalid/payload"}, Checksum: "invalid",
 	}); err == nil || !strings.Contains(err.Error(), "invalid ADD checksum") {
 		t.Fatalf("invalid checksum error = %v", err)
-	}
-}
-
-func TestCopyAddDigestUsesDryRunOnlyForProbe(t *testing.T) {
-	contextDir := t.TempDir()
-	operation := Copy{
-		Sources: []string{"source"}, Destination: "/destination", Chown: "12:34", Chmod: "0640",
-		Parents: true, Excludes: []string{"*.tmp"},
-	}
-	builder := &recordingBuilder{}
-	if _, err := probeCopyAddDigest(builder, contextDir, nil, operation); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := applyCopyAddWithDigest(builder, contextDir, nil, operation); err != nil {
-		t.Fatal(err)
-	}
-	if len(builder.addOptions) != 2 {
-		t.Fatalf("Buildah Add calls = %d, want 2", len(builder.addOptions))
-	}
-	probe, applied := builder.addOptions[0], builder.addOptions[1]
-	if !probe.DryRun || applied.DryRun {
-		t.Fatalf("Buildah DryRun options = %v, %v, want true, false", probe.DryRun, applied.DryRun)
-	}
-	if probe.Hasher == nil || applied.Hasher == nil {
-		t.Fatal("COPY digest path omitted Buildah Hasher")
-	}
-	wantExcludes := []string{"*.tmp", "source/*.tmp"}
-	if probe.ContextDir != contextDir || applied.ContextDir != contextDir || probe.Chown != operation.Chown || probe.Chmod != operation.Chmod || !probe.Parents || !reflect.DeepEqual(probe.Excludes, wantExcludes) {
-		t.Fatalf("probe options = %#v, applied options = %#v", probe, applied)
-	}
-	if !probe.StripSetuidBit || !probe.StripSetgidBit || !applied.StripSetuidBit || !applied.StripSetgidBit {
-		t.Fatalf("COPY digest paths omitted set-ID stripping: probe=%#v applied=%#v", probe, applied)
 	}
 }
 
@@ -128,7 +103,7 @@ func TestApplyCopyAddWithDigestValidatesBeforeExecution(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			digested, err := applyCopyAddWithDigest(nativeBuilder{}, test.context, test.artifacts, test.operation)
+			digested, err := applyCopyAddWithDigestContext(t.Context(), nativeBuilder{}, test.context, test.artifacts, test.operation)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("applyCopyAddWithDigest() digest = %q, error = %v, want error containing %q", digested, err, test.want)
 			}

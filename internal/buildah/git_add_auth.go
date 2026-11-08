@@ -107,7 +107,7 @@ func gitAddEnvironment(builder any, remote string) ([]string, func() error, bool
 	if err != nil || !found {
 		return environment, nil, false, err
 	}
-	credentialScope := gitAuthorizationScope(remote)
+	credentialScope := remote
 	return append(environment,
 		"GIT_CONFIG_COUNT=2",
 		"GIT_CONFIG_KEY_0=http."+credentialScope+".extraHeader",
@@ -115,10 +115,6 @@ func gitAddEnvironment(builder any, remote string) ([]string, func() error, bool
 		"GIT_CONFIG_KEY_1=http."+credentialScope+".followRedirects",
 		"GIT_CONFIG_VALUE_1=false",
 	), nil, true, nil
-}
-
-func gitAuthorizationScope(remote string) string {
-	return remote
 }
 
 func gitAddKnownHosts(builder any, remote string) (string, func() error, error) {

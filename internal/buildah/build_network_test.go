@@ -47,11 +47,19 @@ func TestBuildWideHostNetworkAuthorizesRuns(t *testing.T) {
 		plan := testPlan(t, `from "scratch" {
     run "true"`+authored+"\n}\n")
 		for _, network := range []string{"default", "host"} {
-			request, err := RequestFromPlan(plan, PlanOptions{Network: network})
+			options, err := normalizePlanOptions(PlanOptions{Network: network})
 			if err != nil {
 				t.Fatal(err)
 			}
-			err = authorizeOperations(request.Operations, request.Allow)
+			stages, err := resolveAndValidateBuildNetwork(plan.Stages, options.Network, options.RunControls, options.Isolation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			allowed, err := allowedEntitlements(options.Allow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = authorizePlannedOperation(stages[0].Operations[0], allowed, nil)
 			if network == "default" && authored != "" {
 				if err == nil || !strings.Contains(err.Error(), "--allow network.host") {
 					t.Fatalf("authored host network without grant: %v", err)
@@ -173,7 +181,7 @@ func TestChrootRejectsRequestedNetworkIsolation(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			plan := testPlan(t, `from "scratch" {
     run "true"`+test.authored+"\n}\n")
-			_, err := RequestFromPlan(plan, PlanOptions{Network: test.network, Isolation: test.isolation, RunControls: test.controls})
+			_, err := resolveAndValidateBuildNetwork(plan.Stages, test.network, test.controls, test.isolation)
 			if test.wantError {
 				if err == nil || !strings.Contains(err.Error(), "cannot be used with chroot isolation") {
 					t.Fatalf("unsupported chroot network request: %v", err)
@@ -294,7 +302,7 @@ func TestImplicitNoneEnablesPortablePackageAndComponentCaches(t *testing.T) {
 	operation := planner.Operation{Instruction: definition.Instruction{Name: "run", Properties: map[string]string{"network": "default"}}}
 	original := []planner.Stage{{ID: "output", Kind: "extend", Operations: []planner.Operation{operation}}}
 	effective := resolveBuildNetwork(original, "none")
-	if _, eligible := packageCacheEligibility(effective); !eligible {
+	if _, eligible := packageCacheEligibility(effective, RunControls{}); !eligible {
 		t.Fatal("implicit build-wide none did not enable package cache eligibility")
 	}
 	resolved := &ResolvedComponentPlan{Plan: &planner.Plan{Outputs: []string{"output"}, Stages: effective}}
@@ -315,25 +323,24 @@ func TestImplicitNoneEnablesPortablePackageAndComponentCaches(t *testing.T) {
 	}
 }
 
-func TestRequestFromPlanResolvesBuildNetworkAndHosts(t *testing.T) {
+func TestPlanOptionsResolveBuildNetworkAndHosts(t *testing.T) {
 	plan := testPlan(t, `from "scratch" {
     run "printf implicit"
     run "printf explicit" network="default"
 }
 `)
-	request, err := RequestFromPlan(plan, PlanOptions{Network: "none", AddHosts: []string{"EXAMPLE.TEST:127.0.0.1"}})
+	options, err := normalizePlanOptions(PlanOptions{Network: "none", AddHosts: []string{"EXAMPLE.TEST:127.0.0.1"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(request.Operations) != 2 {
-		t.Fatalf("operations = %#v", request.Operations)
+	stages, err := resolveAndValidateBuildNetwork(plan.Stages, options.Network, options.RunControls, options.Isolation)
+	if err != nil {
+		t.Fatal(err)
 	}
-	first, firstOK := request.Operations[0].(Run)
-	second, secondOK := request.Operations[1].(Run)
-	if !firstOK || !secondOK || first.Network != "none" || second.Network != "default" {
-		t.Fatalf("resolved RUN networks = %#v", request.Operations)
+	if first, second := stages[0].Operations[0], stages[0].Operations[1]; first.Properties["network"] != "none" || second.Properties["network"] != "default" {
+		t.Fatalf("resolved RUN networks = %#v", stages[0].Operations)
 	}
-	if !reflect.DeepEqual(request.AddHosts, []string{"example.test:127.0.0.1"}) {
-		t.Fatalf("request add-hosts = %#v", request.AddHosts)
+	if !reflect.DeepEqual(options.AddHosts, []string{"example.test:127.0.0.1"}) {
+		t.Fatalf("normalized add-hosts = %#v", options.AddHosts)
 	}
 }

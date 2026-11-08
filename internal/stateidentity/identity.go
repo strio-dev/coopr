@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"maps"
 	"math/big"
 	"path"
 	"slices"
@@ -62,56 +63,14 @@ type entry struct {
 	xattrs  map[string]string
 }
 
-// Option supplies separately observed metadata for an identity calculation.
-type Option func(*calculateOptions) error
-
-type calculateOptions struct {
-	modTimes    map[string]time.Time
-	hasModTimes bool
-}
-
-// WithModTimes supplies nanosecond mtimes measured from the same immutable
-// builder snapshot as the tar export. The tar exporter may round these values
-// to whole seconds. Keys must be canonical relative paths for every non-root
-// tar entry; the root directory's mtime is always excluded.
-func WithModTimes(times map[string]time.Time) Option {
-	return func(options *calculateOptions) error {
-		if options.hasModTimes {
-			return errors.New("duplicate mtime metadata option")
-		}
-		if times == nil {
-			return errors.New("mtime metadata is nil")
-		}
-		options.hasModTimes = true
-		options.modTimes = make(map[string]time.Time, len(times))
-		for name, mtime := range times {
-			canonical, err := canonicalPath(name, false)
-			if err != nil || canonical != name {
-				return fmt.Errorf("non-canonical mtime path %q", name)
-			}
-			options.modTimes[name] = mtime
-		}
-		return nil
-	}
-}
-
 // Calculate computes a portable identity from a complete effective-rootfs tar.
 // root is the builder's separately observed root-directory metadata. The
 // optional root entry in archive must agree with it, except for root mtime.
 // ambientSELinux must be measured independently from the builder's empty
-// snapshot on this host. Use WithModTimes when the exporter loses nanoseconds.
-func Calculate(ctx context.Context, root *tar.Header, archive io.Reader, config json.RawMessage, ambientSELinux []byte, opts ...Option) (Identity, error) {
+// snapshot on this host.
+func Calculate(ctx context.Context, root *tar.Header, archive io.Reader, config json.RawMessage, ambientSELinux []byte) (Identity, error) {
 	if ctx == nil || root == nil || archive == nil {
 		return Identity{}, errors.New("state identity requires context, root header, and archive")
-	}
-	var options calculateOptions
-	for _, option := range opts {
-		if option == nil {
-			return Identity{}, errors.New("nil state identity option")
-		}
-		if err := option(&options); err != nil {
-			return Identity{}, err
-		}
 	}
 	if err := ctx.Err(); err != nil {
 		return Identity{}, err
@@ -127,7 +86,6 @@ func Calculate(ctx context.Context, root *tar.Header, archive io.Reader, config 
 		return Identity{}, fmt.Errorf("root metadata: %w", err)
 	}
 	entries := map[string]*entry{".": rootEntry}
-	seenModTimes := make(map[string]struct{}, len(options.modTimes))
 	rootSeen := false
 	stream := &checkedReader{ctx: ctx, reader: archive}
 	reader := tar.NewReader(stream)
@@ -137,6 +95,8 @@ func Calculate(ctx context.Context, root *tar.Header, archive io.Reader, config 
 		stream.nonzero = false
 		hdr, err := reader.Next()
 		if errors.Is(err, io.EOF) {
+			// The private, uncompressed snapshot stream checks cancellation and tar padding.
+			// nosemgrep: cache.semgrep-rules.go.lang.security.potential-dos-via-decompression-bomb
 			if _, err := io.Copy(io.Discard, stream); err != nil {
 				return Identity{}, fmt.Errorf("read rootfs tar trailer: %w", err)
 			}
@@ -153,23 +113,14 @@ func Calculate(ctx context.Context, root *tar.Header, archive io.Reader, config 
 		if err != nil {
 			return Identity{}, fmt.Errorf("rootfs tar path %q: %w", hdr.Name, err)
 		}
-		if name != "." && options.hasModTimes {
-			mtime, ok := options.modTimes[name]
-			if !ok {
-				return Identity{}, fmt.Errorf("rootfs tar path %q is missing gateway mtime", name)
-			}
-			if hdr.ModTime.Unix() != mtime.Round(time.Second).Unix() {
-				return Identity{}, fmt.Errorf("rootfs tar path %q has mtime seconds %d, gateway rounds to %d", name, hdr.ModTime.Unix(), mtime.Round(time.Second).Unix())
-			}
-			hdr.ModTime = mtime
-			seenModTimes[name] = struct{}{}
-		}
 		item, err := makeEntry(hdr, name, ambientSELinux)
 		if err != nil {
 			return Identity{}, fmt.Errorf("rootfs tar entry %q: %w", hdr.Name, err)
 		}
 		if hdr.Typeflag == tar.TypeReg {
 			h := sha256.New()
+			// SnapshotPackage emits regular, uncompressed payloads; tar bounds each entry.
+			// nosemgrep: cache.semgrep-rules.go.lang.security.potential-dos-via-decompression-bomb
 			if _, err := io.Copy(h, reader); err != nil {
 				return Identity{}, fmt.Errorf("read file %q: %w", name, err)
 			}
@@ -191,16 +142,27 @@ func Calculate(ctx context.Context, root *tar.Header, archive io.Reader, config 
 		}
 		entries[name] = item
 	}
-	if options.hasModTimes && len(seenModTimes) != len(options.modTimes) {
-		for name := range options.modTimes {
-			if _, ok := seenModTimes[name]; !ok {
-				return Identity{}, fmt.Errorf("gateway mtime path %q is absent from rootfs tar", name)
-			}
-		}
+	fsDigest, err := hashFilesystem(ctx, entries, filesystemDomain)
+	if err != nil {
+		return Identity{}, err
+	}
+	configHash, err := hashConfig(config)
+	if err != nil {
+		return Identity{}, err
+	}
+	stateHash := domainHash(stateDomain)
+	field(stateHash, []byte(fsDigest))
+	field(stateHash, []byte(configHash))
+	return Identity{Filesystem: fsDigest, Configuration: configHash, State: sum(stateHash)}, nil
+}
+
+func hashFilesystem(ctx context.Context, entries map[string]*entry, domain string) (digest.Digest, error) {
+	if root := entries["."]; root == nil || root.header.Typeflag != tar.TypeDir {
+		return "", errors.New("filesystem identity requires directory root metadata")
 	}
 	for name := range entries {
 		if err := ctx.Err(); err != nil {
-			return Identity{}, err
+			return "", err
 		}
 		if name == "." {
 			continue
@@ -211,34 +173,34 @@ func Calculate(ctx context.Context, root *tar.Header, archive io.Reader, config 
 		}
 		p, ok := entries[parent]
 		if !ok || p.header.Typeflag != tar.TypeDir {
-			return Identity{}, fmt.Errorf("%q has missing or non-directory parent %q", name, parent)
+			return "", fmt.Errorf("%q has missing or non-directory parent %q", name, parent)
 		}
 	}
 	leaders := make(map[string]string)
 	groupIDs := make(map[string]string)
 	for name, item := range entries {
 		if err := ctx.Err(); err != nil {
-			return Identity{}, err
+			return "", err
 		}
 		if item.header.Typeflag != tar.TypeReg && item.header.Typeflag != tar.TypeLink {
 			continue
 		}
 		leader, err := regularLeader(ctx, name, entries, leaders)
 		if err != nil {
-			return Identity{}, err
+			return "", err
 		}
 		if item.header.Typeflag == tar.TypeLink && !compatibleLinkMetadata(item, entries[leader]) {
-			return Identity{}, fmt.Errorf("hardlink %q has conflicting inode metadata", name)
+			return "", fmt.Errorf("hardlink %q has conflicting inode metadata", name)
 		}
 		if smallest, ok := groupIDs[leader]; !ok || name < smallest {
 			groupIDs[leader] = name
 		}
 	}
-	fsHash := domainHash(filesystemDomain)
+	fsHash := domainHash(domain)
 	names := make([]string, 0, len(entries))
 	for name := range entries {
 		if err := ctx.Err(); err != nil {
-			return Identity{}, err
+			return "", err
 		}
 		names = append(names, name)
 	}
@@ -246,7 +208,7 @@ func Calculate(ctx context.Context, root *tar.Header, archive io.Reader, config 
 	field(fsHash, []byte("entries"))
 	for _, name := range names {
 		if err := ctx.Err(); err != nil {
-			return Identity{}, err
+			return "", err
 		}
 		item := entries[name]
 		field(fsHash, []byte(name))
@@ -259,15 +221,7 @@ func Calculate(ctx context.Context, root *tar.Header, archive io.Reader, config 
 			writeMetadata(fsHash, item, item.header.Typeflag)
 		}
 	}
-	configHash, err := hashConfig(config)
-	if err != nil {
-		return Identity{}, err
-	}
-	fsDigest := sum(fsHash)
-	stateHash := domainHash(stateDomain)
-	field(stateHash, []byte(fsDigest))
-	field(stateHash, []byte(configHash))
-	return Identity{Filesystem: fsDigest, Configuration: configHash, State: sum(stateHash)}, nil
+	return sum(fsHash), nil
 }
 
 type checkedReader struct {
@@ -444,7 +398,7 @@ func compatibleLinkMetadata(link, leader *entry) bool {
 	if !h.ModTime.IsZero() && !h.ModTime.Equal(src.ModTime) {
 		return false
 	}
-	if len(link.xattrs) != 0 && !equalAttrs(link.xattrs, leader.xattrs) {
+	if len(link.xattrs) != 0 && !maps.Equal(link.xattrs, leader.xattrs) {
 		return false
 	}
 	return true
@@ -452,19 +406,7 @@ func compatibleLinkMetadata(link, leader *entry) bool {
 
 func sameMetadata(a, b *entry) bool {
 	x, y := a.header, b.header
-	return x.Typeflag == y.Typeflag && x.Mode == y.Mode && x.Uid == y.Uid && x.Gid == y.Gid && x.ModTime.Equal(y.ModTime) && equalAttrs(a.xattrs, b.xattrs)
-}
-
-func equalAttrs(a, b map[string]string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k, v := range a {
-		if b[k] != v {
-			return false
-		}
-	}
-	return true
+	return x.Typeflag == y.Typeflag && x.Mode == y.Mode && x.Uid == y.Uid && x.Gid == y.Gid && x.ModTime.Equal(y.ModTime) && maps.Equal(a.xattrs, b.xattrs)
 }
 
 func writeMetadata(h hash.Hash, item *entry, kind byte) {

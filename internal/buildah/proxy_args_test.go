@@ -12,49 +12,29 @@ import (
 	"github.com/strio-dev/coopr/internal/planner"
 )
 
-func TestRequestFromPlanInjectsOnlyUndeclaredPredefinedProxyArgs(t *testing.T) {
-	plan := proxyTestPlan(t, map[string]string{
-		"HTTP_PROXY": "http://undeclared",
-		"NO_PROXY":   "example.test",
-	}, false)
-	request, err := RequestFromPlan(plan, PlanOptions{ProxyArgs: map[string]string{
-		"HTTP_PROXY": "http://undeclared",
-		"NO_PROXY":   "example.test",
-		"NOT_PROXY":  "must-not-leak",
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	run := request.Operations[0].(Run)
-	want := []string{"HTTP_PROXY=http://undeclared", "NO_PROXY=example.test"}
-	if !reflect.DeepEqual(run.Env, want) {
-		t.Fatalf("RUN environment = %#v, want %#v", run.Env, want)
-	}
-
-	explicit := proxyTestPlan(t, map[string]string{"HTTP_PROXY": "http://explicit"}, true)
-	request, err = RequestFromPlan(explicit, PlanOptions{ProxyArgs: map[string]string{"HTTP_PROXY": "http://executor"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	run = request.Operations[0].(Run)
-	if !reflect.DeepEqual(run.Env, []string{"HTTP_PROXY=http://explicit"}) {
-		t.Fatalf("explicit proxy ARG environment = %#v", run.Env)
-	}
-}
-
-func TestRequestFromPlanDoesNotOverrideProxyENV(t *testing.T) {
-	plan := testPlan(t, `from "scratch" {
-    env HTTP_PROXY="http://image-env"
-    run "env"
-}
-`)
-	request, err := RequestFromPlan(plan, PlanOptions{ProxyArgs: map[string]string{"HTTP_PROXY": "http://cli"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	run := request.Operations[1].(Run)
-	if len(run.Env) != 0 {
-		t.Fatalf("RUN proxy environment overrides image ENV: %#v", run.Env)
+func TestPredefinedProxyEnvironmentHonorsDeclarationAndImageENV(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		plan *planner.Plan
+		args map[string]string
+		want []string
+	}{
+		{name: "undeclared", plan: proxyTestPlan(t, map[string]string{"HTTP_PROXY": "http://undeclared", "NO_PROXY": "example.test"}, false), args: map[string]string{"HTTP_PROXY": "http://undeclared", "NO_PROXY": "example.test", "NOT_PROXY": "must-not-leak"}, want: []string{"HTTP_PROXY=http://undeclared", "NO_PROXY=example.test"}},
+		{name: "declared", plan: proxyTestPlan(t, map[string]string{"HTTP_PROXY": "http://explicit"}, true), args: map[string]string{"HTTP_PROXY": "http://executor"}, want: []string{"HTTP_PROXY=http://explicit"}},
+		{name: "image ENV", plan: testPlan(t, `from "scratch" { env HTTP_PROXY="http://image-env"; run "env"; }`), args: map[string]string{"HTTP_PROXY": "http://cli"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			operation := test.plan.Stages[0].Operations[len(test.plan.Stages[0].Operations)-1]
+			lowered, _, err := lowerOperationWithCacheMountIDs(operation, []string{"/bin/sh", "-c"}, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			run := lowered[0].(Run)
+			environment := mergePredefinedProxyEnvironment(run.Env, test.args, operation.DeclaredProxyArguments, operation.ShadowedProxyArguments)
+			if len(environment) != len(test.want) || len(test.want) > 0 && !reflect.DeepEqual(environment, test.want) {
+				t.Fatalf("RUN environment=%#v, want %#v", environment, test.want)
+			}
+		})
 	}
 }
 

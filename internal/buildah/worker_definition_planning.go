@@ -43,19 +43,12 @@ func planDefinitionInWorker(ctx context.Context, request planWorkerRequest) (*pl
 	oci.ApplyTLSVerify(system, request.TLSVerify)
 	planning.SourceDateEpochResolver = sourceDateEpochResolver(ctx, buildCredentialSource{secretSpecs: request.Secrets, sshSpecs: request.SSH, systemContext: system, registryOptions: oci.Options{Retry: request.Retry, RetrySet: request.RetrySet, RetryDelay: request.RetryDelay}})
 	ensureResolver := func() error {
-		if resolver == nil {
-			var err error
-			resolver, err = oci.NewResolver(oci.Options{
-				ProgressWriter: os.Stderr,
-				AuthFile:       request.AuthFile, CertDir: request.CertDir, TLSVerify: request.TLSVerify,
-				Credentials: request.Credentials, Retry: request.Retry, RetrySet: request.RetrySet, RetryDelay: request.RetryDelay, DecryptionKeys: request.DecryptionKeys, SignaturePolicyPath: request.SignaturePolicyPath,
-				Pull: request.Pull, PullPolicy: request.PullPolicy, ComponentStoreDir: request.ComponentStoreDir, NativeStore: NativeStoreOptions(request.Store),
-			})
-			if err != nil {
-				return fmt.Errorf("create build worker resolver: %w", err)
-			}
+		if resolver != nil {
+			return nil
 		}
-		return nil
+		var err error
+		resolver, err = request.newResolver()
+		return err
 	}
 	withStore := func(resolve func(storage.Store) (ResolvedImageSource, error)) (ResolvedImageSource, error) {
 		lease, err := acquireStore(request.Store)
@@ -125,4 +118,19 @@ func planDefinitionInWorker(ctx context.Context, request planWorkerRequest) (*pl
 		}
 	}
 	return plan, resolver, selected, nil
+}
+
+// Reconstruct registry configuration only from explicit private request fields.
+// The process-local writer and selected native-store options are supplied here.
+func (request planWorkerRequest) newResolver() (*oci.Resolver, error) {
+	resolver, err := oci.NewResolver(oci.Options{
+		ProgressWriter: os.Stderr,
+		AuthFile:       request.AuthFile, CertDir: request.CertDir, TLSVerify: request.TLSVerify,
+		Credentials: request.Credentials, Retry: request.Retry, RetrySet: request.RetrySet, RetryDelay: request.RetryDelay, DecryptionKeys: request.DecryptionKeys, SignaturePolicyPath: request.SignaturePolicyPath,
+		Pull: request.Pull, PullPolicy: request.PullPolicy, ComponentStoreDir: request.ComponentStoreDir, NativeStore: NativeStoreOptions(request.Store),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create build worker resolver: %w", err)
+	}
+	return resolver, nil
 }

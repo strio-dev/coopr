@@ -27,7 +27,7 @@ func TestAuthoredExposeUsesNativeFrontend(t *testing.T) {
 				expected[string(port)] = struct{}{}
 			}
 			inst := definition.Instruction{Name: "expose", Arguments: args}
-			lowered, _, err := lowerOperation(planner.Operation{Instruction: inst}, nil)
+			lowered, _, err := lowerOperationWithCacheMountIDs(planner.Operation{Instruction: inst}, nil, nil, nil)
 			if (err != nil) != (nativeErr != nil) {
 				t.Fatalf("lowering error=%v, native=%v", err, nativeErr)
 			}

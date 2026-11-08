@@ -1,7 +1,6 @@
 package planner
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 
@@ -28,14 +27,7 @@ extend as="runtime" {
 	if publication.Target != "runtime" || len(publication.Stages) != 1 || publication.Stages[0].Kind != "package" {
 		t.Fatalf("publication: %+v", publication)
 	}
-	encoded, err := json.Marshal(publication.Component)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var component PublishedComponent
-	if err := json.Unmarshal(encoded, &component); err != nil {
-		t.Fatal(err)
-	}
+	component := roundTripPublished(t, publication.Component)
 	if _, err := ValidatePublished(&component); err != nil {
 		t.Fatal(err)
 	}
@@ -145,10 +137,7 @@ extend as="runtime" { from "base" { copy "/x" "/x" from="base"; } }
 func TestExtendScopeExternalOnBuildCanConsumeTopLevelProducer(t *testing.T) {
 	publication, err := CreateDemandDriven(parse(t, `from "scratch" as="producer" { copy "private" "/private"; }
 extend as="runtime" { from "registry.example/base:latest" {} }
-`), Options{Mode: Publish}, func(FromSource) (StageBind, error) {
-		t.Fatal("publication resolved invocation base")
-		return StageBind{}, nil
-	})
+`), Options{Mode: Publish}, unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,10 +181,7 @@ extend as="runtime" {
  from "registry.example/base:latest" as="output" {}
  copy "/selected" "/selected" from="output"
 }
-`), Options{Mode: Publish}, func(FromSource) (StageBind, error) {
-		t.Fatal("publication resolved invocation image")
-		return StageBind{}, nil
-	})
+`), Options{Mode: Publish}, unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,10 +247,7 @@ func TestExtendScopeExternalOnBuildCanSelectEarlierCallerBody(t *testing.T) {
 extend as="runtime" {
  from "registry.example/base:latest" {}
 }
-`), Options{Mode: Publish}, func(FromSource) (StageBind, error) {
-		t.Fatal("publication resolved invocation base")
-		return StageBind{}, nil
-	})
+`), Options{Mode: Publish}, unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
 	}

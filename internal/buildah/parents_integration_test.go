@@ -23,28 +23,27 @@ func TestBuildCopyAndAddParentsPreservePivotSuffix(t *testing.T) {
 		t.Fatal(err)
 	}
 	layout := filepath.Join(root, "layout")
-	_, err := Build(ctx, Request{
+	_, err := BuildPlan(ctx, testPlan(t, `from "scratch" {
+ copy "prefix/./nested/proof" "/copied/" parents="true"
+ add "prefix/./nested/proof" "/added/" parents="true"
+}`), PlanOptions{
 		Store: StoreOptions{
 			RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs",
 		},
-		Base: "scratch", ContextDir: contextDir, Isolation: "rootless",
-		Operations: []Operation{
-			Copy{Sources: []string{"prefix/./nested/proof"}, Destination: "/copied/", Parents: true},
-			Add{Sources: []string{"prefix/./nested/proof"}, Destination: "/added/", Parents: true},
-		},
+		ContextDir: contextDir, Isolation: "rootless",
 		Output: Output{Path: layout, Reference: "coopr-parents"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	manifest, _ := readPlanImage(t, layout)
-	if len(manifest.Layers) != 1 {
-		t.Fatalf("parents build layers = %d, want one build layer", len(manifest.Layers))
+	if len(manifest.Layers) != 2 {
+		t.Fatalf("parents build layers = %d, want COPY and ADD layers", len(manifest.Layers))
 	}
 	if got := readLayerFile(t, filepath.Join(layout, "blobs", "sha256", manifest.Layers[0].Digest.Encoded()), "copied/nested/proof"); got != "parents\n" {
 		t.Fatalf("COPY --parents contents = %q", got)
 	}
-	if got := readLayerFile(t, filepath.Join(layout, "blobs", "sha256", manifest.Layers[0].Digest.Encoded()), "added/nested/proof"); got != "parents\n" {
+	if got := readLayerFile(t, filepath.Join(layout, "blobs", "sha256", manifest.Layers[1].Digest.Encoded()), "added/nested/proof"); got != "parents\n" {
 		t.Fatalf("ADD --parents contents = %q", got)
 	}
 }
@@ -77,27 +76,30 @@ func TestBuildLocalCopyPolicyMatchesContainerfileFrontend(t *testing.T) {
 		}
 	}
 	layout := filepath.Join(root, "layout")
-	_, err := Build(ctx, Request{
-		Store: StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"},
-		Base:  "scratch", ContextDir: contextDir, Isolation: "rootless",
-		Operations: []Operation{
-			Copy{Sources: []string{"first", "second"}, Destination: "/filtered/", Excludes: []string{"nested/*.tmp"}},
-			Copy{Sources: []string{"copy-mode"}, Destination: "/copy-mode"},
-			Add{Sources: []string{"add-mode"}, Destination: "/add-mode"},
-		},
+	_, err := BuildPlan(ctx, testPlan(t, `from "scratch" {
+ copy "first" "second" "/filtered/" { exclude "nested/*.tmp" }
+ copy "copy-mode" "/copy-mode"
+ add "add-mode" "/add-mode"
+}`), PlanOptions{
+		Store:      StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"},
+		ContextDir: contextDir, Isolation: "rootless",
 		Output: Output{Path: layout, Reference: "coopr-copy-policy"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	manifest, _ := readPlanImage(t, layout)
-	blob := filepath.Join(layout, "blobs", "sha256", manifest.Layers[len(manifest.Layers)-1].Digest.Encoded())
+	if len(manifest.Layers) != 3 {
+		t.Fatalf("policy layers = %d, want three", len(manifest.Layers))
+	}
+	blob := filepath.Join(layout, "blobs", "sha256", manifest.Layers[0].Digest.Encoded())
 	for _, name := range []string{"filtered/first/nested/drop.tmp", "filtered/second/nested/drop.tmp"} {
 		if layerContainsPath(t, blob, name) {
 			t.Fatalf("source-relative COPY exclude retained %q", name)
 		}
 	}
-	for _, name := range []string{"copy-mode", "add-mode"} {
+	for index, name := range []string{"copy-mode", "add-mode"} {
+		blob := filepath.Join(layout, "blobs", "sha256", manifest.Layers[index+1].Digest.Encoded())
 		if got := readLayerHeader(t, blob, name).Mode & 0o7777; got != 0o755 {
 			t.Fatalf("%s mode = %#o, want 0755", name, got)
 		}

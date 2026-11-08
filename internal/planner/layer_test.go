@@ -1,7 +1,6 @@
 package planner
 
 import (
-	"encoding/json"
 	"reflect"
 	"slices"
 	"testing"
@@ -105,15 +104,8 @@ extend as="replacement" {
 	if !slices.Equal(publication.Component.DormantRoots, []string{"0"}) {
 		t.Fatalf("mandatory extend missing: %+v", publication.Component)
 	}
-	encoded, _ := json.Marshal(publication.Component)
-	var decoded PublishedComponent
-	if err := json.Unmarshal(encoded, &decoded); err != nil {
-		t.Fatal(err)
-	}
-	invocation, err := InstantiateDemandDriven(&decoded, Options{Mode: Invoke}, nil, func(FromSource) (StageBind, error) {
-		t.Fatal("scratch output must not resolve external inputs")
-		return StageBind{}, nil
-	})
+	decoded := roundTripPublished(t, publication.Component)
+	invocation, err := InstantiateDemandDriven(&decoded, Options{Mode: Invoke}, nil, unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,10 +165,7 @@ extend as="caller" {
 extend as="replacement" {
     from "scratch" {}
 }
-`), Options{Mode: Publish}, func(source FromSource) (StageBind, error) {
-		t.Fatalf("dormant package source resolved: %+v", source)
-		return StageBind{}, nil
-	})
+`), Options{Mode: Publish}, unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,10 +199,7 @@ extend as="replacement" {
 	if _, err := ValidatePublished(publication.Component); err != nil {
 		t.Fatal(err)
 	}
-	invocation, err := InstantiateDemandDriven(publication.Component, Options{Mode: Invoke}, nil, func(source FromSource) (StageBind, error) {
-		t.Fatalf("deferred source resolved before producer: %+v", source)
-		return StageBind{}, nil
-	})
+	invocation, err := InstantiateDemandDriven(publication.Component, Options{Mode: Invoke}, nil, unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,10 +256,7 @@ extend {
     }
 }
 `, Options{Mode: Publish})
-	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, func(FromSource) (StageBind, error) {
-		t.Fatal("caller-based stages must not resolve external images")
-		return StageBind{}, nil
-	})
+	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,10 +290,7 @@ extend {
     }
 }
 `, Options{Mode: Publish})
-	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, func(FromSource) (StageBind, error) {
-		t.Fatal("caller-based stages must not resolve images")
-		return StageBind{}, nil
-	})
+	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
 	}

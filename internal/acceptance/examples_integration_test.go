@@ -136,7 +136,7 @@ func TestPublishedExamplesSurvivePublisherRemovalAndRun(t *testing.T) {
 	if image.OS != "linux" || image.Architecture != "amd64" || image.Config.WorkingDir != "/work" || image.Config.Labels["coopr_example"] != "published-components" || len(image.Config.Cmd) != 3 || image.Config.Cmd[0] != "/bin/sh" {
 		t.Fatalf("final image platform/config changed: %+v", image)
 	}
-	if !hasEnv(image.Config.Env, "company_channel=preview") || !hasEnv(image.Config.Env, "company_debug=true") {
+	if !slices.Contains(image.Config.Env, "company_channel=preview") || !slices.Contains(image.Config.Env, "company_debug=true") {
 		t.Fatalf("company debug target/argument missing: %+v", image.Config.Env)
 	}
 	// The gofmt component mkdir is a filesystem no-op on this base.
@@ -222,13 +222,4 @@ func copyExampleFile(t *testing.T, source, target string) {
 	if err := os.WriteFile(target, data, 0600); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func hasEnv(env []string, want string) bool {
-	for _, entry := range env {
-		if entry == want {
-			return true
-		}
-	}
-	return false
 }

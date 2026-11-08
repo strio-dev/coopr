@@ -200,7 +200,8 @@ func TestComponentCacheRelaysDeferredImageCandidate(t *testing.T) {
 		t.Fatal(err)
 	}
 	manifest := v1.Descriptor{MediaType: v1.MediaTypeImageManifest, Digest: digest.FromString("manifest"), Size: 123}
-	index, err := json.Marshal(v1.Index{Versioned: specs.Versioned{SchemaVersion: 2}, Manifests: []v1.Descriptor{manifest}})
+	base := v1.Descriptor{MediaType: v1.MediaTypeImageManifest, Digest: digest.FromString("base"), Size: 100}
+	index, err := json.Marshal(v1.Index{Versioned: specs.Versioned{SchemaVersion: 2}, Manifests: []v1.Descriptor{base, manifest}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,9 +212,9 @@ func TestComponentCacheRelaysDeferredImageCandidate(t *testing.T) {
 		Instruction: digest.FromString("instruction"), Parent: digest.FromString("parent"),
 		Platform: v1.Platform{OS: "linux", Architecture: "amd64"}, Executor: "executor", Format: "oci",
 	}
-	worker := &componentCache{stagingDir: workerRoot, images: &portableInstructionCache{stagingDir: workerRoot, candidates: []portableInstructionCandidate{{
-		key: key, record: cache.ImageRecord{Version: cache.ImageRecordVersion, Key: key, Image: manifest}, layout: layout,
-	}}}}
+	worker := &componentCache{stagingDir: workerRoot, candidates: []portableInstructionCandidate{{
+		key: key, record: cache.ImageRecord{Version: cache.ImageRecordVersion, Key: key, Image: manifest, BaseImage: &base}, layout: layout,
+	}}}
 	relays, err := worker.relayCandidates(parentRoot)
 	if err != nil {
 		t.Fatal(err)
@@ -225,12 +226,26 @@ func TestComponentCacheRelaysDeferredImageCandidate(t *testing.T) {
 	if err := parent.acceptRelayedCandidates(relays); err != nil {
 		t.Fatal(err)
 	}
-	if len(parent.images.candidates) != 1 {
-		t.Fatalf("accepted %d candidates, want 1", len(parent.images.candidates))
+	if len(parent.candidates) != 1 {
+		t.Fatalf("accepted %d candidates, want 1", len(parent.candidates))
 	}
-	if _, err := os.Stat(filepath.Join(parent.images.candidates[0].layout, "index.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(parent.candidates[0].layout, "index.json")); err != nil {
 		t.Fatalf("relayed layout did not survive worker cleanup: %v", err)
 	}
+	invalid := relays[0]
+	invalid.Record.BaseImage = &v1.Descriptor{MediaType: base.MediaType, Digest: digest.FromString("wrong-base"), Size: base.Size}
+	if err := parent.acceptRelayedCandidates([]componentCacheRelay{invalid}); err == nil {
+		t.Fatal("accepted unrelated base descriptor in component relay")
+	}
+	invalid = relays[0]
+	invalid.Record.Image.Digest = digest.FromString("wrong-output")
+	if err := parent.acceptRelayedCandidates([]componentCacheRelay{invalid}); err == nil {
+		t.Fatal("accepted unrelated selected output descriptor in component relay")
+	}
+	if len(parent.candidates) != 1 {
+		t.Fatal("invalid relay was enqueued")
+	}
+
 }
 
 func TestComponentCacheLayoutCannotOverlapBuildState(t *testing.T) {
@@ -390,7 +405,7 @@ func TestComponentCacheLookupPropagatesCancellation(t *testing.T) {
 func TestComponentCachePublishPropagatesCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	c := &componentCache{images: &portableInstructionCache{}}
+	c := &componentCache{}
 	if err := c.publish(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
@@ -401,12 +416,12 @@ func TestComponentCacheExportReturnsAllFailuresAfterCleanup(t *testing.T) {
 	if err := os.MkdirAll(layout, 0700); err != nil {
 		t.Fatal(err)
 	}
-	c := &componentCache{images: &portableInstructionCache{writeStores: []instructionCacheStore{failingInstructionCacheStore{err: errors.New("first export failed")}, failingInstructionCacheStore{err: errors.New("second export failed")}}, candidates: []portableInstructionCandidate{{layout: layout}}}}
+	c := &componentCache{writeStores: []instructionCacheStore{failingInstructionCacheStore{err: errors.New("first export failed")}, failingInstructionCacheStore{err: errors.New("second export failed")}}, candidates: []portableInstructionCandidate{{layout: layout}}}
 	err := c.publish(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "first export failed") || !strings.Contains(err.Error(), "second export failed") {
 		t.Fatal(err)
 	}
-	if len(c.images.candidates) != 0 || c.stats.Errors != 2 || c.stats.Stored != 0 {
+	if len(c.candidates) != 0 || c.stats.Errors != 2 || c.stats.Stored != 0 {
 		t.Fatalf("stats %+v", c.stats)
 	}
 	if _, err := os.Stat(filepath.Dir(layout)); !errors.Is(err, os.ErrNotExist) {
@@ -416,7 +431,7 @@ func TestComponentCacheExportReturnsAllFailuresAfterCleanup(t *testing.T) {
 
 func TestComponentCacheOptionalReadWarnsWithCause(t *testing.T) {
 	failure := errors.New("injected cache read permission failure")
-	c := &componentCache{images: &portableInstructionCache{readStores: []instructionCacheStore{unavailableInstructionCacheStore{err: failure}}}}
+	c := &componentCache{readStores: []instructionCacheStore{unavailableInstructionCacheStore{err: failure}}}
 	warning := packageWarningOutput(t, func() {
 		entry, _, err := c.lookup(context.Background(), &graphExecutor{}, validComponentTestKey(), nil, componentCacheCaller{})
 		if entry.ImageID != "" || err != nil || c.stats.Errors != 1 || c.stats.Misses != 1 {
@@ -428,33 +443,13 @@ func TestComponentCacheOptionalReadWarnsWithCause(t *testing.T) {
 	}
 }
 
-func TestExecutorSemanticsInvalidateLegacyRunMountResults(t *testing.T) {
-	// This is the previous execution identity, before direct-mount boolean and
-	// source-metadata isolation repairs. Its cached RUN results must not be reused.
-	legacy := `{"buildah":"1.45.1","modules":"fixture","isolation":"rootless","driver":"vfs","runtime":"crun","output_format":"oci"}`
-	previous := "buildah-" + digest.FromString(legacy).Encoded()
-	current, err := componentCacheExecutorSemantics("1.45.1", "fixture", "rootless", "vfs", nil, "crun", "oci")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if current == previous {
-		t.Fatal("repaired RUN semantics reused a legacy portable-cache identity")
-	}
-}
-
-func TestComponentImageCacheKeyRejectsOldLoweringAndCallerGraphChanges(t *testing.T) {
+func TestComponentImageCacheKeySeparatesCallerGraphAndCommandState(t *testing.T) {
 	original := validComponentTestKey()
 	original.Inputs = map[string]digest.Digest{"caller-image": digest.FromString("caller-one")}
 	a, err := componentImageCacheKey(original, "oci")
 	if err != nil {
 		t.Fatal(err)
 	}
-	original.Lowering = "coopr-buildah-component-image-v6"
-	b, err := componentImageCacheKey(original, "oci")
-	if err != nil {
-		t.Fatal(err)
-	}
-	original.Lowering = portableCacheLoweringVersion
 	original.Inputs["caller-image"] = digest.FromString("caller-two")
 	c, err := componentImageCacheKey(original, "oci")
 	if err != nil {
@@ -473,8 +468,8 @@ func TestComponentImageCacheKeyRejectsOldLoweringAndCallerGraphChanges(t *testin
 	if inherited.Instruction == authored.Instruction {
 		t.Fatal("same image with different CMD authorship reused image key")
 	}
-	if a.Instruction == b.Instruction || a.Instruction == c.Instruction {
-		t.Fatal("old snapshot semantics or alternate caller graph reused image key")
+	if a.Instruction == c.Instruction {
+		t.Fatal("alternate caller graph reused image key")
 	}
 }
 
@@ -599,7 +594,7 @@ func TestComponentImageCacheInvalidMetadataMissesBeforeSeed(t *testing.T) {
 	}
 	executor := &graphExecutor{store: lease.store, options: f.options}
 	key := validComponentTestKey()
-	producer := &componentCache{stagingDir: staging, writeStores: []cache.Store{store}}
+	producer := &componentCache{stagingDir: staging, writeStores: []instructionCacheStore{store}}
 	producer.record(f.ctx, executor, key, result.ImageID, digest.Digest(result.ManifestDigest), logical, &PackageRootMetadata{Mode: 0755}, f.options.SystemContext, sourceBase.ID, true)
 	if err := producer.publish(f.ctx); err != nil {
 		t.Fatal(err)
@@ -640,7 +635,7 @@ func TestComponentImageCacheInvalidMetadataMissesBeforeSeed(t *testing.T) {
 		{"caller-chain-conflict", func(*cache.ImageRecord) {}, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			consumer := &componentCache{stagingDir: t.TempDir(), readStores: []cache.Store{}, images: &portableInstructionCache{stagingDir: t.TempDir(), validateHit: validateComponentImageCacheHit, readStores: []instructionCacheStore{mutatingComponentImageCacheStore{instructionCacheStore: imageStore, mutate: test.mutate}}, writeStores: []instructionCacheStore{failingInstructionCacheStore{err: errors.New("invalid metadata must not be seeded")}}}}
+			consumer := &componentCache{stagingDir: t.TempDir(), readStores: []instructionCacheStore{mutatingComponentImageCacheStore{instructionCacheStore: imageStore, mutate: test.mutate}}, writeStores: []instructionCacheStore{failingInstructionCacheStore{err: errors.New("invalid metadata must not be seeded")}}}
 			warning := packageWarningOutput(t, func() {
 				callerID := sourceBase.ID
 				if test.name == "caller-chain-conflict" {

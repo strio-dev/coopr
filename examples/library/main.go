@@ -24,8 +24,9 @@ func main() {
 	}
 	busybox := flag.String("busybox", "", "absolute path to a static BusyBox binary")
 	work := flag.String("work", "", "fresh absolute directory for caller-owned stores, cache and outputs")
+	network := flag.String("network", "", "RUN network mode; empty preserves the native default")
 	flag.Parse()
-	if err := prove(*work, *busybox); err != nil {
+	if err := prove(*work, *busybox, *network); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -40,7 +41,7 @@ type proof struct {
 	ContextIsolated bool             `json:"writable_context_isolated"`
 }
 
-func prove(root, busybox string) error {
+func prove(root, busybox, network string) error {
 	if os.Getuid() == 0 {
 		return errors.New("run this consumer as an ordinary user with subordinate IDs")
 	}
@@ -72,6 +73,7 @@ func prove(root, busybox string) error {
 	}
 	options := func(name string) coopr.Options {
 		return coopr.Options{
+			Network:    network,
 			Store:      coopr.StoreOptions{RunRoot: filepath.Join(root, name+"-run"), GraphRoot: filepath.Join(root, name+"-graph"), Driver: "vfs"},
 			ContextDir: filepath.Join(root, "context"), Runtime: "crun", Isolation: "rootless", Jobs: 2,
 			Output:   coopr.Output{OCI: filepath.Join(root, name+"-oci"), Filesystem: filepath.Join(root, name+"-fs")},
@@ -151,12 +153,14 @@ func prove(root, busybox string) error {
 		return fmt.Errorf("cancellation graph exited before readiness: %w", err)
 	case <-ctx.Done():
 		stop()
-		<-done
-		return fmt.Errorf("waiting for cancellation readiness: %w", ctx.Err())
+		return fmt.Errorf("waiting for cancellation readiness: %w", errors.Join(ctx.Err(), <-done))
 	}
 	processes, err := descendants(os.Getpid())
 	stop()
 	runErr := <-done
+	if errors.Is(runErr, coopr.ErrCleanupFailed) {
+		return fmt.Errorf("cancellation cleanup unconfirmed; preserve execution inputs: %w", runErr)
+	}
 	if err != nil {
 		return err
 	}

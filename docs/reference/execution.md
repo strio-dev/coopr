@@ -32,7 +32,7 @@ Inside EXTEND, direct instructions modify the caller; nested FROM blocks own sep
 
 ### Dependencies
 
-COPY/ADD and RUN mounts with `from=` create input dependencies without changing base lineage. Sources can be named stages, packages, named contexts, or external images. COPY/ADD can also read [OCI artifact files](definition.md#copy-oci-artifact-files). External inputs resolve to immutable descriptors; image and artifact indexes select the stage's platform. Stage sources must precede their consuming FROM, COPY/ADD, or RUN mount. Nested FROM helpers become visible to later instructions inside EXTEND. Graphs must be acyclic and stage aliases unambiguous. Graph-affecting values must resolve before their consuming instruction executes; after a component returns, planning continues with its actual output environment.
+COPY/ADD and RUN mounts with `from=` create input dependencies without changing base lineage. Sources can be named stages, packages, named contexts, or external images. COPY/ADD and read-only bind RUN mounts can also read [OCI artifact files](definition.md#copy-oci-artifact-files). RUN mounts expose the same verified raw-blob filenames, with archives remaining files; `source` selects one path or defaults to the whole view. External inputs resolve to immutable descriptors; image and artifact indexes select the stage's platform. Stage sources must precede their consuming FROM, COPY/ADD, or RUN mount. Nested FROM helpers become visible to later instructions inside EXTEND. Graphs must be acyclic and stage aliases unambiguous. Graph-affecting values must resolve before their consuming instruction executes; after a component returns, planning continues with its actual output environment.
 
 Published components fix whether each FROM, COPY/ADD, and RUN mount source is a stage, `scratch`, or an external image. Invocation arguments cannot change that role or a stage dependency. Explicit [named build contexts](#named-contexts) can substitute a source without rewriting the published definition. Arguments may change an external reference while it remains external. Component references themselves may use caller ARG/ENV values resolved at invocation.
 
@@ -126,6 +126,8 @@ Unused supplied build arguments are ignored with a warning containing names only
 
 ### Timestamps and cache age
 
+For regular COPY, destination directories created implicitly use the Unix epoch, and existing enclosing directories keep their previous timestamps. Source file and subdirectory timestamps remain intact. This rule applies to input materialization with or without cache reuse, including COPY from named contexts or images. Linked COPY uses the native backend's linked-layer timestamp policy; ADD archive extraction keeps its native metadata behavior. Explicit timestamp policies below still apply to committed layers.
+
 `SOURCE_DATE_EPOCH` accepts a supplied Unix timestamp or global ARG default; empty clears it. It controls image/history creation and reaches RUN only after stage redeclaration. `--source-date-epoch` overrides the resolved value; `--source-date-epoch=` clears the environment default. An empty environment value is unset, and negative Unix timestamps are accepted. An explicit numeric build argument overrides an authored `context` default.
 
 | Epoch source | Value |
@@ -145,6 +147,8 @@ A positional definition path uses its parent directory as context. With `--file 
 Definition and primary context are independent inputs. Either can use stdin, but both cannot do so in one request. Contexts accept directories, local tar archives, stdin tar, Git checkouts, or HTTP(S) tar archives. `--file` also accepts an HTTP(S) definition. Definitions selected inside remote/archive contexts must remain inside them after symlink resolution; explicit local definitions may live outside the context.
 
 Ignore selection is `--ignorefile`, otherwise the first context-root file: `.cooprignore`, `.containerignore`, `.dockerignore`. Docker/Podman patterns filter local COPY/ADD, RUN binds, and local component definitions; filtered inputs enter cache identity. Definition placement does not change ignore selection. Paths/symlinks cannot escape the selected context.
+
+Active output, cache and store paths are excluded from the context. Cacheable primary-context RUNs and package results use a private filtered capture for both lookup and execution. Identity includes file content, metadata and links; selected read-only RUN mounts measure their selected views. Later operations capture changes made by earlier stages. Keep inputs stable during capture: it is not an atomic snapshot of a concurrently changing directory.
 
 Local contexts exclude host `security.selinux` labels. Other xattrs, including `security.capability` and `user.*`, remain subject to runtime and exporter limits.
 
@@ -179,7 +183,7 @@ Both build commands accept the following RUN and lifecycle settings. Defaults no
 
 `--jobs` changes concurrency without changing dependency order or cache identity. Authored RUN network values override the build-wide default. Both build commands accept `--stdin` to pass command stdin to RUN; stdin cannot simultaneously supply the definition or context.
 
-RUN resource, namespace, and runtime settings affect cache reuse; host volume/device contents are not measured. Memory and swap apply independently; explicit shared-memory zero differs from omission. Host permissions and cgroup delegation can reject resource requests.
+RUN resource, namespace, and runtime settings affect cache reuse. Native `--volume` binds, including inherited `containers.conf` volumes, disable RUN and enclosing whole-result reuse; their current host files are not snapshotted cache inputs. COPY/config-only work can still reuse results when it does not execute RUN. Live device contents remain unmeasured. Memory and swap apply independently; explicit shared-memory zero differs from omission. Host permissions and cgroup delegation can reject resource requests.
 
 Image `--env` prepends values to every stage; authored ENV wins. Bare names import present host values, `PREFIX*` imports matching names, and `*` imports all. Repeated context names and secret/SSH IDs use the last value.
 
@@ -236,7 +240,9 @@ For generated image sources, FROM `after` names one earlier stage by alias or nu
 
 Authored mount children apply to their RUN. Repeatable `--mount` adds mounts to every executed RUN, including component and inherited RUNs, after the authored mounts. Mount `from` references participate in dependency planning and input identity; a self-dependency or cycle fails before execution.
 
-A writable bind of the primary context uses one filtered, disposable copy for the build. Changes persist across RUNs, stages, and component calls, so later file operations and generated image sources see them. The original context is unchanged. Writes to image or named-context bind mounts use disposable per-RUN overlays and do not persist to subsequent RUNs.
+OCI artifact RUN inputs are read-only private file views, never writable image overlays.
+
+A writable bind of the primary context uses one filtered, disposable copy for the build. Changes persist across RUNs, stages, and component calls, so later file operations and generated image sources see them. The original context is unchanged. Writes to image or named-context bind mounts use disposable per-RUN overlays and do not persist to subsequent RUNs. Read-only image, stage and named-context mounts reject writes. Explicit relabeling or ownership options operate on a private snapshot, without changing shared image content.
 
 For example, these instructions inside a FROM write a file into that disposable context, then copy it into the image:
 
@@ -255,7 +261,7 @@ Image VOLUME paths exist in final filesystem exports. With `--compat-volumes`, e
 
 Reuse requires matching input state, arguments, platform, execution settings, and declared sources.
 
-Instruction keys use the ordered OCI filesystem layers rather than the image's creation time. Execution configuration and captured root metadata still participate. Repeated component builds can reuse instructions without timestamp flags; cached results retain the current caller's history, labels, and annotations.
+Instruction keys describe operations, dependencies, execution settings and measured inputs rather than image creation times. Cache restoration selects a complete image and reapplies current authored history, labels and annotations.
 
 | Cache | Reuses | Limits |
 | --- | --- | --- |
@@ -265,19 +271,19 @@ Instruction keys use the ordered OCI filesystem layers rather than the image's c
 | Package result | Completed package snapshots. | All selected package results must be available; otherwise their producers execute. |
 | Cache mount | Disposable tool data. | Names are scoped to their use unless explicitly supplied. Builds must work with empty mounts. |
 
-COPY/ADD measure their selected inputs. Checksum-pinned HTTP ADD can hit without downloading again; Git ADD resolves the commit and submodules before checking the cache. A cache hit therefore does not guarantee an entirely offline build.
+COPY/ADD measure their selected inputs; local hits can still read and extract files. Checksum-pinned HTTP ADD can hit without downloading again; Git ADD resolves the commit and submodules before checking the cache. A cache hit therefore does not guarantee an offline build.
 
 Whole-component reuse requires a resolved invocation graph. COPY/ADD and bind inputs must identify retained stages, packages, or selected images and named contexts. Dynamic bases, generated image inputs, nested component calls, and caller-context inputs still pass through planning and execution, where individual instructions can reuse their snapshots. This keeps transitive input resolution and context side effects visible.
 
-Package-result caching supports networked and device-backed RUN, bind/cache/tmpfs/secret/SSH mounts, and checksum-pinned remote ADD. Volume compatibility, layer policy, and stage-label settings participate in package-result identity. Mutable remote ADD sources, nested components, dynamic bases, generated image inputs, and unplanned ONBUILD triggers must resolve before individual instructions reuse results instead of returning a whole-package hit. Writable context mounts execute to replay their side effects.
+Package-result caching supports networked and device-backed RUN, captured or selected bind inputs, cache/tmpfs/secret/SSH mounts, and checksum-pinned remote ADD. Volume compatibility, layer policy, and stage-label settings participate in package-result identity. Mutable remote ADD sources, nested components, dynamic bases, generated image inputs, and unplanned ONBUILD triggers must resolve before individual instructions reuse results instead of returning a whole-package hit. Writable context mounts execute to replay their side effects. Live host-directory binds bypass whole-package reuse even when read-only: their current files are not part of the captured context. Instruction and whole-component reuse apply the same live-input exclusion.
 
 Effective device names after entitlement aliases participate in cache identity, including whether an optional CDI device is present. Required devices and authorization are checked before reuse. Live device contents, network responses, credentials/SSH-agent state, cache-mount contents, clock, randomness, and undeclared host inputs do not invalidate conventional cache results. A cache hit is not a reproducibility guarantee. Required reusable files belong in packages. Cache repositories are trusted inputs and may contain intermediate files absent from final images; protect them accordingly.
 
-`--no-cache` bypasses instruction, component-state, and package-result reads, writes fresh results, and leaves cache mounts intact. `--cache-from` reads portable results; `--cache-to` writes them. Validated hits can seed another writable destination; read-only sources are never updated and write-only destinations are never queried. See the [caching guide](../guides/caching.md) for registry/local syntax and refresh commands.
+`--no-cache` forces instruction execution, bypasses component-state and package-result reuse, writes fresh results, and leaves cache mounts intact. Portable graph metadata may still be imported, but its results cannot satisfy forced execution. `--cache-from` reads portable results; `--cache-to` writes selected results and dependency snapshots with complete image closures. Validated hits can seed another writable destination without copying every same-key alternative; read-only sources are never updated and write-only destinations are not consulted for execution cache hits. Publication can inspect existing destination content for integrity. See the [caching guide](../guides/caching.md) for registry/local syntax and refresh commands.
 
 ### State identity and metadata limits
 
-Portable instruction cache identity includes the ordered filesystem layers and execution configuration, excluding creation time and non-execution history metadata. Equal flattened filesystems with different layer chains need not share a key.
+Portable instruction graphs preserve dependency associations, execution identities and complete selected image results. The format is not interchangeable with BuildKit registry caches. Source boundaries can distinguish equal flattened filesystems with different layer chains. Intermediate generated parent layer timestamps do not replace logical dependency identity.
 
 Component-result cache identity also includes the input image chain. Restoration retains the selected output's image graph, configuration and root metadata; identity ignores the root directory's modification time. Metadata that the exporter cannot preserve can prevent portable reuse.
 
@@ -307,4 +313,4 @@ Pruning follows [storage lifecycle rules](../guides/storage.md#inspect-and-maint
 
 Image builds accept `--compression-format gzip|zstd|zstd:chunked`, `--compression-level`, and `--force-compression`. A specified format defaults force-compression to true unless explicitly disabled. Otherwise native `containers.conf` defaults apply. Docker-format manifests require compatible layer compression.
 
-These controls apply when exporting final image layers and portable instruction-cache images, including after cache hits and when the final stage is unchanged. They do not change instruction cache keys or force RUNs to execute. The native image store retains its normal filesystem/layer representation; filesystem and tar exports are not compressed image manifests.
+These controls apply when exporting final image layers, including after cache hits and when the final stage is unchanged. They do not change instruction cache keys or force RUNs to execute. Graph-cache snapshots preserve their selected immutable manifests. The native image store retains its normal filesystem/layer representation; filesystem and tar exports are not compressed image manifests.

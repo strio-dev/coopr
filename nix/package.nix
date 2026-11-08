@@ -10,19 +10,27 @@
   buildTestBinaries ? false,
 }:
 let
+  rootFiles = builtins.readDir ../.;
+  rootGo = map (name: ../. + "/${name}") (
+    lib.filter (name: rootFiles.${name} == "regular" && lib.hasSuffix ".go" name) (
+      builtins.attrNames rootFiles
+    )
+  );
   testSource = lib.fileset.toSource {
     root = ../.;
-    fileset = lib.fileset.unions [
-      ../cmd
-      ../internal
-      ../coopr.go
-      ../plan.go
-      ../plan_test.go
-      ../go.mod
-      ../go.sum
-      ../LICENSE
-      ../examples
-    ];
+    fileset = lib.fileset.unions (
+      rootGo
+      ++ [
+        ../cmd
+        ../api
+        ../client
+        ../internal
+        ../go.mod
+        ../go.sum
+        ../LICENSE
+        ../examples
+      ]
+    );
   };
 in
 (buildGoModule.override { go = go_1_27; }) (finalAttrs: {
@@ -55,7 +63,7 @@ in
       GOPROXY = "https://proxy.golang.org|direct";
     };
   };
-  vendorHash = "sha256-C7OYv9ndBIwT0RmcdvGY0whGIyRoGqDhDcerWebaROU=";
+  vendorHash = "sha256-ty7qPV0z675oivhmj76SA2ML8ePnOvJkK0RmBFHMxJc=";
   subPackages = [ "./cmd/coopr" ];
   ldflags = [ "-X main.version=${version}" ];
   tags = [

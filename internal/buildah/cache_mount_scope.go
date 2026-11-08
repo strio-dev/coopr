@@ -56,7 +56,7 @@ func scopedCacheMountIDResolver(scope CacheMountScope) (CacheMountIDResolver, er
 	if scope.Kind != "definition" && scope.Kind != "component" {
 		return nil, fmt.Errorf("invalid cache mount scope kind %q", scope.Kind)
 	}
-	if scope.Source.Algorithm() != digest.SHA256 || scope.Source.Validate() != nil {
+	if scope.Source.Validate() != nil || scope.Source.Algorithm() != digest.SHA256 {
 		return nil, fmt.Errorf("invalid cache mount source digest %q", scope.Source)
 	}
 	if scope.Stage == "" || scope.Platform.OS != "linux" || scope.Platform.Architecture == "" {

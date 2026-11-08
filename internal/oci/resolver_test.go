@@ -94,6 +94,9 @@ func assertPackageSnapshot(t *testing.T, snapshot []byte, contents string, confi
 // not part of an individual fixture's inputs.
 func testResolver(t *testing.T, options Options) (*Resolver, error) {
 	t.Helper()
+	if options.ComponentStoreDir == "" {
+		options.ComponentStoreDir = filepath.Join(t.TempDir(), "components")
+	}
 	resolver, err := NewResolver(options)
 	if err == nil {
 		resolver.system.BlobInfoCacheDir = t.TempDir()

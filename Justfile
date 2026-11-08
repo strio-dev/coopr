@@ -18,7 +18,7 @@ scan:
 
 # Format Go, Nix, and Justfile sources with pinned tools.
 fmt:
-    nix develop path:. -c gofmt -w *.go cmd internal examples/library
+    nix develop path:. -c gofmt -w *.go api client cmd internal examples/client examples/library nix/exporter
     nix develop path:. -c nixfmt flake.nix nix/*.nix nix/tests/*.nix
     nix develop path:. -c just --fmt
 
@@ -56,6 +56,18 @@ benchmark iterations="5" multiplatform="0":
 # Verify explicit Docker engine transfers and imports with a disposable daemon.
 docker-acceptance store="modern":
     nix develop path:.#docker -c ./scripts/acceptance/docker.sh {{ quote(store) }}
+
+# Qualify a source-matched CLI service on an already configured rootless host.
+api-service-acceptance:
+    nix develop path:.#api-service -c go test -count=1 -v -timeout=8m ./internal/apibackend -run '^TestPublicClient(NativeServiceLifetime|NativeLiterals|DefinitionProgressColdWarm)$'
+
+# Check native Nix image composition on a configured rootless host.
+nix-image-acceptance results scratch="/var/tmp": build
+    nix develop path:.#composition -c python3 scripts/acceptance/nix-frontend.py --coopr-binary {{ quote(justfile_directory() + "/result-coopr/bin/coopr") }} --evidence {{ quote(results) }} --scratch-parent {{ quote(scratch) }}
+
+# Check native Nix component packaging and complete local delivery.
+nix-component-acceptance results scratch="/var/tmp": build
+    nix develop path:.#composition -c python3 scripts/acceptance/nix-component.py --coopr-binary {{ quote(justfile_directory() + "/result-coopr/bin/coopr") }} --evidence {{ quote(results) }} --scratch-parent {{ quote(scratch) }}
 
 # Publish the repository examples, remove publisher files, and run the consumer.
 examples-acceptance:

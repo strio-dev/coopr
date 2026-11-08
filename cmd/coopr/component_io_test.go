@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/go-containerregistry/pkg/registry"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/bale"
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
 
@@ -51,6 +52,24 @@ func TestComponentIOCommandsRoundTripWithoutNativeImageStore(t *testing.T) {
 	if err := componentstore.Put(ctx, dir, source, root, "source"); err != nil {
 		t.Fatal(err)
 	}
+	t.Run("complete local bundle", func(t *testing.T) {
+		output := filepath.Join(t.TempDir(), "bundle")
+		var out, errs bytes.Buffer
+		if status := run([]string{"component", "bundle", "source", "--origin", "packages.example/components/base:stable", "--output", output}, &out, &errs); status != 0 {
+			t.Fatalf("bundle status=%d stdout=%q stderr=%q", status, &out, &errs)
+		}
+		client, err := bale.NewClient(bale.ClientOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		report, err := client.InspectLayout(ctx, output)
+		if err != nil || report.MetadataOnly || len(report.Metadata.Roots) != 1 || report.Metadata.Roots[0].Descriptor.Digest != root.Digest || strings.TrimSpace(out.String()) != report.Descriptor.Digest.String() {
+			t.Fatalf("verify command output: %+v, %v, stdout=%q", report, err, &out)
+		}
+		if status := run([]string{"component", "bundle", "source", "--output", filepath.Join(t.TempDir(), "absent")}, &out, &errs); status == 0 {
+			t.Fatal("bundle accepted an implicit origin coordinate")
+		}
+	})
 	t.Run("save literal output paths", func(t *testing.T) {
 		for _, test := range []struct {
 			name     string

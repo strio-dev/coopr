@@ -73,7 +73,7 @@ func TestAggregateCachesInvalidateOldWorkdirSemantics(t *testing.T) {
 		}
 		old := current
 		old.Lowering = "coopr-buildah-component-image-v7"
-		producer := &componentCache{stagingDir: staging, writeStores: []cache.Store{store}}
+		producer := &componentCache{stagingDir: staging, writeStores: []instructionCacheStore{store}}
 		producer.record(f.ctx, executor, old, legacy.ImageID, digest.Digest(legacy.ManifestDigest), logical, &PackageRootMetadata{Mode: 0755}, f.options.SystemContext, legacy.ImageID, false)
 		if err := producer.publish(f.ctx); err != nil {
 			t.Fatal(err)
@@ -81,7 +81,7 @@ func TestAggregateCachesInvalidateOldWorkdirSemantics(t *testing.T) {
 		if producer.stats.Errors != 0 || producer.stats.Stored != 1 {
 			t.Fatalf("legacy cache not published: %+v", producer.stats)
 		}
-		consumer := &componentCache{stagingDir: t.TempDir(), readStores: []cache.Store{store}}
+		consumer := &componentCache{stagingDir: t.TempDir(), readStores: []instructionCacheStore{store}}
 		entry, _, err := consumer.lookup(f.ctx, executor, current, f.options.SystemContext, componentCacheCaller{ImageID: legacy.ImageID})
 		if err != nil {
 			t.Fatal(err)
@@ -106,7 +106,7 @@ func TestAggregateCachesInvalidateOldWorkdirSemantics(t *testing.T) {
 		if err := producer.publish(f.ctx); err != nil {
 			t.Fatal(err)
 		}
-		warm := &componentCache{stagingDir: t.TempDir(), readStores: []cache.Store{store}}
+		warm := &componentCache{stagingDir: t.TempDir(), readStores: []instructionCacheStore{store}}
 		entry, config, err := warm.lookup(f.ctx, executor, current, f.options.SystemContext, componentCacheCaller{ImageID: fresh.ImageID})
 		if err != nil || entry.ImageID == "" || config == nil || warm.stats.Hits != 1 {
 			t.Fatalf("current component warm lookup: %+v %+v %v", entry, warm.stats, err)

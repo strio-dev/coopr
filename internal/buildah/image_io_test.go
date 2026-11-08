@@ -63,10 +63,12 @@ func TestLoadImagesWithNonRunnableIndexChildren(t *testing.T) {
 	unknown.Annotations = map[string]string{"vnd.docker.reference.type": "attestation-manifest", "vnd.docker.reference.digest": runnable.Digest.String()}
 	absent := unknown
 	absent.Platform = nil
-	index := v1.Index{
-		Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: v1.MediaTypeImageIndex,
-		Manifests:   []v1.Descriptor{absent, runnable, unknown},
-		Annotations: map[string]string{"org.example.index": "preserved"},
+	index := map[string]any{
+		"schemaVersion": 2, "mediaType": v1.MediaTypeImageIndex,
+		"manifests":   []v1.Descriptor{absent, runnable, unknown},
+		"annotations": map[string]string{"org.example.index": "preserved"},
+		// Unknown top-level data must survive filtering without numeric coercion.
+		"org.example.extension": json.RawMessage(`{"number":9007199254740993,"values":[true,"opaque"]}`),
 	}
 	root := push(v1.MediaTypeImageIndex, marshal(index))
 	if err := source.Tag(ctx, root, "mixed"); err != nil {
@@ -83,7 +85,7 @@ func TestLoadImagesWithNonRunnableIndexChildren(t *testing.T) {
 	}), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	index.Manifests = []v1.Descriptor{runnable}
+	index["manifests"] = []v1.Descriptor{runnable}
 	wantData := marshal(index)
 	wantRoot := oci.Descriptor(v1.MediaTypeImageIndex, wantData)
 	for _, input := range []struct{ name, path string }{{"layout", layout}, {"archive", archive}} {

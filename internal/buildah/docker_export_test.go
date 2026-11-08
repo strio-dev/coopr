@@ -16,6 +16,7 @@ import (
 	"github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/strio-dev/coopr/internal/oci"
+	"go.podman.io/image/v5/pkg/blobinfocache/none"
 	"go.podman.io/image/v5/types"
 )
 
@@ -72,9 +73,9 @@ func TestExportRawDockerSourceRejectsChangedBlobAndCleansStaging(t *testing.T) {
 	if _, statErr := os.Lstat(output.Path); !os.IsNotExist(statErr) {
 		t.Fatalf("failed output remains: %v", statErr)
 	}
-	matches, globErr := filepath.Glob(filepath.Join(root, ".coopr-docker-layout-*"))
-	if globErr != nil || len(matches) != 0 {
-		t.Fatalf("staged layouts remain: %v, %v", matches, globErr)
+	entries, readErr := os.ReadDir(root)
+	if readErr != nil || len(entries) != 0 {
+		t.Fatalf("failed export retained staging data: %v, %v", entries, readErr)
 	}
 }
 
@@ -257,4 +258,8 @@ func readRawDockerBlob(t *testing.T, layout string, descriptor v1.Descriptor) []
 		t.Fatal(err)
 	}
 	return data
+}
+
+func exportRawDockerSource(ctx context.Context, source types.ImageSource, imageID string, output Output) (result Result, retErr error) {
+	return exportRawImageSource(ctx, source, imageID, output, nil, true, none.NoCache, nil, nil)
 }

@@ -1,7 +1,6 @@
 package planner
 
 import (
-	"encoding/json"
 	"reflect"
 	"slices"
 	"strconv"
@@ -31,14 +30,6 @@ extend as="final" {
 	if _, err := Instantiate(publication.Component, Options{Platform: "linux/arm64/v8"}); err != nil {
 		t.Fatalf("arm64/v8 alias rejected: %v", err)
 	}
-	clone := func() *PublishedComponent {
-		data, _ := json.Marshal(publication.Component)
-		var copy PublishedComponent
-		if err := json.Unmarshal(data, &copy); err != nil {
-			t.Fatal(err)
-		}
-		return &copy
-	}
 	for _, test := range []struct {
 		name   string
 		change func(*PublishedComponent)
@@ -55,9 +46,9 @@ extend as="final" {
 		}, "outside selected output closure"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			component := clone()
-			test.change(component)
-			if _, err := ValidatePublished(component); err == nil || !strings.Contains(err.Error(), test.want) {
+			component := roundTripPublished(t, publication.Component)
+			test.change(&component)
+			if _, err := ValidatePublished(&component); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("tampered publication accepted or wrong error: %v", err)
 			}
 		})
@@ -65,7 +56,7 @@ extend as="final" {
 }
 
 func TestPublishedGraphValidationMatchesStageAliasesCaseInsensitively(t *testing.T) {
-	publication, err := Create(parse(t, `
+	publication := makePlan(t, `
 package as="pkg" {}
 extend as="base" {
     copy "/src" "/dst" from="pkg"
@@ -73,10 +64,7 @@ extend as="base" {
 extend as="final" {
     from "base" {}
 }
-`), Options{Mode: Publish})
-	if err != nil {
-		t.Fatal(err)
-	}
+`, Options{Mode: Publish})
 	for i := range publication.Component.Definition.Instructions {
 		inst := &publication.Component.Definition.Instructions[i]
 		switch inst.Name {
@@ -119,10 +107,7 @@ extend {
     from "payload" as="prepared" {}
     copy "/selected" "/selected" from="prepared"
 }
-`), Options{Mode: Publish}, func(source FromSource) (StageBind, error) {
-		t.Fatalf("unexpected external source %+v", source)
-		return StageBind{}, nil
-	})
+`), Options{Mode: Publish}, unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,17 +133,6 @@ extend {
 	if _, err := InstantiateWithPackageBinds(publication.Component, Options{}, map[string]StageBind{prepared: bind}); err != nil {
 		t.Fatalf("verified package trigger rejected: %v", err)
 	}
-	clone := func() *PublishedComponent {
-		data, err := json.Marshal(publication.Component)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var copy PublishedComponent
-		if err := json.Unmarshal(data, &copy); err != nil {
-			t.Fatal(err)
-		}
-		return &copy
-	}
 	onbuild := -1
 	for i, ref := range publication.Component.StageReferences {
 		if ref.Origin == "onbuild" {
@@ -183,19 +157,19 @@ extend {
 		}, "invalid stage reference order"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			component := clone()
-			test.change(component)
-			if _, err := ValidatePublished(component); err == nil || !strings.Contains(err.Error(), test.want) {
+			component := roundTripPublished(t, publication.Component)
+			test.change(&component)
+			if _, err := ValidatePublished(&component); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("tampered publication accepted or wrong error: %v", err)
 			}
 		})
 	}
-	wrongOperation := clone()
+	wrongOperation := roundTripPublished(t, publication.Component)
 	wrongOperation.StageReferences[onbuild].Operation = 17
-	if _, err := ValidatePublished(wrongOperation); err != nil {
+	if _, err := ValidatePublished(&wrongOperation); err != nil {
 		t.Fatalf("static validation should defer ONBUILD operation count to package config: %v", err)
 	}
-	if _, err := InstantiateWithPackageBinds(wrongOperation, Options{}, map[string]StageBind{prepared: bind}); err == nil || !strings.Contains(err.Error(), "stage copy or mount references changed") {
+	if _, err := InstantiateWithPackageBinds(&wrongOperation, Options{}, map[string]StageBind{prepared: bind}); err == nil || !strings.Contains(err.Error(), "stage copy or mount references changed") {
 		t.Fatalf("package trigger did not verify frozen operation index: %v", err)
 	}
 }
@@ -247,17 +221,6 @@ extend {
 		t.Fatalf("invocation did not activate package-backed ONBUILD: %+v", invocation.Stages)
 	}
 
-	clone := func() *PublishedComponent {
-		data, marshalErr := json.Marshal(publication.Component)
-		if marshalErr != nil {
-			t.Fatal(marshalErr)
-		}
-		var component PublishedComponent
-		if unmarshalErr := json.Unmarshal(data, &component); unmarshalErr != nil {
-			t.Fatal(unmarshalErr)
-		}
-		return &component
-	}
 	for _, test := range []struct {
 		name   string
 		change func(*PublishedComponent)
@@ -268,9 +231,9 @@ extend {
 		{"selected dependency as dormant root", func(component *PublishedComponent) { component.DormantRoots = []string{"1"} }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			component := clone()
-			test.change(component)
-			if _, validateErr := ValidatePublished(component); validateErr == nil {
+			component := roundTripPublished(t, publication.Component)
+			test.change(&component)
+			if _, validateErr := ValidatePublished(&component); validateErr == nil {
 				t.Fatal("tampered dormant roots accepted")
 			}
 		})
@@ -290,10 +253,7 @@ extend {
     from "${runtime_base}" as="prepared" {}
     copy "/selected" "/selected" from="prepared"
 }
-`), Options{Mode: Publish}, func(source FromSource) (StageBind, error) {
-		t.Fatalf("publication resolved invocation-only image: %+v", source)
-		return StageBind{}, nil
-	})
+`), Options{Mode: Publish}, unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,10 +286,7 @@ extend {
     from "${runtime_base}" as="prepared" {}
     copy "/selected" "/selected" from="prepared"
 }
-`), Options{Mode: Publish}, func(source FromSource) (StageBind, error) {
-		t.Fatalf("publication resolved invocation-only image: %+v", source)
-		return StageBind{}, nil
-	})
+`), Options{Mode: Publish}, unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,10 +311,7 @@ extend {
     from "${base}" as="helper" {}
     copy "/asset" "/asset" from="helper"
 }
-`), Options{Mode: Publish}, func(source FromSource) (StageBind, error) {
-		t.Fatalf("publication resolved invocation-only image: %+v", source)
-		return StageBind{}, nil
-	})
+`), Options{Mode: Publish}, unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,10 +320,7 @@ extend {
 	}
 	_, err = InstantiateDemandDriven(publication.Component, Options{
 		Arguments: map[string]string{"base": "registry.example/base:changed"},
-	}, nil, func(source FromSource) (StageBind, error) {
-		t.Fatalf("resolved external image before rejecting fixed override: %+v", source)
-		return StageBind{}, nil
-	})
+	}, nil, unexpectedBindResolver(t))
 	if err == nil || !strings.Contains(err.Error(), "fixed at publication") {
 		t.Fatalf("fixed argument error = %v", err)
 	}
@@ -516,10 +467,7 @@ extend {
     from "base" {}
 }
 `, Options{Mode: Publish})
-	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, func(source FromSource) (StageBind, error) {
-		t.Fatalf("caller-derived stage requested external metadata: %+v", source)
-		return StageBind{}, nil
-	})
+	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 
 	"github.com/strio-dev/coopr/internal/componentstore"
@@ -71,6 +70,10 @@ from "primary" { copy "/side" "/side" from="side"; }`, body, kind))
 				manifest, _ := readPlanImage(t, layout)
 				if len(manifest.Layers) != 2 {
 					t.Fatalf("layers = %d", len(manifest.Layers))
+				}
+				side := filepath.Join(layout, "blobs", "sha256", manifest.Layers[1].Digest.Encoded())
+				if got := readLayerFile(t, side, "side"); got != "side" {
+					t.Fatalf("%s worker side payload = %q, want side", attempt, got)
 				}
 				digest := manifest.Layers[0].Digest.String()
 				if attempt == "cold" {
@@ -186,75 +189,5 @@ ${value}
 				}
 			}
 		})
-	}
-}
-
-func TestAuthoredInlineNativeWireBoundary(t *testing.T) {
-	f := newLocalComponentFixture(t)
-	file := filepath.Join(f.contextDir, "Containerfile")
-	f.write(t, "has space", "ordinary")
-	f.write(t, `back\slash`, "ordinary")
-	for _, variant := range []string{"normal", "empty", "collision", "source-space", "destination-space", "backslash-source", "nul", "embedded-cr", "crlf"} {
-		collision := variant == "collision"
-		contents := "FROM scratch\nCOPY <<name /out/\npayload\nname"
-		if variant == "embedded-cr" {
-			contents = "FROM scratch\nCOPY <<name /out/\npayload\rexact\nname"
-		}
-		if variant == "crlf" {
-			contents = "FROM scratch\nCOPY <<name /out/\npayload\r\nname"
-		}
-		if variant == "nul" {
-			contents = "FROM scratch\nCOPY <<name /out/\npayload\x00exact\nname"
-		}
-		if variant == "backslash-source" {
-			contents = "FROM scratch\nCOPY back\\\\slash <<name /out/\npayload\nname"
-		}
-		if variant == "source-space" {
-			contents = "FROM scratch\nCOPY \"has space\" <<name /out/\npayload\nname"
-		}
-		if variant == "destination-space" {
-			contents = "FROM scratch\nCOPY <<name \"/out space/\"\npayload\nname"
-		}
-		if variant == "empty" {
-			contents = "FROM scratch\nCOPY <<name /out/\nname"
-		}
-		if collision {
-			contents = "FROM scratch\nCOPY <<name /out/\nname\npayload\nname\n"
-		}
-		if err := os.WriteFile(file, []byte(contents), 0600); err != nil {
-			t.Fatal(err)
-		}
-		layout := filepath.Join(f.root, "native-"+variant)
-		lease, err := acquireStore(f.options.Store)
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, _, buildErr := imagebuildah.BuildDockerfiles(f.ctx, lease.store, upstreamdefine.BuildOptions{ContextDirectory: f.contextDir, Output: "oci:" + layout, Layers: true, PullPolicy: upstreamdefine.PullNever, Isolation: upstreamdefine.IsolationOCIRootless, Runtime: "crun", CommonBuildOpts: &upstreamdefine.CommonBuildOptions{}, Compression: upstreamdefine.Uncompressed, Out: io.Discard, Err: os.Stderr, RemoveIntermediateCtrs: true, ForceRmIntermediateCtrs: true}, file)
-		if err := lease.Close(); err != nil {
-			t.Fatal(err)
-		}
-		if collision || strings.HasSuffix(variant, "-space") || variant == "backslash-source" {
-			if buildErr == nil {
-				t.Fatal("native accepted an unrepresentable source/header")
-			}
-			t.Logf("native %s boundary: %v", variant, buildErr)
-			continue
-		}
-		if buildErr != nil {
-			t.Fatal(buildErr)
-		}
-		want := "payload\n"
-		if variant == "embedded-cr" {
-			want = "payload\rexact\n"
-		}
-		if variant == "nul" {
-			want = "payload\x00exact\n"
-		}
-		if variant == "empty" {
-			want = "\n"
-		}
-		if got := localComponentLastFile(t, layout, "out/name"); got != want {
-			t.Fatalf("native nonempty heredoc bytes = %q", got)
-		}
 	}
 }

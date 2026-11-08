@@ -76,9 +76,6 @@ func ResolveFromSources(def *definition.Definition, opts Options) ([]FromSource,
 	if _, err := NormalizeParameters(opts.PublishedArguments); err != nil {
 		return nil, err
 	}
-	if err := definition.Validate(def); err != nil {
-		return nil, err
-	}
 	if opts.Platform == "" {
 		opts.Platform = "linux/amd64"
 	}

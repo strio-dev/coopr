@@ -139,7 +139,7 @@ func TestNormalizeImageTag(t *testing.T) {
 			t.Errorf("NormalizeImageTag(%q) = %q, %v; want %q", input, got, err, want)
 		}
 	}
-	for _, input := range []string{"", " bad", "bad tag", "-bad", "docker://base", "base@sha256:deadbeef"} {
+	for _, input := range []string{"", " bad", "bad tag", "-bad", "docker://base", "base@sha256:deadbeef", "base@sha256:" + strings.Repeat("a", 64), "base:dev@sha256:" + strings.Repeat("a", 64)} {
 		got, err := NormalizeImageTag(input)
 		if input == "" {
 			if err != nil || got != "" {
