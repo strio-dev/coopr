@@ -817,8 +817,22 @@ func TestPublicClientNativeServiceLifetime(t *testing.T) {
 						continue
 					}
 					fd, err := unix.PidfdOpen(pid, 0)
+					if errors.Is(err, unix.ESRCH) {
+						// Short-lived helpers may exit after the /proc snapshot.
+						break
+					}
 					if err != nil {
 						t.Fatal(err)
+					}
+					current, err := readPastaProcessIdentity(pid)
+					if os.IsNotExist(err) || errors.Is(err, unix.ESRCH) || (err == nil && current.Start != process.Start) {
+						// The observed process exited; do not retain a reused PID.
+						_ = unix.Close(fd)
+						break
+					}
+					if err != nil {
+						_ = unix.Close(fd)
+						t.Fatal("verify descendant pidfd identity", err)
 					}
 					descendants = append(descendants, fd)
 					defer func() { _ = unix.Close(fd) }()
