@@ -542,11 +542,10 @@ func TestCopyRootSignsMultiPlatformIndexAndEveryInstance(t *testing.T) {
 
 func verifySignedReference(t *testing.T, ctx context.Context, registryName, publicKey string, selection imagecopy.ImageListSelection, wantAllowed bool) {
 	t.Helper()
-	registriesDir, err := sigstoreAttachmentsConfig()
-	if err != nil {
+	registriesDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(registriesDir, "coopr-signing.yaml"), []byte(`{"default-docker":{"use-sigstore-attachments":true}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = os.RemoveAll(registriesDir) }()
 	system := &types.SystemContext{
 		RegistriesDirPath: registriesDir, DockerInsecureSkipTLSVerify: types.OptionalBoolTrue,
 		BigFilesTemporaryDir: t.TempDir(),

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -60,9 +61,9 @@ func TestBuildFlatTarStdoutLive(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(filepath.Dir(file), "marker"), []byte("flat output\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, value := range []string{"-", "type=tar,dest=-"} {
+	for _, options := range [][]string{{"--output", "-"}, {"--output", "type=tar,dest=-"}, {"--output", "type=tar,dest=-", "--quiet", "--platform", "linux/amd64"}} {
 		var output, diagnostics bytes.Buffer
-		if code := run([]string{"build", file, "--output", value}, &output, &diagnostics); code != 0 {
+		if code := run(append([]string{"build", file}, options...), &output, &diagnostics); code != 0 {
 			t.Fatalf("stdout export failed: %s", diagnostics.String())
 		}
 		reader := tar.NewReader(&output)
@@ -87,6 +88,9 @@ func TestBuildFlatTarStdoutLive(t *testing.T) {
 			t.Fatal("tar missing marker")
 		}
 		lines := strings.Split(strings.TrimSpace(diagnostics.String()), "\n")
+		if slices.Contains(options, "--quiet") && len(lines) != 1 {
+			t.Fatalf("quiet tar build emitted diagnostics besides result ID: %q", diagnostics.String())
+		}
 		imageID := lines[len(lines)-1]
 		if decoded, err := hex.DecodeString(imageID); err != nil || len(decoded) != 32 {
 			t.Fatalf("final stderr line is not a native image ID: %q", imageID)

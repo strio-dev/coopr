@@ -12,11 +12,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func TestRemovedBuildKitCacheFlagsAreAbsent(t *testing.T) {
+func TestRemovedBuildFlagsAreAbsent(t *testing.T) {
 	cmd := newBuildCommand()
-	for _, name := range []string{"cache-dir", "cache-repository", "no-state-cache"} {
+	for _, name := range []string{"cache-dir", "cache-repository", "no-state-cache", "arg", "builder-address"} {
 		if cmd.Flags().Lookup(name) != nil {
-			t.Fatalf("BuildKit cache flag --%s is still registered", name)
+			t.Fatalf("removed build flag --%s is still registered", name)
 		}
 	}
 }

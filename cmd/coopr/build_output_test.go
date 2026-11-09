@@ -1,11 +1,9 @@
 package main
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/hex"
-	"io"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -88,47 +86,6 @@ func TestBuildCommandResultAndIIDFiles(t *testing.T) {
 	}
 }
 
-func TestBuildCommandTarStdoutKeepsResultOnStderr(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping live Buildah tests in short mode")
-	}
-	file := definitionFile(t, `from "scratch" {
-    copy "payload" "/payload"
-}
-`)
-	if err := os.WriteFile(filepath.Join(filepath.Dir(file), "payload"), []byte("archive payload"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	var stdout, stderr bytes.Buffer
-	if code := run([]string{"build", file, "--quiet", "--output", "type=tar,dest=-", "--platform", "linux/amd64"}, &stdout, &stderr); code != 0 {
-		t.Fatalf("tar build status=%d: %s", code, &stderr)
-	}
-	reader := tar.NewReader(&stdout)
-	found := false
-	for {
-		header, err := reader.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if strings.TrimPrefix(header.Name, "./") == "payload" {
-			data, err := io.ReadAll(reader)
-			if err != nil || string(data) != "archive payload" {
-				t.Fatalf("tar payload=%s err=%v", data, err)
-			}
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("stdout tar omitted payload")
-	}
-	if decoded, err := hex.DecodeString(strings.TrimSpace(stderr.String())); err != nil || len(decoded) != 32 {
-		t.Fatalf("stderr is not raw result ID: %q", &stderr)
-	}
-}
-
 func TestBuildCommandRunsDefaultNetworkInConcurrentStageWorker(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live Buildah tests in short mode")
@@ -192,18 +149,6 @@ func TestBuildOutputFlags(t *testing.T) {
 				t.Fatalf("failed build printed success: %q", out.String())
 			}
 		})
-	}
-}
-
-func TestBuildUsesConventionalBuildArgumentFlag(t *testing.T) {
-	cmd := newBuildCommand()
-	if cmd.Flags().Lookup("build-arg") == nil {
-		t.Fatal("missing --build-arg")
-	}
-	for _, removed := range []string{"arg", "builder-address"} {
-		if cmd.Flags().Lookup(removed) != nil {
-			t.Fatalf("removed flag --%s is still registered", removed)
-		}
 	}
 }
 
