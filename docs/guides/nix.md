@@ -4,7 +4,9 @@ Use Nix packages in a Coopr image or reusable component. Nix prepares the packag
 
 ## Before you start
 
-Use Linux with Nix flakes enabled and a working [rootless Coopr host](../getting-started/index.md#set-up-your-host). Podman runs the finished image. Nix provides the build inputs and Coopr executable; it does not configure the host's container runtime.
+Use Linux with Nix flakes enabled and a working [rootless Coopr host](../getting-started/index.md#set-up-your-host). Podman runs the finished image. Nix provides the build inputs and the launcher's Coopr executable; it does not configure the host's container runtime.
+
+The standalone `coopr` commands later in this guide also require [Coopr on your PATH](../getting-started/index.md#install-with-nix). Running a generated launcher does not install that command in your shell.
 
 ## Declare an image
 

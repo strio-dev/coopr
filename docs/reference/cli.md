@@ -179,9 +179,11 @@ Image `save --format` accepts:
 
 | Format | Output |
 | --- | --- |
-| `docker-archive` (default) | Docker image archive. Operands after the first image are additional tags; `--multi-image-archive` (`-m`) selects multiple images instead. |
+| `docker-archive` (default) | Docker image archive. Extra operands add tags with `--multi-image-archive=false`, or select separate images with `--multi-image-archive` (`-m`). |
 | `oci-archive` | OCI archive containing one image or a complete stored index. |
 | `docker-dir`, `oci-dir` | Image directory; requires `--output DIRECTORY`. |
+
+When `--multi-image-archive` is omitted, its value comes from `[engine] multi_image_archive` in `containers.conf`. If enabled there, set `--multi-image-archive=false` to save an OCI archive or directory format.
 
 `--compress` applies to Docker directory output; `--uncompressed` controls OCI output. Native image export may change compression and manifest/index digests while retaining filesystem layers and their order. A build's `--output` exports a [flattened filesystem](../guides/builds.md#export-an-image-or-its-files), without an image's configuration or layer structure.
 

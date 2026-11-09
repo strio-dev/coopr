@@ -200,13 +200,13 @@ For filesystem destinations (`oci`, `oci-archive`, `dir`, `docker-archive`), the
 
 | Object | Fields |
 | --- | --- |
-| `store` | Absolute nonoverlapping `runRoot` and `graphRoot`; optional `driver`, `driverOptions`. |
+| `store` | Required absolute nonoverlapping `runRoot` and `graphRoot` for `execute`, `build`, `component` and `publish`, including OCI-layout publication. Omit for `component-load`. Optional `driver`, `driverOptions`. |
 | `output` | Required fresh absolute `oci` for execution/build/component; optional fresh absolute `filesystem` for image/literal builds. Parents must already exist. |
 | `cache` | Optional absolute `localDir` and separate private `mountDir`, boolean `noCache`, and independent `registryFrom`/`registryTo` repository arrays. Coopr determines which cached results can be reused. |
 | `registry` | Optional absolute `authFile`, `certDir`, `signaturePolicyPath`; `pullPolicy`, `tlsVerify`. |
 | `contexts` | Optional mapping of native lowercase context names to existing absolute local directories. `build` and `scratch` are reserved; unknown COPY context names are errors. |
 | `network` | Optional native RUN network default for `execute`, `build` and `component`; requires `run-network`. |
-| Other options | Optional absolute `contextDir`, `runtime`, `isolation`, nonnegative `jobs`. |
+| Other options | Optional absolute `contextDir`; optional `runtime` and `isolation`; nonnegative `jobs`. |
 
 Keep stores, cache, component store and outputs outside context and away from one another as required by validation. Existing outputs are not overwritten. Native stores/cache and successful outputs remain caller-owned. Multiple output promotions and publication destinations are not one atomic transaction. A failed request can leave successfully exported outputs; inspect both the result and error before using them.
 

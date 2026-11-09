@@ -95,7 +95,9 @@ To save several images in one Docker archive, use `--multi-image-archive`:
 coopr save --multi-image-archive --output images.tar app:dev docker.io/redhat/ubi9:latest
 ```
 
-Without this option, extra operands assign tags to the first image. `load --input` also accepts an HTTP(S) archive URL. See [archive formats](../reference/cli.md#archives-and-directories) for formats and index filtering.
+Extra operands normally assign tags to the first image. If `containers.conf` enables `[engine] multi_image_archive`, they select separate images instead. Set `--multi-image-archive=false` to force additional-tag behavior or use a format other than Docker archive.
+
+`load --input` also accepts an HTTP(S) archive URL. See [archive formats](../reference/cli.md#archives-and-directories) for formats and index filtering.
 
 ## Store and share components
 
