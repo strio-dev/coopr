@@ -127,7 +127,7 @@ func (request planWorkerRequest) newResolver() (*oci.Resolver, error) {
 		ProgressWriter: os.Stderr,
 		AuthFile:       request.AuthFile, CertDir: request.CertDir, TLSVerify: request.TLSVerify,
 		Credentials: request.Credentials, Retry: request.Retry, RetrySet: request.RetrySet, RetryDelay: request.RetryDelay, DecryptionKeys: request.DecryptionKeys, SignaturePolicyPath: request.SignaturePolicyPath,
-		Pull: request.Pull, PullPolicy: request.PullPolicy, ComponentStoreDir: request.ComponentStoreDir, NativeStore: NativeStoreOptions(request.Store),
+		PullPolicy: request.PullPolicy, ComponentStoreDir: request.ComponentStoreDir, NativeStore: NativeStoreOptions(request.Store),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create build worker resolver: %w", err)

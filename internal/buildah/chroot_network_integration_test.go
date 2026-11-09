@@ -33,7 +33,7 @@ func TestChrootNetworkPolicyRejectsCachedImageAndComponent(t *testing.T) {
 				_ = localConfigComponentResolver(t, ctx, root, `extend {
     `+run+`
 }
-`, false)
+`)
 				source += "component \"config\"\n"
 			} else {
 				source += run

@@ -379,8 +379,8 @@ from "`+base.reference+`" {
 	layout := filepath.Join(root, "layout")
 	_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 		Store: store, ContextDir: contextDir, Isolation: "rootless", Runtime: "crun", Output: Output{Path: layout},
-		Pull: false, SignaturePolicyPath: policy,
-		Stdout: io.Discard, Stderr: io.Discard,
+		SignaturePolicyPath: policy,
+		Stdout:              io.Discard, Stderr: io.Discard,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -417,8 +417,8 @@ from "`+base.reference+`" {
 	writableLayout := filepath.Join(root, "writable-layout")
 	_, err = BuildPlanSupervised(ctx, writable, SupervisedPlanOptions{
 		Store: store, ContextDir: contextDir, Isolation: "rootless", Runtime: "crun", Output: Output{Path: writableLayout},
-		Pull: false, SignaturePolicyPath: policy,
-		Stdout: io.Discard, Stderr: io.Discard,
+		SignaturePolicyPath: policy,
+		Stdout:              io.Discard, Stderr: io.Discard,
 	})
 	if err != nil {
 		t.Fatalf("writable stage file bind: %v", err)

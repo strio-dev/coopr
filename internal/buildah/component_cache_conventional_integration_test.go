@@ -20,7 +20,7 @@ func TestDirectionalComponentCacheReusesDefaultNetworkRunAcrossStores(t *testing
 	componentResolver := localConfigComponentResolver(t, ctx, root, `extend {
     run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof"
 }
-`, false)
+`)
 	resolver, err := oci.NewResolver(oci.Options{
 		ComponentStoreDir: componentResolver.ComponentStoreDir(), TLSVerify: new(false),
 	})
@@ -83,7 +83,7 @@ func TestComponentCacheRetainsStageLabelModesAcrossStores(t *testing.T) {
 			componentResolver := localConfigComponentResolver(t, ctx, root, `extend as="component-output" {
     `+test.operation+`
 }
-`, false)
+`)
 			resolver, err := oci.NewResolver(oci.Options{ComponentStoreDir: componentResolver.ComponentStoreDir(), TLSVerify: new(false)})
 			if err != nil {
 				t.Fatal(err)

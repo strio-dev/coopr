@@ -26,7 +26,7 @@ func TestInstructionGraphComponentAggregateBoundaryAcrossFreshStores(t *testing.
 	_ = localConfigComponentResolver(t, ctx, root, `extend {
     run "printf module-data > /module" network="none"
 }
-`, false)
+`)
 	policy := writeComponentTestPolicy(t, root)
 	build := func(name, project, variant string) (string, string) {
 		t.Helper()

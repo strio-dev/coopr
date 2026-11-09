@@ -22,6 +22,5 @@ func resolveBuildPullPolicy(command *cobra.Command) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	normalized, err := oci.NormalizePullPolicy(policy.String(), false)
-	return string(normalized), err
+	return policy.String(), nil
 }

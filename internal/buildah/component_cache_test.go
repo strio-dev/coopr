@@ -483,7 +483,7 @@ func TestComponentCacheSeedFailureReachesBuildCaller(t *testing.T) {
 	componentResolver := localConfigComponentResolver(t, ctx, root, `extend {
     env CACHE_PROOF="yes"
 }
-`, false)
+`)
 	destination := filepath.Join(root, "seed-destination")
 	var inject atomic.Bool
 	var injected atomic.Bool

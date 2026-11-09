@@ -40,7 +40,7 @@ from %q {
 		var stderr strings.Builder
 		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-			Output: Output{Path: layout}, Pull: false,
+			Output:              Output{Path: layout},
 			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: &stderr,
 		})
 		if err != nil {
@@ -85,7 +85,7 @@ from %q {
 		layout := filepath.Join(root, "tail-layout-"+string(rune('1'+attempt)))
 		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-			Output: Output{Path: layout}, Pull: false,
+			Output:              Output{Path: layout},
 			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {
@@ -129,8 +129,8 @@ func TestWarmHostNetworkRunCacheStillRequiresEntitlement(t *testing.T) {
 `, base.reference))
 	common := SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-		Pull: false, SignaturePolicyPath: policy,
-		Stdout: io.Discard, Stderr: io.Discard,
+		SignaturePolicyPath: policy,
+		Stdout:              io.Discard, Stderr: io.Discard,
 	}
 	allowed := common
 	allowed.Allow = []string{"network.host"}
@@ -192,8 +192,8 @@ from %q {
 `, base.reference))
 	common := SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-		Pull: false, SignaturePolicyPath: policy,
-		Stdout: io.Discard, Stderr: io.Discard,
+		SignaturePolicyPath: policy,
+		Stdout:              io.Discard, Stderr: io.Discard,
 	}
 	allowed := common
 	allowed.Allow = []string{"device=test.example/env=proof"}
@@ -234,7 +234,7 @@ from %q {
 		started := time.Now()
 		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-			Output: Output{Path: layout}, Pull: false,
+			Output:              Output{Path: layout},
 			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {

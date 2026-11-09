@@ -284,7 +284,7 @@ extend { copy "/unused" "/unused" from="recursive"; copy "/unused" "/independent
 					if singleCaller {
 						source = strings.Replace(source, `component "cycle";`, `component "boundary"; component "cycle";`, 1)
 					}
-					f.options.Resolver = localConfigComponentResolverWithDefinitions(t, f.ctx, f.root, []componentDefinitionFixture{{name: "boundary", source: `extend { env boundary="returned"; }`}, {name: "cycle", source: source}}, false)
+					f.options.Resolver = localConfigComponentResolverWithDefinitions(t, f.ctx, f.root, []componentDefinitionFixture{{name: "boundary", source: `extend { env boundary="returned"; }`}, {name: "cycle", source: source}})
 				} else {
 					if singleCaller {
 						source = strings.Replace(source, ` component "./cycle.coopr"`, " component \"./boundary.coopr\"\n component \"./cycle.coopr\"", 1)

@@ -464,8 +464,8 @@ from %q {
 	_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 		Store:      store,
 		ContextDir: contextDir, Isolation: "rootless", Runtime: "crun", Output: Output{Path: layout},
-		Pull: false, SignaturePolicyPath: policy,
-		Stdout: io.Discard, Stderr: io.Discard,
+		SignaturePolicyPath: policy,
+		Stdout:              io.Discard, Stderr: io.Discard,
 	})
 	if err != nil {
 		t.Fatal(err)

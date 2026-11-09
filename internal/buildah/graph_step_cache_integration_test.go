@@ -76,7 +76,7 @@ from %q {
 		layout := filepath.Join(root, fmt.Sprintf("layout-%d", attempt))
 		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-			Output: Output{Path: layout}, Pull: false,
+			Output:              Output{Path: layout},
 			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {
@@ -119,7 +119,7 @@ from %q {
 		layout := filepath.Join(root, fmt.Sprintf("metadata-%d", attempt))
 		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-			Output: Output{Path: layout}, Pull: false,
+			Output:              Output{Path: layout},
 			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {
@@ -172,7 +172,7 @@ from "source" {
 		layout := filepath.Join(root, fmt.Sprintf("source-metadata-%d", attempt))
 		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-			Output: Output{Path: layout}, Pull: false,
+			Output:              Output{Path: layout},
 			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {
@@ -222,7 +222,7 @@ from %q {
 		layout := filepath.Join(root, fmt.Sprintf("environment-%d", attempt))
 		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-			Output: Output{Path: layout}, Pull: false,
+			Output:              Output{Path: layout},
 			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {
@@ -345,7 +345,7 @@ from %q {
 		layout := filepath.Join(root, name)
 		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, ContextDir: contextDir, Isolation: "rootless", Runtime: "crun",
-			Output: Output{Path: layout}, Pull: false,
+			Output:              Output{Path: layout},
 			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {
@@ -412,7 +412,7 @@ from %q {
 		layout := filepath.Join(root, name)
 		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, ContextDir: contextDir, Isolation: "rootless", Runtime: "crun",
-			Output: Output{Path: layout}, Pull: false,
+			Output:              Output{Path: layout},
 			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {
@@ -506,7 +506,7 @@ from %q {
 		layout := filepath.Join(root, fmt.Sprintf("layout-%d", attempt))
 		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun", NoCache: noCache,
-			Output: Output{Path: layout}, Pull: false,
+			Output:              Output{Path: layout},
 			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {

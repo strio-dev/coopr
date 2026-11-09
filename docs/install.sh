@@ -61,10 +61,8 @@ main() {
     $sudo_cmd mkdir -p "$prefix/bin" "$prefix/share/licenses/coopr"
     $sudo_cmd cp -R "$temp_dir/third-party" "$prefix/share/licenses/coopr/"
     $sudo_cmd install -m 644 "$temp_dir/LICENSE" "$prefix/share/licenses/coopr/LICENSE"
-    if [ -f "$temp_dir/libexec/coopr/coopr-run-sequence" ]; then
-        $sudo_cmd mkdir -p "$prefix/libexec/coopr"
-        $sudo_cmd install -m 755 "$temp_dir/libexec/coopr/coopr-run-sequence" "$prefix/libexec/coopr/coopr-run-sequence"
-    fi
+    $sudo_cmd mkdir -p "$prefix/libexec/coopr"
+    $sudo_cmd install -m 755 "$temp_dir/libexec/coopr/coopr-run-sequence" "$prefix/libexec/coopr/coopr-run-sequence"
     $sudo_cmd install -m 755 "$temp_dir/coopr" "$prefix/bin/coopr"
 
     printf 'Installed Coopr to %s/bin/coopr\n' "$prefix"

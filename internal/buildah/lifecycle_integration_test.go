@@ -134,8 +134,7 @@ func TestLifecycleNoLayersAddsOneLayerAcrossComponentBoundaries(t *testing.T) {
 	base := newLiveBusyBoxStorage(t, ctx, root, store)
 	componentResolver, _, _ := localComponentResolver(t, ctx, v1.Platform{OS: "linux", Architecture: runtime.GOARCH})
 	resolver, err := oci.NewResolver(oci.Options{
-		ComponentStoreDir: componentResolver.ComponentStoreDir(), Pull: false,
-	})
+		ComponentStoreDir: componentResolver.ComponentStoreDir()})
 	if err != nil {
 		t.Fatal(err)
 	}

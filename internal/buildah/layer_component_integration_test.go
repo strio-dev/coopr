@@ -543,7 +543,7 @@ func TestComponentReplacementDoesNotExecuteUnusedExtendBody(t *testing.T) {
 `
 			reference := "./restricted.coopr"
 			if published {
-				f.options.Resolver = localConfigComponentResolver(t, f.ctx, f.root, component, false)
+				f.options.Resolver = localConfigComponentResolver(t, f.ctx, f.root, component)
 				reference = "config"
 			} else {
 				f.write(t, "restricted.coopr", component)

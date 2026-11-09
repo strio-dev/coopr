@@ -41,7 +41,7 @@ type ComponentOptions struct {
 	Platform, Target               string
 	Platforms                      []string
 	Args                           map[string]string
-	Push, Pull, NoCache            bool
+	Push, NoCache                  bool
 	PullPolicy                     string
 	Network                        string
 	AddHosts                       []string
@@ -304,7 +304,7 @@ func BuildComponent(ctx context.Context, opts ComponentOptions) (_ string, retEr
 			Progress: opts.Progress,
 			Store:    buildStore, ContextDir: opts.Context, IgnoreFile: opts.IgnoreFile, ContextArtifacts: artifacts,
 			Output: buildah.Output{Path: output}, ComponentStoreDir: opts.StoreDir,
-			Pull: opts.Pull, PullPolicy: opts.PullPolicy, SourcePolicyFile: opts.SourcePolicyFile, TransientRunMounts: opts.TransientRunMounts,
+			PullPolicy: opts.PullPolicy, SourcePolicyFile: opts.SourcePolicyFile, TransientRunMounts: opts.TransientRunMounts,
 			NoCache:     opts.NoCache,
 			Network:     opts.Network,
 			AddHosts:    opts.AddHosts,

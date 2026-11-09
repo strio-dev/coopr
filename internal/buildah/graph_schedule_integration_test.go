@@ -35,7 +35,7 @@ func TestBuildPlanRunsIndependentStagesInOneRootlessGraph(t *testing.T) {
 	root := t.TempDir()
 	store := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
 	base := newLiveBusyBoxStorage(t, ctx, root, store)
-	resolver, err := oci.NewResolver(oci.Options{Pull: false})
+	resolver, err := oci.NewResolver(oci.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,9 +331,9 @@ from "scratch" {
 	started := time.Now()
 	_, buildErr := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 		Store: storeOptions, ContextDir: root, Isolation: "rootless", Runtime: "crun", Output: Output{Path: layout},
-		Jobs: 2,
-		Pull: false, SignaturePolicyPath: policy,
-		Stdout: io.Discard, Stderr: io.Discard,
+		Jobs:                2,
+		SignaturePolicyPath: policy,
+		Stdout:              io.Discard, Stderr: io.Discard,
 	})
 	if !errors.Is(buildErr, context.DeadlineExceeded) || !strings.Contains(buildErr.Error(), "build worker exited after cleanup") {
 		t.Fatalf("cancelled parallel graph error = %v", buildErr)

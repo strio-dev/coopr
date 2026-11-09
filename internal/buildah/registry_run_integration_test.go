@@ -27,7 +27,7 @@ func TestBuildPlanRunsWithAndWithoutNetworkFromRegistryBase(t *testing.T) {
 	root := t.TempDir()
 	base, _ := newLiveBusyBoxRegistry(t, ctx)
 	resolver, err := oci.NewResolver(oci.Options{
-		Pull: true, TLSVerify: new(false),
+		PullPolicy: "always", TLSVerify: new(false),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -79,7 +79,7 @@ func TestBuildPlanAddsCustomHostToRun(t *testing.T) {
 	layout := filepath.Join(root, "layout")
 	_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-		Output: Output{Path: layout}, Pull: false,
+		Output:  Output{Path: layout},
 		Network: "host", AddHosts: []string{"Coopr.Test:127.0.0.42"}, Allow: []string{"network.host"},
 		SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 	})
@@ -119,7 +119,7 @@ from %q {
 		// the command, while the cache mount itself must still retain its data.
 		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, Isolation: "rootless", Runtime: "crun", Output: Output{Path: layout},
-			Pull: false, NoCache: attempt > 0, SignaturePolicyPath: policy,
+			NoCache: attempt > 0, SignaturePolicyPath: policy,
 			Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {
@@ -150,8 +150,8 @@ func TestBuildPlanSupervisedRunsIndependentJobsConcurrently(t *testing.T) {
 `)
 	_, err := BuildPlanSupervised(ctx, warm, SupervisedPlanOptions{
 		Store: store, Isolation: "rootless", Runtime: "crun", Output: Output{Path: filepath.Join(root, "warm")},
-		Pull: false, SignaturePolicyPath: policy,
-		Stdout: io.Discard, Stderr: io.Discard,
+		SignaturePolicyPath: policy,
+		Stdout:              io.Discard, Stderr: io.Discard,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -178,8 +178,8 @@ func TestBuildPlanSupervisedRunsIndependentJobsConcurrently(t *testing.T) {
 			<-start
 			_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 				Store: store, Isolation: "rootless", Runtime: "crun", Output: Output{Path: filepath.Join(root, "layout-"+name)},
-				Pull: false, SignaturePolicyPath: policy,
-				Stdout: io.Discard, Stderr: io.Discard,
+				SignaturePolicyPath: policy,
+				Stdout:              io.Discard, Stderr: io.Discard,
 			})
 			results <- jobResult{name: name, err: err}
 		}()

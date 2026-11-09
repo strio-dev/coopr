@@ -309,7 +309,7 @@ let
               TestResolveImageSourcePinnedAlwaysUsesNativePolicy \
               TestWorkDirMetadataMatchesNativeBuildah \
               TestInheritedConfigurationAdmissionMatchesNativeBuildah \
-              TestAggregateCachesInvalidateOldWorkdirSemantics \
+              TestAggregateCachesPreserveWorkdirSemantics \
               TestRemoteAddTLSPolicyMatchesNative \
               TestRemoteAddTLSBuildCacheAndEpoch \
               TestRemoteAddTLSCredentialRedirect \

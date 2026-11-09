@@ -102,7 +102,7 @@ func TestCacheGapDeviceSelectionAndAuthorizationAcrossCacheScopes(t *testing.T) 
 			if scope == "global" {
 				run = `run "printf '%s' \"$COOPR_DEVICE_VALUE\" >/proof" network="none"`
 			}
-			resolver := localConfigComponentResolver(t, ctx, root, "extend { "+run+"; }", false)
+			resolver := localConfigComponentResolver(t, ctx, root, "extend { "+run+"; }")
 			resolver, err := oci.NewResolver(oci.Options{ComponentStoreDir: resolver.ComponentStoreDir(), TLSVerify: new(false)})
 			if err != nil {
 				t.Fatal(err)

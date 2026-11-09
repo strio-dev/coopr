@@ -50,7 +50,6 @@ type workerExecutionOptions struct {
 	AuthFile           string               `json:"auth_file,omitempty"`
 	CertDir            string               `json:"cert_dir,omitempty"`
 	TLSVerify          *bool                `json:"tls_verify,omitempty"`
-	Pull               bool                 `json:"pull,omitempty"`
 	PullPolicy         string               `json:"pull_policy,omitempty"`
 }
 

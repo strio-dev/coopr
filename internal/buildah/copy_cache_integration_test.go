@@ -181,7 +181,7 @@ func TestBuildDefinitionCachesExternalImageCopy(t *testing.T) {
 			Mode: planner.Build, Platform: "linux/" + runtime.GOARCH,
 		}, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Output: Output{Path: layout},
-			Pull: false, SignaturePolicyPath: policy,
+			SignaturePolicyPath: policy,
 		}); err != nil {
 			t.Fatal(err)
 		}

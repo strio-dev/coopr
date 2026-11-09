@@ -111,7 +111,7 @@ func TestCopyPinnedManifestExportsExactVariantSharingImageID(t *testing.T) {
 			Mode: planner.Build, Platform: platform.OS + "/" + platform.Architecture,
 		}, buildah.SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-			Output: buildah.Output{Path: filepath.Join(root, name), Format: format}, TLSVerify: new(false), Pull: true,
+			Output: buildah.Output{Path: filepath.Join(root, name), Format: format}, TLSVerify: new(false), PullPolicy: "always",
 		})
 		if err != nil {
 			t.Fatalf("import %s variant: %v", name, err)

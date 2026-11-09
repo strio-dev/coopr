@@ -103,7 +103,6 @@ type SupervisedPlanOptions struct {
 	RetrySet            bool
 	RetryDelay          time.Duration
 	DecryptionKeys      []string
-	Pull                bool
 	PullPolicy          string
 	SignaturePolicyPath string
 	Stdout              io.Writer
@@ -399,7 +398,7 @@ func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition
 			Secrets:           append([]string(nil), options.Secrets...),
 			SSH:               append([]string(nil), options.SSH...),
 			ProxyArgs:         proxyArgs,
-			AuthFile:          options.AuthFile, CertDir: options.CertDir, TLSVerify: options.TLSVerify, Pull: options.Pull, PullPolicy: options.PullPolicy,
+			AuthFile:          options.AuthFile, CertDir: options.CertDir, TLSVerify: options.TLSVerify, PullPolicy: options.PullPolicy,
 		},
 		ExecutionRecipe: len(executionRecipe) != 0 && executionRecipe[0],
 		Mode:            mode, ImageID: options.ImageID, ManifestDescriptor: options.ManifestDescriptor, JobID: jobID, Plan: plan, Definition: def, PlannerOptions: planning,

@@ -227,7 +227,6 @@ func (executor *graphExecutor) executeGraphStageIsolated(ctx context.Context, pl
 	if executor.options.Resolver != nil {
 		request.ResolverEnabled = true
 		request.ComponentStore = executor.options.Resolver.ComponentStoreDir()
-		request.Pull = executor.options.Resolver.PullImages()
 		request.PullPolicy = string(executor.options.Resolver.PullPolicy())
 	}
 	for key, source := range resolvedBases {
@@ -524,7 +523,7 @@ func executeStageWorkerRequestControlled(ctx context.Context, request stageWorke
 		}
 		registry := request.RegistryOptions
 		registry.ProgressWriter = os.Stderr
-		registry.Pull, registry.PullPolicy = request.Pull, request.PullPolicy
+		registry.PullPolicy = request.PullPolicy
 		registry.AuthFile, registry.CertDir, registry.TLSVerify = request.AuthFile, request.CertDir, request.TLSVerify
 		registry.SignaturePolicyPath = request.SignaturePolicy
 		registry.ComponentStoreDir = request.ComponentStore

@@ -71,7 +71,6 @@ type Options struct {
 	CompressionLevel     *int
 	ForceCompression     *bool
 	Push                 bool
-	Pull                 bool
 	PullPolicy           string
 	NoCache              bool
 	Network              string
@@ -438,7 +437,7 @@ func Run(ctx context.Context, opts Options) (_ Result, retErr error) {
 			ProgressReference: progressReference,
 			Store:             buildStore, ContextDir: opts.Context, IgnoreFile: opts.IgnoreFile, ContextArtifacts: contextArtifacts,
 			Output: buildah.Output{Path: output, Format: opts.Format, Squash: opts.Squash, SquashAll: opts.SquashAll, DisableCompression: opts.DisableCompression, BlobDirectory: opts.BlobDirectory, CompressionFormat: opts.CompressionFormat, CompressionLevel: opts.CompressionLevel, ForceCompression: opts.ForceCompression, ConfidentialWorkload: opts.ConfidentialWorkload, SBOM: opts.SBOM, Filesystems: platformFilesystemOutputs(outputs, targetPlatform, len(targets))}, ComponentStoreDir: componentStoreDir,
-			Pull: opts.Pull, PullPolicy: opts.PullPolicy, SourcePolicyFile: opts.SourcePolicyFile, TransientRunMounts: opts.TransientRunMounts,
+			PullPolicy: opts.PullPolicy, SourcePolicyFile: opts.SourcePolicyFile, TransientRunMounts: opts.TransientRunMounts,
 			NoCache:     opts.NoCache,
 			Network:     opts.Network,
 			AddHosts:    opts.AddHosts,

@@ -30,7 +30,7 @@ func TestComponentBoundaryInstructionCacheWithoutTimestamp(t *testing.T) {
 `
 			reference := "config"
 			if kind == "reusable" {
-				_ = localConfigComponentResolver(t, ctx, root, component, false)
+				_ = localConfigComponentResolver(t, ctx, root, component)
 			} else {
 				reference = "./component.coopr"
 				if err := os.WriteFile(filepath.Join(root, "component.coopr"), []byte(component), 0o600); err != nil {

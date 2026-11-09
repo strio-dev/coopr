@@ -38,7 +38,7 @@ func TestBuildDefinitionMountsSelectedExternalImageForRun(t *testing.T) {
 		Mode: planner.Build, Platform: "linux/" + runtime.GOARCH,
 	}, SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Output: Output{Path: layout},
-		Pull: false, SignaturePolicyPath: policy,
+		SignaturePolicyPath: policy,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -79,7 +79,7 @@ from "left" {
 		Mode: planner.Build, Platform: "linux/" + runtime.GOARCH,
 	}, SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Output: Output{Path: layout},
-		Pull: false, SignaturePolicyPath: policy,
+		SignaturePolicyPath: policy,
 	})
 	if err != nil {
 		t.Fatal(err)

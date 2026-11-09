@@ -134,15 +134,13 @@ func testRunPullRefresh(t *testing.T, withLayers bool) {
 	opts.PullPolicy = string(oci.PullNewer)
 	assertRevision("new") // Different registry digests refresh under newer.
 	assertRevision("new") // An unchanged registry digest reuses the local image.
-	opts.PullPolicy = string(oci.PullMissing)
-	opts.Pull = true
+	opts.PullPolicy = string(oci.PullAlways)
 	assertRevision("new") // --pull replaces the cached tag with the registry result.
-	opts.Pull = false
+	opts.PullPolicy = string(oci.PullMissing)
 	assertRevision("new") // Later default builds use the refreshed local tag.
 
 	server.Close()
 	writeConsumer(ref)
-	opts.Pull = false
 	opts.PullPolicy = string(oci.PullNewer)
 	assertRevision("new") // Registry errors under newer retain an available local image.
 	opts.PullPolicy = string(oci.PullNever)

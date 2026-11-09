@@ -22,6 +22,7 @@ import (
 	specs "github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/common/pkg/auth"
+	"go.podman.io/common/pkg/config"
 	"go.podman.io/common/pkg/retry"
 	nativemanifest "go.podman.io/image/v5/manifest"
 	"go.podman.io/image/v5/types"
@@ -78,8 +79,7 @@ type Package struct {
 type Options struct {
 	ProgressWriter      io.Writer `json:"-"`
 	TLSVerify           *bool     // nil inherits native registry configuration.
-	Pull                bool      // Resolve mutable image tags from their registry instead of the local image store.
-	PullPolicy          string    // always, missing, never, or newer; Pull=true is an alias for always.
+	PullPolicy          string    // always, missing, never, or newer; empty uses missing.
 	AuthFile            string    // Explicit containers-auth.json or Docker config.json credentials file.
 	CertDir             string    // Direct certificate directory containing ca.crt and optional client certificates.
 	Credentials         string    // Explicit username[:password], overriding credential files for image pulls.
@@ -137,7 +137,7 @@ func (r *Resolved) Source() content.ReadOnlyStorage {
 
 func NewResolver(opts Options) (*Resolver, error) {
 	var err error
-	pullPolicy, err := NormalizePullPolicy(opts.PullPolicy, opts.Pull)
+	pullPolicy, err := config.ParsePullPolicy(opts.PullPolicy)
 	if err != nil {
 		return nil, err
 	}
@@ -164,42 +164,13 @@ func NewResolver(opts Options) (*Resolver, error) {
 	}
 	return &Resolver{
 		progressWriter:    opts.ProgressWriter,
-		pullPolicy:        pullPolicy,
+		pullPolicy:        PullPolicy(pullPolicy.String()),
 		componentStoreDir: componentStoreDir,
 		system:            system, credentials: opts.Credentials, retry: opts.Retry, retrySet: opts.RetrySet,
 		retryDelay: opts.RetryDelay, decryptionKeys: slices.Clone(opts.DecryptionKeys),
 		nativeStore:  cloneNativeStoreOptions(opts.NativeStore),
 		retryOptions: retryOptions,
 	}, nil
-}
-
-// NormalizePullPolicy resolves the legacy --pull switch and the explicit
-// policy without allowing contradictory behavior.
-func NormalizePullPolicy(policy string, pull bool) (PullPolicy, error) {
-	if policy == "" {
-		policy = string(PullMissing)
-	}
-	switch PullPolicy(strings.ToLower(policy)) {
-	case PullAlways:
-		return PullAlways, nil
-	case PullMissing:
-		if pull {
-			return PullAlways, nil
-		}
-		return PullMissing, nil
-	case PullNever:
-		if pull {
-			return "", errors.New("pull=true conflicts with pull policy never")
-		}
-		return PullNever, nil
-	case PullNewer, "ifnewer":
-		if pull {
-			return "", errors.New("pull=true conflicts with pull policy newer")
-		}
-		return PullNewer, nil
-	default:
-		return "", fmt.Errorf("unsupported pull policy %q: expected always, missing, never, or newer", policy)
-	}
 }
 
 // NormalizeRegistryPaths resolves native auth defaults, validates registry inputs,
@@ -279,9 +250,6 @@ func cloneNativeStoreOptions(options storage.StoreOptions) storage.StoreOptions 
 
 // ComponentStoreDir returns the local OCI layout for published components.
 func (r *Resolver) ComponentStoreDir() string { return r.componentStoreDir }
-
-// PullImages reports whether mutable image references must be refreshed.
-func (r *Resolver) PullImages() bool { return r.pullPolicy == PullAlways }
 
 // PullPolicy reports how mutable remote image references use native local storage.
 func (r *Resolver) PullPolicy() PullPolicy { return r.pullPolicy }
