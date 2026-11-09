@@ -77,7 +77,7 @@ Expected file contents:
 Hello from the API!
 ```
 
-The terminal `result` event reports the image identity and export paths. HTTP success alone does not mean the build succeeded. Logs arrive as separate events with base64-encoded byte chunks; production clients must validate the complete stream. The [Go client](client.md) handles this for you.
+The terminal `result` event reports the image identity and export paths. HTTP success alone does not mean the build succeeded. Logs arrive as separate events with base64-encoded byte chunks; clients must validate every event and check that a terminal result arrived. The [Go client](client.md) handles this for you.
 
 To repeat the example, choose fresh output paths and a new execution ID. IDs cannot be reused during a service's lifetime.
 
@@ -92,6 +92,6 @@ curl --fail --unix-socket "$work/api.sock" -X DELETE \
 
 A `cleanup_failed` error means cleanup could not be confirmed. Keep input and staging paths available until it is resolved. When finished, stop the foreground service with Ctrl-C and wait for it to exit. Successful outputs and stores remain in `work`.
 
-A supervising application can pass `--parent-fd FD`, an inherited pipe descriptor numbered 3 or above. Pipe EOF or SIGTERM requests cancellation and shutdown. Keep the socket directory private: the API runs with the service account's filesystem and registry access, and is not a remote or cross-account interface.
+A supervising application can pass `--parent-fd FD`, an inherited pipe descriptor numbered 3 or above. Pipe EOF or SIGTERM requests cancellation and shutdown. Keep the socket directory private: the API runs with the service account's filesystem and registry access, and must not be exposed to other accounts or over a network.
 
 For native definitions, component loading and artifact transfers, see the [API reference](../reference/api.md). For host requirements and cleanup limits, see [security](security.md).

@@ -32,7 +32,7 @@ Coopr loads effective `storage.conf`, including rootless/user settings. Images b
 coopr info --format json
 ```
 
-The pinned go.podman.io/storage 1.65.0 loader can retain root-owned paths from system `storage.conf` during rootless operation. If it selects `/run/containers/storage` or `/var/lib/containers/storage`, configure writable `runroot` and `graphroot` in your user `storage.conf`, or supply both `--runroot` and `--root`.
+Rootless builds can inherit root-owned storage paths from the system `storage.conf`. If Coopr selects `/run/containers/storage` or `/var/lib/containers/storage`, configure writable `runroot` and `graphroot` in your user `storage.conf`, or supply both `--runroot` and `--root`.
 
 Component artifacts use a separate OCI layout at `$XDG_DATA_HOME/coopr/components`, or `~/.local/share/coopr/components` when unset. A nonempty `XDG_DATA_HOME` must be absolute. `--root` does not relocate components. See [storage locations](../guides/storage.md#where-data-lives) for image, component and cache paths.
 
@@ -64,7 +64,9 @@ Image/component transfers, manifest-member additions and build downloads (includ
 
 Image and manifest push inherit `[engine] compression_format` and `compression_level`; explicit push options take precedence. Image push `--compress` controls directory output separately from the configured algorithm. See [transfer options](cli.md#transfer-output-and-errors) for compression and signing.
 
-On Linux, `coopr login` normally writes `$XDG_RUNTIME_DIR/containers/auth.json`, which does not survive reboot. `REGISTRY_AUTH_FILE` selects the default credential file across login, builds and transfers; otherwise `DOCKER_CONFIG` selects its `config.json`. Without either override, native lookup can read user configuration and Docker credential files or use helpers. An explicit `--authfile` takes precedence. Username-only `--creds USER` prompts for a password in the CLI before starting workers; a noninteractive command must supply `USER:PASSWORD` or use an auth file. See [registry login](../guides/security.md#log-in-to-a-registry).
+On Linux, `coopr login` normally writes `$XDG_RUNTIME_DIR/containers/auth.json`, which does not survive reboot. `REGISTRY_AUTH_FILE` selects the default credential file across login, builds and transfers; otherwise `DOCKER_CONFIG` selects its `config.json`. Without either override, native lookup can read user configuration and Docker credential files or use helpers. An explicit `--authfile` takes precedence.
+
+`--creds USER` prompts for a password before starting the build or transfer. For noninteractive commands, prefer an auth file; `--creds USER:PASSWORD` is also accepted but exposes the password in command-line arguments. See [registry login](../guides/security.md#log-in-to-a-registry).
 
 Image, component and registry cache transfers use Podman/Buildah's registry transport. Registry routing, mirrors, authentication and certificates follow native configuration. TLS behavior is:
 

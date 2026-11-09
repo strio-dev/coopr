@@ -1,6 +1,6 @@
 # Build with Nix inputs
 
-Nix builds packages and their runtime closures. Coopr combines those inputs with native definitions and components to produce an image. The Nix builders prepare runnable recipes; composition runs outside the Nix sandbox using your normal [Coopr runtime](../getting-started/index.md).
+Use Nix packages in a Coopr image or reusable component. Nix prepares the packages and their runtime dependencies; Coopr builds the result outside the Nix sandbox using your normal [Coopr runtime](../getting-started/index.md).
 
 ## Before you start
 
@@ -50,7 +50,7 @@ The package set selects the platform: `x86_64-linux` produces `linux/amd64` inpu
 
 ## Apply components
 
-Add `components` inside the `pkgs.coopr.buildImage` attributes above, using immutable references in invocation order:
+Add `components` inside the `pkgs.coopr.buildImage` attributes above, listing digest-pinned references in the order they should run:
 
 ```nix
 components = [
@@ -68,7 +68,7 @@ Nix includes the closure of `hello` even when it appears only in an argument. Ke
 
 ## Use a native definition
 
-Provide `definition` and `context` for local components or more involved composition:
+Provide `definition` and `context` to build from your own Coopr file:
 
 ```nix
 pkgs.coopr.buildImage {
@@ -98,7 +98,7 @@ from "coopr-nix" {
 
 `config` sets initial OCI image configuration. Its default environment is `[ "PATH=/bin" ]`; explicit `config.Env` replaces it. Supported fields are `User`, `ExposedPorts`, `Env`, `Entrypoint`, `Cmd`, `Volumes`, `WorkingDir`, `Labels`, `StopSignal` and `ArgsEscaped`. Components can change these values later. No shell, user database, certificates or Nix installation is added implicitly.
 
-All static attributes enter the readable Nix store. Supply secrets through runtime Coopr options or authentication files instead.
+Values written in the Nix definition enter the Nix store, where other users on the machine can read them. Supply secrets through runtime Coopr options or authentication files instead.
 
 ## Package Nix tools as a reusable component
 
@@ -139,7 +139,7 @@ A generated component can also declare `components`. Their instructions execute 
 
 ### Deliver local dependencies
 
-When packaging archive-selected children, request `--bundle-output` to include their dependencies in a complete Bale bundle. A child that already has a Bale delivery binding also needs its original complete local layout:
+When a component uses children loaded from archives, pass `--bundle-output` to package their dependencies in a complete Bale bundle. If a child was delivered through Bale, supply its original complete bundle with `bundle`:
 
 ```nix
 components = [
@@ -156,7 +156,7 @@ nix run .#tools -- --bundle-output ./tools.bale
 bale inspect --layout ./tools.bale
 ```
 
-A newly produced child without a delivery binding needs no prior bundle if its dependencies are otherwise available. Missing or conflicting dependencies fail packaging. `bundle` is only supported by the component builder. Deliver the complete bundle rather than pushing the parent alone. See [component bundles](../reference/cli.md#complete-component-bundles).
+A locally built child that has not been delivered through Bale needs no prior bundle if its dependencies are otherwise available. Missing or conflicting dependencies fail packaging. `bundle` is only supported by the component builder. Deliver the complete bundle rather than pushing the parent alone. See [component bundles](../reference/cli.md#complete-component-bundles).
 
 ## Outputs and runtime options
 
@@ -170,4 +170,4 @@ Forward native options after `--`, including cache, storage, runtime and metadat
 
 The overlay's Coopr executable is selected by default. `cooprBinary = "${anotherCoopr}/bin/coopr"` selects a different Nix package; `COOPR_BINARY` overrides execution at runtime. A runtime override does not remove the declared Nix dependency.
 
-Nix owns package and input-image caching; Coopr owns composition caching and persistent native stores. See [caching](caching.md) for refresh controls and [the examples](https://github.com/strio-dev/coopr/tree/main/examples/nix) for complete recipes.
+Nix caches packages and the initial input image. Coopr caches build instructions and stores the resulting images and components. See [caching](caching.md) for refresh controls and [the examples](https://github.com/strio-dev/coopr/tree/main/examples/nix) for complete recipes.

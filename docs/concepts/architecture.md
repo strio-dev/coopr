@@ -15,11 +15,11 @@ Unused stages are normally skipped. Inherited ONBUILD instructions or a componen
 
 ## What a component carries
 
-A packaged component is an OCI artifact containing its definition, selected output, fixed package arguments, platform, and selected immutable package snapshots. Each package includes its filesystem and full image configuration. Consumers can use those files without the publisher's checkout.
+A packaged component is an OCI artifact containing its retained definition, selected output, fixed package arguments, platform, and saved package snapshots. Each package includes its filesystem and full image configuration. Consumers can use those files without the publisher's checkout.
 
-Packaging runs only the required package stages and their dependencies. Invocation resolves the selected `extend`'s dependencies afresh, in the component's own stage namespace, and uses saved packages as immutable inputs. A local component path goes through the same packaging and invocation phases automatically during the build. See [package components](../guides/components.md).
+Packaging runs only the required package stages and their dependencies. Invocation resolves the selected `extend`'s dependencies using the caller's inputs and the component's own stage names. Saved packages remain fixed. A local component path goes through the same packaging and invocation phases automatically during the build. See [package components](../guides/components.md).
 
-Publication omits FROM bodies it can prove unselectable, while preserving original names and numeric positions. Otherwise recipes remain, including unused stages and stages used only to prepare packages. Retained instructions and defaults are visible in the artifact and increase its size and planning work. A recipe selected later runs with the caller's invocation inputs; it is not a saved build result. PACKAGE producer instructions are removed. See [component phases](stages.md) and [component source disclosure](../guides/security.md#component-source-disclosure).
+Artifacts can retain FROM instructions and defaults from unused stages, including stages used to prepare packages. Consumers can read this source and may select it with invocation arguments. Coopr removes PACKAGE producer instructions and FROM bodies it can prove will never be selected. Review [component source disclosure](../guides/security.md#component-source-disclosure) before publishing.
 
 Descriptor sizes and digests are verified. Pinning a component fixes that artifact's content; mutable image or component references inside it can still change. See [trust images and components](../guides/security.md#trust-images-and-components).
 

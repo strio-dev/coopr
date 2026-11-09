@@ -1,6 +1,6 @@
 # Local execution API v1
 
-`coopr system service` serves HTTP over a private Unix socket. The transport-independent schema is defined in `api/types.go`; clients need not import the native engine. For a ready-to-use client, see the [Go client guide](../guides/client.md).
+`coopr system service` serves HTTP over a private Unix socket. Request and response types are defined in `api/types.go`, which has no native engine dependencies. For a ready-to-use client, see the [Go client guide](../guides/client.md).
 
 ## Transport and endpoints
 
@@ -11,30 +11,32 @@ HTTP runs over a private Unix socket. There is no TCP listener or automatic conn
 | `GET /v1/info` | JSON `apiVersion`, binary `version` and `capabilities`. Required API version: integer `1`. |
 | `POST /v1/executions/ID` | Registers one execution and streams `application/x-ndjson` log/result events. |
 | `GET /v1/executions/ID` | JSON status for a known ID, or 404. |
-| `DELETE /v1/executions/ID` | Cancel and wait for backend return, then JSON status. Unknown IDs become canceled tombstones. |
+| `DELETE /v1/executions/ID` | Cancel, wait for execution cleanup, and return JSON status. Unknown IDs are recorded as canceled. |
 
-`ID` is exactly 32 lowercase hexadecimal characters. Reusing an ID returns 409, including after cancellation-before-start. The service retains at most 4,096 records/tombstones during its lifetime; further registrations return 429. Shutdown rejects new execution admission with 503. Transport/admission errors use ordinary HTTP errors; admitted validation/execution failures use the terminal stream event.
+`ID` is exactly 32 lowercase hexadecimal characters. Reusing an ID returns 409, even if it was canceled before execution started. The service retains up to 4,096 IDs during its lifetime, including canceled IDs; registering another returns 429. New executions receive 503 during shutdown.
+
+Requests rejected before execution starts return an HTTP error. Once a request is accepted, validation and execution failures are reported in the terminal stream event.
 
 POST requests contain exactly one JSON object, with unknown fields rejected, and are limited to 4 MiB. Event consumers must enforce the 1 MiB per-event limit. An absent terminal event, invalid event type, malformed event or interrupted connection is an uncertain result: cancel the known ID and wait instead of inferring success.
 
 The `registry-cache` capability advertises `options.cache.registryFrom` and
 `registryTo`. Require this capability before sending those options; API version
-`1` alone does not establish support in every executable.
+`1` alone does not guarantee support.
 
 ## Client compatibility
 
-The [public Go client](../guides/client.md) uses these same API types. API major
-version and required capabilities determine compatibility; executable version
-strings need not match. Additive optional response fields and capability names
-are permitted within response limits. Requests remain strict: a new optional
-request feature needs its capability before it is sent. `build-platform` enables
+The [public Go client](../guides/client.md) uses these same API types. Compatibility depends on the API major
+version and required capabilities, not matching executable versions. Clients
+may receive new optional response fields and capability names. Requests reject
+unknown fields, so check the required capability before using an optional feature. `build-platform` enables
 nonempty native `build.platform`. `named-contexts`
-advertises `options.contexts` and named COPY sources. `run-mounts` adds named
-RUN contexts, image-or-artifact RUN file inputs, explicit live `hostPath` binds,
-optional host `relabel`, and the persistent `options.cache.mountDir` parent.
-Require it for these features; API v1 alone does not establish their availability. Known v1 progress may be
-validated and ignored; future semantic event kinds require negotiation or a
-major revision. Unsupported majors do not fall back to another API.
+enables `options.contexts` and named COPY sources. `run-mounts` adds named
+RUN contexts, image or artifact inputs for RUN mounts, live `hostPath` binds,
+optional host `relabel`, and the persistent `options.cache.mountDir` directory.
+
+Clients may validate and discard v1 progress events. New event kinds require
+capability negotiation or a new API major version. Clients must reject
+unsupported major versions rather than attempting a fallback.
 
 ## Request envelope
 
@@ -66,7 +68,7 @@ major revision. Unsupported majors do not fall back to another API.
 }
 ```
 
-This is a request-shape example: provide your own existing input/context, suitable native policy, runtime and fresh outputs. It is not a ready-made host configuration.
+Replace the example paths with your input directory, store and unused output paths. For a runnable example with host setup, follow the [API guide](../guides/api.md).
 
 | Field | Contract |
 | --- | --- |
@@ -77,7 +79,7 @@ This is a request-shape example: provide your own existing input/context, suitab
 | `componentLoad` | Required only for `component-load`; archive and explicit component store. |
 | `options` | Explicit resource, output, cache and registry settings. |
 
-Mismatched payload fields and operation kinds are errors. Literal requests do not generate Coopr source or invoke KDL ARG/ENV expansion.
+Supply only the payload for the selected `kind`. Literal programs use values as supplied; they do not expand Coopr ARG or ENV expressions.
 
 ### Literal programs
 
@@ -100,11 +102,13 @@ Mount fields are `type`, `target`, optional `source`, `id`, `sharing`, `from`, `
 `hostPath` is an absolute live directory, exclusive with `from` and `source`; it
 requires `bind`. Its optional `relabel` is `shared` or `private`, explicitly
 requesting native SELinux labeling. The default does not relabel. Live mounts
-conservatively disable result-cache reuse for the typed invocation. A named
-`from.context` uses snapshotted named-context materialization. An external
+disable result-cache reuse for the whole typed program. A named
+`from.context` mounts a snapshot of that context. An external
 `from.image` can resolve to a verified OCI artifact raw-file view; artifact
 mounts require `readOnly: true`. Cache sharing supports `shared` and `locked`;
-the current Buildah backend does not implement `private`. Supported types and native semantics follow the [Go execution library](../guides/library.md). Unsupported/incompatible fields are rejected. The typed graph is not a workflow dependency scheduler: states unreachable from the output can be pruned; an external test gate belongs to the caller's workflow layer.
+the current Buildah backend does not implement `private`. See the [Go execution library](../guides/library.md) for mount behavior. Unsupported fields and incompatible combinations are rejected.
+
+States that do not contribute to the selected output may be skipped. Run required tests separately if their states are not dependencies of that output.
 
 ### Native definitions
 
@@ -120,26 +124,25 @@ For `kind: build` or `component`, supply:
 }
 ```
 
-This object is the `build` payload inside the request envelope; it is not a complete request. `files` is a nonempty ordered list of existing absolute regular files. `platform`, `target`, `args` and `componentStoreDir` are optional. `contextDir` is required. Coopr owns parsing, expansion, component resolution and native planning. The API exposes this selected set of frontend options; it does not imply that every CLI flag is a wire field.
+Place this object in the request's `build` field. `files` is a nonempty ordered list of existing absolute regular files. `platform`, `target`, `args` and `componentStoreDir` are optional. `contextDir` is required. Coopr parses the definitions, expands expressions, resolves components and plans the build. Only the fields listed here are supported; do not add CLI flags as extra `build` fields.
 
-`platform` selects one normalized Linux default (`linux/arch[/variant]`) for
-native definition planning. Explicit per-stage FROM platform overrides remain
-in effect. A nonempty selection requires `build-platform`; omitting it retains
-the native default. Literal programs continue to use their existing
-`program.platform` field and capability contract.
+`platform` sets the default Linux platform (`linux/arch[/variant]`) for the
+build. A stage can override it with its FROM platform. A nonempty value requires
+`build-platform`; omit it to use the native default. For literal programs, set
+`program.platform` instead.
 
 For a single native image result, `result.platform` reports the actual final
 image configuration, which can differ from the requested default when the final
-FROM overrides it. Component results report their platform-qualified artifact
-selection rather than claiming a runnable image. Ambiguous multi-platform
-metadata leaves the singular result field empty. The full native selection list
-remains in `metadata["coopr.platforms"]`.
+FROM overrides it. Component results report the selected artifact
+platform. When metadata identifies several platforms without a single
+selection, `result.platform` is empty. Read `metadata["coopr.platforms"]` for
+the full platform list.
 
-Foreign filesystem assembly and cross-compilation do not inherently need
-emulation. A RUN that executes foreign binaries needs the runner's existing
-Buildah-compatible binfmt/QEMU setup. Coopr supplies no emulator installer,
-registration or alternate executor. Genuine exec-format failures retain the
-native cause and identify this runner prerequisite.
+Assembling a filesystem for another architecture or cross-compiling does not
+by itself require emulation. A RUN that executes foreign binaries requires
+Buildah-compatible binfmt/QEMU support on the service host. Configure it before
+building; Coopr does not install or register emulators. Exec-format errors
+include the native failure and identify the missing host support.
 
 `build` returns a native image ID and exports an OCI image layout. `component` returns a component reference/digest and exports an OCI archive at `options.output.oci`; it rejects `options.output.filesystem`. An archive is a file, not an image-layout directory.
 
@@ -166,10 +169,10 @@ For `kind: publish`, the `publish` payload is:
 }
 ```
 
-`artifact` is `image` or `component`. `source` and nonempty `destinations` are required. The source must be meaningful in the supplied native/component store. Registry destinations perform explicit external writes; local destinations still write caller-selected files. Publication uses `destinations`, so build `output.oci`/`filesystem` must be absent. Results retain per-destination `destination`, `reference`, `status` and optional `error`; publication across destinations is not atomic.
+`artifact` is `image` or `component`. `source` and nonempty `destinations` are required. The source must exist in the supplied image or component store. Registry destinations upload the artifact; local destinations write it to disk. Publication uses `destinations`, so build `output.oci`/`filesystem` must be absent. Results retain per-destination `destination`, `reference`, `status` and optional `error`; publication across destinations is not atomic.
 
-The `publish-oci-layout` capability additionally accepts an explicit original
-image layout, independently of the native image store:
+With `publish-oci-layout`, you can publish an exported OCI image layout
+without importing it into the native image store:
 
 ```json
 {
@@ -182,16 +185,16 @@ image layout, independently of the native image store:
 
 Require this capability before sending `sourceDigest` or an `oci:` source. The
 source directory must exist, select exactly one runnable image manifest, and
-match the required SHA-256 digest. Index/layout/manifest documents are bounded
-regular files; metadata links, ambiguous indices, wrong digests and component
-sources fail validation before transfer. The source must not overlap execution
+match the required SHA-256 digest. Layout, index and manifest documents must be
+regular files no larger than 1 MiB each. Symlinked metadata, ambiguous indices,
+wrong digests and component sources are rejected before transfer. The source must not overlap execution
 storage/cache or filesystem destinations. Components retain their ordinary
 verified component-store publication path. `sourceDigest` is rejected for
 ordinary native/component sources.
 
 Publication preserves the selected manifest digest and uses the request's registry authentication, TLS and signature policy. Keep the source graph stable until publication completes. Missing content is an error; it is not recovered from a cache.
 
-For filesystem destinations (`oci`, `oci-archive`, `dir`, `docker-archive`), the final absolute path must be unused and its parent must already exist. API publication transfers into a private sibling staging directory, then promotes the completed artifact without replacing any existing file, directory or symlink. A concurrent creator keeps its destination intact and that publication fails. Cancellation or transfer failure before promotion removes only the owned staging directory. Returned references use the authored destination rather than the staging path. This policy applies to API publication; ordinary CLI transfer behavior is unchanged.
+For filesystem destinations (`oci`, `oci-archive`, `dir`, `docker-archive`), the final absolute path must be unused and its parent must already exist. API publication transfers into a private sibling staging directory, then promotes the completed artifact without replacing any existing file, directory or symlink. A concurrent creator keeps its destination intact and that publication fails. Cancellation or transfer failure before promotion removes only the owned staging directory. Returned references use the requested destination rather than the staging path. This policy applies to API publication; ordinary CLI transfer behavior is unchanged.
 
 ## Options and ownership
 
@@ -199,13 +202,13 @@ For filesystem destinations (`oci`, `oci-archive`, `dir`, `docker-archive`), the
 | --- | --- |
 | `store` | Absolute nonoverlapping `runRoot` and `graphRoot`; optional `driver`, `driverOptions`. |
 | `output` | Required fresh absolute `oci` for execution/build/component; optional fresh absolute `filesystem` for image/literal builds. Parents must already exist. |
-| `cache` | Optional absolute `localDir` and separate private `mountDir`, boolean `noCache`, and independent `registryFrom`/`registryTo` repository arrays. Coopr owns identities, invalidation and coordinated reuse. |
+| `cache` | Optional absolute `localDir` and separate private `mountDir`, boolean `noCache`, and independent `registryFrom`/`registryTo` repository arrays. Coopr determines which cached results can be reused. |
 | `registry` | Optional absolute `authFile`, `certDir`, `signaturePolicyPath`; `pullPolicy`, `tlsVerify`. |
 | `contexts` | Optional mapping of native lowercase context names to existing absolute local directories. `build` and `scratch` are reserved; unknown COPY context names are errors. |
 | `network` | Optional native RUN network default for `execute`, `build` and `component`; requires `run-network`. |
 | Other options | Optional absolute `contextDir`, `runtime`, `isolation`, nonnegative `jobs`. |
 
-Keep stores, cache, component store and outputs outside context and away from one another as required by validation. Existing outputs are not overwritten. Native stores/cache and successful outputs remain caller-owned. Multiple output promotions and publication destinations are not one atomic transaction. A failed run can leave partial evidence that must not be labeled a successful artifact.
+Keep stores, cache, component store and outputs outside context and away from one another as required by validation. Existing outputs are not overwritten. Native stores/cache and successful outputs remain caller-owned. Multiple output promotions and publication destinations are not one atomic transaction. A failed request can leave successfully exported outputs; inspect both the result and error before using them.
 
 `cache.registryFrom` reads portable results and `registryTo` writes them. They accept bare repository names without tags or digests and can be used independently or alongside `localDir`. Registry authentication uses `registry`. `noCache` forces fresh execution while allowing cache writes. Cache mounts are not transferred; publication does not read or write execution cache entries. See [portable caching](../guides/caching.md).
 
@@ -224,22 +227,22 @@ The `operation-progress` capability advertises typed progress events alongside s
 {"type":"result","result":{"imageID":"EXAMPLE_ID","oci":"/absolute/exports/image"}}
 ```
 
-`data` is base64-encoded bytes; decode it before writing to stdout/stderr. Chunk boundaries need not coincide with lines or UTF-8 characters. The service chunks log writes; clients also bound every decoded event. One terminal `type: result` event carries a `result` object and optional `error` object with `code` and `message`. A result may retain partial output information on failure. Clients must validate the terminal event and its error, not merely successful HTTP transport.
+`data` is base64-encoded bytes; decode it before writing to stdout/stderr. Chunk boundaries need not coincide with lines or UTF-8 characters. The service splits log writes into chunks; clients must enforce the event size limit. One terminal `type: result` event carries a `result` object and optional `error` object with `code` and `message`. A result may retain partial output information on failure. Clients must validate the terminal event and its error, not merely successful HTTP transport.
 
 Result fields are optional according to operation: `imageID`, `manifestDigest`, `platform`, `oci`, `filesystem`, `reference`, `cache`, `metadata`, `destinations`. Literal execution supplies portable-cache counters (`Hits`, `Misses`, `Stored`, `Skipped`, `Errors`). Native frontend build/component results currently omit `cache`; absence means unavailable, not zero activity.
 
 Progress states are `started`, `completed`, `failed` and `canceled`. Terminal
 phase observations carry a completion time and nonnegative `durationNanos`;
 failed/canceled phases can include `error`. `stage`, `instruction`, `operation`
-and `cache` provide attribution. IDs correlate each start/completion pair.
+and `cache` identify the work being reported. Match start and completion events by ID.
 Durations use a monotonic clock; serialized wall-clock timestamps need not be
 ordered after a clock adjustment. Lookup can include restore/checkpoint work,
 so intervals overlap.
 
-Capture retains up to 1,024 phase IDs/2,048 events per worker/owning plan. The
+Progress reporting retains up to 1,024 phase IDs (2,048 events) per worker or build plan. The
 optional terminal `progressDropped` field counts omitted phases reported by
-workers, including handled native build/component failures. Zero or absence
-does not establish trace completeness after an abrupt worker kill. Native CLI
+workers, including handled native build/component failures. A zero or missing count
+does not guarantee a complete trace if a worker was killed abruptly. Native CLI
 metadata retains the bounded trace, while API terminal `metadata` omits
 `coopr.operation.progress` and its duplicated drop count; observations already
 arrive as separate events. Clients can ignore valid observations, but must
@@ -255,6 +258,6 @@ Status has `id`, `state`, optional `result`, optional `error`. States are `runni
 
 ## Cancellation and service shutdown
 
-An admitted POST is bound to its connection and service context. Loss of the stream cancels that backend, but the caller must still use DELETE to establish its terminal state. DELETE waits for backend return; a canceled unknown-ID tombstone prevents late-start races. GET provides observations, not a cancellation acknowledgement.
+An accepted POST is canceled if its connection is lost or the service shuts down. Losing the stream cancels the execution, but the caller must still use DELETE to confirm cleanup. DELETE waits for the backend to return. If the ID is unknown, the service records it as canceled so a delayed POST cannot start it. GET reads status without requesting or acknowledging cancellation.
 
-The supervisor owns the service process and parent-lifetime pipe. Pipe EOF or SIGTERM cancels active operations and drains backend cleanup. Persistent resources remain caller-owned. If cleanup cannot be confirmed, report failure; killing the process is not equivalent to a clean acknowledgment. The API has no cross-account authentication layer or privilege-broker contract. See [the local API guide](../guides/api.md) and [security](../guides/security.md).
+The supervisor owns the service process and parent-lifetime pipe. Pipe EOF or SIGTERM cancels active operations and drains backend cleanup. Persistent resources remain caller-owned. If cleanup cannot be confirmed, report failure; killing the process is not equivalent to a clean acknowledgment. The API does not authenticate other accounts or restrict the service account's authority. See [the local API guide](../guides/api.md) and [security](../guides/security.md).

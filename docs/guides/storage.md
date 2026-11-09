@@ -87,7 +87,7 @@ coopr save --format oci-dir --output app-layout app:dev
 coopr load --input app-layout
 ```
 
-An OCI save includes one image or a stored manifest list. Exporting a list fails if a required member is missing; use `--platform linux/amd64` to export a resident image explicitly. An ordinary single-platform pull remains one image even when it retains its source index as metadata. Native export can change layer compression and manifest/index digests. Docker's classic Engine store also needs one selected platform for an index; see [transfer contracts](../reference/execution.md#layers-storage-and-copying).
+An OCI save includes one image or a stored manifest list. Exporting a list fails if a required member is missing; use `--platform linux/amd64` to export one locally available platform instead. An ordinary single-platform pull remains one image even when it retains its source index as metadata. Native export can change layer compression and manifest/index digests. Docker's classic Engine store also needs one selected platform for an index; see [image transfer behavior](../reference/execution.md#layers-storage-and-copying).
 
 To save several images in one Docker archive, use `--multi-image-archive`:
 
@@ -95,7 +95,7 @@ To save several images in one Docker archive, use `--multi-image-archive`:
 coopr save --multi-image-archive --output images.tar app:dev docker.io/redhat/ubi9:latest
 ```
 
-Without this option, extra operands assign tags to the first image. `load --input` also accepts an HTTP(S) archive URL. See [archive contracts](../reference/cli.md#archives-and-directories) for formats and index filtering.
+Without this option, extra operands assign tags to the first image. `load --input` also accepts an HTTP(S) archive URL. See [archive formats](../reference/cli.md#archives-and-directories) for formats and index filtering.
 
 ## Store and share components
 
@@ -142,7 +142,7 @@ coopr manifest push app:multi registry.example.com/team/app:dev
 
 Podman reads local indexes directly. `manifest add` can also read remote images and explicit image transports; push fetches their contents when publishing the list. Create/add `--all` includes every member of an input index, and push includes all members by default.
 
-You can also build into a manifest list with `coopr build --manifest NAME`. This updates an existing native list in place: aliases and the native list ID follow the update, while exports of prior index digests select their original index. Tagging a retained digest adds an alias to the existing native record. An ordinary pulled image is not a native manifest list.
+You can also build into a manifest list with `coopr build --manifest NAME`. This updates an existing native list in place. Its names and native ID refer to the updated list; exporting an earlier index digest still selects the original index. Tagging a retained digest adds an alias to the existing native record. An ordinary pulled image is not a native manifest list.
 
 Annotate members or the index without rebuilding their files. `manifest push --rm` removes the local list only after successful publication. See [manifest list options](../reference/cli.md#manifest-lists) for annotations, platform overrides, and removal.
 
@@ -213,6 +213,6 @@ Pruning reports removed names and images, followed by reclaimed space from nativ
 
 Artifact source indexes are cached as OCI metadata so offline builds can select the right platform. Their selected manifests and file blobs stay in the native artifact store, under immutable digest references.
 
-Coopr honors explicit `graphroot` and `runroot` settings even when running rootless. Native defaults apply when the effective configuration omits these keys or leaves them empty. To override system paths for one user, set these keys in `$XDG_CONFIG_HOME/containers/storage.conf` (normally `~/.config/containers/storage.conf`); see the [native storage configuration reference](https://github.com/podman-container-tools/container-libs/blob/6eac452fac5c9d9ad8f86b6fd6109f8f32659f77/storage/docs/containers-storage.conf.5.md).
+Coopr honors explicit `graphroot` and `runroot` settings even when running rootless. Native defaults apply when the effective configuration omits these keys or leaves them empty. To override system paths for one user, set these keys in `$XDG_CONFIG_HOME/containers/storage.conf` (normally `~/.config/containers/storage.conf`); see the [native storage configuration reference](https://github.com/podman-container-tools/container-libs/blob/d58edff7015b064c7d04211ffd20cc069bb7c8a1/storage/docs/containers-storage.conf.5.md).
 
 The published Coopr container uses these native image-store defaults. See [configuration](../reference/configuration.md) for overrides and the [container guide](container.md) for persistent storage.

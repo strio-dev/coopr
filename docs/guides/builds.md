@@ -140,7 +140,7 @@ coopr build image.coopr --output type=tar,dest=rootfs.tar
 
 Filesystem outputs contain files, without the image configuration or layers of an image archive. For registries and Docker Engine destinations, see [tags and transfers](storage.md#tags-and-transfers). Image format and destination are separate: `--format docker` changes manifest/config format, while `docker-daemon:` selects Docker Engine.
 
-`--compression-format gzip|zstd|zstd:chunked` controls exported image-layer compression. Graph-cache snapshots retain their selected immutable manifests. See [output compression](../reference/execution.md#output-compression) for format compatibility and force-compression behavior.
+`--compression-format gzip|zstd|zstd:chunked` controls exported image-layer compression. This does not recompress cached instruction snapshots. See [output compression](../reference/execution.md#output-compression) for format compatibility and force-compression behavior.
 
 ## Refresh inputs
 

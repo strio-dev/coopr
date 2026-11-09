@@ -73,6 +73,9 @@ or `Negotiate(ctx, caps...)` to require features in advance.
 | Typed program | `execute` |
 | Native image or component definition | `build` or `component` |
 | Artifact publication | `publish` |
+| Publication from an OCI image layout | `publish-oci-layout` |
+| Component archive loading | `component-load` |
+| Named component delivery | `component-load-name` |
 | Explicit RUN network | `run-network` |
 | Explicit native build platform | `build-platform` |
 | Registry cache sources or destinations | `registry-cache` |
@@ -80,8 +83,9 @@ or `Negotiate(ctx, caps...)` to require features in advance.
 | Image/context/host RUN mounts or persistent cache mount directory | `run-mounts` |
 
 Compatibility depends on the API version and capabilities, not identical client
-and executable version strings. A client caches service identity; create a new
-client when restarting or replacing the service. `Info` refreshes the snapshot.
+and executable version strings. A client caches the service version and
+capabilities; create a new client when restarting or replacing the service.
+`Info` refreshes those values.
 
 ## Handle results and cancellation
 
@@ -97,9 +101,9 @@ acknowledgement. The default wait is thirty seconds; set
 `Options.CancellationTimeout` to another positive duration if needed. Execution
 requests are never automatically retried.
 
-Check `errors.Is(err, client.ErrCleanupFailed)`: cleanup failed or could not be
-confirmed. Keep input trees and retained staging paths available until cleanup
-is resolved. `CancelWait(ctx, id)` retries cancellation acknowledgement;
+If `errors.Is(err, client.ErrCleanupFailed)` is true, cleanup failed or could
+not be confirmed. Keep input trees and retained staging paths available until
+cleanup is resolved. `CancelWait(ctx, id)` retries cancellation acknowledgement;
 `Get(ctx, id)` reads status without cancelling. Killing the service or closing a
 connection does not confirm cleanup.
 
@@ -111,7 +115,7 @@ the request to progress; synchronize them when shared across concurrent calls.
 
 Use `LoadComponent(ctx, api.ComponentLoad{Archive: archivePath,
 ComponentStoreDir: storePath}, streams)` to import a component archive. Paths
-must be absolute. Set `Name` to retain a distinct local delivery selection when
+must be absolute. Set `Name` to distinguish local deliveries when
 several archives share a root digest. Build and publish using the same component
 store. See [component loading](../reference/api.md#load-components) for capabilities and naming.
 

@@ -59,9 +59,9 @@ Apply a shared definition with `component "./components/shared.coopr"`. [Share a
 
 For components you can distribute, follow the [reusable-components tutorial](docs/tutorials/reusable-components.md) to package two components and apply them to an image. Explore [the examples](examples/README.md) for cache mounts and published components, or read about [image storage and transfers](docs/guides/storage.md).
 
-## Application integrations
+## Build from an application
 
-Embed builds with the [Go execution library](docs/guides/library.md), or use the [Go service client](docs/guides/client.md) to call Coopr over a private Unix socket. The client supports typed programs, image and component builds, and artifact transfers without importing native engine libraries.
+Use the [Go execution library](docs/guides/library.md) to run builds in your application. To keep the native engine in a separate process, start a [local service](docs/guides/api.md) and call it with the [Go client](docs/guides/client.md). The client can submit typed programs, build images and components, and transfer artifacts.
 
 ## Development
 

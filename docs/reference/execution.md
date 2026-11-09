@@ -32,9 +32,11 @@ Inside EXTEND, direct instructions modify the caller; nested FROM blocks own sep
 
 ### Dependencies
 
-COPY/ADD and RUN mounts with `from=` create input dependencies without changing base lineage. Sources can be named stages, packages, named contexts, or external images. COPY/ADD and read-only bind RUN mounts can also read [OCI artifact files](definition.md#copy-oci-artifact-files). RUN mounts expose the same verified raw-blob filenames, with archives remaining files; `source` selects one path or defaults to the whole view. External inputs resolve to immutable descriptors; image and artifact indexes select the stage's platform. Stage sources must precede their consuming FROM, COPY/ADD, or RUN mount. Nested FROM helpers become visible to later instructions inside EXTEND. Graphs must be acyclic and stage aliases unambiguous. Graph-affecting values must resolve before their consuming instruction executes; after a component returns, planning continues with its actual output environment.
+COPY/ADD and RUN mounts with `from=` create input dependencies without changing the destination stage's base. Sources can be named stages, packages, named contexts, or external images. COPY/ADD and read-only bind RUN mounts can also read [OCI artifact files](definition.md#copy-oci-artifact-files). Artifact mounts expose verified blobs as files without extracting archives; `source` selects one path or defaults to all files. Image and artifact indexes select the stage's platform, and each external input resolves to an immutable descriptor.
 
-Published components resolve FROM, COPY/ADD, and RUN mount sources afresh using the current invocation arguments and environment. A selector can change between earlier stages or between a stage and external image; FROM can also select `scratch`. The current selected graph must remain valid, including stage order, cycle, platform, and input-type constraints. Package arguments and the published output remain fixed. Planning resumes after a component returns when later sources depend on its returned environment.
+A stage must precede the FROM, COPY/ADD, or RUN mount that consumes it. Nested FROM helpers become available to later instructions inside EXTEND. Dependency cycles and ambiguous stage aliases are errors. Values used to select dependencies must resolve before the consuming instruction executes.
+
+Each component invocation resolves FROM, COPY/ADD, and RUN mount sources using its current arguments and environment. A source selector can choose a different earlier stage or external image; FROM can also select `scratch`. The selected dependencies must still satisfy stage-order, cycle, platform, and input-type rules. Package arguments and the published output remain fixed. After a component returns, Coopr uses its returned environment to resolve later sources.
 
 Resolution uses the component's isolated namespace with its original stage identities and numeric positions. An earlier component-local stage takes precedence over an image with the same name, subject to explicit [named build contexts](#named-contexts). Caller-stage aliases are not visible: passing one as an argument does not import that stage. Use an explicit named context backed by a separately built image to supply such an input. Component references themselves may use caller ARG/ENV values resolved at invocation.
 
@@ -50,7 +52,7 @@ Executing foreign-architecture binaries requires host-provided `binfmt_misc` emu
 
 FROM runs inherited triggers in stored order before authored instructions, then clears them. Local COPY/ADD and bind mounts use the child build's context; inherited secret/SSH mounts use the child's supplied sources. Native RUN mount text is expanded in child scope before its type and fields are validated. Imported triggers retain their original native field spelling through that expansion. EXTEND does not consume the caller's triggers.
 
-Authored inline COPY/ADD bodies retain decoded KDL bytes and expand ordinary-string ARG/ENV references at their execution phase; raw bodies and filenames stay literal. ONBUILD serialization preserves child-time expansion and native filenames. Native heredocs always terminate their data with LF, including empty bodies, so authored ONBUILD inline files require nonempty LF-terminated content and reject delimiter collisions or other parsing losses. Ordinary authored inline files have no line-termination requirement. Inline batches precede ordinary sources, bypass context ignore/exclude filtering, and share the existing layer, worker and instruction-cache paths.
+Inline COPY/ADD files in ONBUILD expand ordinary-string ARG/ENV references in the child stage; raw strings and filenames stay literal. Their content must be nonempty and LF-terminated so Dockerfile heredocs can preserve it. See [healthchecks and triggers](definition.md#healthchecks-and-triggers) for filename and content restrictions. As with ordinary inline files, Coopr copies them before ordinary sources and does not apply ignore or exclude patterns to them.
 
 Planning binds inherited ARGs and stage references before execution. Invocation-only external bases resolve at invocation and remain pinned for execution. Their ONBUILD stage references use the component's original namespace, including original numeric positions, and must select stages declared before the child FROM. A trigger can activate a previously unused FROM recipe; selecting an uncaptured package fails rather than rebuilding it.
 
@@ -60,17 +62,23 @@ Planning binds inherited ARGs and stage references before execution. Invocation-
 | --- | --- | --- |
 | Image build | Selected output and dependencies. | Image caller's context. |
 | Component build | Required package producers and dependencies. | Component builder's context. |
-| Component invocation | Dependencies selected with current invocation inputs, using stored packages as leaves. | Consuming caller's context. |
+| Component invocation | Instructions selected by the current invocation inputs; saved packages supply completed results. | Consuming caller's context. |
 
 FROM stages follow these dependencies regardless of position or nesting. A stage needed by both a package and the selected extend runs in both phases, with each phase's inputs. Stage sources must still be declared before their consumers.
 
-A package cannot depend on actual EXTEND caller state: the consumer filesystem is unavailable at publication. An independently based FROM can supply a package, including one nested inside EXTEND. Publication executes only required packages and their dependencies; it does not capture every package for possible future selections.
+A package cannot depend on EXTEND caller state: there is no consumer filesystem during packaging. An independently based FROM can supply a package, including one nested inside EXTEND. Publication executes only required packages and their dependencies; it does not capture every package for possible future selections.
 
-PACKAGE producer instructions are removed from the artifact and never execute at invocation. Captured packages become immutable leaves. Uncaptured packages keep their original identity as unavailable leaves. Selecting one fails with an error asking you to rebuild the component with that package selected, instead of falling back to an image or running its producer.
+Coopr removes PACKAGE producer instructions from the artifact. Captured packages supply fixed results at invocation. Other packages keep their names and positions but have no saved result. Selecting one fails and asks you to rebuild the component with that package selected; it does not run the producer or fall back to a same-named image.
 
-Publication prunes only FROM bodies proven unselectable, preserving their original stage slots and aliases as non-executable placeholders. The selected closure retains full source when source selectors depend on ARG/ENV values, or when it contains ONBUILD or component-return instructions. For a static closure, earlier recipes remain available to ONBUILD supplied by a FROM image or named-context override. ADD-bearing recipes remain available for name-based SOURCE_DATE_EPOCH lookup. EXTEND structure and immutable package availability do not change.
+Coopr removes a FROM body only when it can prove that no invocation will select it. The stage's name and numeric position remain reserved. Source retention follows these rules:
 
-Retained FROM bodies and argument defaults, including unused or publication-only recipes, are available to anyone who can read the artifact and add to its size and planning cost. If selected at invocation, a FROM recipe executes with the caller's context and current invocation inputs, not as a replay of the publisher's filesystem snapshot. See [Stages and component phases](../concepts/stages.md) for a complete example and [source disclosure](../guides/security.md#component-source-disclosure) before publishing.
+- If the selected output or its dependencies use ARG/ENV source selectors, ONBUILD, or component calls, Coopr keeps the full source.
+- Otherwise, Coopr keeps earlier recipes that inherited ONBUILD triggers from a FROM image or named-context override could select.
+- Recipes containing ADD remain available for `SOURCE_DATE_EPOCH` lookup by stage name.
+
+Removing FROM bodies does not change EXTEND structure or which packages have saved results.
+
+Anyone who can read the artifact can read its retained FROM instructions and argument defaults, including those from unused stages or stages used only during packaging. This source increases artifact size and planning work. Selecting a retained FROM runs its instructions with the caller's context and current invocation inputs. See [Stages and component phases](../concepts/stages.md) for a complete example and [source disclosure](../guides/security.md#component-source-disclosure) before publishing.
 
 Packages store both filesystem and full image configuration. FROM inherits both; COPY/ADD takes files only. Referencing a package does not otherwise install its configuration or append its layers to the consumer. Component-owned files needed at invocation must be captured in a package; invocation does not require the source checkout.
 
@@ -78,7 +86,7 @@ Package imports verify content and the full Linux platform, including OS version
 
 A component retains its selected output, definition, fixed arguments, and package snapshots. Multi-platform builds package each platform separately. Components use the caller’s platform; they do not infer distribution or package-manager requirements.
 
-Older component artifact formats are incompatible and rejected. Rebuild them from their source definitions; there is no migration or compatibility reader.
+If Coopr rejects an unsupported component format, rebuild the artifact from its source definition.
 
 ### Returned state
 
@@ -89,7 +97,7 @@ A component call adopts the selected output's complete image chain, filesystem a
 | Caller ARGs | Remain in scope; component-private ARGs do not escape. |
 | Returned ENV | Wins collisions with caller arguments. |
 | Later caller ARG declaration | Retains the original caller CLI binding when supplied; returned ENV still wins when the names collide. |
-| Later ENTRYPOINT | Clears inherited CMD unless a subsequent CMD supplies one, as after FROM. |
+| Later ENTRYPOINT | Preserves CMD authored in the continuing caller/EXTEND stage or the replacement output stage. Clears CMD inherited only from that stage's base. |
 
 ## Instructions and image configuration
 
@@ -166,7 +174,7 @@ Named contexts take precedence over image references and stage aliases in FROM s
 
 Only contexts needed by the selected graph materialize. Local named contexts use their own ignore files and freeze contents before execution. Context overrides supplied while packaging a component apply to package production and are not saved as invocation overrides. At invocation, named contexts and local inputs come from the caller.
 
-These are Coopr's lookup rules. Stage aliases remain case-insensitive and numeric references preserve component-local positions; context collisions and numeric lookup do not promise exact Containerfile/Buildah parity. An explicit context does not make other caller-stage aliases visible.
+Stage aliases remain case-insensitive, and numeric references use component-local positions. Named-context collisions and numeric lookup can differ from Containerfile/Buildah behavior. Supplying a named context does not expose other caller-stage aliases.
 
 For transport syntax, Git selectors, and credentials, see [named inputs](cli.md#named-inputs) and [remote inputs](definition.md#remote-inputs).
 
@@ -325,4 +333,4 @@ Pruning follows [storage lifecycle rules](../guides/storage.md#inspect-and-maint
 
 Image builds accept `--compression-format gzip|zstd|zstd:chunked`, `--compression-level`, and `--force-compression`. A specified format defaults force-compression to true unless explicitly disabled. Otherwise native `containers.conf` defaults apply. Docker-format manifests require compatible layer compression.
 
-These controls apply when exporting final image layers, including after cache hits and when the final stage is unchanged. They do not change instruction cache keys or force RUNs to execute. Graph-cache snapshots preserve their selected immutable manifests. The native image store retains its normal filesystem/layer representation; filesystem and tar exports are not compressed image manifests.
+These controls apply when exporting final image layers, including after cache hits and when the final stage is unchanged. They do not change instruction cache keys or force RUNs to execute. Compression settings do not rewrite stored graph-cache manifests. The native image store retains its normal filesystem/layer representation; filesystem and tar exports are not compressed image manifests.

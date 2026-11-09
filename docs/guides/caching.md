@@ -53,13 +53,13 @@ Paths are relative to the command’s working directory. Coopr creates the direc
 
 Portable caches store eligible instruction snapshots, component outputs, and package results. Restored components retain their selected image’s layers, configuration, and root metadata. RUN cache-mount contents remain local and are **not uploaded** by `--cache-to` or restored by `--cache-from`.
 
-Portable instruction results include device-backed RUNs and remote ADD. HTTP sources are measured and Git refs resolved before an unpinned ADD can reuse a result. Dynamic bases and nested components still resolve their dependencies while reusing individual instructions. See [cache scopes](../reference/execution.md#cache-scopes) for whole-component, package and layer-group behavior.
+Portable instruction results include device-backed RUNs and remote ADD. Coopr checks HTTP source contents and resolves Git refs before reusing an unpinned ADD result. Dynamic bases and nested components still resolve their dependencies while reusing individual instructions. See [cache scopes](../reference/execution.md#cache-scopes) for whole-component, package and layer-group behavior.
 
 Trust cache repositories as you would other build inputs. Intermediate results may contain files removed from the final image.
 
 ## Misses and failures
 
-Missing or invalid cache entries cause a rebuild; invalid reads produce warnings. Cache writes can fail independently of execution. If imported content is corrupt, Coopr skips publication of the affected cache graph and leaves its existing tag unchanged. Export and destination-write failures remain errors. A successful build with cache warnings does not mean its cache was refreshed.
+Missing or invalid cache entries cause a rebuild. Coopr warns about invalid entries; if imported content is corrupt, it also skips publishing the affected cache and leaves its existing tag unchanged. A build can therefore succeed without refreshing its cache. Cache export and destination-write failures still fail the command.
 
 ## Refresh deliberately
 
@@ -72,13 +72,13 @@ coopr build examples/first-image/image.coopr --cache-ttl 24h
 
 `--no-cache` forces instruction execution and saves fresh results. It does not clear cache mounts or refresh a base image; use `--pull` to refresh registry image inputs. `--cache-ttl` limits reuse by cache-record age, not image timestamps. `--cache-ttl 0` disables result reuse while saving fresh results.
 
-Stored component packages are immutable artifact inputs, not cache entries. These flags never rebuild package snapshots or make an uncaptured package available. Rebuild the component when its packaged inputs need to change.
+Stored component packages are immutable artifact inputs, not cache entries. Neither flag rebuilds those packages or supplies packages missing from the component. Rebuild the component when its packaged inputs need to change.
 
-Network responses, credential values, cache-mount contents, and live device contents do not invalidate conventional results. Secret and SSH declarations do enter cache identity, but their contents do not. Use `--no-cache` or change a consumed build argument when these inputs must force a rebuild. A cache hit is not a reproducibility guarantee, and required entitlements are checked even on a hit. Explicit live host binds and native host volumes instead force their RUNs to execute, as described above.
+Network responses, credential values, cache-mount contents, and live device contents do not invalidate cached RUN results. Changing a secret or SSH mount declaration can invalidate a result; changing its contents does not. Use `--no-cache` or change a consumed build argument when these inputs must force a rebuild. A cache hit is not a reproducibility guarantee, and required entitlements are checked even on a hit.
 
 Writable primary-context bind mounts execute each time so their context changes remain visible to later instructions. Components using caller-context binds also bypass whole-component reuse. See [RUN mounts](../reference/execution.md#run-mounts) for context lifetime and measurement.
 
-Sources may still need resolution before a cache lookup, so a hit does not guarantee an offline build. [Output compression](../reference/execution.md#output-compression) controls final image export; graph-cache snapshots preserve their selected immutable manifests.
+Sources may still need resolution before a cache lookup, so a hit does not guarantee an offline build. [Output compression](../reference/execution.md#output-compression) controls the final image export, not cached instruction snapshots.
 
 ## Cache mounts
 

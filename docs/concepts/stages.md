@@ -55,17 +55,17 @@ from "docker.io/redhat/ubi9:latest" {
 
 The component uses its saved package and runs `configured` against the caller's current image. Stored artifacts never rerun PACKAGE producer instructions. Local references check their definition and inputs during each build and can reuse cached packages. Follow [Build hello world](../tutorials/first-image.md) to build and run this example.
 
-Invocation resolves the selected extend's dependencies using the current arguments and environment, stopping at saved package inputs. Arguments can select different earlier stages or switch between a stage, image, and `scratch` where the instruction permits it. The selected graph must still satisfy ordering and cycle rules.
+Invocation resolves the selected extend's dependencies using the current arguments and environment. Saved packages supply completed results and do not run again. Arguments can select different earlier stages or switch between a stage, image, and `scratch` where the instruction permits it. The selected graph must still satisfy ordering and cycle rules.
 
-Publication can omit FROM bodies proven unselectable, while keeping original names and numeric positions. Recipes that could become dependencies remain available, even when unused by the default invocation or needed only for packaging. Selecting one at invocation runs its instructions with the consumer's context and invocation arguments, not the publisher's completed result. A FROM needed in both phases runs with each phase's inputs. Its saved package and arguments used during packaging remain fixed.
+A published component keeps FROM recipes that later invocations might need, even if the default invocation does not use them. Selecting one runs its instructions with the consumer's context and invocation arguments. If a FROM is needed in both phases, it runs separately in each; the saved package remains unchanged. Coopr can remove FROM bodies that cannot be selected, but preserves their names and numeric positions.
 
-Uncaptured packages retain their names and original positions but have no saved result. Selecting one fails with an error asking you to rebuild the component with that package selected. Coopr does not build it during invocation. Retained source also has [disclosure and size implications](../guides/security.md#component-source-disclosure).
+Only packages needed during packaging have saved results. Selecting any other package fails: rebuild the component with that package selected. Retained FROM instructions and defaults are readable by consumers; review [source disclosure](../guides/security.md#component-source-disclosure) before publishing.
 
 Context COPY in an invocation stage reads the caller's context unless it selects a package, stage, or other input with `from=`. Files belonging to a distributed component must be captured during packaging, as `/hello.txt` is above.
 
 ## Select the result
 
-Images default to the last top-level FROM; components default to the last top-level EXTEND. Trailing FROM and PACKAGE stages do not change the component output. Stages outside the selected dependencies do not execute; retained source is not evidence that a stage ran.
+Images default to the last top-level FROM; components default to the last top-level EXTEND. Trailing FROM and PACKAGE stages do not change the component output. Stages outside the selected dependencies do not execute, even if their source remains in the artifact.
 
 Use `--target NAME` when building an artifact, or append `#NAME` to a local component path, such as `./components/greeting.coopr#configured`. A stored or registry artifact keeps the output chosen when it was packaged. Nested FROM aliases can supply dependencies but are not callable component targets.
 

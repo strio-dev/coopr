@@ -77,8 +77,12 @@ For checks on your host, configure [rootless containers](guides/security.md) fir
 | `just examples-acceptance` | Publish and consume example components through a temporary local registry, then run the image. Requires network access for upstream inputs, not a registry account. |
 | `just benchmark` | Coopr/Podman timing measurements. |
 | `just api-service-acceptance` | Source-built API service execution and shutdown. |
+| `just nix-image-acceptance RESULTS` | Nix-built inputs composed into an image with Coopr. Writes validation results to `RESULTS`. |
+| `just nix-component-acceptance RESULTS` | Nix-built components and delivery of their local dependencies. Writes validation results to `RESULTS`. |
 
-`just cosign-acceptance` verifies a registry signature with an external `cosign` executable on `PATH`. Skipped integration tests do not establish runtime support.
+For the Nix checks, use a new absolute directory for `RESULTS`. See [the script instructions](https://github.com/strio-dev/coopr/tree/main/scripts) for scratch storage and cleanup.
+
+`just cosign-acceptance` verifies a registry signature with an external `cosign` executable on `PATH`.
 
 To run only the Pasta networking VM check, use `nix build path:.#checks.x86_64-linux.rootless-pasta`. Like the other VM checks, it requires KVM.
 
