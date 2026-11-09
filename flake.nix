@@ -35,11 +35,7 @@
           ...
         }:
         let
-          version =
-            if builtins.pathExists ./nix/release-version then
-              pkgs.lib.fileContents ./nix/release-version
-            else
-              "dev";
+          version = coopr.version;
           sourceUrl =
             if version == "dev" then
               "https://github.com/strio-dev/coopr"
