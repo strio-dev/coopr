@@ -169,9 +169,11 @@ func TestComponentTopLevelFromRetainsDynamicOnBuildDependencies(t *testing.T) {
     onbuild { copy "/payload" "/proof" from=%q; }
 }
 `, reference))
+			// The trigger is only known at invocation, so select its immutable
+			// package input explicitly when publishing the component.
 			f.write(t, "component.coopr", `from "scratch" as="unused" { copy "missing" "/missing"; }
 package as="assets" { copy "payload" "/payload"; }
-from "scratch" as="helper" { component "./trigger.coopr"; }
+from "scratch" as="helper" after="assets" { component "./trigger.coopr"; }
 extend { from "helper" {}; }
 from "scratch" as="trailing" { copy "missing-trailing-input" "/unused"; }
 package as="trailing_assets" { copy "missing-trailing-input" "/unused"; }
