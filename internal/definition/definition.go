@@ -24,6 +24,11 @@ type Definition struct {
 
 // Instruction retains its source order and string values for later planning.
 type Instruction struct {
+	// PrunedFrom preserves an unselectable FROM slot without an executable body.
+	PrunedFrom bool `json:"pruned_from,omitempty"`
+	// UnavailablePackage preserves an uncaptured PACKAGE identity in a residual.
+	// It is internal metadata, never authored syntax or permission to rebuild.
+	UnavailablePackage bool `json:"unavailable_package,omitempty"`
 	// LayerBoundary marks an internal ordered group boundary after planning.
 	// Public definitions retain nested layer instructions instead.
 	LayerBoundary string            `json:"layer_boundary,omitempty"`
@@ -426,6 +431,9 @@ func normalizeScalar(value kdl.Value, permission bool) (string, error) {
 }
 
 func validate(inst Instruction, childCount int, child, resolved bool) error {
+	if inst.PrunedFrom && (inst.Name != "from" || childCount != 0) {
+		return fmt.Errorf("pruned FROM slot cannot contain a body or use another instruction kind")
+	}
 	// Raw/public instructions cannot inject FlattenLayers' execution markers.
 	if !resolved && inst.LayerBoundary != "" {
 		return fmt.Errorf("layer boundaries are internal; use a layer block")

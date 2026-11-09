@@ -72,6 +72,8 @@ coopr build examples/first-image/image.coopr --cache-ttl 24h
 
 `--no-cache` forces instruction execution and saves fresh results. It does not clear cache mounts or refresh a base image; use `--pull` to refresh registry image inputs. `--cache-ttl` limits reuse by cache-record age, not image timestamps. `--cache-ttl 0` disables result reuse while saving fresh results.
 
+Stored component packages are immutable artifact inputs, not cache entries. These flags never rebuild package snapshots or make an uncaptured package available. Rebuild the component when its packaged inputs need to change.
+
 Network responses, credential values, cache-mount contents, and live device contents do not invalidate conventional results. Secret and SSH declarations do enter cache identity, but their contents do not. Use `--no-cache` or change a consumed build argument when these inputs must force a rebuild. A cache hit is not a reproducibility guarantee, and required entitlements are checked even on a hit. Explicit live host binds and native host volumes instead force their RUNs to execute, as described above.
 
 Writable primary-context bind mounts execute each time so their context changes remain visible to later instructions. Components using caller-context binds also bypass whole-component reuse. See [RUN mounts](../reference/execution.md#run-mounts) for context lifetime and measurement.

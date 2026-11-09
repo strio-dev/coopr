@@ -102,10 +102,12 @@ extend as="unused" { component "registry.example/unselected:stable"; }
 	if err != nil {
 		t.Fatal(err)
 	}
+	retained := false
 	for _, stage := range projected.Stages {
-		if stage.Name == "unused" {
-			t.Fatal("unselected target survived closure pruning")
-		}
+		retained = retained || stage.Name == "unused"
+	}
+	if !retained {
+		t.Fatal("residual lost the original unselected target namespace")
 	}
 	invocation := invokePublished(t, publication, Options{AwaitComponentReturns: true})
 	assertPublishedDependencyInputs(t, invocation, []string{"registry.example/shared:stable", "registry.example/leaf:stable"})
@@ -267,7 +269,7 @@ extend as="selected" {
 }
 extend as="unused" { component "registry.example/unselected:stable"; }
 `, Options{Mode: Publish, Target: "selected"})
-	inspection, err := InspectPublishedDependencies(publication.Component, nil)
+	inspection, err := InspectPublishedDependencies(publication.Component, map[string]StageBind{"0": {}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +306,7 @@ extend {
 	}
 }
 
-func TestPublishedDependencyInspectionIncludesDormantRequirementsOffline(t *testing.T) {
+func TestPublishedDependencyInspectionDefersUnknownOnbuildClosureOffline(t *testing.T) {
 	publication := makePlan(t, `from "scratch" as="dormant" {
     component "registry.example/dormant:stable"
 }
@@ -314,15 +316,15 @@ extend {
     }
 }
 `, Options{Mode: Publish})
-	if len(publication.Component.DormantRoots) == 0 {
-		t.Fatal("fixture did not retain a possible ONBUILD producer")
+	projected, err := ProjectPublished(publication.Component)
+	if err != nil || len(projected.Stages) != 3 || projected.Stages[0].Name != "dormant" {
+		t.Fatalf("original possible ONBUILD namespace lost: %+v, %v", projected, err)
 	}
 	inspection, err := InspectPublishedDependencies(publication.Component, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertInspectedDependencyInputs(t, inspection, []Input{
-		{Kind: "component", Reference: "registry.example/dormant:stable"},
 		{Kind: "image", Reference: "registry.example/base:stable"},
 		{Kind: "component", Reference: "registry.example/direct:stable"},
 	})
@@ -348,7 +350,7 @@ extend {
 	}
 	binds := map[string]StageBind{}
 	for _, stage := range projection.Stages {
-		if stage.Kind == "from" {
+		if stage.Kind == "package" {
 			binds[stage.ID] = StageBind{BaseEnvironment: map[string]string{"dependency": "registry.example/child:from-package"}}
 		}
 	}
@@ -430,7 +432,7 @@ extend {
 	}
 	binds := map[string]StageBind{}
 	for _, stage := range projection.Stages {
-		if stage.Kind == "from" {
+		if stage.Kind == "package" {
 			binds[stage.ID] = StageBind{Inherited: []definition.Instruction{{
 				Name: "copy", Arguments: []string{"/asset", "/asset"},
 				Properties: map[string]string{"from": `"registry.example/asset:stable"`}, ProcessQuotes: true,

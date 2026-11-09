@@ -312,10 +312,12 @@ extend {
 	if got := publication.PackageArguments["destination"]; got != "/transient" {
 		t.Fatalf("transient mount argument not fixed in package: %q", got)
 	}
-	for _, ref := range publication.Component.StageReferences {
-		if ref.MountIndex >= 0 {
-			t.Fatalf("build-only source mount leaked into component metadata: %#v", ref)
-		}
+	invocation, err := Instantiate(publication.Component, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(invocation.Stages) != 2 || invocation.Stages[0].ID != "2" || invocation.Stages[0].Kind != "package-input" || len(invocation.Stages[0].Operations) != 0 {
+		t.Fatalf("publisher-only mounts or producer instructions replayed: %+v", invocation.Stages)
 	}
 	if _, err := ValidatePublished(publication.Component); err != nil {
 		t.Fatal(err)

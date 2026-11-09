@@ -163,7 +163,7 @@ extend { from "helper" {}; }
 	if len(publication.Stages) != 1 || publication.Stages[0].Name != "assets" {
 		t.Fatalf("local ONBUILD package dependency pruned: %+v", publication.Stages)
 	}
-	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, unexpectedBindResolver(t))
+	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, map[string]StageBind{"0": {}}, unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
 	}

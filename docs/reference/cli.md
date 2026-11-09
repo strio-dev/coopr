@@ -207,6 +207,8 @@ bale push --layout ./tools.bale registry.example/team/delivery:development --dry
 
 Repeat `--input-bundle` for complete local Bale layouts and `--input-component IMMUTABLE_REF=LOCAL_NAME` to select a locally loaded child. All dependencies must be available locally. Missing or conflicting captures fail without replacing existing output. The parent must be a locally produced component without a delivery binding; keep a delivered component's original complete bundle for relocation.
 
+Dependency discovery covers the default selected invocation graph, not every retained recipe or future argument choice. `component bundle` rejects incomplete discovery. A complete Bale capture is not a guarantee that every invocation works offline. See [dependency discovery limits](../guides/components.md#capture-dependencies-with-bale) and include the inputs required by the invocation you intend to run.
+
 `component build --bundle-output DIRECTORY` creates a bundle from the same build. `--bundle-origin` optionally chooses its portable coordinate; otherwise Coopr assigns one under `coopr.invalid/components/`. The same input flags apply. Delivered children require their original complete Bale capture, and selected local children require bundle delivery rather than `--push` of the parent alone.
 
 With `--metadata-file`, `coopr.bundle` records the bundle path, descriptor and any packaging error. A failed capture retains the built local component but exits unsuccessfully. An ordinary `component save` archive contains the component's own packages, not its external dependency closure. See [Nix components](../guides/nix.md#package-nix-tools-as-a-reusable-component) for a packaging example.

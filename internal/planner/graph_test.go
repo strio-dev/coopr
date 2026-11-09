@@ -49,7 +49,7 @@ from "first" as="second" {
 	}
 }
 
-func TestProjectPublishedUsesReindexedBindingsAndPackageLeaves(t *testing.T) {
+func TestProjectPublishedPreservesOriginalNamespaceAndPackageLeaves(t *testing.T) {
 	def := parse(t, `
 arg "image" "alpine:3.20"
 from "scratch" as="unused" {}
@@ -78,25 +78,31 @@ extend as="final" {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if graph.Output != "3" || graph.Platform != "linux/amd64" || !reflect.DeepEqual(graph.PackageLeaves, []string{"0"}) {
+	if graph.Output != "4" || graph.Platform != "linux/amd64" || !reflect.DeepEqual(graph.PackageLeaves, []string{"1"}) {
 		t.Fatalf("published output/package projection = %+v", graph)
 	}
-	if len(graph.Stages) != 4 || graph.Stages[0].Kind != "package" || graph.Stages[1].Kind != "extend" || graph.Stages[2].Kind != "extend" || graph.Stages[3].Kind != "from" {
-		t.Fatalf("pruned stages = %+v", graph.Stages)
+	if len(graph.Stages) != 5 || graph.Stages[0].Name != "unused" || graph.Stages[1].Kind != "package" || graph.Stages[4].Kind != "from" {
+		t.Fatalf("original stages = %+v", graph.Stages)
 	}
-	if !reflect.DeepEqual(graph.Stages[1].Dependencies, []string{"0"}) || !reflect.DeepEqual(graph.Stages[3].Dependencies, []string{"1", "0"}) {
-		t.Fatalf("published dependencies = %+v", graph.Stages)
+	for _, stage := range graph.Stages {
+		if len(stage.Dependencies) != 0 {
+			t.Fatalf("projection bound dependencies before invocation: %+v", stage)
+		}
 	}
-	if len(graph.StageReferences) != 2 || graph.StageReferences[0].Stage != "1" || graph.StageReferences[0].Operation != 0 || graph.StageReferences[0].Target != "0" || graph.StageReferences[1].Stage != "3" || graph.StageReferences[1].Operation != 0 || graph.StageReferences[1].Target != "0" {
-		t.Fatalf("ARG-aware references = %+v", graph.StageReferences)
-	}
-	if graph.Stages[1].Body[0].Arguments[1] != "default" || graph.Stages[3].Body[0].Arguments[1] != "again" {
+	if graph.Stages[2].Body[0].Arguments[1] != "default" || graph.Stages[4].Body[0].Arguments[1] != "again" {
 		t.Fatalf("stage ARG defaults lost: %+v", graph.Stages)
 	}
-	graph.FromBindings["3"] = FromBinding{Kind: "image"}
+	invocation, err := Instantiate(publication.Component, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(stageIDs(invocation), []string{"1", "2", "4"}) || !reflect.DeepEqual(invocation.Stages[2].Dependencies, []string{"2", "1"}) {
+		t.Fatalf("invocation dependencies = %+v", invocation.Stages)
+	}
 	graph.PackageArguments["fixed"] = "changed"
-	graph.Stages[3].Body[1].Children[0].Properties["target"] = "/changed"
-	if publication.Component.FromBindings["3"].Kind != "stage" || publication.Component.PackageArguments["fixed"] != "value" || publication.Component.Definition.Instructions[len(publication.Component.Definition.Instructions)-1].Children[0].Children[1].Children[0].Properties["target"] != "/input" {
+	graph.Stages[4].Head.Arguments[0] = "changed"
+	graph.Stages[4].Body[1].Children[0].Properties["target"] = "/changed"
+	if publication.Component.PackageArguments["fixed"] != "value" || publication.Component.Definition.Instructions[4].Children[0].Arguments[0] != "base" || publication.Component.Definition.Instructions[4].Children[0].Children[1].Children[0].Properties["target"] != "/input" {
 		t.Fatal("projection mutated publication metadata")
 	}
 }
@@ -177,5 +183,38 @@ extend as="later" {
 	if _, err := ProjectPublicationRaw(parse(t, `from "scratch" {}
 `), ""); err == nil || !strings.Contains(err.Error(), "requires extend") {
 		t.Fatalf("container projected as component: %v", err)
+	}
+}
+
+func TestProjectionOwnsNestedInstructionTrees(t *testing.T) {
+	def := parse(t, `arg "value" "original"
+extend {
+    from "scratch" as="nested" {
+        layer {
+            run "true" { mount "cache" id="original" target="/cache"; }
+            copy "/inline/" { file "text" "original"; }
+        }
+    }
+    copy "/inline/" "/selected/" from="nested"
+}`)
+	projected, err := ProjectPublicationRaw(def, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := ProjectPublicationRaw(def, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	def.Instructions[0].Arguments[1] = "changed"
+	nested := &def.Instructions[1].Children[0]
+	nested.Arguments[0] = "changed"
+	nested.Properties["as"] = "changed"
+	nested.Children[0].Children[0].Children[0].Properties["id"] = "changed"
+	nested.Children[0].Children[1].InlineFiles[0].Data = "changed"
+	if !reflect.DeepEqual(projected, before) {
+		t.Fatal("source mutation reached the projection's instruction trees")
+	}
+	if projected.Stages[1].endPosition >= projected.Stages[0].operationPositions[0] {
+		t.Fatal("nested LAYER instructions must precede the enclosing EXTEND copy")
 	}
 }

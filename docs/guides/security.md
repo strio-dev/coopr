@@ -102,6 +102,14 @@ Image inputs honor native registry routing and `policy.json` signature policy; t
 
 Image publication supports GPG and Sigstore signing. Sigstore parameter files use the native containers/image format, including private keys, Fulcio/OIDC keyless signing and optional Rekor transparency-log settings. Direct private-key signing does not add a Rekor entry automatically. See [signing options](../reference/cli.md#manifest-lists) for authentication and passphrase handling.
 
+### Component source disclosure
+
+A component artifact may contain unused FROM recipes and recipes used only to prepare packages. Publication removes a body only when it can prove that no valid invocation can select it; original stage heads, aliases, numeric positions and global defaults remain. Do not rely on pruning to hide private source. Retained recipe text, ENV values, inline content and path strings are visible to anyone who can read the artifact. Retaining more source also increases artifact size and planning work.
+
+PACKAGE producer instructions are removed, but captured package files, full image configuration, and fixed package arguments are included. Do not put credentials in definitions, argument defaults, or package contents; use [secret mounts](#mount-a-build-secret) and review the files and configuration you publish.
+
+A retained FROM is an executable recipe, not an immutable copy of its publication result. Invocation arguments or inherited ONBUILD triggers can select a previously unused recipe, which then runs with the caller's context and available permissions. Package snapshots stay fixed; PACKAGE bodies never run at invocation. Review the whole retained definition, not just the default invocation path.
+
 ## Nested container profile
 
 The published scratch-based image includes Coopr and its build helpers, without a distribution package manager or builder daemon. UID/GID 0 inside rootless Podman maps to your host user.

@@ -33,11 +33,13 @@ from "${base}" as="runtime" {
 }
 ```
 
-Images default to the last top-level FROM; components default to the last top-level EXTEND, even when FROM or PACKAGE stages follow it. `--target NAME`, or `#NAME` on a local component reference, selects another named output. Component targets must be top-level EXTEND stages. FROM stages can supply packaging or invocation dependencies; PACKAGE stages capture packaged inputs. Trailing stages outside the selected output’s dependencies are skipped.
+Images default to the last top-level FROM; components default to the last top-level EXTEND, even when FROM or PACKAGE stages follow it. `--target NAME`, or `#NAME` on a local component reference, selects another named output. Component targets must be top-level EXTEND stages. FROM stages can supply packaging or invocation dependencies; PACKAGE stages capture packaged inputs. Stages outside the selected dependencies do not execute, but their FROM recipes remain in a published component.
 
 Inside `extend`, direct instructions modify the caller and nested FROM blocks own separate stages. The last non-ARG child determines the output: a nested FROM returns its image; a direct instruction returns the modified caller. ARG declarations alone do not switch the output. Stage aliases must be unique throughout the definition, including nested stages. A local stage must be completed before the FROM, COPY/ADD, or RUN mount that consumes its result. Self-references and references to later stages are errors. Inside EXTEND, a nested FROM becomes available to subsequent instructions and nested stages.
 
 Stage names start with a letter and may contain letters, digits, `_`, `.`, and `-`. Names match case-insensitively; `scratch` is reserved. Stage sources also accept zero-based numeric indices, counting nested FROM stages.
+
+Components preserve these original names and numeric positions in an isolated namespace. Source arguments resolve again at invocation and may select different inputs, subject to the same dependency rules. Caller-stage aliases are not imported by passing their names as argument values. See [component dependencies](execution.md#dependencies) and [package availability](execution.md#component-build-and-invocation-phases).
 
 FROM accepts `as`, `platform`, and `after`. `after="NAME"` names one earlier stage (or its numeric index) that must finish before the external image is resolved. Use it for an image layout or archive generated through a writable primary-context mount. It adds a dependency without inheriting that stage's state. See [image selection](execution.md#image-selection) for accepted transports and context confinement.
 

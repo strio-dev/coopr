@@ -58,7 +58,7 @@ type ResolvedComponentPlan struct {
 }
 
 // ResolveComponentPlan resolves and verifies one selected OCI component
-// manifest, instantiates its frozen publication metadata with caller
+// manifest, instantiates its verified residual definition with caller
 // parameters, and binds each verified package descriptor to its invocation
 // stage. It does not download, import, or execute package contents.
 func ResolveComponentPlan(ctx context.Context, request ComponentPlanRequest) (*ResolvedComponentPlan, error) {

@@ -34,9 +34,9 @@ Inside EXTEND, direct instructions modify the caller; nested FROM blocks own sep
 
 COPY/ADD and RUN mounts with `from=` create input dependencies without changing base lineage. Sources can be named stages, packages, named contexts, or external images. COPY/ADD and read-only bind RUN mounts can also read [OCI artifact files](definition.md#copy-oci-artifact-files). RUN mounts expose the same verified raw-blob filenames, with archives remaining files; `source` selects one path or defaults to the whole view. External inputs resolve to immutable descriptors; image and artifact indexes select the stage's platform. Stage sources must precede their consuming FROM, COPY/ADD, or RUN mount. Nested FROM helpers become visible to later instructions inside EXTEND. Graphs must be acyclic and stage aliases unambiguous. Graph-affecting values must resolve before their consuming instruction executes; after a component returns, planning continues with its actual output environment.
 
-Published components fix whether each FROM, COPY/ADD, and RUN mount source is a stage, `scratch`, or an external image. Invocation arguments cannot change that role or a stage dependency. Explicit [named build contexts](#named-contexts) can substitute a source without rewriting the published definition. Arguments may change an external reference while it remains external. Component references themselves may use caller ARG/ENV values resolved at invocation.
+Published components resolve FROM, COPY/ADD, and RUN mount sources afresh using the current invocation arguments and environment. A selector can change between earlier stages or between a stage and external image; FROM can also select `scratch`. The current selected graph must remain valid, including stage order, cycle, platform, and input-type constraints. Package arguments and the published output remain fixed. Planning resumes after a component returns when later sources depend on its returned environment.
 
-If a deferred component could change the scope needed to classify a dynamic COPY or mount source, publication rejects the unknown role; literal sources remain usable.
+Resolution uses the component's isolated namespace with its original stage identities and numeric positions. An earlier component-local stage takes precedence over an image with the same name, subject to explicit [named build contexts](#named-contexts). Caller-stage aliases are not visible: passing one as an argument does not import that stage. Use an explicit named context backed by a separately built image to supply such an input. Component references themselves may use caller ARG/ENV values resolved at invocation.
 
 ### Platforms
 
@@ -52,7 +52,7 @@ FROM runs inherited triggers in stored order before authored instructions, then 
 
 Authored inline COPY/ADD bodies retain decoded KDL bytes and expand ordinary-string ARG/ENV references at their execution phase; raw bodies and filenames stay literal. ONBUILD serialization preserves child-time expansion and native filenames. Native heredocs always terminate their data with LF, including empty bodies, so authored ONBUILD inline files require nonempty LF-terminated content and reject delimiter collisions or other parsing losses. Ordinary authored inline files have no line-termination requirement. Inline batches precede ordinary sources, bypass context ignore/exclude filtering, and share the existing layer, worker and instruction-cache paths.
 
-Planning binds inherited ARGs and stage references before execution. Publication retains named stages and package snapshots that invocation-time triggers could activate. Invocation-only external bases resolve at invocation and remain pinned for execution. Inherited stage references must select retained stages declared before the child FROM; numeric references preserve their original source identities.
+Planning binds inherited ARGs and stage references before execution. Invocation-only external bases resolve at invocation and remain pinned for execution. Their ONBUILD stage references use the component's original namespace, including original numeric positions, and must select stages declared before the child FROM. A trigger can activate a previously unused FROM recipe; selecting an uncaptured package fails rather than rebuilding it.
 
 ## Component build and invocation phases
 
@@ -60,17 +60,25 @@ Planning binds inherited ARGs and stage references before execution. Publication
 | --- | --- | --- |
 | Image build | Selected output and dependencies. | Image caller's context. |
 | Component build | Required package producers and dependencies. | Component builder's context. |
-| Component invocation | Retained invocation graph, using stored packages as leaves. | Consuming caller's context. |
+| Component invocation | Dependencies selected with current invocation inputs, using stored packages as leaves. | Consuming caller's context. |
 
 FROM stages follow these dependencies regardless of position or nesting. A stage needed by both a package and the selected extend runs in both phases, with each phase's inputs. Stage sources must still be declared before their consumers.
 
-A package cannot depend on actual EXTEND caller state: the consumer filesystem is unavailable at publication. An independently based FROM can supply a package, including one nested inside EXTEND. Only package snapshots are immutable leaves. Packaging-only producers are omitted from the invocation graph; unneeded stages are excluded, except dormant dependencies retained for inherited triggers. See [Stages and component phases](../concepts/stages.md) for a complete example.
+A package cannot depend on actual EXTEND caller state: the consumer filesystem is unavailable at publication. An independently based FROM can supply a package, including one nested inside EXTEND. Publication executes only required packages and their dependencies; it does not capture every package for possible future selections.
+
+PACKAGE producer instructions are removed from the artifact and never execute at invocation. Captured packages become immutable leaves. Uncaptured packages keep their original identity as unavailable leaves. Selecting one fails with an error asking you to rebuild the component with that package selected, instead of falling back to an image or running its producer.
+
+Publication prunes only FROM bodies proven unselectable, preserving their original stage slots and aliases as non-executable placeholders. The selected closure retains full source when source selectors depend on ARG/ENV values, or when it contains ONBUILD or component-return instructions. For a static closure, earlier recipes remain available to ONBUILD supplied by a FROM image or named-context override. ADD-bearing recipes remain available for name-based SOURCE_DATE_EPOCH lookup. EXTEND structure and immutable package availability do not change.
+
+Retained FROM bodies and argument defaults, including unused or publication-only recipes, are available to anyone who can read the artifact and add to its size and planning cost. If selected at invocation, a FROM recipe executes with the caller's context and current invocation inputs, not as a replay of the publisher's filesystem snapshot. See [Stages and component phases](../concepts/stages.md) for a complete example and [source disclosure](../guides/security.md#component-source-disclosure) before publishing.
 
 Packages store both filesystem and full image configuration. FROM inherits both; COPY/ADD takes files only. Referencing a package does not otherwise install its configuration or append its layers to the consumer. Component-owned files needed at invocation must be captured in a package; invocation does not require the source checkout.
 
 Package imports verify content and the full Linux platform, including OS version/features. Filesystem metadata remains subject to the [output limitations](#state-identity-and-metadata-limits).
 
 A component retains its selected output, definition, fixed arguments, and package snapshots. Multi-platform builds package each platform separately. Components use the caller’s platform; they do not infer distribution or package-manager requirements.
+
+Older component artifact formats are incompatible and rejected. Rebuild them from their source definitions; there is no migration or compatibility reader.
 
 ### Returned state
 
@@ -157,6 +165,8 @@ Local contexts exclude host `security.selinux` labels. Other xattrs, including `
 Named contexts take precedence over image references and stage aliases in FROM sources, COPY/ADD `from=`, and RUN mount `from=`. Substituting a FROM's source keeps its instruction body. A context matching the FROM stage's own `as=` name replaces that stage and skips its body; numeric references still select stages. EXTEND and PACKAGE stage names are not replaced this way.
 
 Only contexts needed by the selected graph materialize. Local named contexts use their own ignore files and freeze contents before execution. Context overrides supplied while packaging a component apply to package production and are not saved as invocation overrides. At invocation, named contexts and local inputs come from the caller.
+
+These are Coopr's lookup rules. Stage aliases remain case-insensitive and numeric references preserve component-local positions; context collisions and numeric lookup do not promise exact Containerfile/Buildah parity. An explicit context does not make other caller-stage aliases visible.
 
 For transport syntax, Git selectors, and credentials, see [named inputs](cli.md#named-inputs) and [remote inputs](definition.md#remote-inputs).
 
@@ -267,8 +277,8 @@ Instruction keys describe operations, dependencies, execution settings and measu
 | --- | --- | --- |
 | Local instruction | RUN, COPY, ADD, and WORKDIR checkpoints across image and component phases. | Metadata-only changes need no filesystem checkpoint. |
 | Portable instruction | RUN, COPY, ADD, and WORKDIR checkpoints from an OCI cache. | Requires identified inputs and execution settings; source resolution and request authorization still run. |
-| Component state | The selected component output. | Requires a fixed invocation graph with fully identified inputs; see below. |
-| Package result | Completed package snapshots. | All selected package results must be available; otherwise their producers execute. |
+| Component state | The selected component output. | Requires a resolved invocation graph with fully identified inputs; see below. |
+| Package result | Completed package snapshots during component build. | A cache miss runs package production during packaging only. |
 | Cache mount | Disposable tool data. | Names are scoped to their use unless explicitly supplied. Builds must work with empty mounts. |
 
 COPY/ADD measure their selected inputs; local hits can still read and extract files. Checksum-pinned HTTP ADD can hit without downloading again; Git ADD resolves the commit and submodules before checking the cache. A cache hit therefore does not guarantee an offline build.
@@ -280,6 +290,8 @@ Package-result caching supports networked and device-backed RUN, captured or sel
 Effective device names after entitlement aliases participate in cache identity, including whether an optional CDI device is present. Required devices and authorization are checked before reuse. Live device contents, network responses, credentials/SSH-agent state, cache-mount contents, clock, randomness, and undeclared host inputs do not invalidate conventional cache results. A cache hit is not a reproducibility guarantee. Required reusable files belong in packages. Cache repositories are trusted inputs and may contain intermediate files absent from final images; protect them accordingly.
 
 `--no-cache` forces instruction execution, bypasses component-state and package-result reuse, writes fresh results, and leaves cache mounts intact. Portable graph metadata may still be imported, but its results cannot satisfy forced execution. `--cache-from` reads portable results; `--cache-to` writes selected results and dependency snapshots with complete image closures. Validated hits can seed another writable destination without copying every same-key alternative; read-only sources are never updated and write-only destinations are not consulted for execution cache hits. Publication can inspect existing destination content for integrity. See the [caching guide](../guides/caching.md) for registry/local syntax and refresh commands.
+
+Stored package snapshots are artifact inputs, not cache hits. `--no-cache` does not rebuild them or make uncaptured packages available; rebuild the component to change its packages.
 
 ### State identity and metadata limits
 

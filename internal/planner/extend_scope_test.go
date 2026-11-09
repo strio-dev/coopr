@@ -81,7 +81,7 @@ package as="unused_assets" { copy "missing" "/missing"; }
 	}
 }
 
-func TestExtendScopeIndependentOutputPrunesUnusedCallerInputs(t *testing.T) {
+func TestExtendScopeIndependentOutputSkipsUnusedCallerInputs(t *testing.T) {
 	def := parse(t, `package as="unused" { copy "private" "/private"; }
 extend as="runtime" {
  copy "/private" "/private" from="unused"
@@ -94,8 +94,8 @@ extend as="runtime" {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(publication.Stages) != 0 || len(publication.Component.Definition.Instructions) != 1 || len(publication.Component.Definition.Instructions[0].Children) != 1 {
-		t.Fatalf("unused caller input survived: %+v", publication)
+	if len(publication.Stages) != 0 || len(publication.Component.Definition.Instructions) != 2 || !publication.Component.Definition.Instructions[0].UnavailablePackage || len(publication.Component.Definition.Instructions[1].Children) != 4 {
+		t.Fatalf("unused package executed or original caller namespace changed: %+v", publication)
 	}
 	if _, err := ValidatePublished(publication.Component); err != nil {
 		t.Fatal(err)
@@ -169,7 +169,7 @@ extend as="runtime" { from "assets" {} }
 		t.Fatalf("ONBUILD helper executed at publication: %+v", publication.Stages)
 	}
 	bind := StageBind{Inherited: []definition.Instruction{{Name: "copy", Arguments: []string{"/private", "/private"}, Properties: map[string]string{"from": "producer"}}}}
-	if _, err := InstantiateWithPackageBinds(publication.Component, Options{}, map[string]StageBind{publication.Component.Output: bind}); err != nil {
+	if _, err := InstantiateWithPackageBinds(publication.Component, Options{}, map[string]StageBind{"1": bind}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -185,9 +185,12 @@ extend as="runtime" {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Dormant root helpers retain their original numeric identity.
-	if publication.Component.SourceStageIDs["2"] != "2" {
-		t.Fatalf("original identities: %+v", publication.Component.SourceStageIDs)
+	projected, err := ProjectPublished(publication.Component)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projected.Stages[2].Name != "helper" || projected.Stages[2].ID != "2" {
+		t.Fatalf("original helper identity changed: %+v", projected.Stages)
 	}
 	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, func(source FromSource) (StageBind, error) {
 		if source.Source != "registry.example/base:latest" {
@@ -214,13 +217,13 @@ extend as="runtime" {
 		_, err := InstantiateDemandDriven(publication.Component, Options{}, nil, func(FromSource) (StageBind, error) {
 			return StageBind{Inherited: []definition.Instruction{{Name: "copy", Arguments: []string{"/asset", "/selected"}, Properties: map[string]string{"from": selector}}}}, nil
 		})
-		if err == nil || !strings.Contains(err.Error(), "unavailable original stage") {
+		if err == nil || !strings.Contains(err.Error(), "unknown numeric stage") {
 			t.Fatalf("unavailable original selector %s accepted: %v", selector, err)
 		}
 	}
 }
 
-func TestExtendScopePrunedOwnerAliasDoesNotRetargetToHelper(t *testing.T) {
+func TestExtendScopeRetainedOwnerAliasKeepsItsOriginalResult(t *testing.T) {
 	publication, err := CreateDemandDriven(parse(t, `extend as="branch" {
  from "scratch" as="helper" { copy "asset" "/asset"; }
  from "scratch" as="original_result" {}
@@ -234,11 +237,15 @@ extend as="runtime" { arg "source" "helper"; copy "/asset" "/asset" from="${sour
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := raw.Aliases["branch"]; ok {
-		t.Fatalf("pruned output alias retargeted: %+v", raw.Aliases)
+	if raw.Aliases["branch"] != "2" || raw.Aliases["helper"] != "1" {
+		t.Fatalf("owner alias retargeted to selected helper: %+v", raw.Aliases)
 	}
-	if _, err := Instantiate(publication.Component, Options{Arguments: map[string]string{"source": "branch"}}); err == nil {
-		t.Fatal("pruned output alias changed dependency")
+	invocation, err := Instantiate(publication.Component, Options{Arguments: map[string]string{"source": "branch"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(invocation.Stages) != 2 || invocation.Stages[0].ID != "2" || invocation.Stages[0].Name != "original_result" || invocation.Stages[1].Dependencies[0] != "2" {
+		t.Fatalf("retained owner selected wrong result: %+v", invocation.Stages)
 	}
 }
 
@@ -277,9 +284,8 @@ extend as="runtime" { from "assets" {} }
 	if err != nil {
 		t.Fatal(err)
 	}
-	output := raw.Output
 	bind := StageBind{Inherited: []definition.Instruction{{Name: "copy", Arguments: []string{"/x", "/x"}, Properties: map[string]string{"from": "base"}}}}
-	invocation, err := InstantiateWithPackageBinds(publication.Component, Options{}, map[string]StageBind{output: bind})
+	invocation, err := InstantiateWithPackageBinds(publication.Component, Options{}, map[string]StageBind{"0": bind})
 	if err != nil {
 		t.Fatal(err)
 	}

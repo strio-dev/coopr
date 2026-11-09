@@ -44,7 +44,7 @@ package as="assets" {
     copy "fixture" "/artifact"
 }
 extend {
-    from "${runtime_base}" as="prepared" {}
+    from "${runtime_base}" as="prepared" after="assets" {}
     copy "/inherited" "/selected" from="prepared"
 }
 `)

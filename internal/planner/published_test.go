@@ -3,7 +3,6 @@ package planner
 import (
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -36,14 +35,13 @@ extend as="final" {
 		want   string
 	}{
 		{"selected package", func(c *PublishedComponent) { c.Output = "0" }, "invalid published output"},
-		{"lost copy binding", func(c *PublishedComponent) { c.StageReferences = nil }, "stage reference missing"},
-		{"wrong from binding", func(c *PublishedComponent) { c.FromBindings["3"] = FromBinding{Kind: "image"} }, "image binding reuses stage name"},
-		{"unreachable retained package", func(c *PublishedComponent) {
-			c.Definition.Instructions = append(c.Definition.Instructions, definition.Instruction{Name: "package", Properties: map[string]string{"as": "unused"}})
-			c.ReservedStageNames = append(c.ReservedStageNames, "unused")
-			c.SourceStageIDs[strconv.Itoa(c.SourceStageCount)] = strconv.Itoa(len(c.SourceStageIDs))
-			c.SourceStageCount++
-		}, "outside selected output closure"},
+		{"missing format", func(c *PublishedComponent) { c.Format = "" }, "residual component format"},
+		{"unknown format", func(c *PublishedComponent) { c.Format = "future" }, "residual component format"},
+		{"package producer", func(c *PublishedComponent) {
+			c.Definition.Instructions[0].Children = []definition.Instruction{{Name: "run", Arguments: []string{"touch /mutated"}}}
+		}, "producer instructions"},
+		{"unavailable non-package", func(c *PublishedComponent) { c.Definition.Instructions[1].UnavailablePackage = true }, "unavailable marker requires PACKAGE"},
+		{"duplicate alias", func(c *PublishedComponent) { c.Definition.Instructions[1].Properties["as"] = "PKG" }, "duplicate stage name"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			component := roundTripPublished(t, publication.Component)
@@ -80,7 +78,6 @@ extend as="final" {
 			}
 		}
 	}
-	publication.Component.ReservedStageNames = []string{"Base", "Final", "Pkg"}
 	packages, err := ValidatePublished(publication.Component)
 	if err != nil {
 		t.Fatal(err)
@@ -97,12 +94,9 @@ extend as="final" {
 	}
 }
 
-func TestPublishedPackageOnBuildReferenceIsFrozen(t *testing.T) {
-	publication, err := CreateDemandDriven(parse(t, `
-package as="assets" {}
-package as="payload" {
-    onbuild { copy "/asset" "/selected" from="assets" }
-}
+func TestPublishedPackageOnBuildUsesVerifiedSnapshotAndOriginalNamespace(t *testing.T) {
+	publication, err := CreateDemandDriven(parse(t, `package as="assets" {}
+package as="payload" { onbuild { copy "/asset" "/selected" from="assets"; }; }
 extend {
     from "payload" as="prepared" {}
     copy "/selected" "/selected" from="prepared"
@@ -111,132 +105,55 @@ extend {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ValidatePublished(publication.Component); err != nil {
-		t.Fatal(err)
-	}
-	projection, err := ProjectPublished(publication.Component)
+	projected, err := ProjectPublished(publication.Component)
 	if err != nil {
 		t.Fatal(err)
 	}
-	prepared := ""
-	for _, stage := range projection.Stages {
-		if stage.Name == "prepared" {
-			prepared = stage.ID
+	if !slices.Equal(projected.PackageLeaves, []string{"0", "1"}) || len(projected.Stages[1].Body) != 0 {
+		t.Fatalf("package snapshots or erased bodies changed: %+v", projected)
+	}
+	bind := StageBind{Inherited: []definition.Instruction{{Name: "copy", Arguments: []string{"/asset", "/selected"}, Properties: map[string]string{"from": "assets"}}}}
+	invocation, err := InstantiateWithPackageBinds(publication.Component, Options{}, map[string]StageBind{"0": {}, "1": bind})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(stageIDs(invocation), []string{"1", "0", "3", "2"}) {
+		t.Fatalf("verified trigger graph: %+v", invocation.Stages)
+	}
+	child := invocation.Stages[2]
+	if !slices.Equal(child.Dependencies, []string{"1", "0"}) || len(child.Operations) != 1 || child.Operations[0].Properties["from"] != "assets" {
+		t.Fatalf("verified package ONBUILD not applied: %+v", child)
+	}
+	for _, binds := range []map[string]StageBind{nil, {"0": {}, "3": bind}, {"0": {}, "1": bind, "3": {}}} {
+		if _, err := InstantiateWithPackageBinds(publication.Component, Options{}, binds); err == nil {
+			t.Fatalf("binds not keyed by captured original PACKAGE IDs accepted: %+v", binds)
 		}
-	}
-	if prepared == "" || len(projection.PackageLeaves) != 2 {
-		t.Fatalf("published hidden package graph = %+v", projection)
-	}
-	bind := StageBind{Inherited: []definition.Instruction{{
-		Name: "copy", Arguments: []string{"/asset", "/selected"}, Properties: map[string]string{"from": "assets"},
-	}}}
-	if _, err := InstantiateWithPackageBinds(publication.Component, Options{}, map[string]StageBind{prepared: bind}); err != nil {
-		t.Fatalf("verified package trigger rejected: %v", err)
-	}
-	onbuild := -1
-	for i, ref := range publication.Component.StageReferences {
-		if ref.Origin == "onbuild" {
-			onbuild = i
-		}
-	}
-	if onbuild < 0 {
-		t.Fatalf("hidden ONBUILD reference missing: %+v", publication.Component.StageReferences)
-	}
-	for _, test := range []struct {
-		name   string
-		change func(*PublishedComponent)
-		want   string
-	}{
-		{"missing", func(c *PublishedComponent) {
-			c.StageReferences = append(c.StageReferences[:onbuild], c.StageReferences[onbuild+1:]...)
-		}, "outside selected output closure"},
-		{"wrong target", func(c *PublishedComponent) { c.StageReferences[onbuild].Target = "999" }, "invalid ONBUILD stage reference target"},
-		{"wrong kind", func(c *PublishedComponent) { c.StageReferences[onbuild].Kind = "image" }, "invalid ONBUILD image reference target"},
-		{"duplicate", func(c *PublishedComponent) {
-			c.StageReferences = append(c.StageReferences[:onbuild+1], append([]StageReferenceBinding{c.StageReferences[onbuild]}, c.StageReferences[onbuild+1:]...)...)
-		}, "invalid stage reference order"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			component := roundTripPublished(t, publication.Component)
-			test.change(&component)
-			if _, err := ValidatePublished(&component); err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("tampered publication accepted or wrong error: %v", err)
-			}
-		})
-	}
-	wrongOperation := roundTripPublished(t, publication.Component)
-	wrongOperation.StageReferences[onbuild].Operation = 17
-	if _, err := ValidatePublished(&wrongOperation); err != nil {
-		t.Fatalf("static validation should defer ONBUILD operation count to package config: %v", err)
-	}
-	if _, err := InstantiateWithPackageBinds(&wrongOperation, Options{}, map[string]StageBind{prepared: bind}); err == nil || !strings.Contains(err.Error(), "stage copy or mount references changed") {
-		t.Fatalf("package trigger did not verify frozen operation index: %v", err)
 	}
 }
 
-func TestDemandDrivenInvocationRetainsPackageForExternalOnBuild(t *testing.T) {
-	publication, err := CreateDemandDriven(parse(t, `package as="assets" {
-    copy "./asset" "/asset"
-}
+func TestDemandDrivenInvocationRejectsUncapturedPackageForExternalOnBuild(t *testing.T) {
+	publication, err := CreateDemandDriven(parse(t, `package as="assets" { copy "./asset" "/asset"; }
 extend {
     from "helper" as="prepared" {}
     copy "/selected" "/selected" from="prepared"
 }
-`), Options{Mode: Publish}, func(source FromSource) (StageBind, error) {
-		if source.Source == "helper" {
-			t.Fatal("invocation-only base resolved during publication")
-		}
-		return StageBind{}, nil
-	})
+`), Options{Mode: Publish}, unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := publication.Outputs, []string{"0"}; !slices.Equal(got, want) {
-		t.Fatalf("package outputs = %v, want %v", got, want)
+	if len(publication.Outputs) != 0 || len(publication.Stages) != 0 || !publication.Component.Definition.Instructions[0].UnavailablePackage || len(publication.Component.Definition.Instructions[0].Children) != 0 {
+		t.Fatalf("unselected package was captured or retained executable body: %+v", publication)
 	}
-	if got, want := publication.Component.DormantRoots, []string{"0"}; !slices.Equal(got, want) {
-		t.Fatalf("dormant roots = %v, want %v", got, want)
-	}
-
 	resolved := 0
-	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, func(source FromSource) (StageBind, error) {
+	_, err = InstantiateDemandDriven(publication.Component, Options{}, nil, func(source FromSource) (StageBind, error) {
 		resolved++
 		if source.Source != "helper" {
-			t.Fatalf("resolved source = %+v", source)
+			t.Fatalf("unexpected source: %+v", source)
 		}
-		return StageBind{Inherited: []definition.Instruction{{
-			Name: "copy", Arguments: []string{"/asset", "/selected"}, Properties: map[string]string{"from": "assets"},
-		}}}, nil
+		return StageBind{Inherited: []definition.Instruction{{Name: "copy", Arguments: []string{"/asset", "/selected"}, Properties: map[string]string{"from": "assets"}}}}, nil
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resolved != 1 {
-		t.Fatalf("external resolutions = %d, want 1", resolved)
-	}
-	if got, want := stageIDs(invocation), []string{"0", "2", "1"}; !slices.Equal(got, want) {
-		t.Fatalf("invocation stages = %v, want %v", got, want)
-	}
-	if invocation.Stages[0].Kind != "package-input" || !invocation.Stages[1].InheritedOnBuildPlanned {
-		t.Fatalf("invocation did not activate package-backed ONBUILD: %+v", invocation.Stages)
-	}
-
-	for _, test := range []struct {
-		name   string
-		change func(*PublishedComponent)
-	}{
-		{"missing dormant root", func(component *PublishedComponent) { component.DormantRoots = nil }},
-		{"unknown dormant root", func(component *PublishedComponent) { component.DormantRoots = []string{"999"} }},
-		{"duplicate dormant root", func(component *PublishedComponent) { component.DormantRoots = []string{"0", "0"} }},
-		{"selected dependency as dormant root", func(component *PublishedComponent) { component.DormantRoots = []string{"1"} }},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			component := roundTripPublished(t, publication.Component)
-			test.change(&component)
-			if _, validateErr := ValidatePublished(&component); validateErr == nil {
-				t.Fatal("tampered dormant roots accepted")
-			}
-		})
+	if resolved != 1 || err == nil || !strings.Contains(err.Error(), `package "assets" (original stage 0) was not captured at publication`) {
+		t.Fatalf("late ONBUILD did not fail at unavailable package: resolutions=%d error=%v", resolved, err)
 	}
 }
 
@@ -258,7 +175,7 @@ extend {
 		t.Fatal(err)
 	}
 	resolved := 0
-	if _, err := InstantiateDemandDriven(publication.Component, Options{}, nil, func(source FromSource) (StageBind, error) {
+	if _, err := InstantiateDemandDriven(publication.Component, Options{}, emptyPackageBinds(t, publication.Component), func(source FromSource) (StageBind, error) {
 		resolved++
 		if source.Source != "registry.invalid/runtime:latest" {
 			t.Fatalf("dormant image was resolved: %+v", source)
@@ -272,7 +189,7 @@ extend {
 	}
 }
 
-func TestDemandDrivenInvocationSkipsUnselectedDormantBindings(t *testing.T) {
+func TestDemandDrivenInvocationSkipsUnselectedUnavailablePackages(t *testing.T) {
 	publication, err := CreateDemandDriven(parse(t, `arg "runtime_base" "registry.invalid/runtime:latest"
 package as="assets" {
     copy "./asset" "/asset"
@@ -292,7 +209,7 @@ extend {
 	}
 	if _, err := InstantiateDemandDriven(publication.Component, Options{
 		Arguments: map[string]string{"runtime_base": "registry.example/base:latest"},
-	}, map[string]StageBind{"2": {}}, func(source FromSource) (StageBind, error) {
+	}, emptyPackageBinds(t, publication.Component), func(source FromSource) (StageBind, error) {
 		if source.Source != "registry.example/base:latest" {
 			t.Fatalf("unexpected invocation base: %+v", source)
 		}
@@ -310,6 +227,7 @@ package as="pkg" {
 extend {
     from "${base}" as="helper" {}
     copy "/asset" "/asset" from="helper"
+    copy "/fixed" "/fixed" from="pkg"
 }
 `), Options{Mode: Publish}, unexpectedBindResolver(t))
 	if err != nil {
@@ -320,7 +238,7 @@ extend {
 	}
 	_, err = InstantiateDemandDriven(publication.Component, Options{
 		Arguments: map[string]string{"base": "registry.example/base:changed"},
-	}, nil, unexpectedBindResolver(t))
+	}, emptyPackageBinds(t, publication.Component), unexpectedBindResolver(t))
 	if err == nil || !strings.Contains(err.Error(), "fixed at publication") {
 		t.Fatalf("fixed argument error = %v", err)
 	}
@@ -333,18 +251,23 @@ func TestDemandDrivenInvocationResolvesExternalOnBuildEarlierReference(t *testin
 extend as="runtime" {
     from "helper" as="prepared" {}
     copy "/selected" "/selected" from="prepared"
+    copy "/asset" "/captured" from="assets"
 }
 `), Options{Mode: Publish, Target: "runtime"}, func(FromSource) (StageBind, error) { return StageBind{}, nil })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := publication.Component.DormantRoots, []string{"0"}; !slices.Equal(got, want) {
-		t.Fatalf("dormant roots = %v, want %v", got, want)
+	projected, err := ProjectPublished(publication.Component)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projected.Stages) != 3 || projected.Stages[0].Name != "assets" || !slices.Equal(projected.PackageLeaves, []string{"0"}) {
+		t.Fatalf("original namespace lost: %+v", projected.Stages)
 	}
 	if got, want := publication.Outputs, []string{"0"}; !slices.Equal(got, want) {
 		t.Fatalf("package outputs = %v, want %v", got, want)
 	}
-	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, func(source FromSource) (StageBind, error) {
+	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, emptyPackageBinds(t, publication.Component), func(source FromSource) (StageBind, error) {
 		if source.Source != "helper" || source.Kind != FromSourceImage {
 			t.Fatalf("resolved source = %+v", source)
 		}
@@ -390,13 +313,17 @@ extend as="runtime" {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := publication.Component.DormantRoots, []string{"0", "1", "2"}; !slices.Equal(got, want) {
-		t.Fatalf("dormant roots = %v, want %v", got, want)
+	projected, err := ProjectPublished(publication.Component)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projected.Stages) != 5 || projected.Stages[0].Name != "unused" || projected.Stages[2].Kind != "from" || projected.Stages[2].Head.Arguments[0] != "scratch" {
+		t.Fatalf("original namespace lost: %+v", projected.Stages)
 	}
 	if got := publication.Component.Definition.Instructions[0].Properties["as"]; got != "unused" {
 		t.Fatalf("dormant extend alias changed during publication: %q", got)
 	}
-	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, func(source FromSource) (StageBind, error) {
+	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, emptyPackageBinds(t, publication.Component), func(source FromSource) (StageBind, error) {
 		if source.Source != "helper" || source.Kind != FromSourceImage {
 			t.Fatalf("resolved source = %+v", source)
 		}
@@ -428,7 +355,7 @@ func TestDemandDrivenInvocationResolvesExternalOnBuildImageSource(t *testing.T) 
 		t.Fatal(err)
 	}
 	var resolved []FromSource
-	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, func(source FromSource) (StageBind, error) {
+	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, emptyPackageBinds(t, publication.Component), func(source FromSource) (StageBind, error) {
 		resolved = append(resolved, source)
 		if source.Kind == FromSourceImage {
 			return StageBind{Inherited: []definition.Instruction{{
@@ -467,7 +394,7 @@ extend {
     from "base" {}
 }
 `, Options{Mode: Publish})
-	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, unexpectedBindResolver(t))
+	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, emptyPackageBinds(t, publication.Component), unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -485,4 +412,19 @@ func TestPublishedPlatformComparisonUsesNormalizedExactIdentity(t *testing.T) {
 			t.Errorf("samePlatform(%q,%q) = %v", test.left, test.right, got)
 		}
 	}
+}
+
+// Fixtures that do not consume package configuration still supply each verified
+// snapshot's empty configuration through the same original-ID boundary.
+func emptyPackageBinds(t *testing.T, component *PublishedComponent) map[string]StageBind {
+	t.Helper()
+	raw, err := ProjectPublished(component)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binds := map[string]StageBind{}
+	for _, id := range raw.PackageLeaves {
+		binds[id] = StageBind{}
+	}
+	return binds
 }

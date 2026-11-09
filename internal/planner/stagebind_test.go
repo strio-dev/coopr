@@ -112,11 +112,11 @@ func TestStageBindDoesNotExposeUndeclaredAutomaticArguments(t *testing.T) {
 	}
 }
 
-func TestStageBindRejectsComponentWithoutFrozenMetadata(t *testing.T) {
+func TestStageBindRejectsComponentWithoutVerifiedMetadata(t *testing.T) {
 	_, err := Create(parse(t, `from "scratch" as="builder" {}
 extend {}
 `), Options{Mode: Publish, StageBinds: map[string]StageBind{"0": {}}})
-	if err == nil || !strings.Contains(err.Error(), "require frozen publication metadata") {
+	if err == nil || !strings.Contains(err.Error(), "require verified publication metadata") {
 		t.Fatalf("component stage bind was accepted without publication binding: %v", err)
 	}
 }

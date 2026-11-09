@@ -186,11 +186,11 @@ extend {
 			t.Fatal(err)
 		}
 		output = next.Stages[len(next.Stages)-1]
-		if len(output.Dependencies) != 1 || output.Dependencies[0] != "0" {
+		if len(output.Dependencies) != 1 || output.Dependencies[0] != "1" {
 			t.Fatalf("replayed published dependency=%v", output.Dependencies)
 		}
-		if output.Operations[1].Properties["from"] != "0" {
-			t.Fatalf("numeric source was not rebound: %+v", output.Operations[1])
+		if output.Operations[1].Properties["from"] != "1" {
+			t.Fatalf("original numeric source changed: %+v", output.Operations[1])
 		}
 		if output.Operations[2].Properties["captured"] != "returned" {
 			t.Fatalf("published suffix did not consume returned ENV: %+v", output.Operations[2])

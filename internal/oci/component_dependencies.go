@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/strio-dev/coopr/internal/imageconfig"
@@ -29,29 +28,20 @@ func ComponentPackageBinds(metadata ComponentMetadata) (map[string]planner.Stage
 	}
 	binds := make(map[string]planner.StageBind)
 	for _, stage := range projection.Stages {
-		binding := projection.FromBindings[stage.ID]
-		if stage.Kind != "from" || binding.Kind != "stage" {
+		if stage.Kind != "package" || stage.Head.UnavailablePackage {
 			continue
 		}
-		index, err := strconv.Atoi(binding.Stage)
-		if err != nil || index < 0 || index >= len(projection.Stages) {
-			return nil, fmt.Errorf("invalid base stage %q", binding.Stage)
-		}
-		base := projection.Stages[index]
-		if base.Kind != "package" {
-			continue
-		}
-		pkg, ok := packages[strings.ToLower(base.Name)]
+		pkg, ok := packages[strings.ToLower(stage.Name)]
 		if !ok {
-			return nil, fmt.Errorf("no package for stage %q", base.Name)
+			return nil, fmt.Errorf("no package for stage %q", stage.Name)
 		}
 		config, err := imageconfig.Parse(pkg.Config)
 		if err != nil {
-			return nil, fmt.Errorf("package %q configuration: %w", base.Name, err)
+			return nil, fmt.Errorf("package %q configuration: %w", stage.Name, err)
 		}
 		bind, err := planner.StageBindFromImageConfig(config)
 		if err != nil {
-			return nil, fmt.Errorf("package %q inherited instructions: %w", base.Name, err)
+			return nil, fmt.Errorf("package %q inherited instructions: %w", stage.Name, err)
 		}
 		binds[stage.ID] = bind
 	}

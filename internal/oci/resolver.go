@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/strio-dev/coopr/internal/componentstore"
-	"github.com/strio-dev/coopr/internal/definition"
 	"github.com/strio-dev/coopr/internal/imageconfig"
 	"github.com/strio-dev/coopr/internal/planner"
 
@@ -36,7 +35,7 @@ const (
 	ComponentArtifactType = "application/vnd.coopr.strio.dev.component.v1+json"
 	ComponentConfigType   = "application/vnd.coopr.strio.dev.component.config.v1+json"
 	ComponentPackageType  = "application/vnd.coopr.strio.dev.package.v1+tar"
-	ComponentVersion      = "coopr.strio.dev/component/v1"
+	ComponentVersion      = "coopr.strio.dev/component/v2"
 	maxMetadataBytes      = 8 << 20
 	dockerManifestType    = "application/vnd.docker.distribution.manifest.v2+json"
 	dockerIndexType       = "application/vnd.docker.distribution.manifest.list.v2+json"
@@ -501,12 +500,9 @@ func validateComponent(meta ComponentMetadata, layers []v1.Descriptor, platform 
 	if meta.Version != ComponentVersion || meta.Component.Output == "" || meta.Component.Definition == nil || !componentPlatformMatches(meta.Component.Platform, platform) || !platformEqual(meta.Platform, platform) {
 		return fmt.Errorf("invalid component metadata version, output, definition, or platform")
 	}
-	if err := definition.Validate(meta.Component.Definition); err != nil {
-		return fmt.Errorf("invalid component definition: %w", err)
-	}
 	required, err := planner.ValidatePublished(&meta.Component)
 	if err != nil {
-		return err
+		return fmt.Errorf("invalid component definition: %w", err)
 	}
 	wanted := make(map[string]bool, len(required))
 	for _, name := range required {

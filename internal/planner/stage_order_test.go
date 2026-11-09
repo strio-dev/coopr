@@ -1,7 +1,6 @@
 package planner
 
 import (
-	"strconv"
 	"strings"
 	"testing"
 
@@ -85,7 +84,7 @@ func TestStageOrderSourceDiscoveryRejectsForwardFrom(t *testing.T) {
 	}
 }
 
-func TestStageOrderPublishedMetadataRejectsMovedForwardReferences(t *testing.T) {
+func TestStageOrderInvocationRejectsMovedForwardReferences(t *testing.T) {
 	publication, err := CreateDemandDriven(parse(t, `extend as="output" {
         from "scratch" as="helper" {}
         copy "/x" "/x" from="helper"
@@ -96,7 +95,7 @@ func TestStageOrderPublishedMetadataRejectsMovedForwardReferences(t *testing.T) 
 	}
 	children := publication.Component.Definition.Instructions[0].Children
 	children[0], children[1] = children[1], children[0]
-	if _, err := ValidatePublished(publication.Component); err == nil || !strings.Contains(err.Error(), "earlier") {
+	if _, err := Instantiate(publication.Component, Options{}); err == nil || !strings.Contains(err.Error(), "earlier") {
 		t.Fatalf("forged forward binding: %v", err)
 	}
 }
@@ -117,11 +116,11 @@ func TestStageOrderPublicationIgnoresTrailingOnBuildCandidates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := raw.Aliases["unused"]; ok {
-		t.Fatal("trailing FROM retained")
+	if _, ok := raw.Aliases["unused"]; !ok {
+		t.Fatal("original trailing FROM namespace lost")
 	}
-	if _, ok := raw.Aliases["unused_assets"]; ok {
-		t.Fatal("trailing package retained")
+	if id, ok := raw.Aliases["unused_assets"]; !ok || !raw.Stages[mustStageIndex(id)].Head.UnavailablePackage {
+		t.Fatal("trailing package must remain an unavailable original slot")
 	}
 	_, err = InstantiateDemandDriven(publication.Component, Options{}, nil, func(input FromSource) (StageBind, error) {
 		if input.Source != "registry.example/base:latest" {
@@ -134,24 +133,19 @@ func TestStageOrderPublicationIgnoresTrailingOnBuildCandidates(t *testing.T) {
 	}
 }
 
-func TestStageOrderPublishedMetadataRejectsTrailingDormantStages(t *testing.T) {
+func TestStageOrderRetainedTrailingStagesRemainUnavailableToEarlierOnBuild(t *testing.T) {
 	for _, kind := range []string{"package", "extend"} {
 		t.Run(kind, func(t *testing.T) {
-			publication, err := CreateDemandDriven(parse(t, `extend as="output" { from "registry.example/base:latest" {}; }`), Options{Mode: Publish}, unexpectedBindResolver(t))
-			if err != nil {
+			publication := makePlan(t, `extend as="output" { from "registry.example/base:latest" {}; }
+`+kind+` as="trailing" {}`, Options{Mode: Publish, Target: "output"})
+			if _, err := ValidatePublished(publication.Component); err != nil {
 				t.Fatal(err)
 			}
-			component := publication.Component
-			component.Definition.Instructions = append(component.Definition.Instructions, definition.Instruction{
-				Name: kind, Properties: map[string]string{"as": "trailing"}, Children: []definition.Instruction{},
+			_, err := InstantiateDemandDriven(publication.Component, Options{}, nil, func(FromSource) (StageBind, error) {
+				return StageBind{Inherited: []definition.Instruction{{Name: "copy", Arguments: []string{"/x", "/x"}, Properties: map[string]string{"from": "trailing"}}}}, nil
 			})
-			id := component.SourceStageCount
-			component.SourceStageCount++
-			component.SourceStageIDs[strconv.Itoa(id)] = strconv.Itoa(id)
-			component.ReservedStageNames = append(component.ReservedStageNames, "trailing")
-			component.DormantRoots = append(component.DormantRoots, strconv.Itoa(id))
-			if _, err := ValidatePublished(component); err == nil || !strings.Contains(err.Error(), "no selected external FROM") {
-				t.Fatalf("forged trailing dormant %s: %v", kind, err)
+			if err == nil || !strings.Contains(err.Error(), "earlier") {
+				t.Fatalf("late ONBUILD selected trailing %s: %v", kind, err)
 			}
 		})
 	}
@@ -169,13 +163,13 @@ func TestStageOrderInheritedInstructionsCannotSeeLaterNestedHelpers(t *testing.T
 	_, err = InstantiateDemandDriven(publication.Component, Options{}, nil, func(input FromSource) (StageBind, error) {
 		return StageBind{Inherited: []definition.Instruction{{Name: "copy", Arguments: []string{"/x", "/x"}, Properties: map[string]string{"from": "later"}}}}, nil
 	})
-	if err == nil {
-		t.Fatal("inherited trigger consumed later nested helper")
+	if err == nil || !strings.Contains(err.Error(), "earlier") {
+		t.Fatalf("inherited trigger did not reject later nested helper: %v", err)
 	}
 }
 
 func TestStageOrderInheritedArgsDoNotShiftAuthoredReferences(t *testing.T) {
-	_, err := CreateDemandDriven(parse(t, `from "scratch" as="asset" {}
+	plan, err := CreateDemandDriven(parse(t, `from "scratch" as="asset" {}
         from "registry.example/base:latest" as="output" {
             arg "unused"
             layer { copy "/x" "/x" from="asset"; }
@@ -187,5 +181,9 @@ func TestStageOrderInheritedArgsDoNotShiftAuthoredReferences(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	output := plan.Stages[len(plan.Stages)-1]
+	if len(output.Dependencies) != 1 || output.Dependencies[0] != "0" || len(output.Operations) != 4 || output.Operations[0].Properties["inherited"] != "yes" || output.Operations[2].Properties["from"] != "asset" {
+		t.Fatalf("inherited ARG shifted authored dependency or scope: %+v", output)
 	}
 }
