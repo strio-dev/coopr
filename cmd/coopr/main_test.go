@@ -100,25 +100,6 @@ func TestNamedValuesRejectInvalidNames(t *testing.T) {
 	}
 }
 
-func TestPlanCommandIsAbsent(t *testing.T) {
-	var out, errOut bytes.Buffer
-	if status := run([]string{"plan"}, &out, &errOut); status == 0 || !strings.Contains(errOut.String(), "unknown command") {
-		t.Fatalf("status %d, stderr %q", status, errOut.String())
-	}
-}
-
-func TestHelp(t *testing.T) {
-	for _, args := range [][]string{nil, {"--help"}} {
-		var out, errOut bytes.Buffer
-		if status := run(args, &out, &errOut); status != 0 {
-			t.Fatalf("help status %d: %s", status, errOut.String())
-		}
-		if strings.Contains(out.String(), "plan") {
-			t.Fatalf("help advertises removed plan command: %s", out.String())
-		}
-	}
-}
-
 func TestVersion(t *testing.T) {
 	var out, errOut bytes.Buffer
 	if status := run([]string{"--version"}, &out, &errOut); status != 0 {

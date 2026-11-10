@@ -127,7 +127,7 @@ func TestInstructionMountBackendDifferential(t *testing.T) {
 							}
 							parsed, cooprErr := onbuildparse.ParseExpandedEnvironment("RUN --mount="+mount+" printf executed >/instruction-proof", env)
 							if cooprErr == nil {
-								operations, err := lowerOperationsWithCacheMountIDs([]planner.Operation{{Instruction: parsed[0]}}, func(planner.Operation, int) (string, error) { return "instruction-differential", nil })
+								operations, err := lowerGraphOperations([]planner.Operation{{Instruction: parsed[0]}}, nil, nil, nil, []string{"/bin/sh", "-c"}, func(planner.Operation, int) (string, error) { return "instruction-differential", nil })
 								cooprErr = err
 								if cooprErr == nil {
 									run := operations[0].(Run)

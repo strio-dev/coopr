@@ -16,11 +16,9 @@ import (
 	"time"
 
 	"github.com/opencontainers/go-digest"
-	"github.com/strio-dev/coopr/internal/buildcontext"
 	"github.com/strio-dev/coopr/internal/imageconfig"
 	"github.com/strio-dev/coopr/internal/oci"
 	"github.com/strio-dev/coopr/internal/planner"
-	"go.podman.io/buildah/pkg/sourcepolicy"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/storage"
 	"go.podman.io/storage/pkg/reexec"
@@ -28,16 +26,13 @@ import (
 
 const (
 	stageWorkerName  = "coopr-buildah-stage-worker-v1"
-	stageWorkerGrace = time.Second
+	stageWorkerGrace = time.Second + workerChildDrainTimeout + time.Second
 )
 
 type stageWorkerRequest struct {
-	ExecutableOrigin      string                            `json:"executable_origin,omitempty"`
+	workerExecutionOptions
 	RetainsCaller         bool                              `json:"retains_caller,omitempty"`
 	BaseRoot              *PackageRootMetadata              `json:"base_root,omitempty"`
-	ProgressReference     string                            `json:"progress_reference,omitempty"`
-	ProgressPrefix        string                            `json:"progress_prefix,omitempty"`
-	Lifecycle             LifecycleControls                 `json:"lifecycle,omitempty"`
 	Mode                  planner.Mode                      `json:"mode"`
 	Stage                 planner.Stage                     `json:"stage"`
 	Base                  string                            `json:"base"`
@@ -59,53 +54,19 @@ type stageWorkerRequest struct {
 	ActiveComponents      map[digest.Digest]bool            `json:"active_components,omitempty"`
 	ActiveLocalComponents map[string]bool                   `json:"active_local_components,omitempty"`
 	CacheScope            *CacheMountScope                  `json:"cache_scope,omitempty"`
-	Jobs                  int                               `json:"jobs,omitempty"`
-	LogRusage             bool                              `json:"log_rusage,omitempty"`
-	RusageLogFile         string                            `json:"rusage_log_file,omitempty"`
 	Output                bool                              `json:"output,omitempty"`
 	CaptureRoot           bool                              `json:"capture_root,omitempty"`
-	Store                 StoreOptions                      `json:"store"`
 	ContextPrepared       bool                              `json:"context_prepared,omitempty"`
-	BuildContexts         []buildcontext.Spec               `json:"build_contexts,omitempty"`
-	TransientRunMounts    []RunMount                        `json:"transient_run_mounts,omitempty"`
-	ContextDir            string                            `json:"context_dir,omitempty"`
-	SourcePolicyFile      string                            `json:"source_policy_file,omitempty"`
-	SourcePolicy          *sourcepolicy.Policy              `json:"source_policy,omitempty"`
-	IgnoreFile            string                            `json:"ignore_file,omitempty"`
-	ContextArtifacts      []string                          `json:"context_artifacts,omitempty"`
-	NoCache               bool                              `json:"no_cache,omitempty"`
-	CacheLocalDir         string                            `json:"cache_local_dir,omitempty"`
-	CacheRepository       string                            `json:"cache_repository,omitempty"`
-	CacheFrom             []CacheSpec                       `json:"cache_from,omitempty"`
-	CacheTo               []CacheSpec                       `json:"cache_to,omitempty"`
 	ComponentRelay        string                            `json:"component_relay,omitempty"`
-	InstructionRelay      string                            `json:"instruction_relay,omitempty"`
-	Network               string                            `json:"network,omitempty"`
-	AddHosts              []string                          `json:"add_hosts,omitempty"`
-	ProxyArgs             map[string]string                 `json:"proxy_args,omitempty"`
-	RunControls           RunControls                       `json:"run_controls,omitempty"`
-	ImageControls         ImageControls                     `json:"image_controls,omitempty"`
-	Timestamp             *int64                            `json:"timestamp,omitempty"`
-	CacheTTL              *time.Duration                    `json:"cache_ttl,omitempty"`
-	SourceDateEpoch       *int64                            `json:"source_date_epoch,omitempty"`
-	RewriteTimestamp      bool                              `json:"rewrite_timestamp,omitempty"`
-	Allow                 []string                          `json:"allow,omitempty"`
-	Secrets               []string                          `json:"secrets,omitempty"`
-	SSH                   []string                          `json:"ssh,omitempty"`
-	Isolation             string                            `json:"isolation,omitempty"`
-	Runtime               string                            `json:"runtime,omitempty"`
+	GraphParent           *instructionVertexRelay           `json:"graph_parent,omitempty"`
+	GraphReadBindings     []digest.Digest                   `json:"graph_read_bindings,omitempty"`
 	ImageOutput           Output                            `json:"image_output"`
 	JobID                 string                            `json:"job_id,omitempty"`
 	SignaturePolicy       string                            `json:"signature_policy_path,omitempty"`
 	BigFilesTempDir       string                            `json:"big_files_temporary_dir,omitempty"`
-	AuthFile              string                            `json:"auth_file,omitempty"`
-	CertDir               string                            `json:"cert_dir,omitempty"`
-	TLSVerify             *bool                             `json:"tls_verify,omitempty"`
 	RegistryOptions       oci.Options                       `json:"registry_options,omitempty"`
 	ResolverEnabled       bool                              `json:"resolver_enabled,omitempty"`
 	ComponentStore        string                            `json:"component_store,omitempty"`
-	Pull                  bool                              `json:"pull,omitempty"`
-	PullPolicy            string                            `json:"pull_policy,omitempty"`
 	ResultPath            string                            `json:"result_path"`
 	Control               bool                              `json:"control,omitempty"`
 }
@@ -116,20 +77,25 @@ type stageWorkerBase struct {
 }
 
 type stageWorkerResponse struct {
-	RetainsCaller         bool                            `json:"retains_caller,omitempty"`
-	BaseImageID           string                          `json:"base_image_id,omitempty"`
-	ImageID               string                          `json:"image_id,omitempty"`
-	ManifestDigest        digest.Digest                   `json:"manifest_digest,omitempty"`
-	CommandSet            bool                            `json:"command_set,omitempty"`
-	Config                json.RawMessage                 `json:"config,omitempty"`
-	Result                Result                          `json:"result"`
-	Root                  *PackageRootMetadata            `json:"root,omitempty"`
-	ComponentRelays       []componentCacheRelay           `json:"component_relays,omitempty"`
-	InstructionRelays     []portableInstructionCacheRelay `json:"instruction_relays,omitempty"`
-	ComponentCacheStats   CacheStats                      `json:"component_cache_stats"`
-	InstructionCacheStats CacheStats                      `json:"instruction_cache_stats"`
-	Error                 string                          `json:"error,omitempty"`
-	Failure               *workerError                    `json:"failure,omitempty"`
+	CleanupComplete       bool                        `json:"cleanup_complete"`
+	ProgressStream        *workerProgressSummary      `json:"progress_stream,omitempty"`
+	ProgressDropped       uint64                      `json:"progress_dropped,omitempty"`
+	RetainsCaller         bool                        `json:"retains_caller,omitempty"`
+	BaseImageID           string                      `json:"base_image_id,omitempty"`
+	ImageID               string                      `json:"image_id,omitempty"`
+	ManifestDigest        digest.Digest               `json:"manifest_digest,omitempty"`
+	CommandSet            bool                        `json:"command_set,omitempty"`
+	Config                json.RawMessage             `json:"config,omitempty"`
+	Result                Result                      `json:"result"`
+	Root                  *PackageRootMetadata        `json:"root,omitempty"`
+	ComponentRelays       []componentCacheRelay       `json:"component_relays,omitempty"`
+	GraphEndpoint         *instructionVertexRelay     `json:"graph_endpoint,omitempty"`
+	GraphRoots            []instructionGraphRootRelay `json:"graph_roots,omitempty"`
+	GraphSources          *instructionGraphSourceFile `json:"graph_sources,omitempty"`
+	graphSources          []instructionGraphSourceRelay
+	ComponentCacheStats   CacheStats   `json:"component_cache_stats"`
+	InstructionCacheStats CacheStats   `json:"instruction_cache_stats"`
+	Failure               *workerError `json:"failure,omitempty"`
 }
 
 // executeGraphStageIsolated runs one parallel stage in a separately supervised
@@ -197,46 +163,56 @@ func (executor *graphExecutor) executeGraphStageIsolated(ctx context.Context, pl
 	}
 
 	request := stageWorkerRequest{
-		ExecutableOrigin:  executor.options.executableOrigin,
-		ProgressPrefix:    prepared.progressPrefix,
-		ProgressReference: executor.options.ProgressReference,
-		Mode:              plan.Mode, Stage: prepared.stage, Base: prepared.base, BaseName: prepared.baseName, BaseRoot: prepared.baseRoot, RetainsCaller: prepared.retainsCaller, PreserveBaseImageAnns: prepared.preserveBaseImageAnnotations, BaseManifest: prepared.baseManifest, Logical: logical, BaseLogical: baseLogical, CommandSet: prepared.logical.CommandSet(), BaseCommandSet: prepared.baseLogical.CommandSet(),
+		workerExecutionOptions: workerExecutionOptions{
+			StreamProgress:    executor.options.Progress != nil,
+			ExecutableOrigin:  executor.options.executableOrigin,
+			ProgressPrefix:    prepared.progressPrefix,
+			ProgressReference: executor.options.ProgressReference,
+			Jobs:              1, LogRusage: executor.options.LogRusage, RusageLogFile: executor.options.RusageLogFile,
+			Store: executor.options.Store, ContextDir: executor.options.ContextDir, SourcePolicyFile: executor.options.SourcePolicyFile, SourcePolicy: executor.sourcePolicy, IgnoreFile: executor.options.IgnoreFile,
+			ContextArtifacts:   append(append([]string(nil), executor.options.ContextArtifacts...), jobDir),
+			TransientRunMounts: executor.options.TransientRunMounts,
+			BuildContexts:      executor.options.BuildContexts,
+			NoCache:            executor.options.NoCache,
+			CacheLocalDir:      executor.options.CacheLocalDir,
+			CacheMountDir:      executor.options.CacheMountDir,
+			CacheRepository:    executor.options.CacheRepository,
+			CacheFrom:          slices.Clone(executor.options.CacheFrom),
+			CacheTo:            slices.Clone(executor.options.CacheTo),
+			Network:            executor.options.Network,
+			AddHosts:           append([]string(nil), executor.options.AddHosts...),
+			ProxyArgs:          cloneStringMap(executor.options.ProxyArgs),
+			RunControls:        executor.options.RunControls, Lifecycle: executor.options.Lifecycle,
+			ImageControls:    executor.options.ImageControls,
+			Timestamp:        executor.options.Timestamp,
+			CacheTTL:         executor.options.CacheTTL,
+			SourceDateEpoch:  executor.options.SourceDateEpoch,
+			RewriteTimestamp: executor.options.RewriteTimestamp,
+			Allow:            append([]string(nil), executor.options.Allow...),
+			Secrets:          append([]string(nil), executor.options.Secrets...),
+			SSH:              append([]string(nil), executor.options.SSH...),
+			Isolation:        executor.options.Isolation, Runtime: executor.options.Runtime,
+			AuthFile: executor.system.AuthFilePath, CertDir: executor.system.DockerCertPath,
+		},
+		Mode: plan.Mode, Stage: prepared.stage, Base: prepared.base, BaseName: prepared.baseName, BaseRoot: prepared.baseRoot, RetainsCaller: prepared.retainsCaller, PreserveBaseImageAnns: prepared.preserveBaseImageAnnotations, BaseManifest: prepared.baseManifest, Logical: logical, BaseLogical: baseLogical, CommandSet: prepared.logical.CommandSet(), BaseCommandSet: prepared.baseLogical.CommandSet(),
 		Operations: prepared.operations, Aliases: aliases, Images: encodedImages,
-		CacheScope: prepared.cacheScope, Jobs: 1, LogRusage: executor.options.LogRusage, RusageLogFile: executor.options.RusageLogFile,
-		Output: stageWorkerOutput(prepared.stage.ID, imageOutputID), CaptureRoot: graphStageNeedsRootMetadata(plan, prepared.stage.ID, observed),
-		Store: executor.options.Store, ContextDir: executor.options.ContextDir, SourcePolicyFile: executor.options.SourcePolicyFile, SourcePolicy: executor.sourcePolicy, IgnoreFile: executor.options.IgnoreFile,
-		ContextArtifacts:   append(append([]string(nil), executor.options.ContextArtifacts...), jobDir),
-		ContextPrepared:    executor.options.ContextPrepared,
-		TransientRunMounts: executor.options.TransientRunMounts,
-		BuildContexts:      executor.options.BuildContexts,
-		NoCache:            executor.options.NoCache,
-		CacheLocalDir:      executor.options.CacheLocalDir,
-		CacheRepository:    executor.options.CacheRepository,
-		CacheFrom:          slices.Clone(executor.options.CacheFrom),
-		CacheTo:            slices.Clone(executor.options.CacheTo),
-		Network:            executor.options.Network,
-		AddHosts:           append([]string(nil), executor.options.AddHosts...),
-		ProxyArgs:          cloneStringMap(executor.options.ProxyArgs),
-		RunControls:        executor.options.RunControls, Lifecycle: executor.options.Lifecycle,
-		RegistryOptions:  executor.options.registrySettings(),
-		ImageControls:    executor.options.ImageControls,
-		Timestamp:        executor.options.Timestamp,
-		CacheTTL:         executor.options.CacheTTL,
-		SourceDateEpoch:  executor.options.SourceDateEpoch,
-		RewriteTimestamp: executor.options.RewriteTimestamp,
-		Allow:            append([]string(nil), executor.options.Allow...),
-		Secrets:          append([]string(nil), executor.options.Secrets...),
-		SSH:              append([]string(nil), executor.options.SSH...),
-		Isolation:        executor.options.Isolation, Runtime: executor.options.Runtime, ImageOutput: executor.options.Output,
-		JobID: jobID, SignaturePolicy: executor.system.SignaturePolicyPath,
+		CacheScope: prepared.cacheScope,
+		Output:     stageWorkerOutput(prepared.stage.ID, imageOutputID), CaptureRoot: graphStageNeedsRootMetadata(plan, prepared.stage.ID, observed),
+		ContextPrepared: executor.options.ContextPrepared,
+		RegistryOptions: executor.options.registrySettings(),
+		ImageOutput:     executor.options.Output,
+		JobID:           jobID, SignaturePolicy: executor.system.SignaturePolicyPath,
 		BigFilesTempDir: executor.system.BigFilesTemporaryDir,
-		AuthFile:        executor.system.AuthFilePath, CertDir: executor.system.DockerCertPath,
-		ResultPath: filepath.Join(jobDir, "result.json"),
+		ResultPath:      filepath.Join(jobDir, "result.json"),
 	}
 	if executor.system.DockerInsecureSkipTLSVerify != types.OptionalBoolUndefined {
 		request.TLSVerify = new(executor.system.DockerInsecureSkipTLSVerify == types.OptionalBoolFalse)
 	}
 	request.ComponentPins = cloneStringMap(prepared.componentPins)
+	request.GraphParent, err = encodeInstructionVertexRelay(prepared.graphEndpoint)
+	if err != nil {
+		return executedGraphStage{}, fmt.Errorf("encode stage %s graph parent: %w", prepared.stage.ID, err)
+	}
 	request.ComponentSources = cloneStringMap(prepared.componentSources)
 	request.ComponentSelections = cloneComponentSelections(prepared.componentSelections)
 	request.Delivery = prepared.delivery
@@ -246,12 +222,11 @@ func (executor *graphExecutor) executeGraphStageIsolated(ctx context.Context, pl
 		request.ComponentRelay = executor.componentCache.stagingDir
 	}
 	if executor.instructionPortableCache != nil {
-		request.InstructionRelay = executor.instructionPortableCache.stagingDir
+		request.GraphReadBindings = slices.Clone(executor.instructionPortableCache.readBindingIDs)
 	}
 	if executor.options.Resolver != nil {
 		request.ResolverEnabled = true
 		request.ComponentStore = executor.options.Resolver.ComponentStoreDir()
-		request.Pull = executor.options.Resolver.PullImages()
 		request.PullPolicy = string(executor.options.Resolver.PullPolicy())
 	}
 	for key, source := range resolvedBases {
@@ -283,6 +258,11 @@ func (executor *graphExecutor) executeGraphStageIsolated(ctx context.Context, pl
 		defer control.close()
 		request.Control = true
 	}
+	progressReceiver, err := newWorkerProgressReceiver(request.ResultPath, executor.options.Progress)
+	if err != nil {
+		return executedGraphStage{}, err
+	}
+	defer func() { _ = progressReceiver.close() }()
 	requestPath := filepath.Join(jobDir, "request.json")
 	if err := writeWorkerJSON(requestPath, request); err != nil {
 		return executedGraphStage{}, err
@@ -303,28 +283,42 @@ func (executor *graphExecutor) executeGraphStageIsolated(ctx context.Context, pl
 		return executedGraphStage{}, errors.Join(ErrWorkerWaitIncomplete, processErr, fmt.Errorf("stage worker files retained at %s because process exit was not confirmed", jobDir))
 	}
 	response, responseErr := readStageWorkerResponse(request.ResultPath)
-	if errors.Is(response.Failure, ErrWorkerWaitIncomplete) {
-		return executedGraphStage{}, errors.Join(response.Failure, WorkerSupervisionError(processErr), responseErr)
+	progressErr := progressReceiver.finish(response.ProgressStream)
+	executor.options.progressBuffer.addDropped(response.ProgressDropped)
+	if proofErr := requireWorkerCleanup(response.CleanupComplete, responseErr); proofErr != nil {
+		removeJobDir = false
+		var failure error
+		if response.Failure != nil {
+			failure = response.Failure
+			if responseErr == nil {
+				processErr = WorkerSupervisionError(processErr)
+			}
+		}
+		return executedGraphStage{}, errors.Join(proofErr, failure, processErr, ctx.Err(), progressErr)
 	}
-	return executor.completeStageWorkerResponse(ctx, prepared.stage.ID, response, responseErr, processErr, ownedJobID, jobID)
+	if errors.Is(response.Failure, ErrWorkerWaitIncomplete) {
+		removeJobDir = false
+		return executedGraphStage{}, errors.Join(response.Failure, WorkerSupervisionError(processErr), progressErr)
+	}
+	response.graphSources, responseErr = readInstructionGraphSources(request.ResultPath, response.GraphSources)
+	if responseErr != nil {
+		responseErr = fmt.Errorf("read stage worker graph sources: %w", responseErr)
+	}
+	return executor.completeStageWorkerResponse(ctx, prepared.stage.ID, response, errors.Join(responseErr, progressErr), processErr, ownedJobID, jobID)
 }
 
 func (executor *graphExecutor) completeStageWorkerResponse(ctx context.Context, stageID string, response stageWorkerResponse, responseErr, processErr error, ownedJobID bool, jobID string) (executedGraphStage, error) {
 	finished, resultErr := stageWorkerResult(response, stageID, executor.store)
 	responseErr = errors.Join(responseErr, resultErr)
 	var cleanupErr error
-	failed := processErr != nil || responseErr != nil || response.Error != ""
+	failed := processErr != nil || responseErr != nil || response.Failure != nil
 	if ownedJobID && (responseErr != nil || executor.options.Lifecycle.removeBuilder(failed, ctx.Err() != nil)) {
 		if err := cleanupNamedBuilders(executor.options.Store, jobID); err != nil {
 			cleanupErr = fmt.Errorf("clean isolated stage worker: %w", err)
 		}
 	}
-	if response.Error != "" {
-		failure := error(response.Failure)
-		if response.Failure == nil {
-			failure = WorkerFailure(errors.New(response.Error))
-		}
-		responseErr = errors.Join(responseErr, failure)
+	if response.Failure != nil {
+		responseErr = errors.Join(responseErr, response.Failure)
 		processErr = WorkerSupervisionError(processErr)
 	}
 	if err := errors.Join(responseErr, processErr, ctx.Err(), cleanupErr); err != nil {
@@ -332,6 +326,17 @@ func (executor *graphExecutor) completeStageWorkerResponse(ctx context.Context, 
 	}
 	executor.stageRelayMu.Lock()
 	defer executor.stageRelayMu.Unlock()
+	if err := executor.instructionSolver.acceptInstructionSources(ctx, response.graphSources); err != nil {
+		return finished, fmt.Errorf("accept stage %s graph sources: %w", stageID, err)
+	}
+	endpoint, err := executor.instructionSolver.restoreInstructionVertexRelay(response.GraphEndpoint)
+	if err != nil {
+		return finished, fmt.Errorf("accept stage %s graph endpoint: %w", stageID, err)
+	}
+	if err := executor.instructionSolver.acceptInstructionGraphs(response.GraphRoots); err != nil {
+		return finished, fmt.Errorf("accept stage %s graph cache: %w", stageID, err)
+	}
+	finished.state.graphEndpoint = endpoint
 	if executor.componentCache != nil {
 		if err := executor.componentCache.acceptRelayedCandidates(response.ComponentRelays); err != nil {
 			return finished, fmt.Errorf("accept stage %s component cache: %w", stageID, err)
@@ -339,9 +344,6 @@ func (executor *graphExecutor) completeStageWorkerResponse(ctx context.Context, 
 		executor.componentCache.stats = addCacheStats(executor.componentCache.stats, response.ComponentCacheStats)
 	}
 	if executor.instructionPortableCache != nil {
-		if err := executor.instructionPortableCache.acceptRelayedCandidates(response.InstructionRelays); err != nil {
-			return finished, fmt.Errorf("accept stage %s instruction cache: %w", stageID, err)
-		}
 		executor.instructionPortableCache.stats = addCacheStats(executor.instructionPortableCache.stats, response.InstructionCacheStats)
 	}
 	return finished, nil
@@ -351,7 +353,7 @@ func (executor *graphExecutor) completeStageWorkerResponse(ctx context.Context, 
 // subsequently reports cancellation or fails while closing its resources.
 func stageWorkerResult(response stageWorkerResponse, stageID string, store storage.Store) (executedGraphStage, error) {
 	if response.ImageID == "" {
-		if response.Error != "" {
+		if response.Failure != nil {
 			return executedGraphStage{}, nil
 		}
 		return executedGraphStage{}, fmt.Errorf("stage %s result lacks an image ID", stageID)
@@ -398,7 +400,11 @@ func runStageWorker() {
 		_, _ = fmt.Fprintln(os.Stderr, "invalid Coopr stage worker arguments")
 		os.Exit(2)
 	}
-	if err := executeStageWorker(os.Args[1]); err != nil {
+	scope, err := newWorkerChildScope()
+	if err == nil {
+		err = executeStageWorkerScoped(os.Args[1], scope)
+	}
+	if err != nil {
 		if !workerFailureReported(err) {
 			_, _ = fmt.Fprintln(os.Stderr, err)
 		}
@@ -407,8 +413,30 @@ func runStageWorker() {
 	os.Exit(0)
 }
 
-func executeStageWorker(requestPath string) error {
+func executeStageWorkerScoped(requestPath string, scope *workerChildScope) (retErr error) {
 	var request stageWorkerRequest
+	var pending *stageWorkerResponse
+	workerCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer func() {
+		defer stopSignals()
+		var cleanupErr error
+		if scope != nil {
+			cleanupErr = scope.finish(retErr)
+		}
+		retErr = errors.Join(retErr, cleanupErr)
+		if pending == nil {
+			return
+		}
+		pending.CleanupComplete = scope != nil && cleanupErr == nil
+		if cleanupErr != nil {
+			pending.Failure = WorkerFailure(retErr)
+		}
+		if writeErr := writeWorkerJSON(request.ResultPath, *pending); writeErr != nil {
+			retErr = errors.Join(retErr, writeErr)
+		} else {
+			retErr = reportedWorkerFailure(retErr)
+		}
+	}()
 	if err := readWorkerJSON(requestPath, &request); err != nil {
 		return err
 	}
@@ -418,8 +446,6 @@ func executeStageWorker(requestPath string) error {
 	if request.JobID != "" && !validWorkerJobID(request.JobID) {
 		return errors.New("invalid stage worker job ID")
 	}
-	workerCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer stopSignals()
 	var control *stageWorkerControlClient
 	if request.Control {
 		read := os.NewFile(stageWorkerControlReadFD, "stage-control-read")
@@ -441,16 +467,24 @@ func executeStageWorker(requestPath string) error {
 	}
 	response, stageErr := executeStageWorkerRequestControlled(workerCtx, request, control)
 	if stageErr != nil {
-		response.Error = stageErr.Error()
 		response.Failure = WorkerFailure(stageErr)
 	}
-	if err := writeWorkerJSON(request.ResultPath, response); err != nil {
-		return err
-	}
-	return reportedWorkerFailure(stageErr)
+	pending = &response
+	return stageErr
 }
 
 func executeStageWorkerRequestControlled(ctx context.Context, request stageWorkerRequest, control *stageWorkerControlClient) (response stageWorkerResponse, retErr error) {
+	progressBuffer, progressStream, err := newWorkerProgressCapture(request.StreamProgress, request.ResultPath)
+	if err != nil {
+		return response, err
+	}
+	if progressBuffer != nil {
+		ctx = withOperationProgress(ctx, progressBuffer.record)
+		defer func() {
+			response.ProgressDropped, response.ProgressStream = finishWorkerProgress(progressBuffer, progressStream)
+			response.Result.ProgressDropped = response.ProgressDropped
+		}()
+	}
 	if request.Jobs < 1 {
 		request.Jobs = 1
 	}
@@ -489,7 +523,7 @@ func executeStageWorkerRequestControlled(ctx context.Context, request stageWorke
 		}
 		registry := request.RegistryOptions
 		registry.ProgressWriter = os.Stderr
-		registry.Pull, registry.PullPolicy = request.Pull, request.PullPolicy
+		registry.PullPolicy = request.PullPolicy
 		registry.AuthFile, registry.CertDir, registry.TLSVerify = request.AuthFile, request.CertDir, request.TLSVerify
 		registry.SignaturePolicyPath = request.SignaturePolicy
 		registry.ComponentStoreDir = request.ComponentStore
@@ -498,42 +532,21 @@ func executeStageWorkerRequestControlled(ctx context.Context, request stageWorke
 			return response, fmt.Errorf("create stage resolver: %w", err)
 		}
 	}
-	options := PlanOptions{
-		registryOptions:   request.RegistryOptions,
-		executableOrigin:  request.ExecutableOrigin,
-		ProgressReference: request.ProgressReference,
-		ProgressPrefix:    request.ProgressPrefix,
-		Store:             request.Store, ContextDir: request.ContextDir, SourcePolicyFile: request.SourcePolicyFile, SourcePolicy: request.SourcePolicy, IgnoreFile: request.IgnoreFile, ContextArtifacts: request.ContextArtifacts,
-		Isolation: request.Isolation, Runtime: request.Runtime, Output: request.ImageOutput, JobID: request.JobID,
-		ContextPrepared:    request.ContextPrepared,
-		TransientRunMounts: request.TransientRunMounts,
-		BuildContexts:      request.BuildContexts,
-		NoCache:            request.NoCache,
-		CacheLocalDir:      request.CacheLocalDir,
-		CacheRepository:    request.CacheRepository,
-		CacheFrom:          request.CacheFrom,
-		CacheTo:            request.CacheTo,
-		Network:            request.Network,
-		AddHosts:           request.AddHosts,
-		ProxyArgs:          request.ProxyArgs,
-		RunControls:        request.RunControls, Lifecycle: request.Lifecycle,
-		ImageControls:           request.ImageControls,
-		Timestamp:               request.Timestamp,
-		CacheTTL:                request.CacheTTL,
-		SourceDateEpochOverride: request.SourceDateEpoch,
-		RewriteTimestamp:        request.RewriteTimestamp,
-		Allow:                   request.Allow,
-		Secrets:                 request.Secrets,
-		SSH:                     request.SSH,
-		ResolvedBases:           resolvedBases,
-		Resolver:                resolver,
-		Jobs:                    request.Jobs,
-		LogRusage:               request.LogRusage,
-		RusageLogFile:           request.RusageLogFile,
-		SystemContext: &types.SystemContext{
-			SignaturePolicyPath: request.SignaturePolicy, BigFilesTemporaryDir: request.BigFilesTempDir,
-			AuthFilePath: request.AuthFile, DockerCertPath: request.CertDir,
-		},
+	options := request.planOptions()
+	options.workerDirectory = filepath.Dir(request.ResultPath)
+	options.progressBuffer = progressBuffer
+	options.registryOptions = request.RegistryOptions
+	options.Output = request.ImageOutput
+	options.JobID = request.JobID
+	options.ContextPrepared = request.ContextPrepared
+	options.ResolvedBases = resolvedBases
+	options.Resolver = resolver
+	options.SystemContext = &types.SystemContext{
+		SignaturePolicyPath: request.SignaturePolicy, BigFilesTemporaryDir: request.BigFilesTempDir,
+		AuthFilePath: request.AuthFile, DockerCertPath: request.CertDir,
+	}
+	if progressBuffer != nil {
+		options.Progress = progressBuffer.record
 	}
 	oci.ApplyTLSVerify(options.SystemContext, request.TLSVerify)
 	executor, err := newGraphExecutor(ctx, options)
@@ -543,6 +556,20 @@ func executeStageWorkerRequestControlled(ctx context.Context, request stageWorke
 	defer func() {
 		retErr = errors.Join(retErr, executor.Close())
 	}()
+	if executor.instructionSolver != nil && executor.instructionSolver.portable != nil {
+		if len(request.GraphReadBindings) > 4096 {
+			return response, errors.New("too many parent-approved graph read bindings")
+		}
+		seen := map[digest.Digest]bool{}
+		for _, binding := range request.GraphReadBindings {
+			if !validInstructionRelayDigest(binding) || seen[binding] {
+				return response, errors.New("invalid parent-approved graph read bindings")
+			}
+			seen[binding] = true
+		}
+		executor.instructionSolver.portable.relayBindings = slices.Clone(request.GraphReadBindings)
+		executor.instructionSolver.portable.relayBindingsSet = true
+	}
 	executor.componentPins = cloneStringMap(request.ComponentPins)
 	executor.componentSources = cloneStringMap(request.ComponentSources)
 	executor.componentSelections = cloneComponentSelections(request.ComponentSelections)
@@ -563,9 +590,14 @@ func executeStageWorkerRequestControlled(ctx context.Context, request stageWorke
 			return response, fmt.Errorf("stage %s cache mount scope: %w", request.Stage.ID, err)
 		}
 	}
+	graphParent, err := executor.instructionSolver.restoreInstructionVertexRelay(request.GraphParent)
+	if err != nil {
+		return response, fmt.Errorf("restore stage %s graph parent: %w", request.Stage.ID, err)
+	}
 	finished, err := executor.executeGraphStage(ctx, &planner.Plan{Mode: request.Mode}, preparedGraphStage{
 		stage: request.Stage, base: request.Base, baseName: request.BaseName, baseRoot: request.BaseRoot, retainsCaller: request.RetainsCaller, preserveBaseImageAnnotations: request.PreserveBaseImageAnns, baseManifest: request.BaseManifest, logical: logical, baseLogical: baseLogical, operations: request.Operations,
 		cacheMountID: cacheMountID, cacheScope: request.CacheScope, progressPrefix: request.ProgressPrefix, delivery: request.Delivery,
+		graphEndpoint: graphParent,
 	}, request.Aliases, images, outputStageID(request), observedStage(request), true)
 	if err != nil {
 		return response, err
@@ -578,16 +610,26 @@ func executeStageWorkerRequestControlled(ctx context.Context, request stageWorke
 		BaseImageID: finished.state.baseImageID, RetainsCaller: finished.state.retainsCaller, ImageID: finished.state.storageImageID, ManifestDigest: finished.state.manifestDigest, Config: config, CommandSet: finished.state.config.CommandSet(), Result: finished.result, Root: finished.root,
 		ComponentCacheStats: cacheStats(executor.componentCache), InstructionCacheStats: portableInstructionCacheStats(executor.instructionPortableCache),
 	}
+	response.GraphEndpoint, err = encodeInstructionVertexRelay(finished.state.graphEndpoint)
+	if err != nil {
+		return response, fmt.Errorf("relay stage %s graph endpoint: %w", request.Stage.ID, err)
+	}
+	response.GraphRoots, err = executor.instructionSolver.relayInstructionGraphs()
+	if err != nil {
+		return response, fmt.Errorf("relay stage %s graph cache: %w", request.Stage.ID, err)
+	}
+	sources, err := executor.instructionSolver.relayInstructionSources(request.GraphReadBindings)
+	if err != nil {
+		return response, fmt.Errorf("relay stage %s graph sources: %w", request.Stage.ID, err)
+	}
+	response.GraphSources, err = writeInstructionGraphSources(request.ResultPath, sources)
+	if err != nil {
+		return response, fmt.Errorf("write stage %s graph sources: %w", request.Stage.ID, err)
+	}
 	if executor.componentCache != nil {
 		response.ComponentRelays, err = executor.componentCache.relayCandidates(request.ComponentRelay)
 		if err != nil {
 			return response, fmt.Errorf("relay stage component cache: %w", err)
-		}
-	}
-	if executor.instructionPortableCache != nil {
-		response.InstructionRelays, err = executor.instructionPortableCache.relayCandidates(request.InstructionRelay)
-		if err != nil {
-			return response, fmt.Errorf("relay stage instruction cache: %w", err)
 		}
 	}
 	return response, nil
@@ -612,5 +654,6 @@ func readStageWorkerResponse(path string) (stageWorkerResponse, error) {
 	if err := readWorkerJSON(path, &response); err != nil {
 		return stageWorkerResponse{}, err
 	}
+	response.Result.ProgressDropped = response.ProgressDropped
 	return response, nil
 }

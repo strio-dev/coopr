@@ -12,22 +12,19 @@ Configure your host with [Podman's rootless setup](https://github.com/podman-con
 
 Memory and CPU limits need cgroup v2 with the required controllers delegated to your user. Unsupported limits fail explicitly.
 
+Ordinary builds do not require systemd.
+
 Run Coopr and Podman as the same user with the same storage settings to share images. See [host setup](../getting-started/index.md#set-up-your-host) for a basic check.
+
+## Cancellation and cleanup
+
+Let Coopr finish cleanup after you cancel a build. If Coopr reports `cleanup_failed`, keep input paths available until cleanup is confirmed; Coopr retains private execution files and does not move outputs to their final destinations. Force-killing the engine can leave workloads or storage behind.
 
 ## Embedding in an application
 
-The [Go library](library.md) uses Buildah's same-executable helper dispatch before
-normal application argument checks. Those helpers are reachable independently
-of the application's CLI. A setuid installation, executable file capabilities,
-or a restricted sudo rule can therefore expose more operations than that CLI
-permits. This also applies when a launcher or SELinux domain transition grants
-additional permissions. Coopr does not provide a privilege boundary for such an
-application.
+The [Go library](library.md) runs Buildah helpers through the application's own executable, before normal argument checks. Callers can invoke those helpers independently of the application's CLI. A setuid installation, executable file capabilities, or a restricted sudo rule can therefore expose more operations than that CLI permits. This also applies when a launcher or SELinux domain transition grants additional permissions. Coopr does not provide a privilege boundary for such an application.
 
-Run the engine under the account whose permissions builds should have, normally
-rootless. Root and sudo builds grant the engine the operator's host authority.
-Authenticate service requests before submitting them to the library; container
-isolation does not replace application access control.
+Run the engine under the account whose permissions builds should have, normally rootless. Running the engine as root or through sudo gives builds those host permissions. Authenticate service requests before submitting them to the library; container isolation does not replace application access control.
 
 ## Credentials and remote sources
 
@@ -94,7 +91,15 @@ Pin image and component references by digest for fixed content, including extern
 
 Image inputs honor native registry routing and `policy.json` signature policy; this does not verify component signatures. Keep TLS verification enabled. See [runtime and trust configuration](../reference/configuration.md#runtime-and-trust).
 
-Image publication supports GPG and Sigstore signing. Sigstore parameter files use the native containers/image format, including private keys, Fulcio/OIDC keyless signing and optional Rekor transparency-log settings. Direct private-key signing does not add a Rekor entry automatically. See [signing options](../reference/cli.md#manifest-lists) for authentication and passphrase handling.
+Image publication supports GPG and Sigstore signing. Sigstore parameter files use the native containers/image format, including private keys, Fulcio/OIDC keyless signing and optional Rekor transparency-log settings. Direct private-key signing does not add a Rekor entry automatically. See [signing options](../reference/cli.md#sign-images-and-manifests) for authentication and passphrase handling.
+
+### Component source disclosure
+
+A component artifact may contain unused FROM recipes and recipes used only to prepare packages. Publication removes a body only when it can prove that no valid invocation can select it; original stage heads, aliases, numeric positions and global defaults remain. Do not rely on pruning to hide private source. Retained recipe text, ENV values, inline content and path strings are visible to anyone who can read the artifact.
+
+PACKAGE producer instructions are removed, but captured package files, full image configuration, and fixed package arguments are included. Do not put credentials in definitions, argument defaults, or package contents; use [secret mounts](#mount-a-build-secret) and review the files and configuration you publish.
+
+A retained FROM is an executable recipe, not an immutable copy of its publication result. Invocation arguments or inherited ONBUILD triggers can select a previously unused recipe, which then runs with the caller's context and available permissions. Package snapshots stay fixed; PACKAGE bodies never run at invocation. Review the whole retained definition, not just the default invocation path.
 
 ## Nested container profile
 
@@ -106,11 +111,11 @@ The default `BUILDAH_ISOLATION=chroot` shares the outer container's network, IPC
 
 Separate RUN network namespaces or cgroup controls require `--isolation=rootless` or `--isolation=oci` on `coopr build`. Place Coopr options after the image name when using Podman. Nested OCI execution needs user/mount namespaces, UID-map helpers, and outer policies permitting clone/unshare/mount. Network helpers may need `/dev/net/tun`; resource limits need cgroup delegation. OCI failures do not trigger a chroot fallback.
 
-## Supported limitations
+## Platform and runtime limits
 
 - Foreign-architecture RUNs need host `binfmt_misc` emulation. Coopr supports Linux targets and neither registers emulators nor bundles QEMU.
 - Root-directory mode, ownership, and portable xattrs may be lost by upstream image commits, even though package/cache snapshots capture them. See [filesystem metadata](../reference/execution.md#state-identity-and-metadata-limits).
 - Healthcheck and ONBUILD extensions are preserved with OCI/Docker output; receiving runtimes decide whether to honor them.
 - Docker's classic store requires a selected child for multi-platform transfer. OCI archive loading omits non-image artifacts and `unknown` platforms; an omitted image descriptor platform is read from its verified configuration. See [image transfers](../reference/execution.md#layers-storage-and-copying) and [archive loading](../reference/cli.md#archives-and-directories).
 
-Context and image archives have no size quota: expansion can exhaust disk, memory, or CPU. Use trusted sources and bound the Coopr process or its outer container when needed. RUN resource options do not limit input preparation. Kernel features and runtime policy also determine which CI environments can run Coopr.
+Context and image archives have no size quota: expansion can exhaust disk, memory, or CPU. Use trusted sources and apply resource limits to the Coopr process or its outer container when needed. RUN resource options do not limit input preparation. Kernel features and runtime policy also determine which CI environments can run Coopr.

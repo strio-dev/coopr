@@ -84,6 +84,8 @@ component "shared" {
 
 The package stays fixed until you rebuild it; changing the call’s `channel` changes the consumer without repackaging the settings file.
 
+The artifact can also carry FROM recipes from unused stages and stages used only to produce a package. Their instructions, defaults, and path strings are readable by artifact consumers and add to artifact size. Review [component source disclosure](security.md#component-source-disclosure) before sharing it. PACKAGE producer instructions are removed.
+
 ### Save and load an archive
 
 ```sh
@@ -108,19 +110,21 @@ Pulling retains all packaged platforms. Without `--tag`, pull prints the stored 
 
 ### Capture dependencies with Bale
 
-Pushing a component also publishes a [Bale dependency declaration](https://github.com/strio-dev/bale/blob/v0.1.3/docs/dependencies.md) for the registry references retained by its invocation definition. This includes nested component calls and external image and [artifact file inputs](../reference/definition.md#copy-oci-artifact-files). Dependencies used only to produce an embedded package are already captured in that package and are excluded. Built images do not receive links to their build components.
+Use [Bale](https://github.com/strio-dev/bale/blob/v0.1.3/docs/dependencies.md) to capture a component and its registry dependencies for transfer. When you push a component, Coopr publishes a dependency declaration listing the nested components, external images, and [artifact files](../reference/definition.md#copy-oci-artifact-files) it can discover for the default invocation. It excludes unselected recipes and dependencies already captured in packages. Built images do not link back to their build components.
 
 Coopr publishes the attachment through OCI referrers when the registry supports them, or the standard referrers-tag fallback otherwise. The registry credentials need permission to read and write those artifacts.
 
-Component registry authentication keeps [ORAS 2.7’s upstream protections](https://github.com/oras-project/oras-go/releases/tag/v2.7.0). An HTTPS registry must use an HTTPS token service. Token services on a different host cannot resolve to loopback, link-local, or cloud metadata addresses; ordinary private LAN token services are supported.
+An HTTPS registry must use an HTTPS token service. Token services on a different host cannot resolve to loopback, link-local, or cloud metadata addresses; ordinary private LAN token services are supported.
 
 Dependency tags remain tags when the declaration is published; Coopr does not fetch those dependencies. When Bale captures the parent component, it resolves the declared selectors, follows their declarations recursively, and records immutable digests. Locked transfers use those captured digests; a latest refresh resolves the selectors again.
 
-Discovery includes literal references and references available from the default invocation prefix. Caller arguments, inherited image configuration, or an earlier component's returned environment can select different dependencies. Include those additional artifacts explicitly in the Bale recipe. A registry declaration cannot include a context-local component file or an unnamed local digest.
+Coopr reports incomplete discovery when it cannot determine a dependency without the caller's values, another component's result, or external image configuration and ONBUILD triggers. This includes dynamic FROM, COPY, mount, and `after` selectors and unknown mount types.
+
+Include any additional dependencies required by your invocation in the Bale recipe. Arguments can select retained stages whose dependencies are absent from the declaration. Context-local component files and unnamed local digests cannot be included in a registry declaration.
 
 The declaration is a separate OCI attachment: it does not change the component's manifest or payload. When Bale delivers a component, Coopr reads its destination records and uses the captured destinations for declared dependencies. Nested components use their own records from the same bundle capture. The original registry is no longer needed for those captured inputs.
 
-Component pull, tag, save and load preserve the delivery records. For a fully offline build, also make the referenced components, images and artifact files available in their local stores. Coopr fixes the selected delivery for the build; workers do not refresh it halfway through execution. If several bundle captures or dependency policies could apply, Coopr reports the ambiguity rather than choosing one automatically.
+Component pull, tag, save and load preserve the delivery records. For an offline build, capture the dependencies your invocation needs and load its components, images and artifact files into their local stores. A later argument change may require additional inputs. Coopr uses one delivery selection throughout the build and reports an error if several bundle captures or dependency policies could apply.
 
 ## Select outputs and arguments
 
@@ -145,6 +149,12 @@ Without a selector, a local call uses the last top-level `extend`. Trailing `fro
 A component call accepts only `arg` children, each with a name and an explicit value. These bindings belong to that invocation and do not change the caller’s argument scope. A binding named `target` is an ordinary component argument; use the local path’s `#NAME` suffix to select an output. Arguments used by package stages and their producers become fixed during component build. A local call can package another variant when those values change.
 
 Declare arguments inside `extend` to let consumers choose their values, as `channel` does above. The [packaged-component tutorial](../tutorials/reusable-components.md) demonstrates changing an invocation argument without rebuilding the package.
+
+Invocation arguments can also change a source selector, choosing another earlier stage, an external image, or `scratch` for FROM, provided the selected graph is valid. Each component resolves names and numeric positions in its own original stage namespace. Passing a caller-stage name as an argument does not import it. Use an explicit [named context](../reference/execution.md#named-contexts) for an external input.
+
+Published components keep FROM recipes that arguments, inherited configuration, or named contexts might select. Coopr removes only bodies it can prove will never be selected, preserving stage names and numeric positions. See [source retention](../reference/execution.md#component-build-and-invocation-phases) for the full rules.
+
+Selecting a retained FROM runs its instructions with the caller's context and invocation inputs, even if it previously ran during packaging. A package instead supplies its saved filesystem and configuration. Only packages needed during packaging have saved results; selecting any other package fails and asks you to rebuild the component with that package selected.
 
 ## Preserve layers or group changes
 

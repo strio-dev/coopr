@@ -122,7 +122,7 @@ func TestPublishedComponentEnvironmentReturnAndFreshStoreCache(t *testing.T) {
 	f.options.Resolver = localConfigComponentResolver(t, f.ctx, f.root, `extend {
     env captured="${caller}" value="returned"
 }
-`, false)
+`)
 	source := `from "scratch" {
     arg "value" "argument"
     env caller="current"

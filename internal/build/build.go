@@ -35,6 +35,8 @@ import (
 )
 
 type Options struct {
+	Progress             buildah.OperationProgressFunc
+	ProgressDropped      func(uint64)
 	Lifecycle            buildah.LifecycleControls
 	Output               buildah.FilesystemOutput
 	Outputs              []buildah.FilesystemOutput
@@ -69,7 +71,6 @@ type Options struct {
 	CompressionLevel     *int
 	ForceCompression     *bool
 	Push                 bool
-	Pull                 bool
 	PullPolicy           string
 	NoCache              bool
 	Network              string
@@ -96,6 +97,8 @@ type Options struct {
 	LogRusage            bool
 	RusageLogFile        string
 	BuildStore           buildah.StoreOptions
+	ComponentStoreDir    string
+	CacheMountDir        string
 	CacheLocalDir        string
 	CacheRepository      string
 	CacheFrom            []buildah.CacheSpec
@@ -107,8 +110,9 @@ type Options struct {
 }
 
 type platformBuild struct {
-	selection oci.StoredSelection
-	variant   oci.ImageVariant
+	selection       oci.StoredSelection
+	variant         oci.ImageVariant
+	progressDropped uint64
 }
 
 type lockedWriter struct {
@@ -132,6 +136,8 @@ type Result struct {
 // Run builds each requested platform, stores the result locally as a manifest
 // or index, then applies the requested destinations through the shared transfer path.
 func Run(ctx context.Context, opts Options) (_ Result, retErr error) {
+	var progressSnapshot func() ([]buildah.OperationProgress, uint64)
+	opts.Progress, progressSnapshot = captureBuildProgress(opts.MetadataFile != "", opts.Progress)
 	if opts.Squash && opts.SquashAll {
 		return Result{}, errors.New("--squash and --squash-all are mutually exclusive")
 	}
@@ -239,7 +245,9 @@ func Run(ctx context.Context, opts Options) (_ Result, retErr error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("%s: %w", definitionDisplayName(opts.File), err)
 	}
-	defer func() { _ = cleanupPrimary() }()
+	defer func() {
+		retErr = cleanupBuildFiles(primary.Path, func() { _ = cleanupPrimary() }, retErr)
+	}()
 	opts.File, opts.Context = definitionFile, primary.Path
 	resolvedFiles := make([]string, 0, len(files))
 	for i, file := range files {
@@ -294,9 +302,12 @@ func Run(ctx context.Context, opts Options) (_ Result, retErr error) {
 	}
 	opts.BuildStore = buildStore
 	storeRoots := buildah.ActivityRoots(buildStore, "")
-	componentStoreDir, err := componentstore.DefaultDir()
-	if err != nil {
-		return Result{}, err
+	componentStoreDir := opts.ComponentStoreDir
+	if componentStoreDir == "" {
+		componentStoreDir, err = componentstore.DefaultDir()
+		if err != nil {
+			return Result{}, err
+		}
 	}
 	if opts.AllPlatforms {
 		targets, err = discoverBuildPlatforms(ctx, def, planning, opts, componentStoreDir)
@@ -350,7 +361,7 @@ func Run(ctx context.Context, opts Options) (_ Result, retErr error) {
 	if err != nil {
 		return Result{}, err
 	}
-	defer cleanup()
+	defer func() { retErr = cleanupBuildFiles(filepath.Dir(layout), cleanup, retErr) }()
 	contextArtifacts = append(contextArtifacts, filepath.Dir(layout))
 	stdout, stderr := opts.Stdout, opts.Stderr
 	var sharedLog *os.File
@@ -421,11 +432,12 @@ func Run(ctx context.Context, opts Options) (_ Result, retErr error) {
 			progressPrefix = "[" + targetPlatform + "] "
 		}
 		result, buildErr := buildah.BuildDefinitionSupervised(buildCtx, def, platformPlanning, buildah.SupervisedPlanOptions{
+			Progress:          opts.Progress,
 			ProgressPrefix:    progressPrefix,
 			ProgressReference: progressReference,
 			Store:             buildStore, ContextDir: opts.Context, IgnoreFile: opts.IgnoreFile, ContextArtifacts: contextArtifacts,
 			Output: buildah.Output{Path: output, Format: opts.Format, Squash: opts.Squash, SquashAll: opts.SquashAll, DisableCompression: opts.DisableCompression, BlobDirectory: opts.BlobDirectory, CompressionFormat: opts.CompressionFormat, CompressionLevel: opts.CompressionLevel, ForceCompression: opts.ForceCompression, ConfidentialWorkload: opts.ConfidentialWorkload, SBOM: opts.SBOM, Filesystems: platformFilesystemOutputs(outputs, targetPlatform, len(targets))}, ComponentStoreDir: componentStoreDir,
-			Pull: opts.Pull, PullPolicy: opts.PullPolicy, SourcePolicyFile: opts.SourcePolicyFile, TransientRunMounts: opts.TransientRunMounts,
+			PullPolicy: opts.PullPolicy, SourcePolicyFile: opts.SourcePolicyFile, TransientRunMounts: opts.TransientRunMounts,
 			NoCache:     opts.NoCache,
 			Network:     opts.Network,
 			AddHosts:    opts.AddHosts,
@@ -441,6 +453,7 @@ func Run(ctx context.Context, opts Options) (_ Result, retErr error) {
 			Allow:            opts.Allow,
 			BuildContexts:    opts.BuildContexts,
 			CacheLocalDir:    opts.CacheLocalDir,
+			CacheMountDir:    opts.CacheMountDir,
 			CacheRepository:  opts.CacheRepository,
 			CacheFrom:        opts.CacheFrom,
 			CacheTo:          opts.CacheTo,
@@ -449,6 +462,9 @@ func Run(ctx context.Context, opts Options) (_ Result, retErr error) {
 			Credentials: opts.Credentials, Retry: opts.Retry, RetrySet: opts.RetrySet, RetryDelay: opts.RetryDelay, DecryptionKeys: opts.DecryptionKeys, SignaturePolicyPath: opts.SignaturePolicyPath,
 			Stdin: opts.RunStdin, Stdout: platformStdout, Stderr: platformStderr,
 		})
+		if opts.ProgressDropped != nil {
+			opts.ProgressDropped(result.ProgressDropped)
+		}
 		if buildErr != nil {
 			return platformBuild{}, fmt.Errorf("build %s for %s: %w", definitionDisplayName(opts.File), targetPlatform, buildErr)
 		}
@@ -463,20 +479,22 @@ func Run(ctx context.Context, opts Options) (_ Result, retErr error) {
 		if readErr != nil {
 			return platformBuild{}, fmt.Errorf("read built image configuration for %s: %w", targetPlatform, readErr)
 		}
-		platform, readErr := platforms.Parse(result.Platform)
-		if readErr != nil {
-			return platformBuild{}, fmt.Errorf("parse built image platform %q: %w", result.Platform, readErr)
-		}
-		platform = platforms.Normalize(platform)
 		var configured v1.Image
 		if err := json.Unmarshal(rawConfig, &configured); err != nil {
 			return platformBuild{}, fmt.Errorf("decode built image platform metadata for %s: %w", targetPlatform, err)
 		}
-		platform.OSVersion = configured.OSVersion
+		// The requested default may be overridden by the final authored FROM.
+		// Identify the image we actually built, rather than relabeling it with
+		// the worker plan's default selection.
+		platform := platforms.Normalize(configured.Platform)
+		if platform.OS != "linux" || platform.Architecture == "" {
+			return platformBuild{}, fmt.Errorf("built image has invalid platform %q", platforms.Format(platform))
+		}
 		platform.OSFeatures = slices.Clone(configured.OSFeatures)
 		return platformBuild{
-			selection: oci.StoredSelection{Root: manifest, Manifest: manifest, ImageID: result.ImageID, ConfigData: rawConfig},
-			variant:   oci.ImageVariant{Layout: result.Layout, Manifest: manifest, Platform: platform},
+			selection:       oci.StoredSelection{Root: manifest, Manifest: manifest, ImageID: result.ImageID, ConfigData: rawConfig},
+			variant:         oci.ImageVariant{Layout: result.Layout, Manifest: manifest, Platform: platform},
+			progressDropped: result.ProgressDropped,
 		}, nil
 	})
 	if err != nil {
@@ -588,6 +606,7 @@ func Run(ctx context.Context, opts Options) (_ Result, retErr error) {
 			publicationErr = errors.Join(publicationErr, copyErr, stream.Close())
 		}
 	}
+	setBuildProgress(&report, progressSnapshot, builds)
 	if err := finishOutputs(opts.MetadataFile, opts.IIDFile, root, variants, selections, report, publicationErr, opts.IIDFileRaw, imageID); err != nil {
 		return Result{}, err
 	}
@@ -611,34 +630,42 @@ func runPlatformBuildsWithLimit(ctx context.Context, targets []string, limit int
 	}
 	group, buildCtx := errgroup.WithContext(ctx)
 	results := make([]platformBuild, len(targets))
-	var mu sync.Mutex
-	next := 0
-	stopped := false
-	workers := min(len(targets), max(1, limit))
-	for range workers {
+	failures := make([]error, len(targets))
+	group.SetLimit(max(1, limit))
+	for i, target := range targets {
+		if buildCtx.Err() != nil {
+			break
+		}
 		group.Go(func() error {
-			for {
-				mu.Lock()
-				if stopped || next == len(targets) || buildCtx.Err() != nil {
-					mu.Unlock()
-					return nil
-				}
-				i := next
-				next++
-				mu.Unlock()
-				result, err := build(buildCtx, i, targets[i])
-				if err != nil {
-					mu.Lock()
-					stopped = true
-					mu.Unlock()
-					return err
-				}
-				results[i] = result
+			// Go may wait for a slot. Recheck after admission so a failed sibling
+			// never starts another platform callback when that slot becomes free.
+			if buildCtx.Err() != nil {
+				return nil
 			}
+			result, err := build(buildCtx, i, target)
+			if err != nil {
+				failures[i] = err
+				return err
+			}
+			results[i] = result
+			return nil
 		})
 	}
 	if err := group.Wait(); err != nil {
-		return nil, err
+		// errgroup preserves the first failure, but a canceled sibling can
+		// subsequently report incomplete cleanup. Wait has joined all started
+		// work; retain cleanup uncertainty in platform order. Ordinary canceled
+		// siblings must not reclassify the original failure as cancellation.
+		joined := []error{err}
+		for _, failure := range failures {
+			if errors.Is(failure, buildah.ErrWorkerWaitIncomplete) && !errors.Is(err, failure) {
+				joined = append(joined, failure)
+			}
+		}
+		if len(joined) == 1 {
+			return nil, err
+		}
+		return nil, errors.Join(joined...)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -755,4 +782,15 @@ func canonicalParentPath(path string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(resolved, filepath.Base(abs)), nil
+}
+
+// cleanupBuildFiles preserves inputs and the ancestor of private worker evidence
+// when supervision cannot confirm completion. Ordinary success/failure invokes
+// the existing cleanup, including its existing handling of cleanup errors.
+func cleanupBuildFiles(directory string, cleanup func(), operationErr error) error {
+	if errors.Is(operationErr, buildah.ErrWorkerWaitIncomplete) {
+		return fmt.Errorf("build files retained at %s: %w", directory, operationErr)
+	}
+	cleanup()
+	return operationErr
 }

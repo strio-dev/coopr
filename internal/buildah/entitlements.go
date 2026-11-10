@@ -57,35 +57,6 @@ func runDeviceCacheForPlannedOperation(operation planner.Operation, controls Run
 	return newRunDeviceCacheWithDirs("", controls.CDISpecDirs)
 }
 
-func authorizeOperations(operations []Operation, allow []string) error {
-	allowed, err := allowedEntitlements(allow)
-	if err != nil {
-		return err
-	}
-	for index, operation := range operations {
-		run, ok := operation.(Run)
-		if !ok {
-			continue
-		}
-		if run.Network == "host" && !allowed.Allowed(networkHostEntitlement) {
-			return fmt.Errorf("operation %d: RUN network=host requires --allow %s", index+1, networkHostEntitlement)
-		}
-		if len(run.Devices) == 0 {
-			continue
-		}
-		cache, err := newRunDeviceCache("")
-		if err != nil {
-			return fmt.Errorf("operation %d: load CDI devices: %w", index+1, err)
-		}
-		if err := authorizeRunDevices(run.Devices, allowed, cache); err != nil {
-			return fmt.Errorf("operation %d: %w", index+1, err)
-		}
-		run.Devices, _ = applyRunDeviceEntitlementAliases(run.Devices, allowed)
-		operations[index] = run
-	}
-	return nil
-}
-
 func authorizeRunDevices(requests []runDeviceRequest, allowed entitlements.Set, cache *cdi.Cache) error {
 	if len(requests) == 0 {
 		return nil

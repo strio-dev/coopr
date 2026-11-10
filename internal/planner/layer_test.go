@@ -1,7 +1,6 @@
 package planner
 
 import (
-	"encoding/json"
 	"reflect"
 	"slices"
 	"testing"
@@ -71,14 +70,14 @@ extend as="output" {
 		for _, op := range stage.Operations {
 			if op.Name == "copy" {
 				copies++
-				if op.Properties["from"] != "0" {
-					t.Fatalf("numeric grouped copy not rebound: %+v", op)
+				if op.Properties["from"] != "1" {
+					t.Fatalf("numeric grouped copy changed original identity: %+v", op)
 				}
 			}
 			if op.Name == "run" {
 				mounts++
-				if op.Children[0].Properties["from"] != "0" {
-					t.Fatalf("numeric grouped mount not rebound: %+v", op)
+				if op.Children[0].Properties["from"] != "1" {
+					t.Fatalf("numeric grouped mount changed original identity: %+v", op)
 				}
 			}
 		}
@@ -102,30 +101,23 @@ extend as="replacement" {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(publication.Component.DormantRoots, []string{"0"}) {
-		t.Fatalf("mandatory extend missing: %+v", publication.Component)
+	if len(publication.Component.Definition.Instructions) != 2 || publication.Component.Definition.Instructions[0].Properties["as"] != "caller" {
+		t.Fatalf("original EXTEND namespace lost: %+v", publication.Component)
 	}
-	encoded, _ := json.Marshal(publication.Component)
-	var decoded PublishedComponent
-	if err := json.Unmarshal(encoded, &decoded); err != nil {
-		t.Fatal(err)
-	}
-	invocation, err := InstantiateDemandDriven(&decoded, Options{Mode: Invoke}, nil, func(FromSource) (StageBind, error) {
-		t.Fatal("scratch output must not resolve external inputs")
-		return StageBind{}, nil
-	})
+	decoded := roundTripPublished(t, publication.Component)
+	invocation, err := InstantiateDemandDriven(&decoded, Options{Mode: Invoke}, nil, unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(decoded.Definition.Instructions) != 1 || decoded.Definition.Instructions[0].Name != "extend" || len(invocation.Stages) != 1 || invocation.Stages[0].Kind != "from" {
+	if len(decoded.Definition.Instructions) != 2 || decoded.Definition.Instructions[0].Name != "extend" || len(invocation.Stages) != 1 || invocation.Stages[0].Kind != "from" {
 		t.Fatalf("mandatory EXTEND or selected execution changed: publication=%+v invocation=%+v", decoded, invocation)
 	}
-	if len(invocation.Outputs) != 1 || invocation.Outputs[0] != "1" {
+	if len(invocation.Outputs) != 1 || invocation.Outputs[0] != "2" {
 		t.Fatalf("selected output changed: %+v", invocation.Outputs)
 	}
 }
 
-func TestLayerPublicationRetainsNestedSyntaxAndOperationOrdinals(t *testing.T) {
+func TestLayerPublicationRetainsNestedSyntaxAndOperationOrder(t *testing.T) {
 	publication := makePlan(t, `package as="assets" {
     layer { copy "input" "/source" }
 }
@@ -143,11 +135,7 @@ extend {
 	if len(body) != 1 || body[0].Name != "layer" || len(body[0].Children) != 2 || body[0].Children[0].Name != "layer" {
 		t.Fatalf("nested publication syntax flattened: %+v", body)
 	}
-	for _, ref := range publication.Component.StageReferences {
-		if ref.Operation != 2 && ref.Operation != 4 {
-			t.Fatalf("group reference ordinal drift: %+v", ref)
-		}
-	}
+
 	if _, err := ValidatePublished(publication.Component); err != nil {
 		t.Fatal(err)
 	}
@@ -155,6 +143,21 @@ extend {
 	if len(invocation.Stages) != 2 || invocation.Stages[0].Kind != "package-input" {
 		t.Fatalf("package producer replayed: %+v", invocation.Stages)
 	}
+	var ordered []string
+	for _, op := range invocation.Stages[1].Operations {
+		name := op.Name
+		if op.LayerBoundary != "" {
+			name += "-" + op.LayerBoundary
+		}
+		ordered = append(ordered, name)
+		if op.Name == "copy" && op.Properties["from"] != "assets" {
+			t.Fatalf("grouped copy source lost: %+v", op)
+		}
+	}
+	if !slices.Equal(ordered, []string{"layer-begin", "layer-begin", "copy", "layer-end", "run", "layer-end"}) {
+		t.Fatalf("layer boundaries/operation order changed: %v", ordered)
+	}
+
 	for _, op := range invocation.Stages[1].Operations {
 		if op.Name == "run" && (len(op.Children) != 2 || op.TransientMountCount != 1) {
 			t.Fatalf("grouped published run lost global mount: %+v", op)
@@ -162,7 +165,7 @@ extend {
 	}
 }
 
-func TestReplacementScratchOutputPrunesDormantBodyAndItsPackageInputs(t *testing.T) {
+func TestReplacementScratchOutputSkipsUnselectedBodyAndPackageInputs(t *testing.T) {
 	publication, err := CreateDemandDriven(parse(t, `from "unreachable.invalid/image" as="producer" {}
 package as="assets" {
     copy "/source" "/source" from="producer"
@@ -173,10 +176,7 @@ extend as="caller" {
 extend as="replacement" {
     from "scratch" {}
 }
-`), Options{Mode: Publish}, func(source FromSource) (StageBind, error) {
-		t.Fatalf("dormant package source resolved: %+v", source)
-		return StageBind{}, nil
-	})
+`), Options{Mode: Publish}, unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,8 +184,8 @@ extend as="replacement" {
 		t.Fatalf("unused package producers selected: %+v", publication)
 	}
 	component := publication.Component
-	if !slices.Equal(component.DormantRoots, []string{"0"}) || component.Output != "1" || len(component.Definition.Instructions) != 1 {
-		t.Fatalf("replacement boundary retained unused body: %+v", component)
+	if component.Output != "4" || len(component.Definition.Instructions) != 4 || !component.Definition.Instructions[1].UnavailablePackage {
+		t.Fatalf("replacement residual lost original namespace/unavailable package: %+v", component)
 	}
 	if _, err := ValidatePublished(component); err != nil {
 		t.Fatal(err)
@@ -210,10 +210,7 @@ extend as="replacement" {
 	if _, err := ValidatePublished(publication.Component); err != nil {
 		t.Fatal(err)
 	}
-	invocation, err := InstantiateDemandDriven(publication.Component, Options{Mode: Invoke}, nil, func(source FromSource) (StageBind, error) {
-		t.Fatalf("deferred source resolved before producer: %+v", source)
-		return StageBind{}, nil
-	})
+	invocation, err := InstantiateDemandDriven(publication.Component, Options{Mode: Invoke}, nil, unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,10 +238,10 @@ extend as="selected" {
     copy "/asset" "/asset" from="prepared"
 }
 `, Options{Mode: Publish, Target: "selected"})
-	if len(publication.Component.DormantRoots) == 0 {
-		t.Fatal("fixture must retain dormant target for external ONBUILD indices")
+	if publication.Component.Definition.Instructions[0].Properties["as"] != "unused" {
+		t.Fatal("fixture lost original target namespace")
 	}
-	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, func(FromSource) (StageBind, error) { return StageBind{}, nil })
+	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, emptyPackageBinds(t, publication.Component), func(FromSource) (StageBind, error) { return StageBind{}, nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,10 +267,7 @@ extend {
     }
 }
 `, Options{Mode: Publish})
-	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, func(FromSource) (StageBind, error) {
-		t.Fatal("caller-based stages must not resolve external images")
-		return StageBind{}, nil
-	})
+	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, emptyPackageBinds(t, publication.Component), unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,10 +301,7 @@ extend {
     }
 }
 `, Options{Mode: Publish})
-	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, func(FromSource) (StageBind, error) {
-		t.Fatal("caller-based stages must not resolve images")
-		return StageBind{}, nil
-	})
+	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, emptyPackageBinds(t, publication.Component), unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +326,7 @@ extend {
 	}
 }
 
-func TestDynamicComponentFromStillRejectsChangedPublishedSourceRole(t *testing.T) {
+func TestDynamicComponentFromResolvesReturnedSourceRole(t *testing.T) {
 	publication := makePlan(t, `package as="assets" {
     copy "input" "/asset"
 }
@@ -351,7 +342,7 @@ extend {
 }
 `, Options{Mode: Publish})
 	calls := 0
-	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, func(FromSource) (StageBind, error) {
+	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, emptyPackageBinds(t, publication.Component), func(FromSource) (StageBind, error) {
 		calls++
 		return StageBind{}, nil
 	})
@@ -362,8 +353,13 @@ extend {
 		t.Fatalf("unbound dynamic base resolved %d authored external sources", calls)
 	}
 	output := invocation.Stages[len(invocation.Stages)-1]
-	if _, err := invocation.ReplanDynamicStage(output.ID, StageBind{BaseEnvironment: map[string]string{"source": "assets"}}); err == nil {
-		t.Fatal("dynamic replan changed published image source into package-stage source")
+	replanned, err := invocation.ReplanDynamicStage(output.ID, StageBind{BaseEnvironment: map[string]string{"source": "assets"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	output = replanned.Stages[len(replanned.Stages)-1]
+	if !slices.Contains(output.Dependencies, "0") || output.Operations[2].Properties["from"] != "assets" || calls != 0 {
+		t.Fatalf("returned source did not resolve as captured package: %+v calls=%d", output, calls)
 	}
 }
 
@@ -379,7 +375,7 @@ extend as="selected" {
 }
 extend as="later" {}
 `, Options{Mode: Publish, Target: "selected"})
-			invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, func(FromSource) (StageBind, error) { return StageBind{}, nil })
+			invocation, err := InstantiateDemandDriven(publication.Component, Options{}, emptyPackageBinds(t, publication.Component), func(FromSource) (StageBind, error) { return StageBind{}, nil })
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -398,7 +394,7 @@ extend as="caller" {}
 	}
 	malformed := &PublishedComponent{Definition: parse(t, `from "scratch" as="producer" {}
 extend as="caller" {}
-`), Output: "0", Platform: "linux/amd64", FromBindings: map[string]FromBinding{"0": {Kind: "scratch"}}, ReservedStageNames: []string{"caller", "producer"}, DormantRoots: []string{"1"}}
+`), Output: "0", Platform: "linux/amd64", Format: ResidualFormat}
 	if _, err := ValidatePublished(malformed); err == nil {
 		t.Fatal("published pre-EXTEND producer accepted as component output")
 	}

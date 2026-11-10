@@ -352,7 +352,7 @@ extend {
 
 func TestPackageCacheEligibilityRejectsUndeclaredInputs(t *testing.T) {
 	base := planner.Stage{Operations: []planner.Operation{{Instruction: definition.Instruction{Name: "run", Arguments: []string{"true"}, Properties: map[string]string{"network": "none"}}}}}
-	if _, eligible := packageCacheEligibility([]planner.Stage{base}); !eligible {
+	if _, eligible := packageCacheEligibility([]planner.Stage{base}, RunControls{}); !eligible {
 		t.Fatal("network-isolated RUN was not package-cache eligible")
 	}
 	eligible := []planner.Operation{
@@ -364,7 +364,7 @@ func TestPackageCacheEligibilityRejectsUndeclaredInputs(t *testing.T) {
 		{Instruction: definition.Instruction{Name: "add", Arguments: []string{"https://example.invalid/payload", "/payload"}, Properties: map[string]string{"checksum": digest.FromString("payload").String()}}},
 	}
 	for index, operation := range eligible {
-		if _, ok := packageCacheEligibility([]planner.Stage{{Operations: []planner.Operation{operation}}}); !ok {
+		if _, ok := packageCacheEligibility([]planner.Stage{{Operations: []planner.Operation{operation}}}, RunControls{}); !ok {
 			t.Errorf("declared-input operation %d was not package-cache eligible", index)
 		}
 	}
@@ -372,7 +372,7 @@ func TestPackageCacheEligibilityRejectsUndeclaredInputs(t *testing.T) {
 		{Instruction: definition.Instruction{Name: "add", Arguments: []string{"https://example.invalid/payload", "/payload"}}},
 	}
 	for index, operation := range tests {
-		if _, eligible := packageCacheEligibility([]planner.Stage{{Operations: []planner.Operation{operation}}}); eligible {
+		if _, eligible := packageCacheEligibility([]planner.Stage{{Operations: []planner.Operation{operation}}}, RunControls{}); eligible {
 			t.Errorf("undeclared-input operation %d was package-cache eligible", index)
 		}
 	}

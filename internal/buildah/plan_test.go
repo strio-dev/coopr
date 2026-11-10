@@ -2,8 +2,6 @@ package buildah
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
@@ -15,7 +13,7 @@ import (
 	"github.com/strio-dev/coopr/internal/planner"
 )
 
-func TestRequestFromPlanPreservesInstructionAndCommandForms(t *testing.T) {
+func TestLowerGraphOperationsPreservesInstructionAndCommandForms(t *testing.T) {
 	plan := testPlan(t, `
 arg "mode" "test"
 from "scratch" {
@@ -33,39 +31,39 @@ from "scratch" {
     stopsignal "SIGTERM"
 }
 `)
-	request, err := RequestFromPlan(plan, PlanOptions{ContextDir: "/context"})
+	operations, err := lowerGraphOperations((plan).Stages[0].Operations, nil, nil, nil, []string{"/bin/sh", "-c"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if request.Base != "scratch" || len(request.Operations) != 12 {
-		t.Fatalf("request = %+v", request)
+	if len(operations) != 12 {
+		t.Fatalf("operations = %+v", operations)
 	}
 	wantTypes := []any{
 		Env{}, Env{}, Copy{}, Shell{}, Run{}, Run{}, Label{}, WorkDir(""), User(""), Cmd{}, Entrypoint{}, StopSignal(""),
 	}
 	for index, want := range wantTypes {
-		if reflect.TypeOf(request.Operations[index]) != reflect.TypeOf(want) {
-			t.Fatalf("operation %d type = %T, want %T", index+1, request.Operations[index], want)
+		if reflect.TypeOf(operations[index]) != reflect.TypeOf(want) {
+			t.Fatalf("operation %d type = %T, want %T", index+1, operations[index], want)
 		}
 	}
-	copyOperation := request.Operations[2].(Copy)
+	copyOperation := operations[2].(Copy)
 	if !reflect.DeepEqual(copyOperation.Sources, []string{"one/./nested", "two/./nested"}) || !reflect.DeepEqual(copyOperation.Excludes, []string{"*.tmp"}) || !copyOperation.Parents {
 		t.Fatalf("COPY = %+v", copyOperation)
 	}
-	shellRun := request.Operations[4].(Run)
+	shellRun := operations[4].(Run)
 	if !reflect.DeepEqual(shellRun.Command, []string{"/bin/bash", "-ceu", `printf '%s' "$mode"`}) || !reflect.DeepEqual(shellRun.Env, []string{"mode=test"}) {
 		t.Fatalf("shell RUN = %+v", shellRun)
 	}
-	execRun := request.Operations[5].(Run)
+	execRun := operations[5].(Run)
 	if !reflect.DeepEqual(execRun.Command, []string{"/bin/echo", "ok"}) {
 		t.Fatalf("exec RUN = %+v", execRun)
 	}
-	if got := request.Operations[9].(Cmd); !reflect.DeepEqual(got, Cmd{"/bin/bash", "-ceu", "serve"}) {
+	if got := operations[9].(Cmd); !reflect.DeepEqual(got, Cmd{"/bin/bash", "-ceu", "serve"}) {
 		t.Fatalf("shell CMD = %#v", got)
 	}
 }
 
-func TestRequestFromPlanDoesNotDuplicateGlobalMounts(t *testing.T) {
+func TestLowerGraphOperationsDoesNotDuplicateGlobalMounts(t *testing.T) {
 	mounts, err := ParseTransientRunMounts([]string{"type=bind,target=/global"})
 	if err != nil {
 		t.Fatal(err)
@@ -81,51 +79,49 @@ func TestRequestFromPlanDoesNotDuplicateGlobalMounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request, err := RequestFromPlan(plan, PlanOptions{ContextDir: "/context", IgnoreFile: "/custom.ignore", TransientRunMounts: mounts})
+	operations, err := lowerGraphOperations((plan).Stages[0].Operations, nil, nil, nil, []string{"/bin/sh", "-c"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	run := request.Operations[0].(Run)
+	run := operations[0].(Run)
 	counts := map[string]int{}
-	for _, mount := range append(run.Mounts, request.TransientRunMounts...) {
+	for _, mount := range run.Mounts {
 		counts[mount.Properties["target"]]++
 	}
 	if counts["/global"] != 1 || counts["/authored"] != 1 || len(counts) != 2 {
 		t.Fatalf("effective mount counts=%v", counts)
 	}
-	if request.IgnoreFile != "/custom.ignore" || run.ContextIgnoreFile != request.IgnoreFile {
-		t.Fatalf("adapter lost explicit context policy: %+v", request)
-	}
+
 }
 
-func TestRequestFromPlanPreservesAddGitAndUnpackOptions(t *testing.T) {
+func TestLowerGraphOperationsPreservesAddGitAndUnpackOptions(t *testing.T) {
 	plan := testPlan(t, `
 from "scratch" {
     add "https://example.invalid/repository.git#main" "/source/" keep-git-dir="true" checksum="abcdef"
     add "archive.tar" "/archive/" unpack="false"
 }
 `)
-	request, err := RequestFromPlan(plan, PlanOptions{ContextDir: "/context"})
+	operations, err := lowerGraphOperations((plan).Stages[0].Operations, nil, nil, nil, []string{"/bin/sh", "-c"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	gitAdd := request.Operations[0].(Add)
+	gitAdd := operations[0].(Add)
 	if gitAdd.KeepGitDir == nil || !*gitAdd.KeepGitDir || gitAdd.Checksum != "abcdef" || gitAdd.Unpack != nil {
 		t.Fatalf("Git ADD = %+v", gitAdd)
 	}
-	archiveAdd := request.Operations[1].(Add)
+	archiveAdd := operations[1].(Add)
 	if archiveAdd.Unpack == nil || *archiveAdd.Unpack || archiveAdd.KeepGitDir != nil {
 		t.Fatalf("archive ADD = %+v", archiveAdd)
 	}
 }
 
-func TestRequestFromPlanRejectsInvalidAddBooleanOptions(t *testing.T) {
+func TestLowerGraphOperationsRejectsInvalidAddBooleanOptions(t *testing.T) {
 	for _, property := range []string{"keep-git-dir", "unpack"} {
 		t.Run(property, func(t *testing.T) {
-			_, err := RequestFromPlan(testPlan(t, `from "scratch" {
+			_, err := lowerGraphOperations((testPlan(t, `from "scratch" {
     add "source" "/source" `+property+`="sometimes"
 }
-`), PlanOptions{})
+`)).Stages[0].Operations, nil, nil, nil, []string{"/bin/sh", "-c"}, nil)
 			if err == nil || !strings.Contains(err.Error(), property+" must be true or false") {
 				t.Fatalf("error = %v", err)
 			}
@@ -133,15 +129,10 @@ func TestRequestFromPlanRejectsInvalidAddBooleanOptions(t *testing.T) {
 	}
 }
 
-func TestRequestFromPlanRejectsUnsupportedSemantics(t *testing.T) {
+func TestLowerGraphOperationsRejectsUnsupportedSemantics(t *testing.T) {
 	tests := []struct {
 		name, source, message string
 	}{
-		{"non-scratch base", `from "alpine:3.20" {}
-`, "must be from scratch"},
-		{"multiple stages", `from "scratch" as="base" {}
-from "base" {}
-`, "exactly one stage"},
 		{"run mount without cache scope", `from "scratch" {
     run "true" { mount "cache" target="/cache" }
 }
@@ -157,7 +148,7 @@ from "base" {}
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := RequestFromPlan(testPlan(t, test.source), PlanOptions{})
+			_, err := lowerGraphOperations((testPlan(t, test.source)).Stages[0].Operations, nil, nil, nil, []string{"/bin/sh", "-c"}, nil)
 			if err == nil || !strings.Contains(err.Error(), test.message) {
 				t.Fatalf("want %q, got %v", test.message, err)
 			}
@@ -166,69 +157,30 @@ from "base" {}
 }
 
 func TestLowerOperationRejectsUnknownInstruction(t *testing.T) {
-	_, _, err := lowerOperation(planner.Operation{Instruction: definition.Instruction{Name: "frobnicate", Arguments: []string{"value"}}}, nil)
+	_, _, err := lowerOperationWithCacheMountIDs(planner.Operation{Instruction: definition.Instruction{Name: "frobnicate", Arguments: []string{"value"}}}, nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "instruction is not supported") {
 		t.Fatalf("unknown operation error = %v", err)
 	}
 }
 
-func TestRequestFromPlanLowersRunHostNetwork(t *testing.T) {
-	request, err := RequestFromPlan(testPlan(t, `from "scratch" {
+func TestLowerGraphOperationsLowersRunHostNetwork(t *testing.T) {
+	operations, err := lowerGraphOperations((testPlan(t, `from "scratch" {
     run "true" network="host"
 }
-`), PlanOptions{Allow: []string{"network.host"}})
+`)).Stages[0].Operations, nil, nil, nil, []string{"/bin/sh", "-c"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	run := request.Operations[0].(Run)
-	if run.Network != "host" || !reflect.DeepEqual(request.Allow, []string{"network.host"}) {
-		t.Fatalf("lowered RUN = %#v; allow = %#v", run, request.Allow)
-	}
-}
-
-func TestRequestFromPlanLowersNativeBuildWideNetworkModes(t *testing.T) {
-	namespaceFile := filepath.Join(t.TempDir(), "netns")
-	if err := os.WriteFile(namespaceFile, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	for _, network := range []string{"private", "slirp4netns:mtu=1400", "ns:" + namespaceFile, "buildnet"} {
-		request, err := RequestFromPlan(testPlan(t, `from "scratch" {
-    run "true"
-}
-`), PlanOptions{Network: network})
-		if err != nil {
-			t.Fatalf("lower %s: %v", network, err)
-		}
-		if got := request.Operations[0].(Run).Network; got != network {
-			t.Fatalf("lowered network = %q, want %q", got, network)
-		}
-	}
-}
-
-func TestRequestFromPlanValidatesDNSAgainstEffectiveRunNetwork(t *testing.T) {
-	controls := RunControls{DNSServers: []string{"1.1.1.1"}}
-	if _, err := RequestFromPlan(testPlan(t, `from "scratch" {
-    run "true" network="none"
-}
-`), PlanOptions{Network: "default", RunControls: controls}); err == nil || !strings.Contains(err.Error(), "DNS controls") {
-		t.Fatalf("authored network none with DNS = %v", err)
-	}
-	request, err := RequestFromPlan(testPlan(t, `from "scratch" {
-    run "true" network="default"
-}
-`), PlanOptions{Network: "none", RunControls: controls})
-	if err != nil {
-		t.Fatalf("explicit network override rejected: %v", err)
-	}
-	if got := request.Operations[0].(Run).Network; got != "default" {
-		t.Fatalf("effective network = %q", got)
+	run := operations[0].(Run)
+	if run.Network != "host" {
+		t.Fatalf("lowered RUN = %#v", run)
 	}
 }
 
 func TestLowerRunRejectsRetiredSecurityProperty(t *testing.T) {
 	for _, mode := range []string{"sandbox", "insecure"} {
 		instruction := definition.Instruction{Name: "run", Arguments: []string{"true"}, Properties: map[string]string{"security": mode}}
-		if _, _, err := lowerOperation(planner.Operation{Instruction: instruction}, nil); err == nil {
+		if _, _, err := lowerOperationWithCacheMountIDs(planner.Operation{Instruction: instruction}, nil, nil, nil); err == nil {
 			t.Fatalf("retired RUN security property %q was lowered", mode)
 		}
 	}
@@ -259,24 +211,24 @@ func TestLowerImportedInlineSourcesAndMultilineShebang(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request, err := RequestFromPlan(testPlan(t, `
+	operations, err := lowerGraphOperations((testPlan(t, `
 from "scratch" {
     run """
         #!/bin/sh
         true
         """
 }
-`), PlanOptions{ContextDir: "/context"})
+`)).Stages[0].Operations, nil, nil, nil, []string{"/bin/sh", "-c"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	copyOperation, copyOK := copyOperations[0].(Copy)
-	runOperation, runOK := request.Operations[0].(Run)
+	runOperation, runOK := operations[0].(Run)
 	if !copyOK || !reflect.DeepEqual(copyOperation.InlineFiles, []definition.InlineFile{{Path: "one", Data: "first"}, {Path: "two", Data: "second"}}) {
 		t.Fatalf("lowered imported COPY = %#v", copyOperations[0])
 	}
 	if !runOK || !reflect.DeepEqual(runOperation.Command, []string{"/run/coopr-heredoc/script"}) || len(runOperation.InlineFiles) != 1 {
-		t.Fatalf("lowered shebang RUN = %#v", request.Operations[0])
+		t.Fatalf("lowered shebang RUN = %#v", operations[0])
 	}
 }
 
@@ -290,8 +242,8 @@ func TestLowerHeredocChecksumRequiresPathSource(t *testing.T) {
 	}
 }
 
-func TestRequestFromPlanLowersRepeatedRunDevicesAlongsideMounts(t *testing.T) {
-	request, err := RequestFromPlan(testPlan(t, `
+func TestLowerGraphOperationsLowersRepeatedRunDevicesAlongsideMounts(t *testing.T) {
+	operations, err := lowerGraphOperations((testPlan(t, `
 from "scratch" {
     run "true" {
       device "vendor.example/device=one,required"
@@ -299,11 +251,11 @@ from "scratch" {
       device "accelerator,required=false"
     }
 }
-`), PlanOptions{})
+`)).Stages[0].Operations, nil, nil, nil, []string{"/bin/sh", "-c"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	run := request.Operations[0].(Run)
+	run := operations[0].(Run)
 	wantDevices := []runDeviceRequest{
 		{Name: "vendor.example/device=one", Required: true},
 		{Name: "accelerator", Required: false},
@@ -316,45 +268,24 @@ from "scratch" {
 	}
 }
 
-func TestRequestFromPlanRejectsInvalidRunDeviceOption(t *testing.T) {
-	_, err := RequestFromPlan(testPlan(t, `from "scratch" {
+func TestLowerGraphOperationsRejectsInvalidRunDeviceOption(t *testing.T) {
+	_, err := lowerGraphOperations((testPlan(t, `from "scratch" {
     run "true" { device "name=vendor.example/device=one,required=sometimes" }
 }
-`), PlanOptions{})
+`)).Stages[0].Operations, nil, nil, nil, []string{"/bin/sh", "-c"}, nil)
 	if err == nil || !strings.Contains(err.Error(), "invalid value for required") {
 		t.Fatalf("invalid RUN device error = %v", err)
 	}
 }
 
-func TestRequestFromPlanBindsCredentialSourceSpecs(t *testing.T) {
-	plan := testPlan(t, `
-from "scratch" {
-    run "true" { mount "secret" id="token" required="true"; mount "ssh" id="default" required="true" }
-}
-`)
-	request, err := RequestFromPlan(plan, PlanOptions{
-		Secrets: []string{"id=token,env=TOKEN"}, SSH: []string{"default=/tmp/agent.sock"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	run, ok := request.Operations[0].(Run)
-	if !ok || !reflect.DeepEqual(run.SecretSpecs, []string{"id=token,env=TOKEN"}) || !reflect.DeepEqual(run.SSHSpecs, []string{"default=/tmp/agent.sock"}) {
-		t.Fatalf("lowered credential RUN = %#v", request.Operations[0])
-	}
-	if !reflect.DeepEqual(request.Secrets, []string{"id=token,env=TOKEN"}) || !reflect.DeepEqual(request.SSH, []string{"default=/tmp/agent.sock"}) {
-		t.Fatalf("request credential sources = secrets %v, SSH %v", request.Secrets, request.SSH)
-	}
-}
-
-func TestRequestFromPlanLowersHealthcheckAndOnBuild(t *testing.T) {
+func TestLowerGraphOperationsLowersHealthcheckAndOnBuild(t *testing.T) {
 	plan := testPlan(t, `
 from "scratch" {
     healthcheck interval="30s" timeout="3s" start-period="5s" start-interval="1s" retries=4 { exec "/bin/check" "--ready" }
     onbuild { run "make generated" }
 }
 `)
-	request, err := RequestFromPlan(plan, PlanOptions{})
+	operations, err := lowerGraphOperations((plan).Stages[0].Operations, nil, nil, nil, []string{"/bin/sh", "-c"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -363,12 +294,12 @@ from "scratch" {
 		StartPeriod: 5 * time.Second, StartInterval: time.Second, Retries: 4,
 	})
 	want := []Operation{wantHealthcheck, OnBuild("RUN make generated")}
-	if !reflect.DeepEqual(request.Operations, want) {
-		t.Fatalf("operations = %#v, want %#v", request.Operations, want)
+	if !reflect.DeepEqual(operations, want) {
+		t.Fatalf("operations = %#v, want %#v", operations, want)
 	}
 }
 
-func TestRequestFromPlanLowersLinkForCopyAndAdd(t *testing.T) {
+func TestLowerGraphOperationsLowersLinkForCopyAndAdd(t *testing.T) {
 	plan := testPlan(t, `
 from "scratch" {
     copy "linked-copy" "/linked-copy" link="true"
@@ -377,32 +308,32 @@ from "scratch" {
     add "plain-add" "/plain-add" link="false"
 }
 `)
-	request, err := RequestFromPlan(plan, PlanOptions{ContextDir: "/context"})
+	operations, err := lowerGraphOperations((plan).Stages[0].Operations, nil, nil, nil, []string{"/bin/sh", "-c"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(request.Operations) != 4 {
-		t.Fatalf("operations = %#v, want four COPY/ADD operations", request.Operations)
+	if len(operations) != 4 {
+		t.Fatalf("operations = %#v, want four COPY/ADD operations", operations)
 	}
 	want := []bool{true, false, true, false}
 	got := []bool{
-		request.Operations[0].(Copy).Link,
-		request.Operations[1].(Copy).Link,
-		request.Operations[2].(Add).Link,
-		request.Operations[3].(Add).Link,
+		operations[0].(Copy).Link,
+		operations[1].(Copy).Link,
+		operations[2].(Add).Link,
+		operations[3].(Add).Link,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("lowered link values = %v, want %v", got, want)
 	}
 }
 
-func TestRequestFromPlanRejectsMalformedCopyAndAddLink(t *testing.T) {
+func TestLowerGraphOperationsRejectsMalformedCopyAndAddLink(t *testing.T) {
 	for _, instruction := range []string{"copy", "add"} {
 		t.Run(instruction, func(t *testing.T) {
-			_, err := RequestFromPlan(testPlan(t, `from "scratch" {
+			_, err := lowerGraphOperations((testPlan(t, `from "scratch" {
     `+instruction+` "source" "/output" link="sometimes"
 }
-`), PlanOptions{ContextDir: "/context"})
+`)).Stages[0].Operations, nil, nil, nil, []string{"/bin/sh", "-c"}, nil)
 			if err == nil || !strings.Contains(err.Error(), strings.ToUpper(instruction)+" link must be true or false") {
 				t.Fatalf("malformed %s link error = %v", instruction, err)
 			}
@@ -433,28 +364,28 @@ func TestLowerGraphOperationsPassesLinkForStageCopy(t *testing.T) {
 	}
 }
 
-func TestRequestFromPlanLowersParentsForCopyAndAdd(t *testing.T) {
+func TestLowerGraphOperationsLowersParentsForCopyAndAdd(t *testing.T) {
 	plan := testPlan(t, `
 from "scratch" {
     copy "copy/./nested" "/copy/" parents="true"
     add "add/./nested" "/add/" parents="true"
 }
 `)
-	request, err := RequestFromPlan(plan, PlanOptions{ContextDir: "/context"})
+	operations, err := lowerGraphOperations((plan).Stages[0].Operations, nil, nil, nil, []string{"/bin/sh", "-c"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(request.Operations) != 2 {
-		t.Fatalf("operations = %#v, want COPY and ADD", request.Operations)
+	if len(operations) != 2 {
+		t.Fatalf("operations = %#v, want COPY and ADD", operations)
 	}
-	copyOperation, copyOK := request.Operations[0].(Copy)
-	addOperation, addOK := request.Operations[1].(Add)
+	copyOperation, copyOK := operations[0].(Copy)
+	addOperation, addOK := operations[1].(Add)
 	if !copyOK || !addOK || !copyOperation.Parents || !addOperation.Parents {
-		t.Fatalf("parents operations = %#v, want enabled COPY and ADD", request.Operations)
+		t.Fatalf("parents operations = %#v, want enabled COPY and ADD", operations)
 	}
 }
 
-func TestRequestFromPlanLowersOrderedRunMounts(t *testing.T) {
+func TestLowerGraphOperationsLowersOrderedRunMounts(t *testing.T) {
 	plan := testPlan(t, `
 from "scratch" {
     run "true" {
@@ -465,14 +396,14 @@ from "scratch" {
 }
 `)
 	resolverCalls := []int{}
-	request, err := RequestFromPlan(plan, PlanOptions{ContextDir: "/context", CacheMountID: func(_ planner.Operation, mountIndex int) (string, error) {
+	operations, err := lowerGraphOperations((plan).Stages[0].Operations, nil, nil, nil, []string{"/bin/sh", "-c"}, func(_ planner.Operation, mountIndex int) (string, error) {
 		resolverCalls = append(resolverCalls, mountIndex)
 		return "scoped-cache", nil
-	}})
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	run := request.Operations[0].(Run)
+	run := operations[0].(Run)
 	if !reflect.DeepEqual(resolverCalls, []int{1}) {
 		t.Fatalf("cache resolver calls = %v", resolverCalls)
 	}
@@ -486,7 +417,7 @@ from "scratch" {
 	}
 }
 
-func TestRequestFromPlanRejectsUnboundAndAmbiguousRunMounts(t *testing.T) {
+func TestLowerGraphOperationsRejectsUnboundAndAmbiguousRunMounts(t *testing.T) {
 	tests := []struct{ name, mount, message string }{
 		{"comma", `mount "tmpfs" target="/tmp,other"`, "unsafe or ambiguous"},
 		{"context escape", `mount "bind" source="../secret" target="/secret"`, "escapes the build context"},
@@ -497,10 +428,10 @@ func TestRequestFromPlanRejectsUnboundAndAmbiguousRunMounts(t *testing.T) {
     run "true" { `+test.mount+` }
 }
 `)
-			request, err := RequestFromPlan(plan, PlanOptions{ContextDir: "/context"})
+			operations, err := lowerGraphOperations((plan).Stages[0].Operations, nil, nil, nil, []string{"/bin/sh", "-c"}, nil)
 			if err == nil {
 				fake := &recordingBuilder{}
-				err = applyOperations(context.Background(), fake, "/context", request.Operations)
+				err = applyOperationWithContextContext(context.Background(), fake, "/context", nil, operations[0])
 			}
 			if err == nil || !strings.Contains(err.Error(), test.message) {
 				t.Fatalf("want %q, got %v", test.message, err)
@@ -528,7 +459,7 @@ func TestLowerRunMountsRejectsStageBackedSources(t *testing.T) {
 					Name: "mount", Arguments: []string{mountType}, Properties: properties,
 				}},
 			}}
-			_, _, err := lowerOperation(operation, []string{"/bin/sh", "-c"})
+			_, _, err := lowerOperationWithCacheMountIDs(operation, []string{"/bin/sh", "-c"}, nil, nil)
 			if err == nil || !strings.Contains(err.Error(), "from stages or images") {
 				t.Fatalf("stage-backed %s mount error = %v", mountType, err)
 			}
@@ -536,56 +467,17 @@ func TestLowerRunMountsRejectsStageBackedSources(t *testing.T) {
 	}
 }
 
-func TestRequestFromPlanPreservesNoNetworkRun(t *testing.T) {
+func TestLowerGraphOperationsPreservesNoNetworkRun(t *testing.T) {
 	plan := testPlan(t, `from "scratch" {
     run "true" network="none"
 }
 `)
-	request, err := RequestFromPlan(plan, PlanOptions{})
+	operations, err := lowerGraphOperations((plan).Stages[0].Operations, nil, nil, nil, []string{"/bin/sh", "-c"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := request.Operations[0].(Run).Network; got != "none" {
+	if got := operations[0].(Run).Network; got != "none" {
 		t.Fatalf("RUN network policy = %q, want none", got)
-	}
-}
-
-func TestRequestFromPlanBuildsScratchCopy(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping a live rootless Buildah build in short mode")
-	}
-	root := t.TempDir()
-	contextDir := filepath.Join(root, "context")
-	if err := os.Mkdir(contextDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(contextDir, "proof"), []byte("planned\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	request, err := RequestFromPlan(testPlan(t, `
-from "scratch" {
-    copy "proof" "/proof"
-    env COOPR_PATH="planned"
-    cmd { exec "/proof" }
-}
-`), PlanOptions{
-		Store: StoreOptions{
-			RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs",
-		},
-		ContextDir: contextDir, Isolation: "rootless",
-		Output: Output{Path: filepath.Join(root, "layout"), Reference: "planned-scratch"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	result, err := Build(ctx, request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.ManifestDigest == "" {
-		t.Fatal("planned build returned no manifest digest")
 	}
 }
 

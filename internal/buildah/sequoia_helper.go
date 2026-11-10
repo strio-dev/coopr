@@ -18,12 +18,14 @@ const SequoiaHelperProtocol = "coopr-sequoia-signing/1"
 // FindSequoiaHelper locates the optional installed backend and checks its wire version.
 // Callers invoke it only for explicitly requested Sequoia signing.
 func FindSequoiaHelper(ctx context.Context) (string, error) {
-	executable, _ := os.Executable()
-	directory := filepath.Dir(executable)
-	candidates := []string{filepath.Join(directory, SequoiaHelperName), filepath.Join(directory, "..", "libexec", "coopr", SequoiaHelperName)}
-	if resolved, err := filepath.EvalSymlinks(executable); err == nil && resolved != executable {
-		directory = filepath.Dir(resolved)
-		candidates = append(candidates, filepath.Join(directory, SequoiaHelperName), filepath.Join(directory, "..", "libexec", "coopr", SequoiaHelperName))
+	var candidates []string
+	if executable, err := os.Executable(); err == nil {
+		directory := filepath.Dir(executable)
+		candidates = []string{filepath.Join(directory, SequoiaHelperName), filepath.Join(directory, "..", "libexec", "coopr", SequoiaHelperName)}
+		if resolved, err := filepath.EvalSymlinks(executable); err == nil && resolved != executable {
+			directory = filepath.Dir(resolved)
+			candidates = append(candidates, filepath.Join(directory, SequoiaHelperName), filepath.Join(directory, "..", "libexec", "coopr", SequoiaHelperName))
+		}
 	}
 	if path, err := exec.LookPath(SequoiaHelperName); err == nil {
 		candidates = append(candidates, path)
@@ -40,6 +42,8 @@ func FindSequoiaHelper(ctx context.Context) (string, error) {
 			return "", fmt.Errorf("sequoia helper %q is not executable", path)
 		}
 		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		// Explicit signing probes an installed/PATH helper; the version check is compatibility only.
+		// nosemgrep: cache.semgrep-rules.go.lang.security.audit.dangerous-exec-command
 		command := exec.Command(path, "--protocol-version")
 		var output limitedHelperOutput
 		command.Stdout = &output
@@ -72,6 +76,8 @@ func (output *limitedHelperOutput) Write(data []byte) (int, error) {
 
 // RunSequoiaWorker shares the native worker's process supervision and terminal routing.
 func RunSequoiaWorker(ctx context.Context, helper, worker, request, jobDir string, progress io.Writer) error {
+	// Signing executes the selected helper with a private request path, never shell text.
+	// nosemgrep: cache.semgrep-rules.go.lang.security.audit.dangerous-exec-command
 	command := exec.Command(helper, request)
 	command.Args[0] = worker
 	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stderr, progress

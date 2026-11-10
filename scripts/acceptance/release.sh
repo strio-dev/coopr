@@ -24,12 +24,16 @@ artifact_created=false
 container_created=false
 staged_install=''
 cleanup() {
-  local status=$?
+  local status=$? cleanup_failed=0
   trap - EXIT INT TERM
-  if $container_created; then podman rm "$artifact_container" >/dev/null 2>&1 || true; fi
-  if $artifact_created; then podman rmi "$artifact_image" >/dev/null 2>&1 || true; fi
-  if $cli_loaded; then podman rmi "$cli_image" >/dev/null 2>&1 || true; fi
-  if [[ -n $staged_install ]]; then rm -rf -- "$staged_install"; fi
+  if $container_created; then podman rm "$artifact_container" >/dev/null || cleanup_failed=1; fi
+  if $artifact_created; then podman rmi --no-prune "$artifact_image" >/dev/null || cleanup_failed=1; fi
+  if $cli_loaded; then podman rmi --no-prune "$cli_image" >/dev/null || cleanup_failed=1; fi
+  if [[ -n $staged_install ]]; then rm -rf -- "$staged_install" || cleanup_failed=1; fi
+  if ((cleanup_failed)); then
+    printf 'Packaged acceptance fixture cleanup incomplete\n' >&2
+    if ((status == 0)); then status=1; fi
+  fi
   exit "$status"
 }
 trap cleanup EXIT

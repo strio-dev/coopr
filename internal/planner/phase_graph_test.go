@@ -1,7 +1,6 @@
 package planner
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -22,24 +21,14 @@ from "example.invalid/helper:latest" as="helper" {
 }
 extend as="output" { `+body+`; }
 `)
-			publication, err := CreateDemandDriven(def, Options{Mode: Publish}, func(source FromSource) (StageBind, error) {
-				t.Fatalf("invocation-only base resolved during publication: %+v", source)
-				return StageBind{}, nil
-			})
+			publication, err := CreateDemandDriven(def, Options{Mode: Publish}, unexpectedBindResolver(t))
 			if err != nil {
 				t.Fatal(err)
 			}
 			if len(publication.Stages) != 0 || len(publication.PackageArguments) != 0 {
 				t.Fatalf("invocation helper executed or fixed arguments during publication: %+v", publication)
 			}
-			encoded, err := json.Marshal(publication.Component)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var restored PublishedComponent
-			if err := json.Unmarshal(encoded, &restored); err != nil {
-				t.Fatal(err)
-			}
+			restored := roundTripPublished(t, publication.Component)
 			calls := 0
 			invocation, err := InstantiateDemandDriven(&restored, Options{Arguments: map[string]string{"message": "caller"}}, nil, func(source FromSource) (StageBind, error) {
 				calls++
@@ -167,20 +156,14 @@ func TestComponentPhasesLocalOnBuildKeepsPackageDependency(t *testing.T) {
 	publication, err := CreateDemandDriven(parse(t, `package as="assets" { copy "payload" "/payload"; }
 from "scratch" as="helper" { onbuild { copy "/payload" "/payload" from="assets"; }; }
 extend { from "helper" {}; }
-`), Options{Mode: Publish}, func(source FromSource) (StageBind, error) {
-		t.Fatalf("unexpected external base: %+v", source)
-		return StageBind{}, nil
-	})
+`), Options{Mode: Publish}, unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(publication.Stages) != 1 || publication.Stages[0].Name != "assets" {
 		t.Fatalf("local ONBUILD package dependency pruned: %+v", publication.Stages)
 	}
-	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, func(source FromSource) (StageBind, error) {
-		t.Fatalf("unexpected invocation base: %+v", source)
-		return StageBind{}, nil
-	})
+	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, map[string]StageBind{"0": {}}, unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,10 +184,7 @@ func TestComponentPhasesDormantHelperUsesInvocationArguments(t *testing.T) {
     copy "${input}" "/payload"
 }
 extend { from "registry.example/output:latest" {}; }
-`), Options{Mode: Publish}, func(FromSource) (StageBind, error) {
-		t.Fatal("invocation-only image resolved during publication")
-		return StageBind{}, nil
-	})
+`), Options{Mode: Publish}, unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
 	}

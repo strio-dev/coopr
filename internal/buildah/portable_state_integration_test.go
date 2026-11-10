@@ -194,6 +194,53 @@ func TestPackageSnapshotPreservesPortableStateAcrossStores(t *testing.T) {
 	if firstIdentity != secondIdentity {
 		t.Fatalf("portable state differs after independent import: before=%+v after=%+v", firstIdentity, secondIdentity)
 	}
+	for _, test := range []struct {
+		name, path string
+		eligible   bool
+	}{
+		{"file", "nested/data", false},
+		{"directory", "nested", false},
+		{"root", ".", true},
+	} {
+		t.Run("subsecond_"+test.name, func(t *testing.T) {
+			mount, err := firstStore.MountImage(firstID, nil, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if _, err := firstStore.UnmountImage(firstID, false); err != nil {
+					t.Error(err)
+				}
+			}()
+			path := filepath.Join(mount, test.path)
+			before, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if err := os.Chtimes(path, before.ModTime(), before.ModTime()); err != nil {
+					t.Error(err)
+				}
+			}()
+			stamp := time.Unix(1_700_000_300, 123_456_789)
+			if err := os.Chtimes(path, stamp, stamp); err != nil {
+				t.Fatal(err)
+			}
+			if info, err := os.Stat(path); err != nil || !info.ModTime().Equal(stamp) {
+				t.Fatalf("committed fixture did not retain subsecond mtime: %v, %v", info, err)
+			}
+			identity, _, cachePath, eligible, err := snapshotPortableState(ctx, firstStore, system, firstID, config, config, rootMetadata, platform, root)
+			if cachePath != "" {
+				defer func() { _ = os.Remove(cachePath) }()
+			}
+			if err != nil || eligible != test.eligible || (cachePath != "") != test.eligible {
+				t.Fatalf("subsecond snapshot: eligible=%v path=%q err=%v, want eligible=%v", eligible, cachePath, err, test.eligible)
+			}
+			if eligible && identity != firstIdentity {
+				t.Fatalf("root mtime changed portable identity: before=%+v after=%+v", firstIdentity, identity)
+			}
+		})
+	}
 	// The storage tar exporter cannot encode POSIX ACLs. A cache snapshot
 	// must refuse this state rather than silently create a warm output with
 	// weaker permissions than the cold committed image.

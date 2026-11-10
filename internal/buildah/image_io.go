@@ -213,12 +213,10 @@ func LoadImages(ctx context.Context, store StoreOptions, path string, options oc
 			// Native image storage cannot represent arbitrary attestation layers.
 			// Keep index metadata and imported descriptors, but omit children that
 			// were not loaded instead of publishing dangling references to them.
-			index.Manifests = imported
-			rootData, err = json.Marshal(index)
+			root, rootData, err = oci.RewriteImageIndex(root, rootData, imported)
 			if err != nil {
 				return err
 			}
-			root = oci.Descriptor(root.MediaType, rootData)
 		}
 		id, err := imagestore.FromStore(backend).WriteStoredIndex(ctx, root, rootData, imageIDs, tag)
 		if err != nil {

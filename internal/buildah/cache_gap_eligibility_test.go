@@ -19,7 +19,7 @@ func TestCacheGapKnownExecutionInputsCanReuseAggregateResults(t *testing.T) {
 			if !componentCacheEligible(resolved) {
 				t.Fatal("keyed execution settings prevent component result reuse")
 			}
-			if _, ok := packageCacheEligibility([]planner.Stage{stage}); !ok {
+			if _, ok := packageCacheEligibility([]planner.Stage{stage}, RunControls{}); !ok {
 				t.Fatal("keyed execution settings prevent package result reuse")
 			}
 		})

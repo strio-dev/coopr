@@ -39,9 +39,9 @@ func makePlan(t *testing.T, source string, options Options) *Plan {
 	return p
 }
 
-func invokePublished(t *testing.T, publication *Plan, options Options) *Plan {
+func roundTripPublished(t *testing.T, component *PublishedComponent) PublishedComponent {
 	t.Helper()
-	data, err := json.Marshal(publication.Component)
+	data, err := json.Marshal(component)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,6 +49,12 @@ func invokePublished(t *testing.T, publication *Plan, options Options) *Plan {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatal(err)
 	}
+	return decoded
+}
+
+func invokePublished(t *testing.T, publication *Plan, options Options) *Plan {
+	t.Helper()
+	decoded := roundTripPublished(t, publication.Component)
 	p, err := Instantiate(&decoded, options)
 	if err != nil {
 		t.Fatal(err)
@@ -99,7 +105,7 @@ func TestPackageBoundary(t *testing.T) {
 		t.Fatalf("publication = %+v", publication)
 	}
 	invocation := invokePublished(t, publication, Options{})
-	if !reflect.DeepEqual(stageIDs(invocation), []string{"1", "0", "3", "4"}) {
+	if !reflect.DeepEqual(stageIDs(invocation), []string{"2", "1", "4", "5"}) {
 		t.Fatalf("invocation order = %v", stageIDs(invocation))
 	}
 	for _, s := range invocation.Stages {
@@ -110,7 +116,7 @@ func TestPackageBoundary(t *testing.T) {
 			t.Fatalf("package is executable: %+v", s)
 		}
 	}
-	if !reflect.DeepEqual(invocation.Outputs, []string{"4"}) {
+	if !reflect.DeepEqual(invocation.Outputs, []string{"5"}) {
 		t.Fatalf("outputs = %v", invocation.Outputs)
 	}
 	if !reflect.DeepEqual(invocation.Inputs, []Input{{Kind: "package", Reference: "tools"}}) {
@@ -162,7 +168,7 @@ extend {
 		t.Fatalf("publication stage count = %d", len(publish.Stages))
 	}
 	invoke := invokePublished(t, publish, Options{})
-	if !reflect.DeepEqual(stageIDs(invoke), []string{"0", "1"}) {
+	if !reflect.DeepEqual(stageIDs(invoke), []string{"3", "5"}) {
 		t.Fatalf("invocation = %v", stageIDs(invoke))
 	}
 }
@@ -179,7 +185,7 @@ extend {
 }
 `
 	p := makePlan(t, source, Options{Mode: Invoke})
-	if !reflect.DeepEqual(stageIDs(p), []string{"0", "1"}) {
+	if !reflect.DeepEqual(stageIDs(p), []string{"1", "2"}) {
 		t.Fatalf("stages = %v", stageIDs(p))
 	}
 }
@@ -330,7 +336,7 @@ func TestArgumentErrors(t *testing.T) {
 	}
 	missingMetadata := *publication.Component
 	missingMetadata.PackageArguments = nil
-	if _, err := Instantiate(&missingMetadata, Options{Arguments: map[string]string{"channel": "stable"}}); err == nil || !strings.Contains(err.Error(), "published value") {
+	if _, err := Instantiate(&missingMetadata, Options{Arguments: map[string]string{"channel": "stable"}}); err == nil || !strings.Contains(err.Error(), "invalid package argument") {
 		t.Fatalf("missing fixed metadata accepted: %v", err)
 	}
 	invocation := invokePublished(t, publication, Options{})
@@ -570,9 +576,9 @@ func TestMultipleExtendTargets(t *testing.T) {
 		flavor string
 	}{
 		{"runtime", []string{"0"}, "runtime"},
-		{"debug", []string{"0"}, "debug"},
-		{"release", []string{"0", "2"}, "runtime"},
-		{"", []string{"0", "2"}, "runtime"},
+		{"debug", []string{"1"}, "debug"},
+		{"release", []string{"0", "3"}, "runtime"},
+		{"", []string{"0", "3"}, "runtime"},
 	} {
 		t.Run("target="+tc.target, func(t *testing.T) {
 			publication := makePlan(t, targets, Options{Mode: Publish, Target: tc.target})
@@ -632,7 +638,7 @@ from "SOURCE" as="Final" {
 	}
 }
 
-func TestComponentMetadataCanonicalizesStageReservations(t *testing.T) {
+func TestComponentMetadataPreservesAliasSpellingAndCanonicalLookup(t *testing.T) {
 	publication := makePlan(t, `package as="Pkg" {}
 extend as="Base" {
     copy "/artifact" "/artifact" from="pKg"
@@ -641,8 +647,12 @@ extend as="Final" {
     from "BASE" {}
 }
 `, Options{Mode: Publish, Target: "fInAl"})
-	if !reflect.DeepEqual(publication.Component.ReservedStageNames, []string{"base", "final", "pkg"}) {
-		t.Fatalf("reserved stage names = %v", publication.Component.ReservedStageNames)
+	raw, err := ProjectPublished(publication.Component)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw.Stages[0].Name != "Pkg" || raw.Stages[1].Name != "Base" || raw.Aliases["pkg"] != "0" || raw.Aliases["final"] != "3" {
+		t.Fatalf("original alias spelling/canonical lookup changed: %+v", raw)
 	}
 	if _, err := Instantiate(publication.Component, Options{}); err != nil {
 		t.Fatalf("case-insensitive component metadata rejected: %v", err)
@@ -729,11 +739,11 @@ extend as="debug" {
 }
 `
 	p := invokePublished(t, makePlan(t, source, Options{Mode: Publish, Target: "runtime"}), Options{})
-	if !reflect.DeepEqual(stageIDs(p), []string{"0", "1"}) || p.Stages[0].Kind != "package-input" {
+	if !reflect.DeepEqual(stageIDs(p), []string{"1", "2"}) || p.Stages[0].Kind != "package-input" {
 		t.Fatalf("plan = %+v", p)
 	}
 	p = invokePublished(t, makePlan(t, source, Options{Mode: Publish, Target: "debug"}), Options{})
-	if !reflect.DeepEqual(stageIDs(p), []string{"0"}) {
+	if !reflect.DeepEqual(stageIDs(p), []string{"3"}) {
 		t.Fatalf("unused packages included: %v", stageIDs(p))
 	}
 }
@@ -767,11 +777,11 @@ func TestComponentTargetIsAnInvocationArgument(t *testing.T) {
 
 func TestPublishedTargetAndPlatformCannotBeChangedAtInvocation(t *testing.T) {
 	publication := makePlan(t, targets, Options{Mode: Publish, Target: "debug", Platform: "linux/arm64"})
-	if publication.Component.Platform != "linux/arm64" || publication.Component.Output != "0" {
+	if publication.Component.Platform != "linux/arm64" || publication.Component.Output != "1" {
 		t.Fatalf("publication metadata = %+v", publication.Component)
 	}
-	if len(publication.Component.Definition.Instructions) != 1 {
-		t.Fatalf("unrelated stages retained: %+v", publication.Component.Definition.Instructions)
+	if len(publication.Component.Definition.Instructions) != 3 {
+		t.Fatalf("original target namespace lost: %+v", publication.Component.Definition.Instructions)
 	}
 	p := invokePublished(t, publication, Options{})
 	if p.Target != "debug" || p.Platform != "linux/arm64" {
@@ -800,6 +810,7 @@ func TestPublishedTargetAndPlatformCannotBeChangedAtInvocation(t *testing.T) {
 func TestMalformedPublishedDefinitionIsRejected(t *testing.T) {
 	component := &PublishedComponent{
 		Definition: &definition.Definition{Instructions: []definition.Instruction{{Name: "from"}, {Name: "extend"}}},
+		Format:     ResidualFormat,
 		Output:     "1",
 		Platform:   "linux/amd64",
 	}
@@ -808,7 +819,7 @@ func TestMalformedPublishedDefinitionIsRejected(t *testing.T) {
 	}
 }
 
-func TestPublishedFromBindingsRejectTopologyChanges(t *testing.T) {
+func TestPublishedFromLateBindingStillRejectsInvalidOrder(t *testing.T) {
 	for _, tc := range []struct {
 		name, source, override, message string
 	}{
@@ -818,36 +829,23 @@ extend as="base" {
     copy "/file" "/file" from="builder"
 }
 `, "base", "requires an earlier stage"},
-		{"retained stage to image", `arg "source" "base"
-extend {
-    from "debian" as="base" {}
-    from "${source}" as="builder" {}
-    copy "/file" "/file" from="builder"
-}
-`, "ubuntu", "FROM binding changed"},
-		{"pruned stage alias", `arg "source" "debian"
+
+		{"later stage alias", `arg "source" "debian"
 extend as="used" {
     from "${source}" as="builder" {}
     copy "/file" "/file" from="builder"
 }
 extend as="discarded" {}
-`, "discarded", "was a stage name at publication"},
+`, "discarded", "requires an earlier stage"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			opts := Options{Mode: Publish}
-			if tc.name == "pruned stage alias" {
+			if tc.name == "later stage alias" {
 				opts.Target = "used"
 			}
 			publish := makePlan(t, tc.source, opts)
-			encoded, err := json.Marshal(publish.Component)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var decoded PublishedComponent
-			if err := json.Unmarshal(encoded, &decoded); err != nil {
-				t.Fatal(err)
-			}
-			_, err = Instantiate(&decoded, Options{Arguments: map[string]string{"source": tc.override}})
+			decoded := roundTripPublished(t, publish.Component)
+			_, err := Instantiate(&decoded, Options{Arguments: map[string]string{"source": tc.override}})
 			if err == nil || !strings.Contains(err.Error(), tc.message) {
 				t.Fatalf("want %q, got %v", tc.message, err)
 			}
@@ -869,7 +867,7 @@ extend {
 	}
 }
 
-func TestPublishedStageReferencesCannotChange(t *testing.T) {
+func TestPublishedStageReferencesCanSelectAnotherEarlierStage(t *testing.T) {
 	for _, operation := range []string{
 		`copy "/file" "/file" from="${source}"`,
 		`run "cat /file" {
@@ -885,9 +883,12 @@ extend {
 }
 `
 		publish := makePlan(t, source, Options{Mode: Publish})
-		_, err := Instantiate(publish.Component, Options{Arguments: map[string]string{"source": "b"}})
-		if err == nil || !strings.Contains(err.Error(), "stage copy or mount references changed") {
-			t.Fatalf("changed stage dependency accepted: %v", err)
+		invocation, err := Instantiate(publish.Component, Options{Arguments: map[string]string{"source": "b"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(stageIDs(invocation), []string{"2", "0"}) || !reflect.DeepEqual(invocation.Stages[1].Dependencies, []string{"2"}) {
+			t.Fatalf("changed source kept stale dependency: %+v", invocation.Stages)
 		}
 	}
 }

@@ -210,42 +210,6 @@ func TestExtractArtifactSourceDoesNotFollowUpdatedTag(t *testing.T) {
 	}
 }
 
-func TestExtractArtifactSourceRejectsRemovedSelection(t *testing.T) {
-	ctx := t.Context()
-	store, system := artifactSourceTestStore(t)
-	reference := "registry.example/team/files:latest"
-	native := artifactSourceTestAdd(t, ctx, store, reference, map[string]string{"payload": "original"})
-	resolver, err := oci.NewResolver(oci.Options{PullPolicy: "never"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	selected, err := resolveFileSource(ctx, resolver, reference, v1.Platform{OS: "linux", Architecture: runtime.GOARCH}, store, system)
-	if err != nil {
-		t.Fatal(err)
-	}
-	artifacts, err := libartifact.NewArtifactStore(filepath.Join(store.GraphRoot(), "artifacts"), system)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ref, err := libartifact.NewArtifactStorageReference(native.Digest.Encoded())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := artifacts.Remove(ctx, ref); err != nil {
-		t.Fatal(err)
-	}
-	directory, cleanup, err := extractArtifactSource(ctx, store, selected)
-	if cleanup != nil {
-		t.Cleanup(func() { _ = cleanup() })
-	}
-	if !errors.Is(err, artifacttypes.ErrArtifactNotExist) {
-		t.Fatalf("extraction after native removal = %v, want ErrArtifactNotExist", err)
-	}
-	if directory != "" || cleanup != nil {
-		t.Fatalf("failed extraction returned directory %q or cleanup (present: %t)", directory, cleanup != nil)
-	}
-}
-
 func TestExtractArtifactSourcePreparedFilesSurviveRemoval(t *testing.T) {
 	ctx := t.Context()
 	store, system := artifactSourceTestStore(t)

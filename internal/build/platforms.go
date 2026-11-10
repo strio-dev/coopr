@@ -25,7 +25,7 @@ func discoverBuildPlatforms(ctx context.Context, def *definition.Definition, pla
 	resolver, err := oci.NewResolver(oci.Options{
 		ComponentStoreDir: componentStoreDir,
 		NativeStore:       buildah.NativeStoreOptions(opts.BuildStore),
-		Pull:              opts.Pull, PullPolicy: opts.PullPolicy, AuthFile: opts.AuthFile, CertDir: opts.CertDir, TLSVerify: opts.TLSVerify,
+		PullPolicy:        opts.PullPolicy, AuthFile: opts.AuthFile, CertDir: opts.CertDir, TLSVerify: opts.TLSVerify,
 		Credentials: opts.Credentials, Retry: opts.Retry, RetrySet: opts.RetrySet, RetryDelay: opts.RetryDelay, DecryptionKeys: opts.DecryptionKeys, SignaturePolicyPath: opts.SignaturePolicyPath,
 	})
 	if err != nil {

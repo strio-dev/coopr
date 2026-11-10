@@ -54,6 +54,9 @@ type Options struct {
 	// StageBinds supplies base-image state discovered after parsing but before
 	// graph resolution. Keys are raw numeric stage IDs, before closure pruning.
 	StageBinds map[string]StageBind
+	// packageBinds are verified snapshot configs keyed by the PACKAGE itself,
+	// independent of which FROM consumers invocation arguments select.
+	packageBinds map[string]StageBind
 	// PublishedArguments represents argument metadata from an already published
 	// component. It is distinct from the consumer's invocation overrides.
 	PublishedArguments map[string]string
@@ -103,8 +106,11 @@ type Operation struct {
 	// InputContext identifies the root for copy/add without from. MountContexts
 	// uses the child index for bind mounts without from. Stage-backed inputs keep
 	// their from reference and have no context annotation.
-	InputContext        string         `json:"input_context,omitempty"`
-	MountContexts       map[int]string `json:"mount_contexts,omitempty"`
+	InputContext  string         `json:"input_context,omitempty"`
+	MountContexts map[int]string `json:"mount_contexts,omitempty"`
+	// HostMounts are explicit live host directories admitted by the typed API.
+	// They are not authored component inputs or snapshotted build contexts.
+	HostMounts          map[int]string `json:"host_mounts,omitempty"`
 	TransientMountCount int            `json:"transient_mount_count,omitempty"`
 }
 
@@ -189,7 +195,7 @@ type Plan struct {
 	Component *PublishedComponent `json:"component,omitempty"`
 	// replan is intentionally process-local. Raw-definition workers and nested
 	// component resolution construct plans in the same process that executes
-	// them, so the closure can retain the verified resolver and frozen
+	// them, so the closure can retain the verified resolver and immutable
 	// publication metadata without putting either into the public plan format.
 	replan          dynamicStageReplanner                                     `json:"-"`
 	componentReplan func(ComponentBoundary, map[string]string) (*Plan, error) `json:"-"`
@@ -267,52 +273,18 @@ type Input struct {
 	Reference string `json:"reference"`
 }
 
-// PublishedComponent is symbolic publication metadata, not an OCI artifact.
-// It binds a pruned definition to one output and the package argument snapshot.
-// Registry resolution will eventually supply this metadata from a verified artifact.
+// PublishedComponent stores one replayable residual program in its original
+// stage namespace. PACKAGE bodies are erased after their snapshots are produced.
+// Plan can carry this metadata without an OCI envelope. Format prevents bare
+// compacted recipes from being admitted as an original-namespace residual.
+const ResidualFormat = "coopr.strio.dev/residual-original-selected-v2"
+
 type PublishedComponent struct {
-	// SourceStageIDs maps original numeric selectors to retained stages.
-	// Missing indices within SourceStageCount identify pruned producers.
-	SourceStageCount   int                     `json:"source_stage_count"`
-	SourceStageIDs     map[string]string       `json:"source_stage_ids"`
-	Definition         *definition.Definition  `json:"definition"`
-	Output             string                  `json:"output"`
-	DormantRoots       []string                `json:"dormant_roots,omitempty"`
-	Platform           string                  `json:"platform"`
-	PackageArguments   map[string]string       `json:"package_arguments,omitempty"`
-	FromBindings       map[string]FromBinding  `json:"from_bindings,omitempty"`
-	ReservedStageNames []string                `json:"reserved_stage_names,omitempty"`
-	StageReferences    []StageReferenceBinding `json:"stage_references,omitempty"`
-}
-
-// FromBinding freezes the graph role of a FROM source at publication. An image
-// binding intentionally does not pin the reference here; OCI resolution does so
-// later, while invocation arguments may select another external image.
-type FromBinding struct {
-	AfterStage  string `json:"after_stage,omitempty"`
-	AfterIndex  string `json:"after_index,omitempty"`
-	Kind        string `json:"kind"` // stage, image, or scratch
-	Stage       string `json:"stage,omitempty"`
-	SourceIndex string `json:"source_index,omitempty"`
-}
-
-// StageReferenceBinding freezes each COPY/ADD and mount dependency to the
-// stage it used at publication. Origin distinguishes an authored operation
-// from inherited package ONBUILD or a retained local stage's authored ONBUILD.
-// MountIndex is -1 for COPY/ADD itself.
-type StageReferenceBinding struct {
-	Stage      string `json:"stage"`
-	Origin     string `json:"origin"` // authored, onbuild, or local-onbuild
-	Operation  int    `json:"operation"`
-	MountIndex int    `json:"mount_index"`
-	// Kind is "stage" when omitted for compatibility with existing artifacts.
-	// An image binding freezes the external-image role while allowing its
-	// parameterized reference to change at invocation.
-	Kind   string `json:"kind,omitempty"`
-	Target string `json:"target,omitempty"`
-	// SourceIndex records an authored numeric stage selector before publication
-	// pruned and reindexed the graph. Invocation maps it to Target.
-	SourceIndex string `json:"source_index,omitempty"`
+	Format           string                 `json:"format"`
+	Definition       *definition.Definition `json:"definition"`
+	Output           string                 `json:"output"`
+	Platform         string                 `json:"platform"`
+	PackageArguments map[string]string      `json:"package_arguments,omitempty"`
 }
 
 // NormalizeParameters returns a canonical, reversible encoding for cache keys.
@@ -348,40 +320,37 @@ type rawStage struct {
 }
 
 type graph struct {
-	opts                Options
-	globals             scope
-	automatic           scope
-	globalInstructions  []definition.Instruction
-	raw                 []rawStage
-	stages              []Stage
-	aliases             map[string]int
-	states              []int
-	finalScopes         []scope
-	finalEnvironments   []map[string]string
-	finalShadows        []map[string]bool
-	finalDeclaredProxy  []map[string]bool
-	finalOnBuild        [][]string
-	dynamicConfig       []bool
-	verifiedConfig      []bool
-	packageDerived      []bool
-	inheritedOperations []int
-	packageResolved     []bool
-	packageFixed        []map[string]bool
-	resolutionEpoch     []uint64
-	scopes              []scope
-	deps                [][]int
-	bases               []int
-	packages            []int
-	extended            []int
-	projection          *RawGraph
-	declared            map[string]bool
-	bindResolver        StageBindResolver
-	reservedStageNames  map[string]bool
-	contexts            map[string]buildcontext.Spec
-	contextOverrides    map[int]buildcontext.Spec
-	published           *PublishedComponent
-	packageSource       *graph
-	contextBindings     map[string][]ContextBinding
+	opts               Options
+	globals            scope
+	automatic          scope
+	globalInstructions []definition.Instruction
+	raw                []rawStage
+	stages             []Stage
+	aliases            map[string]int
+	states             []int
+	finalScopes        []scope
+	finalEnvironments  []map[string]string
+	finalShadows       []map[string]bool
+	finalDeclaredProxy []map[string]bool
+	finalOnBuild       [][]string
+	dynamicConfig      []bool
+	verifiedConfig     []bool
+	packageDerived     []bool
+	packageResolved    []bool
+	packageFixed       []map[string]bool
+	resolutionEpoch    []uint64
+	scopes             []scope
+	deps               [][]int
+	bases              []int
+	packages           []int
+	extended           []int
+	projection         *RawGraph
+	declared           map[string]bool
+	bindResolver       StageBindResolver
+	contexts           map[string]buildcontext.Spec
+	contextOverrides   map[int]buildcontext.Spec
+	packageSource      *graph
+	contextBindings    map[string][]ContextBinding
 }
 
 var identifier = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
@@ -393,7 +362,7 @@ func Create(def *definition.Definition, opts Options) (*Plan, error) {
 	if opts.Mode == Invoke {
 		return nil, fmt.Errorf("invoke mode requires a publication plan; use Instantiate")
 	}
-	return create(def, opts, nil, nil)
+	return create(def, opts, nil, nil, nil)
 }
 
 // Instantiate plans the output fixed in publication metadata. Invocation options
@@ -402,7 +371,7 @@ func Instantiate(component *PublishedComponent, opts Options) (*Plan, error) {
 	if len(opts.StageBinds) != 0 {
 		return nil, fmt.Errorf("package stage binds must come from verified package configurations")
 	}
-	return instantiate(component, opts, nil)
+	return instantiate(component, opts, nil, nil)
 }
 
 // InstantiateWithPackageBinds uses base metadata from verified immutable
@@ -411,11 +380,15 @@ func InstantiateWithPackageBinds(component *PublishedComponent, opts Options, bi
 	if len(opts.StageBinds) != 0 {
 		return nil, fmt.Errorf("invocation options cannot supply stage binds")
 	}
-	if err := validatePackageStageBinds(component, binds); err != nil {
+	projected, err := ProjectPublished(component)
+	if err != nil {
 		return nil, err
 	}
-	opts.StageBinds = binds
-	return instantiate(component, opts, nil)
+	if err := validatePackageStageBinds(projected, binds); err != nil {
+		return nil, err
+	}
+	opts.packageBinds = binds
+	return instantiate(component, opts, nil, projected)
 }
 
 // InstantiateDemandDriven uses verified package snapshot metadata while
@@ -428,52 +401,43 @@ func InstantiateDemandDriven(component *PublishedComponent, opts Options, packag
 	if len(opts.StageBinds) != 0 {
 		return nil, fmt.Errorf("invocation options cannot supply stage binds")
 	}
-	if err := validatePackageStageBinds(component, packageBinds); err != nil {
+	projected, err := ProjectPublished(component)
+	if err != nil {
 		return nil, err
 	}
-	opts.StageBinds = packageBinds
-	return instantiate(component, opts, resolve)
+	if err := validatePackageStageBinds(projected, packageBinds); err != nil {
+		return nil, err
+	}
+	opts.packageBinds = packageBinds
+	return instantiate(component, opts, resolve, projected)
 }
 
-func validatePackageStageBinds(component *PublishedComponent, binds map[string]StageBind) error {
-	raw, err := ProjectPublished(component)
-	if err != nil {
-		return fmt.Errorf("invalid published component: %w", err)
-	}
-	required := make(map[string]bool)
-	for _, stage := range raw.Stages {
-		if stage.Kind != "from" {
-			continue
-		}
-		binding := raw.FromBindings[stage.ID]
-		if binding.Kind != "stage" {
-			continue
-		}
-		base, err := strconv.Atoi(binding.Stage)
-		if err != nil || base < 0 || base >= len(raw.Stages) {
-			return fmt.Errorf("invalid package base stage %q", binding.Stage)
-		}
-		if raw.Stages[base].Kind == "package" {
-			required[stage.ID] = true
-		}
+func validatePackageStageBinds(projected *RawGraph, binds map[string]StageBind) error {
+	required := make(map[string]bool, len(projected.PackageLeaves))
+	for _, id := range projected.PackageLeaves {
+		required[id] = true
 	}
 	if len(binds) != len(required) {
-		return fmt.Errorf("verified package stage binds do not match direct FROM-package stages")
+		return fmt.Errorf("verified package binds do not match snapshot leaves")
 	}
-	for stageID := range binds {
-		if !required[stageID] {
-			return fmt.Errorf("stage bind %s is not a direct FROM-package stage", stageID)
+	for id := range binds {
+		if !required[id] {
+			return fmt.Errorf("bind %s is not a package snapshot", id)
 		}
 	}
 	return nil
 }
 
-func instantiate(component *PublishedComponent, opts Options, resolve StageBindResolver) (*Plan, error) {
+func instantiate(component *PublishedComponent, opts Options, resolve StageBindResolver, projected *RawGraph) (*Plan, error) {
 	if component == nil || component.Definition == nil || component.Output == "" || component.Platform == "" {
 		return nil, fmt.Errorf("incomplete published component metadata")
 	}
-	if _, err := ValidatePublished(component); err != nil {
-		return nil, fmt.Errorf("invalid published component: %w", err)
+	if projected == nil {
+		var err error
+		projected, err = ProjectPublished(component)
+		if err != nil {
+			return nil, fmt.Errorf("invalid published component: %w", err)
+		}
 	}
 	for name := range opts.Arguments {
 		if _, fixed := component.PackageArguments[name]; fixed {
@@ -495,7 +459,7 @@ func instantiate(component *PublishedComponent, opts Options, resolve StageBindR
 	opts.Mode = Invoke
 	opts.Platform = component.Platform
 	opts.PublishedArguments = component.PackageArguments
-	return create(component.Definition, opts, component, resolve)
+	return create(component.Definition, opts, component, resolve, projected)
 }
 
 func normalizeSourceDateEpochOptions(opts Options) (Options, *int64, error) {
@@ -547,7 +511,7 @@ func (g *graph) normalizeSuppliedSourceDateEpoch(current *int64) (*int64, error)
 	return epoch, nil
 }
 
-func create(def *definition.Definition, opts Options, published *PublishedComponent, bindResolver StageBindResolver) (*Plan, error) {
+func create(def *definition.Definition, opts Options, published *PublishedComponent, bindResolver StageBindResolver, projected *RawGraph) (*Plan, error) {
 	opts, sourceDateEpoch, err := normalizeSourceDateEpochOptions(opts)
 	if err != nil {
 		return nil, err
@@ -581,9 +545,6 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 			}
 		}
 	}
-	if err := definition.Validate(def); err != nil {
-		return nil, err
-	}
 	if opts.Platform == "" {
 		opts.Platform = "linux/amd64"
 	}
@@ -601,17 +562,12 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 		return nil, err
 	}
 	g := &graph{
-		opts: opts, globals: scope{}, automatic: automaticPlatformScope(opts), published: published,
+		opts: opts, globals: scope{}, automatic: automaticPlatformScope(opts),
 		aliases: map[string]int{}, declared: map[string]bool{}, bindResolver: bindResolver,
-		reservedStageNames: map[string]bool{}, contexts: contexts,
+		contexts:         contexts,
 		contextOverrides: map[int]buildcontext.Spec{}, contextBindings: map[string][]ContextBinding{},
 	}
-	if published != nil {
-		for _, name := range published.ReservedStageNames {
-			g.reservedStageNames[canonicalStageName(name)] = true
-		}
-	}
-	if err := g.split(def); err != nil {
+	if err := g.split(def, projected); err != nil {
 		return nil, err
 	}
 	sourceDateEpoch, err = g.normalizeSuppliedSourceDateEpoch(sourceDateEpoch)
@@ -640,9 +596,13 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 	}
 	allowStageBinds := opts.Mode == Build || opts.Mode == Publish && bindResolver != nil || opts.Mode == Invoke && published != nil
 	if len(stageBinds) != 0 && !allowStageBinds {
-		return nil, fmt.Errorf("stage binds for components require frozen publication metadata")
+		return nil, fmt.Errorf("stage binds for components require verified publication metadata")
 	}
 	opts.StageBinds = stageBinds
+	opts.packageBinds, err = validateAndCloneBinds(g.raw, opts.packageBinds, "package")
+	if err != nil {
+		return nil, err
+	}
 	recipeStageBinds := maps.Clone(stageBinds)
 	g.opts = opts
 	if !component && len(g.packages) > 0 {
@@ -678,7 +638,7 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 	if opts.Mode == Publish {
 		g = g.invocationView()
 	}
-	if bindResolver != nil {
+	if bindResolver != nil || opts.Mode == Invoke {
 		if (component && opts.Mode != Publish && opts.Mode != Invoke) || (!component && opts.Mode != Build) {
 			return nil, fmt.Errorf("demand-driven planning mode %q does not match the definition", opts.Mode)
 		}
@@ -716,42 +676,8 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 			}
 		}
 	}
-	if opts.Mode == Invoke {
-		resolvedOnly := bindResolver != nil
-		if err := g.checkFromBindings(published.FromBindings, published.ReservedStageNames, resolvedOnly); err != nil {
-			return nil, err
-		}
-		expectedReferences := published.StageReferences
-		if resolvedOnly || opts.AwaitComponentReturns {
-			expectedReferences = slices.DeleteFunc(slices.Clone(expectedReferences), func(ref StageReferenceBinding) bool {
-				id, _ := strconv.Atoi(ref.Stage) // ValidatePublished checked every stage ID.
-				// Deferred bodies have no operations until their executed base is
-				// rebound. Their immutable references are checked during that replan.
-				if resolvedOnly && (g.states[id] != 2 || g.stages[id].DynamicBaseStage != "" || g.stages[id].DeferredImageSource) {
-					return true
-				}
-				stage := g.stages[id]
-				if stage.AwaitingComponent != nil && ref.Origin == "authored" {
-					for index, operation := range stage.Operations {
-						if operation.ComponentBoundary != nil && *operation.ComponentBoundary == *stage.AwaitingComponent {
-							return ref.Operation > index-g.inheritedOperations[id]
-						}
-					}
-				}
-				return false
-			})
-		}
-		if !slices.Equal(g.stageReferences(nil), expectedReferences) {
-			return nil, fmt.Errorf("stage copy or mount references changed from publication")
-		}
-	}
-	for key := range opts.PublishedArguments {
-		if !g.declared[key] {
-			return nil, fmt.Errorf("unknown published argument %q", key)
-		}
-	}
 	// Full graph cycle checks include copy and mount edges, not just FROM chains.
-	if bindResolver == nil {
+	if bindResolver == nil && opts.Mode != Invoke {
 		if _, err := g.walk(allIndices(n), false); err != nil {
 			return nil, err
 		}
@@ -768,66 +694,6 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 	if err != nil {
 		return nil, err
 	}
-	retentionRoots := []int{output}
-	if opts.Mode == Publish {
-		selectedClosure := make(map[int]bool, len(reachable))
-		for _, id := range reachable {
-			selectedClosure[id] = true
-		}
-		invocationClosure, err := g.walk([]int{output}, true)
-		if err != nil {
-			return nil, err
-		}
-		var discoveringStages []int
-		for _, id := range invocationClosure {
-			if g.raw[id].head.Name == "from" && (g.bases[id] >= 0 && g.dynamicConfig[g.bases[id]] || g.bases[id] == -1 && !strings.EqualFold(g.stages[id].Source, "scratch")) {
-				discoveringStages = append(discoveringStages, id)
-			}
-		}
-		if len(discoveringStages) != 0 {
-			for id, raw := range g.raw {
-				// External or component-produced ONBUILD may discover package or invocation
-				// dependencies. Retain these dormant roots in source order;
-				// SourceStageIDs maps their original numeric selectors after
-				// private producer stages are pruned.
-				if selectedClosure[id] {
-					continue
-				}
-				if !slices.ContainsFunc(discoveringStages, func(consumer int) bool {
-					return g.projection.requireEarlier(consumer, id, -1, strconv.Itoa(id)) == nil
-				}) {
-					continue
-				}
-				if err := g.resolvePhase(id, raw.head.Name == "package"); err != nil {
-					return nil, err
-				}
-				retentionRoots = append(retentionRoots, id)
-			}
-			reachable, err = g.walk(retentionRoots, false)
-			if err != nil {
-				return nil, err
-			}
-		}
-	}
-	if opts.Mode == Publish {
-		// Ownership is structural, not filesystem ancestry. Preserve the EXTEND block
-		// enclosing an independently based output without executing its caller body.
-		for _, id := range slices.Clone(reachable) {
-			if owner := g.raw[id].owner; owner != "" && !slices.Contains(reachable, mustStageIndex(owner)) && !slices.Contains(retentionRoots, mustStageIndex(owner)) {
-				index := mustStageIndex(owner)
-				g.raw[index].body = nil
-				g.deps[index] = nil
-				g.stages[index] = Stage{ID: owner, Name: g.raw[index].head.Properties["as"], Kind: "extend", Platform: g.opts.Platform}
-				g.states[index] = 2
-				retentionRoots = append(retentionRoots, index)
-			}
-		}
-		reachable, err = g.walk(retentionRoots, false)
-		if err != nil {
-			return nil, err
-		}
-	}
-
 	requiredPackages := []int{}
 	for _, id := range reachable {
 		if g.stages[id].Kind == "package" {
@@ -1031,22 +897,7 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 		}
 	}
 	if opts.Mode == Publish {
-		invocation, err := g.walk(retentionRoots, true)
-		if err != nil {
-			return nil, err
-		}
-		selectedInvocation, err := g.walk([]int{output}, true)
-		if err != nil {
-			return nil, err
-		}
-		dormant := []int{}
-		for _, id := range retentionRoots[1:] {
-			if !slices.Contains(selectedInvocation, id) && !slices.Contains(dormant, id) {
-				dormant = append(dormant, id)
-			}
-		}
-		slices.Sort(dormant)
-		plan.Component = g.component(output, invocation, dormant, plan.PackageArguments)
+		plan.Component = g.component(def, output, requiredPackages, plan.PackageArguments, reachable)
 	}
 	hasComponents := false
 	for _, raw := range executionGraph.raw {
@@ -1098,7 +949,7 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 		plan.awaitComponents = func() (*Plan, error) {
 			next := componentOptions
 			next.AwaitComponentReturns = true
-			return plan.retainExecutionRecipe(create(def, next, published, bindResolver))
+			return plan.retainExecutionRecipe(create(def, next, published, bindResolver, projected))
 		}
 		plan.componentReplan = func(boundary ComponentBoundary, environment map[string]string) (*Plan, error) {
 			next := componentOptions
@@ -1110,7 +961,7 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 				return nil, fmt.Errorf("component boundary %+v is already bound", boundary)
 			}
 			next.ComponentReturns[boundary] = maps.Clone(environment)
-			return plan.retainExecutionRecipe(create(def, next, published, bindResolver))
+			return plan.retainExecutionRecipe(create(def, next, published, bindResolver, projected))
 		}
 	}
 	for _, stage := range plan.Stages {
@@ -1132,7 +983,7 @@ func create(def *definition.Definition, opts Options, published *PublishedCompon
 				next.StageBinds = make(map[string]StageBind)
 			}
 			next.StageBinds[stageID] = bind
-			return plan.retainExecutionRecipe(create(def, next, published, bindResolver))
+			return plan.retainExecutionRecipe(create(def, next, published, bindResolver, projected))
 		}
 		break
 	}
@@ -1150,259 +1001,51 @@ func cloneComponentReturns(bindings map[ComponentBoundary]map[string]string) map
 	return cloned
 }
 
-// Keep the invocation closure in source order. Package stages become opaque
-// leaves: their producer bodies and private dependencies ran during publication
-// and must not be replayed or validated as invocation operations.
-func (g *graph) component(output int, reachable, dormant []int, args map[string]string) *PublishedComponent {
-	kept := make(map[int]bool, len(reachable))
-	newIDs := make(map[int]string, len(reachable))
-	for _, id := range reachable {
-		kept[id] = true
-	}
+// Keep original namespace slots, omitting only provably unselectable FROM bodies.
+func (g *graph) component(source *definition.Definition, output int, captured []int, args map[string]string, reachable []int) *PublishedComponent {
+	pruned := g.prunableFromBodies(reachable)
 	def := &definition.Definition{}
-	// Preserve global declarations, including their source defaults. Their fixed
-	// values are separately stored in package metadata and override those defaults.
-	def.Instructions = append(def.Instructions, g.globalInstructions...)
-	selected, next := "", 0
-	for id := range g.raw {
-		if kept[id] {
-			newIDs[id] = strconv.Itoa(next)
-			next++
+	id := 0
+	for _, authored := range source.Instructions {
+		inst := cloneInstruction(authored)
+		if inst.Name == "from" && pruned[id] {
+			inst.Children, inst.PrunedFrom = nil, true
 		}
-	}
-	bindings := map[string]FromBinding{}
-	heads := map[int]definition.Instruction{}
-	for id, raw := range g.raw {
-		if !kept[id] {
-			continue
-		}
-		if id == output {
-			selected = newIDs[id]
-		}
-		if raw.head.Name == "from" {
-			binding := FromBinding{Kind: "image"}
-			switch {
-			case g.bases[id] >= 0:
-				binding = FromBinding{Kind: "stage", Stage: newIDs[g.bases[id]]}
-				if _, err := strconv.Atoi(g.stages[id].Source); err == nil {
-					binding.SourceIndex = g.stages[id].Source
-				}
-			case strings.EqualFold(g.stages[id].Source, "scratch"):
-				binding.Kind = "scratch"
-			}
-			if after := g.stages[id].AfterStage; after != "" {
-				target, _ := strconv.Atoi(after)
-				binding.AfterStage = newIDs[target]
-				expanded, _ := expand(raw.head.Properties["after"], g.expansionScope(g.globals))
-				if canonicalSourceIndex(expanded) {
-					binding.AfterIndex = expanded
+		if inst.Name == "package" {
+			inst.Children = nil
+			inst.UnavailablePackage = !slices.Contains(captured, id)
+			if !inst.UnavailablePackage {
+				for _, name := range sortedKeys(args) {
+					inst.Children = append(inst.Children, definition.Instruction{Name: "arg", Arguments: []string{name, args[name]}})
 				}
 			}
-			bindings[newIDs[id]] = binding
 		}
-		head := raw.head
-		head.Children = nil
-		if raw.head.Name == "package" {
-			// Preserve the fixed package-argument scope without retaining the
-			// producer instructions. Instantiate uses these declarations to
-			// validate the immutable values stored in publication metadata.
-			for _, name := range sortedKeys(args) {
-				head.Children = append(head.Children, definition.Instruction{
-					Name: "arg", Arguments: []string{name, args[name]},
-				})
-			}
-		} else {
-			head.Children = foldLayerInstructions(raw.body)
+		if authored.Name != "arg" {
+			id++
 		}
-		heads[id] = head
-	}
-	for _, root := range g.projection.Roots {
-		id := mustStageIndex(root)
-		head, ok := heads[id]
-		if !ok {
-			continue
-		}
-		if head.Name == "extend" {
-			head.Children = nil
-			nested := id + 1
-			for _, child := range g.projection.Stages[id].AuthoredChildren {
+		if authored.Name == "extend" {
+			for index, child := range inst.Children {
 				if child.Name == "from" {
-					if retained, ok := heads[nested]; ok {
-						head.Children = append(head.Children, retained)
+					if pruned[id] {
+						inst.Children[index].Children = nil
+						inst.Children[index].PrunedFrom = true
 					}
-					nested++
-				} else if g.raw[id].body != nil {
-					head.Children = append(head.Children, cloneInstruction(child))
+					id++
 				}
 			}
 		}
-		if head.Name == "extend" && head.Properties["as"] != "" {
-			originalResult := mustStageIndex(g.projection.Results[root])
-			// Keeping a nested helper does not publish its owner's original
-			// output. Reserve that name without redirecting it to the helper.
-			if !kept[originalResult] || originalResult == id && g.raw[id].body == nil && len(head.Children) > 0 {
-				head.Properties = maps.Clone(head.Properties)
-				delete(head.Properties, "as")
-			}
-		}
-		def.Instructions = append(def.Instructions, head)
+		def.Instructions = append(def.Instructions, inst)
 	}
-	dormantRoots := make([]string, 0, len(dormant))
-	for _, id := range dormant {
-		if mapped, ok := newIDs[id]; ok && mapped != selected {
-			dormantRoots = append(dormantRoots, mapped)
-		}
-	}
-	sourceIDs := map[string]string{}
-	for original, mapped := range newIDs {
-		sourceIDs[strconv.Itoa(original)] = mapped
-	}
-	return &PublishedComponent{SourceStageCount: len(g.raw), SourceStageIDs: sourceIDs, Definition: def, Output: selected, DormantRoots: dormantRoots, Platform: g.opts.Platform, PackageArguments: maps.Clone(args), FromBindings: bindings, ReservedStageNames: sortedKeys(g.aliases), StageReferences: g.stageReferences(newIDs)}
+	return &PublishedComponent{Format: ResidualFormat, Definition: def, Output: strconv.Itoa(output), Platform: g.opts.Platform, PackageArguments: maps.Clone(args)}
 }
 
-// Bodies originate from validated nested definitions, so their generated
-// boundaries are balanced and cannot contain stage declarations.
-func foldLayerInstructions(body []definition.Instruction) []definition.Instruction {
-	var result []definition.Instruction
-	var stack []*[]definition.Instruction
-	target := &result
-	for _, inst := range body {
-		switch inst.LayerBoundary {
-		case "begin":
-			*target = append(*target, definition.Instruction{Name: "layer"})
-			stack = append(stack, target)
-			target = &(*target)[len(*target)-1].Children
-		case "end":
-			target = stack[len(stack)-1]
-			stack = stack[:len(stack)-1]
-		default:
-			*target = append(*target, inst)
+func (g *graph) split(def *definition.Definition, projected *RawGraph) error {
+	if projected == nil {
+		var err error
+		projected, err = projectRaw(def)
+		if err != nil {
+			return err
 		}
-	}
-	return result
-}
-
-func (g *graph) stageReferences(newIDs map[int]string) []StageReferenceBinding {
-	refs := []StageReferenceBinding{}
-	index := func(id int) string {
-		if newIDs == nil {
-			return strconv.Itoa(id)
-		}
-		return newIDs[id]
-	}
-	for id, stage := range g.stages {
-		if newIDs != nil {
-			if _, kept := newIDs[id]; !kept {
-				continue
-			}
-			if stage.Kind == "package" {
-				continue
-			}
-		}
-		for opIndex, op := range stage.Operations {
-			origin, sourceIndex := "authored", opIndex-g.inheritedOperations[id]
-			if opIndex < g.inheritedOperations[id] {
-				localTriggers := g.bases[id] >= 0 && g.raw[g.bases[id]].head.Name == "from" && !g.dynamicConfig[g.bases[id]]
-				if !g.packageDerived[id] && !localTriggers {
-					continue
-				}
-				origin, sourceIndex = "onbuild", opIndex
-				if localTriggers && !g.packageDerived[id] && len(g.finalOnBuild[g.bases[id]]) > 0 {
-					origin = "local-onbuild"
-				}
-			}
-			if (op.Name == "copy" || op.Name == "add") && op.Properties["from"] != "" {
-				ref := StageReferenceBinding{Stage: index(id), Origin: origin, Operation: sourceIndex, MountIndex: -1}
-				if target, local := g.resolveStageReference(op.Properties["from"]); local {
-					if origin != "authored" {
-						ref.Kind = "stage"
-					}
-					ref.Target = index(target)
-					if _, numeric := strconv.Atoi(op.Properties["from"]); numeric == nil {
-						ref.SourceIndex = g.publishedSourceIndex(index(id), origin, sourceIndex, -1, op.Properties["from"])
-					}
-				} else {
-					ref.Kind = "image"
-				}
-				refs = append(refs, ref)
-			}
-			for childIndex, mount := range op.Children {
-				if childIndex >= len(op.Children)-op.TransientMountCount {
-					continue
-				}
-				if mount.Properties["from"] != "" {
-					ref := StageReferenceBinding{Stage: index(id), Origin: origin, Operation: sourceIndex, MountIndex: childIndex}
-					if target, local := g.resolveStageReference(mount.Properties["from"]); local {
-						if origin != "authored" {
-							ref.Kind = "stage"
-						}
-						ref.Target = index(target)
-						if _, numeric := strconv.Atoi(mount.Properties["from"]); numeric == nil {
-							ref.SourceIndex = g.publishedSourceIndex(index(id), origin, sourceIndex, childIndex, mount.Properties["from"])
-						}
-					} else {
-						ref.Kind = "image"
-					}
-					refs = append(refs, ref)
-				}
-			}
-		}
-	}
-	return refs
-}
-
-func (g *graph) checkFromBindings(bindings map[string]FromBinding, reserved []string, resolvedOnly bool) error {
-	if !slices.IsSorted(reserved) || len(reserved) != len(slices.Compact(slices.Clone(reserved))) {
-		return fmt.Errorf("invalid published stage name reservations")
-	}
-	count := 0
-	for id, raw := range g.raw {
-		if raw.head.Name != "from" {
-			continue
-		}
-		if resolvedOnly && g.states[id] != 2 {
-			continue
-		}
-		count++
-		key := strconv.Itoa(id)
-		expected, ok := bindings[key]
-		if !ok {
-			return fmt.Errorf("published FROM binding missing for stage %s", key)
-		}
-		actual := FromBinding{Kind: "image"}
-		switch {
-		case g.bases[id] >= 0:
-			actual = FromBinding{Kind: "stage", Stage: strconv.Itoa(g.bases[id])}
-			actual.SourceIndex = expected.SourceIndex
-		case strings.EqualFold(g.stages[id].Source, "scratch"):
-			actual.Kind = "scratch"
-		}
-		contextOverride := g.stages[id].SourceContext != ""
-		if contextOverride {
-			// Explicit build contexts override both image references and stage aliases.
-			// They are caller inputs, not a reinterpretation of the published binding.
-			// Keep checking the immutable authored ordering edge below.
-			actual.Kind, actual.Stage, actual.SourceIndex = expected.Kind, expected.Stage, expected.SourceIndex
-		}
-		actual.AfterStage = g.stages[id].AfterStage
-		actual.AfterIndex = expected.AfterIndex
-		if expected != actual {
-			return fmt.Errorf("stage %s FROM binding changed from %+v to %+v at invocation", key, expected, actual)
-		}
-		if actual.Kind == "image" && !contextOverride && containsStageName(reserved, g.stages[id].Source) {
-			return fmt.Errorf("stage %s FROM source %q was a stage name at publication", key, g.stages[id].Source)
-		}
-	}
-	if !resolvedOnly && len(bindings) != count {
-		return fmt.Errorf("published FROM bindings do not match retained stages")
-	}
-	return nil
-}
-
-func (g *graph) split(def *definition.Definition) error {
-	projected, err := projectRaw(def)
-	if err != nil {
-		return err
 	}
 	g.projection = projected
 	for name, id := range projected.Aliases {
@@ -1502,6 +1145,10 @@ func (g *graph) declare(inst definition.Instruction, values scope, expansion sco
 }
 
 func validateAndCloneStageBinds(raw []rawStage, binds map[string]StageBind) (map[string]StageBind, error) {
+	return validateAndCloneBinds(raw, binds, "from")
+}
+
+func validateAndCloneBinds(raw []rawStage, binds map[string]StageBind, kind string) (map[string]StageBind, error) {
 	if len(binds) == 0 {
 		return nil, nil
 	}
@@ -1511,8 +1158,8 @@ func validateAndCloneStageBinds(raw []rawStage, binds map[string]StageBind) (map
 		if err != nil || index < 0 || strconv.Itoa(index) != key || index >= len(raw) {
 			return nil, fmt.Errorf("stage bind %q does not identify a stage", key)
 		}
-		if raw[index].head.Name != "from" {
-			return nil, fmt.Errorf("stage bind %q requires a from stage, got %s", key, raw[index].head.Name)
+		if raw[index].head.Name != kind {
+			return nil, fmt.Errorf("stage bind %q requires a %s stage, got %s", key, kind, raw[index].head.Name)
 		}
 
 		copy := StageBind{BaseEnvironment: maps.Clone(bind.BaseEnvironment)}
@@ -1562,7 +1209,6 @@ func (g *graph) initializeResolution() {
 	g.dynamicConfig = make([]bool, n)
 	g.verifiedConfig = make([]bool, n)
 	g.packageDerived = make([]bool, n)
-	g.inheritedOperations = make([]int, n)
 	g.packageResolved = make([]bool, n)
 	g.packageFixed = make([]map[string]bool, n)
 	g.resolutionEpoch = make([]uint64, n)
@@ -1637,13 +1283,14 @@ func (g *graph) resolve(i int) error {
 }
 
 func (g *graph) resolvePhase(i int, packagePhase bool) error {
+	if g.raw[i].head.PrunedFrom {
+		return fmt.Errorf("stage %d has no executable body: omitted as unselectable at publication", i)
+	}
+	if g.raw[i].head.UnavailablePackage {
+		return fmt.Errorf("package %q (original stage %d) was not captured at publication; rebuild the component with that package selected", g.raw[i].head.Properties["as"], i)
+	}
 	if g.packageSource != nil && g.raw[i].head.Name == "package" {
 		return g.importPackage(i)
-	}
-	// Some focused planner tests construct graph state directly. Keep this
-	// derived scope storage lazy so those graphs follow the same invariant.
-	if len(g.finalDeclaredProxy) != len(g.raw) {
-		g.finalDeclaredProxy = make([]map[string]bool, len(g.raw))
 	}
 	if g.raw[i].head.Name == "package" {
 		packagePhase = true
@@ -1714,15 +1361,6 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 		if source == "" || strings.ContainsAny(source, " \t\r\n$") {
 			return fmt.Errorf("invalid from source %q", source)
 		}
-		if g.published != nil {
-			binding := g.published.FromBindings[stage.ID]
-			if binding.SourceIndex != "" {
-				source, err = bindPublishedNumericSource(source, binding.SourceIndex, binding.Stage)
-				if err != nil {
-					return fmt.Errorf("stage %s FROM: %w", stage.ID, err)
-				}
-			}
-		}
 		stage.Source = source
 		if context, ok := g.contextForSource(source, g.contextsAvailable(packagePhase)); ok {
 			stage.SourceContext = context.Name
@@ -1768,15 +1406,6 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 		if err != nil {
 			return fmt.Errorf("stage %s after: %w", stage.ID, err)
 		}
-		if g.published != nil {
-			binding := g.published.FromBindings[stage.ID]
-			if binding.AfterIndex != "" {
-				after, err = bindPublishedNumericSource(after, binding.AfterIndex, binding.AfterStage)
-				if err != nil {
-					return err
-				}
-			}
-		}
 		dependency, ok := g.resolveStageReference(after)
 		if !ok {
 			return fmt.Errorf("stage %s after requires an earlier stage, got %q", stage.ID, after)
@@ -1791,6 +1420,9 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 		g.deps[i] = append(g.deps[i], dependency)
 	}
 	bind, bound := g.opts.StageBinds[stage.ID]
+	if g.opts.Mode == Invoke && g.bases[i] >= 0 && g.raw[g.bases[i]].head.Name == "package" {
+		bind, bound = g.opts.packageBinds[strconv.Itoa(g.bases[i])]
+	}
 	localBind := g.bindResolver != nil && (g.opts.Mode == Publish && (packagePhase || g.packageDerived[i] || g.bases[i] >= 0 && g.packageResolved[g.bases[i]]) ||
 		g.opts.Mode == Build || g.opts.Mode == Invoke && g.bases[i] >= 0 && (bound || g.verifiedConfig[g.bases[i]] || g.dynamicConfig[g.bases[i]]))
 	// Authored ONBUILD on a completed FROM is known without resolving its external
@@ -1819,7 +1451,7 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 	}
 	deferredConfig := deferredSource && g.bases[i] == -1 && (stage.SourceContext == "" || deferContext) && !strings.EqualFold(stage.Source, "scratch") && !bound
 	stage.DeferredImageSource = deferredConfig
-	if stage.Kind == "from" && g.bases[i] >= 0 && (localBind || g.opts.Mode == Invoke && len(g.opts.StageBinds) != 0 && g.packageDerived[i]) {
+	if stage.Kind == "from" && g.bases[i] >= 0 && (localBind || g.opts.Mode == Invoke && len(g.opts.packageBinds) != 0 && g.packageDerived[i]) {
 		dynamicBase := g.dynamicConfig[g.bases[i]]
 		if dynamicBase && !bound {
 			deferredConfig = true
@@ -1913,6 +1545,7 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 		instructions = nil
 	}
 	inheritedCount := 0
+	inheritedOperations := 0
 	if bound {
 		body := raw.body
 		if stageOverridden {
@@ -2008,43 +1641,15 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 			}
 			normalized.Children = append(normalized.Children, normalizedTransient.Children...)
 		}
-		dynamicInherited := g.opts.Mode == Invoke && instructionIndex < inheritedCount && !g.packageDerived[i] && !localTriggers
 		operationIndex := len(stage.Operations)
-		if dynamicInherited {
-			if err := g.bindExternalNumericReference(normalized.Properties); err != nil {
-				return err
-			}
-			for _, mount := range normalized.Children {
-				if err := g.bindExternalNumericReference(mount.Properties); err != nil {
-					return err
-				}
-			}
-		}
-		if g.published != nil {
-			origin, ordinal := "authored", operationIndex-g.inheritedOperations[i]
-			if instructionIndex < inheritedCount {
-				origin, ordinal = "onbuild", operationIndex
-				if localTriggers && !g.packageDerived[i] {
-					origin = "local-onbuild"
-				}
-			}
-			if err := g.bindPublishedNumericReference(stage.ID, origin, ordinal, -1, normalized.Properties); err != nil {
-				return err
-			}
-			for childIndex, mount := range normalized.Children {
-				if err := g.bindPublishedNumericReference(stage.ID, origin, ordinal, childIndex, mount.Properties); err != nil {
-					return err
-				}
-			}
-		}
 		inputContext := ""
-		referencePosition := operationIndex - g.inheritedOperations[i]
+		referencePosition := operationIndex - inheritedOperations
 		if instructionIndex < inheritedCount {
 			referencePosition = -1
 		}
 		if inst.Name == "copy" || inst.Name == "add" {
 			var err error
-			inputContext, err = g.reference(i, stage.Platform, normalized.Properties, dynamicInherited, true, packagePhase, operationIndex, -1, "copy", referencePosition)
+			inputContext, err = g.reference(i, stage.Platform, normalized.Properties, true, packagePhase, operationIndex, -1, "copy", referencePosition)
 			if err != nil {
 				return err
 			}
@@ -2053,7 +1658,7 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 		for childIndex, mount := range normalized.Children {
 			allowImage := mount.Name == "mount" && len(mount.Arguments) == 1 &&
 				(mount.Arguments[0] == "bind" || mount.Arguments[0] == "cache")
-			contextName, err := g.reference(i, stage.Platform, mount.Properties, dynamicInherited, allowImage, packagePhase, operationIndex, childIndex, "run-mount", referencePosition)
+			contextName, err := g.reference(i, stage.Platform, mount.Properties, allowImage, packagePhase, operationIndex, childIndex, "run-mount", referencePosition)
 			if err != nil {
 				return err
 			}
@@ -2117,7 +1722,7 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 		}
 		stage.Operations = append(stage.Operations, op)
 		if instructionIndex < inheritedCount {
-			g.inheritedOperations[i]++
+			inheritedOperations++
 		}
 		if normalized.Name == "component" {
 			dynamicConfig = true
@@ -2158,7 +1763,7 @@ func (g *graph) resolvePhase(i int, packagePhase bool) error {
 		stage.Dependencies = append(stage.Dependencies, strconv.Itoa(d))
 	}
 	g.stages[i] = stage
-	if g.bindResolver != nil || g.packageSource != nil || packagePhase {
+	if g.bindResolver != nil || g.packageSource != nil || packagePhase || g.opts.Mode == Invoke {
 		if g.opts.Mode == Publish && !packagePhase {
 			for _, dependency := range g.deps[i] {
 				if g.raw[dependency].head.Name == "package" {
@@ -2211,7 +1816,6 @@ func (g *graph) resetResolvedStage(i int) {
 	g.dynamicConfig[i] = false
 	g.verifiedConfig[i] = false
 	g.packageDerived[i] = false
-	g.inheritedOperations[i] = 0
 	g.packageResolved[i] = false
 	if i < len(g.packageFixed) {
 		g.packageFixed[i] = nil
@@ -2318,7 +1922,7 @@ func localContext(mode Mode) string {
 	}
 }
 
-func (g *graph) reference(i int, platform string, props map[string]string, sourceVisible, allowImage, packagePhase bool, operation, mount int, role string, referencePosition int) (string, error) {
+func (g *graph) reference(i int, platform string, props map[string]string, allowImage, packagePhase bool, operation, mount int, role string, referencePosition int) (string, error) {
 	source, ok := props["from"]
 	if !ok {
 		return "", nil
@@ -2336,9 +1940,6 @@ func (g *graph) reference(i int, platform string, props map[string]string, sourc
 	}
 	target, ok := g.resolveStageReference(source)
 	if !ok {
-		if sourceVisible && g.reservedStageNames[canonicalStageName(source)] {
-			return "", fmt.Errorf("stage %d references unknown stage %q", i, source)
-		}
 		if !allowImage {
 			return "", fmt.Errorf("stage %d references unknown stage %q", i, source)
 		}
@@ -2610,41 +2211,6 @@ func sortedKeys[V any](m map[string]V) []string {
 	return keys
 }
 
-// Rebind only numeric executable selectors after expansion. Published authored
-// definitions retain their original selectors and invocation must agree with them.
-func bindPublishedNumericSource(source, original, target string) (string, error) {
-	if source != original {
-		return "", fmt.Errorf("numeric stage reference %q changed from published index %q", source, original)
-	}
-	return target, nil
-}
-
-func (g *graph) bindPublishedNumericReference(stage, origin string, operation, mount int, props map[string]string) error {
-	for _, ref := range g.published.StageReferences {
-		if ref.Stage != stage || ref.Origin != origin || ref.Operation != operation || ref.MountIndex != mount || ref.SourceIndex == "" {
-			continue
-		}
-		source, err := bindPublishedNumericSource(props["from"], ref.SourceIndex, ref.Target)
-		if err != nil {
-			return fmt.Errorf("stage %s %s operation %d: %w", stage, origin, operation, err)
-		}
-		props["from"] = source
-		break
-	}
-	return nil
-}
-
-func (g *graph) publishedSourceIndex(stage, origin string, operation, mount int, source string) string {
-	if g.published != nil {
-		for _, ref := range g.published.StageReferences {
-			if ref.Stage == stage && ref.Origin == origin && ref.Operation == operation && ref.MountIndex == mount && ref.SourceIndex != "" {
-				return ref.SourceIndex
-			}
-		}
-	}
-	return source
-}
-
 // EXTEND names denote their selected output, which may already have a FROM
 // alias. Emit numeric references for that second alias; executors need only
 // the existing primary-name and numeric-ID lookup contract.
@@ -2672,22 +2238,4 @@ func (g *graph) emittedStage(stage Stage) Stage {
 		}
 	}
 	return stage
-}
-
-// External ONBUILD instructions are discovered after publication. Their numeric
-// selectors use the original source graph, not the compact published indices.
-func (g *graph) bindExternalNumericReference(props map[string]string) error {
-	source := props["from"]
-	if !canonicalSourceIndex(source) {
-		return nil
-	}
-	if g.published == nil {
-		return nil
-	}
-	mapped, ok := g.published.SourceStageIDs[source]
-	if !ok {
-		return fmt.Errorf("external ONBUILD references unavailable original stage %q", source)
-	}
-	props["from"] = mapped
-	return nil
 }

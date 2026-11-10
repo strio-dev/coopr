@@ -59,6 +59,10 @@ Apply a shared definition with `component "./components/shared.coopr"`. [Share a
 
 For components you can distribute, follow the [reusable-components tutorial](docs/tutorials/reusable-components.md) to package two components and apply them to an image. Explore [the examples](examples/README.md) for cache mounts and published components, or read about [image storage and transfers](docs/guides/storage.md).
 
+## Build from an application
+
+Use the [Go execution library](docs/guides/library.md) to run builds in your application. To keep the native engine in a separate process, start a [local service](docs/guides/api.md) and call it with the [Go client](docs/guides/client.md). The client can submit typed programs, build images and components, and transfer artifacts.
+
 ## Development
 
 Development uses the pinned Nix environment. See [contributing](CONTRIBUTING.md) for source builds, tests, and documentation checks.

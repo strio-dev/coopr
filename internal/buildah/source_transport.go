@@ -71,14 +71,6 @@ func normalizeBaseSource(reference, contextDir string) (string, bool, error) {
 	return reference, true, nil
 }
 
-func policyBaseSource(reference, policyFile string) (string, error) {
-	policy, err := loadSourcePolicy(policyFile)
-	if err != nil {
-		return "", err
-	}
-	return policyImageSource(reference, policy)
-}
-
 func policyImageSource(reference string, policy *sourcepolicy.Policy) (string, error) {
 	decision, matched, err := policy.Evaluate(sourcepolicy.ImageSourceIdentifier(reference))
 	if err != nil {
@@ -256,11 +248,6 @@ func loadSourcePolicy(file string) (*sourcepolicy.Policy, error) {
 	return sourcepolicy.LoadFromFile(file)
 }
 
-func validateSourcePolicy(file string) error {
-	_, err := loadSourcePolicy(file)
-	return err
-}
-
 func deferredPolicySource(policy *sourcepolicy.Policy) func(string) (bool, error) {
 	return func(reference string) (bool, error) {
 		converted, err := policyImageSource(reference, policy)
@@ -309,6 +296,9 @@ func sourceBaseName(store storage.Store, source ResolvedImageSource) (string, er
 	if named != nil {
 		name = named.String()
 	}
+	if native && isInstructionCacheName(name) {
+		name = ""
+	}
 	selected, err := store.Image(source.ImageID)
 	if err != nil {
 		return "", err
@@ -319,8 +309,17 @@ func sourceBaseName(store storage.Store, source ResolvedImageSource) (string, er
 		prefix, _, _ := strings.Cut(reference, ":")
 		parts := strings.Split(prefix, "/")
 		prefix, _, _ = strings.Cut(parts[len(parts)-1], "@")
-		name = selected.Names[0]
+		selectedName := false
 		for _, candidate := range selected.Names {
+			// Retention names keep cache images alive; they are not authored
+			// Docker provenance for this source or a later sibling's source.
+			if isInstructionCacheName(candidate) {
+				continue
+			}
+			if !selectedName {
+				name = candidate
+				selectedName = true
+			}
 			if strings.Contains(candidate, prefix) {
 				name = candidate
 				break

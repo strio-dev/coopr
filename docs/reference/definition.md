@@ -33,11 +33,13 @@ from "${base}" as="runtime" {
 }
 ```
 
-Images default to the last top-level FROM; components default to the last top-level EXTEND, even when FROM or PACKAGE stages follow it. `--target NAME`, or `#NAME` on a local component reference, selects another named output. Component targets must be top-level EXTEND stages. FROM stages can supply packaging or invocation dependencies; PACKAGE stages capture packaged inputs. Trailing stages outside the selected output’s dependencies are skipped.
+Images default to the last top-level FROM; components default to the last top-level EXTEND, even when FROM or PACKAGE stages follow it. `--target NAME`, or `#NAME` on a local component reference, selects another named output. Component targets must be top-level EXTEND stages. FROM stages can supply packaging or invocation dependencies; PACKAGE stages capture packaged inputs. Stages outside the selected dependencies do not execute. Published components may retain their FROM recipes for later invocations; see [source retention](execution.md#component-build-and-invocation-phases).
 
 Inside `extend`, direct instructions modify the caller and nested FROM blocks own separate stages. The last non-ARG child determines the output: a nested FROM returns its image; a direct instruction returns the modified caller. ARG declarations alone do not switch the output. Stage aliases must be unique throughout the definition, including nested stages. A local stage must be completed before the FROM, COPY/ADD, or RUN mount that consumes its result. Self-references and references to later stages are errors. Inside EXTEND, a nested FROM becomes available to subsequent instructions and nested stages.
 
 Stage names start with a letter and may contain letters, digits, `_`, `.`, and `-`. Names match case-insensitively; `scratch` is reserved. Stage sources also accept zero-based numeric indices, counting nested FROM stages.
+
+Components preserve these original names and numeric positions in an isolated namespace. Source arguments resolve again at invocation and may select different inputs, subject to the same dependency rules. Caller-stage aliases are not imported by passing their names as argument values. See [component dependencies](execution.md#dependencies) and [package availability](execution.md#component-build-and-invocation-phases).
 
 FROM accepts `as`, `platform`, and `after`. `after="NAME"` names one earlier stage (or its numeric index) that must finish before the external image is resolved. Use it for an image layout or archive generated through a writable primary-context mount. It adds a dependency without inheriting that stage's state. See [image selection](execution.md#image-selection) for accepted transports and context confinement.
 
@@ -179,6 +181,8 @@ Numeric ARG values are normalized as decimal text. Mount types and option values
 
 ## Files and mounts
 
+Child options retain their order. COPY reads context files, earlier stages, packages, named contexts, images, or OCI artifact files. ADD also fetches HTTP/Git sources and extracts archives; COPY rejects remote URLs before connecting. Files cannot escape the selected context through paths or symlinks. See [security](../guides/security.md) for credentials and entitlements.
+
 ```kdl
 copy "a" "/a" { exclude "*.md" "*.tmp" }
 run "make" {
@@ -187,7 +191,9 @@ run "make" {
 }
 ```
 
-COPY/ADD accept repeated `file "name" "content"` children. The last positional argument is the destination; ordinary source paths may precede it:
+### Create inline files
+
+Use `file "name" "content"` children in COPY or ADD to write files directly in a definition. The last positional argument is the destination; ordinary source paths may precede it:
 
 ```kdl
 copy "existing.txt" "/etc/app/" chmod=0o640 {
@@ -197,15 +203,20 @@ copy "existing.txt" "/etc/app/" chmod=0o640 {
 }
 ```
 
-Filenames are literal local paths, including any `$` characters; they cannot be empty, absolute, `.` or escape their temporary source directory. Content uses the exact decoded KDL bytes, including empty bodies and final newlines. Ordinary strings expand ARG/ENV references in the current stage or component scope using native heredoc word expansion: quotes and backslashes remain data; single quotes and escaped dollars suppress expansion. Raw strings (`#"..."#` and `#"""..."""#`) disable that expansion. Both ordinary and raw KDL multiline forms retain their decoded multiline value; KDL removes the opening and closing boundary newlines. Filenames reject NUL. COPY/ADD content can include NUL bytes, written as `\u{0}` in an ordinary KDL string.
+Filenames are literal relative paths: `$` characters are not expanded. Names cannot be empty, absolute, `.`, contain NUL, or escape the temporary source directory with `..`.
 
-Inline files run as one native COPY/ADD batch before ordinary sources. Repeated filenames retain their order, and ordinary same-name sources overwrite inline files. Ignore files and `exclude` patterns filter ordinary sources; inline content bypasses them. Ownership, mode, link, destination and source-path handling use the existing native COPY/ADD operations. Inline data and expansion results participate in cache identity. Package-time argument references in expanding bodies become fixed package inputs; EXTEND bodies expand at invocation.
+Content follows these rules:
 
-Child options retain their order. COPY reads context files, earlier stages, packages, named contexts, images, or OCI artifact files. ADD also fetches HTTP/Git sources and extracts archives; COPY rejects remote URLs before connecting. Files cannot escape the selected context through paths or symlinks. See [security](../guides/security.md) for credentials and entitlements.
+- Ordinary strings expand ARG/ENV references in the current stage or component scope. Quotes and backslashes remain in the content; single quotes and escaped dollars suppress expansion, as in native heredocs.
+- Raw strings (`#"..."#` and `#"""..."""#`) keep ARG/ENV references literal.
+- Empty content and final newlines are preserved. KDL multiline strings remove the opening and closing boundary newlines.
+- Content can include NUL bytes, written as `\u{0}` in an ordinary KDL string.
+
+Coopr copies inline files in order before ordinary sources, which overwrite any same-name inline files. Ignore files and `exclude` patterns apply only to ordinary sources. Inline files use the same ownership, mode, link, and destination options as other COPY/ADD inputs. Their content and expanded values affect cache reuse. Arguments used to expand package files become fixed package inputs; files inside EXTEND expand at invocation.
 
 ### Copy OCI artifact files
 
-Use the same `from` property for an OCI artifact published to a registry:
+Set `from` to a registry artifact reference to copy its blobs as files:
 
 ```kdl
 from "docker.io/redhat/ubi9:latest" {
@@ -230,11 +241,18 @@ healthcheck interval="30s" timeout="3s" retries=3 {
 onbuild { copy "generated" "/generated" }
 ```
 
-Timing properties are `interval`, `timeout`, `start-period`, and `start-interval`. Supplied durations must be positive, including values below a millisecond; `retries` must be an integer from 1 through 2147483647. Omit an option to use the native default. `healthcheck NONE` disables a healthcheck; any timing or retry options are ignored, matching Buildah. Quoted `"NONE"` remains a shell command; `exec "NONE"` remains an executable argument.
+Timing properties are `interval`, `timeout`, `start-period`, and `start-interval`. Supplied durations must be positive; submillisecond values are supported. `retries` must be an integer from 1 through 2147483647. Omit an option to use the native default. `healthcheck NONE` disables a healthcheck; any timing or retry options are ignored, matching Buildah. Quoted `"NONE"` remains a shell command; `exec "NONE"` remains an executable argument.
 
 ONBUILD wraps one supported image instruction. Stage declarations, `maintainer`, `component`, `layer`, and nested `onbuild` are not supported inside it. Existing external MAINTAINER triggers can be imported and retain their literal text. A child FROM executes inherited triggers before its authored instructions, using the child's context, then clears them. Local stage sources must be available before that child FROM.
 
-Inline COPY/ADD inside ONBUILD must round-trip through native Dockerfile heredocs. Nonempty content must end in LF and contain no complete line equal to its filename (the native delimiter). Embedded CR and NUL bytes are supported; CRLF is rejected because native parsing strips the CR at line endings. Empty bodies are rejected because native Buildah creates one LF byte. Filenames and repeated-name payloads must survive both native and Coopr source parsing exactly; unrepresentable names (including spaces) or conflicting duplicate payloads are rejected. Ordinary source paths and the destination must also survive the native shell-form header; whitespace-containing paths cannot be mixed with heredocs and are rejected. Coopr never appends bytes, renames files, or splits instructions to encode these cases. Ordinary bodies expand in the child stage; raw bodies remain literal.
+ONBUILD stores inline COPY/ADD as Dockerfile heredocs. To preserve the file content and paths, these files have stricter rules than ordinary inline files:
+
+- Content must be nonempty, end in LF, and contain no complete line equal to the filename, which serves as the heredoc delimiter.
+- Embedded CR and NUL bytes are supported. CRLF line endings are rejected because the native parser strips their CR bytes.
+- Filenames must survive both Dockerfile and Coopr parsing unchanged. Names containing spaces and repeated names with conflicting content are rejected.
+- Ordinary source paths and the destination cannot contain whitespace when used with inline files.
+
+Coopr rejects unrepresentable inputs rather than changing their bytes or names. Ordinary strings expand in the child stage; raw strings remain literal.
 
 ONBUILD stores Dockerfile trigger text using Buildah’s native instruction and mount options. RUN `network`, COPY/ADD boolean flags, and mount values can use child-stage arguments, including typed mount options such as `required` and `mode`. Healthcheck timing/retries and device `required` must remain literal.
 
@@ -283,7 +301,7 @@ COPY/ADD options have these effects:
 
 | Property | Effect |
 | --- | --- |
-| `from` | Read the selected stage, package, named context, or image. |
+| `from` | Read the selected stage, package, named context, image, or OCI artifact files. |
 | `chown` | Set destination ownership as `USER[:GROUP]` or numeric IDs. Named identities resolve in the destination image. |
 | `chmod` | Set Unix permission bits; accepts octal forms described above. |
 | `link` | Create an independent layer, committed before the next filesystem instruction. |

@@ -213,13 +213,3 @@ func TestDeviceEntitlementLastGrantWinsAcrossAliasAndDirectSelector(t *testing.T
 		}
 	}
 }
-
-func TestDirectBuildAuthorization(t *testing.T) {
-	operations := []Operation{Run{Command: []string{"true"}, Network: "host"}}
-	if err := authorizeOperations(operations, nil); err == nil || !strings.Contains(err.Error(), "--allow network.host") {
-		t.Fatalf("missing direct-build entitlement error = %v", err)
-	}
-	if err := authorizeOperations(operations, []string{"network.host"}); err != nil {
-		t.Fatalf("authorized direct build: %v", err)
-	}
-}

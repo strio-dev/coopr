@@ -11,23 +11,21 @@ import (
 )
 
 // RawGraph preserves authored instructions until executor-independent planning.
-// Published bindings describe graph edges; expressions remain raw.
+// Original identities and expressions remain raw until invocation.
 // Aliases includes EXTEND names redirected to their selected nested result.
 // Roots and Results preserve authored scope independently of flattened IDs.
+// Instruction trees are owned by the projection and shared read-only by its views.
 type RawGraph struct {
-	aliasPositions     map[string]int
-	Aliases            map[string]string
-	Roots              []string
-	Results            map[string]string
-	Globals            []definition.Instruction
-	Stages             []RawStage
-	Output             string
-	PackageLeaves      []string
-	FromBindings       map[string]FromBinding
-	StageReferences    []StageReferenceBinding
-	ReservedStageNames []string
-	PackageArguments   map[string]string
-	Platform           string
+	aliasPositions   map[string]int
+	Aliases          map[string]string
+	Roots            []string
+	Results          map[string]string
+	Globals          []definition.Instruction
+	Stages           []RawStage
+	Output           string
+	PackageLeaves    []string
+	PackageArguments map[string]string
+	Platform         string
 }
 
 type RawStage struct {
@@ -88,52 +86,27 @@ func ProjectPublicationRaw(def *definition.Definition, target string) (*RawGraph
 }
 
 // ProjectPublished validates immutable publication metadata, then exposes its
-// already-pruned stage graph without re-evaluating authored instructions.
+// original stage namespace without re-evaluating authored instructions.
 func ProjectPublished(component *PublishedComponent) (*RawGraph, error) {
-	packages, err := ValidatePublished(component)
-	if err != nil {
-		return nil, err
-	}
-	if component.Platform == "" {
-		return nil, fmt.Errorf("published platform is empty")
+	if component == nil || component.Definition == nil || component.Format != ResidualFormat {
+		return nil, fmt.Errorf("unsupported or incomplete residual component format")
 	}
 	if err := validatePlatform(component.Platform); err != nil {
+		return nil, err
+	}
+	if _, err := NormalizeParameters(component.PackageArguments); err != nil {
 		return nil, err
 	}
 	projected, err := projectRaw(component.Definition)
 	if err != nil {
 		return nil, err
 	}
+	if err := validatePublished(component, projected); err != nil {
+		return nil, err
+	}
 	projected.Output = component.Output
-	projected.FromBindings = maps.Clone(component.FromBindings)
-	projected.StageReferences = slices.Clone(component.StageReferences)
-	projected.ReservedStageNames = slices.Clone(component.ReservedStageNames)
 	projected.PackageArguments = maps.Clone(component.PackageArguments)
 	projected.Platform = component.Platform
-
-	byName := make(map[string]string, len(projected.Stages))
-	for _, stage := range projected.Stages {
-		if stage.Name != "" {
-			byName[canonicalStageName(stage.Name)] = stage.ID
-		}
-	}
-	for _, name := range packages {
-		projected.PackageLeaves = append(projected.PackageLeaves, byName[canonicalStageName(name)])
-	}
-	for i := range projected.Stages {
-		stage := &projected.Stages[i]
-		if binding := projected.FromBindings[stage.ID]; binding.AfterStage != "" {
-			stage.Dependencies = appendUnique(stage.Dependencies, binding.AfterStage)
-		}
-		if binding, ok := projected.FromBindings[stage.ID]; ok && binding.Kind == "stage" {
-			stage.Dependencies = appendUnique(stage.Dependencies, binding.Stage)
-		}
-		for _, ref := range projected.StageReferences {
-			if ref.Stage == stage.ID && ref.Kind != "image" {
-				stage.Dependencies = appendUnique(stage.Dependencies, ref.Target)
-			}
-		}
-	}
 	return projected, nil
 }
 
@@ -156,13 +129,11 @@ func projectRaw(def *definition.Definition) (*RawGraph, error) {
 			names[canonical] = true
 		}
 		id := len(result.Stages)
-		authoredChildren := cloneInstruction(inst).Children
+		authoredChildren := inst.Children
 		body := definition.FlattenLayers(inst.Children)
 		inst.Children = nil
-		stage := RawStage{ID: strconv.Itoa(id), Name: name, Kind: inst.Name, Head: cloneInstruction(inst), Owner: owner, AuthoredChildren: authoredChildren}
-		for _, child := range body {
-			stage.Body = append(stage.Body, cloneInstruction(child))
-		}
+		stage := RawStage{ID: strconv.Itoa(id), Name: name, Kind: inst.Name, Head: inst, Owner: owner, AuthoredChildren: authoredChildren}
+		stage.Body = body
 		result.Stages = append(result.Stages, stage)
 		if name != "" {
 			result.Aliases[canonicalStageName(name)] = stage.ID
@@ -170,11 +141,13 @@ func projectRaw(def *definition.Definition) (*RawGraph, error) {
 		return id, nil
 	}
 	for _, inst := range def.Instructions {
+		// The projection owns one copy; its ordered views share immutable nodes.
+		inst = cloneInstruction(inst)
 		if inst.Name == "arg" {
-			result.Globals = append(result.Globals, cloneInstruction(inst))
+			result.Globals = append(result.Globals, inst)
 			continue
 		}
-		children := cloneInstruction(inst).Children
+		children := inst.Children
 		if inst.Name == "extend" {
 			inst.Children = nil
 			for _, child := range children {
@@ -331,13 +304,6 @@ func cloneInstruction(inst definition.Instruction) definition.Instruction {
 		inst.Children = children
 	}
 	return inst
-}
-
-func appendUnique(values []string, value string) []string {
-	if !slices.Contains(values, value) {
-		return append(values, value)
-	}
-	return values
 }
 
 func cloneCommands(commands []definition.Command) []definition.Command {

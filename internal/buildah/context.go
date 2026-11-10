@@ -6,8 +6,11 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	upstream "go.podman.io/buildah"
 	"go.podman.io/buildah/copier"
@@ -44,6 +47,10 @@ func prepareContextPolicyWithIgnore(contextDir string, artifacts []string, ignor
 	if err != nil {
 		return contextPolicy{}, fmt.Errorf("resolve build context: %w", err)
 	}
+
+	// Anchor policy discovery, alias scans and native reads to one root.
+	// Later operations resolve their own policy and may observe a new target.
+	contextRoot = canonicalRoot
 
 	authored, ignoreFile, err := ReadContextIgnore(contextRoot, ignoreFile)
 	if err != nil {
@@ -211,7 +218,10 @@ func independentContextExcludes(contextRoot string, layers ...[]string) ([]strin
 		}
 		parentExcluded := directoryStates[filepath.Dir(relative)]
 		if excluded != parentExcluded {
-			pattern := quoteExcludePath(relative)
+			pattern, err := quoteExcludePath(relative)
+			if err != nil {
+				return err
+			}
 			if !excluded {
 				pattern = "!" + pattern
 			}
@@ -276,7 +286,11 @@ func protectedContextExcludes(contextRoot, canonicalRoot string, artifacts []str
 				if err != nil {
 					return nil, fmt.Errorf("locate context artifact %q: %w", artifact, err)
 				}
-				protected = appendUnique(protected, quoteExcludePath(relative))
+				pattern, err := quoteExcludePath(relative)
+				if err != nil {
+					return nil, err
+				}
+				protected = appendUnique(protected, pattern)
 			}
 		}
 		if info, err := os.Stat(absolute); err == nil {
@@ -310,7 +324,11 @@ func protectedContextExcludes(contextRoot, canonicalRoot string, artifacts []str
 			if err != nil {
 				return err
 			}
-			protected = appendUnique(protected, quoteExcludePath(relative))
+			pattern, err := quoteExcludePath(relative)
+			if err != nil {
+				return err
+			}
+			protected = appendUnique(protected, pattern)
 			if entry.IsDir() {
 				return filepath.SkipDir
 			}
@@ -324,16 +342,28 @@ func protectedContextExcludes(contextRoot, canonicalRoot string, artifacts []str
 	return protected, nil
 }
 
-func quoteExcludePath(value string) string {
+// Generated literals must survive both the native matcher and ignore-file parsing.
+func quoteExcludePath(value string) (string, error) {
 	value = filepath.ToSlash(filepath.Clean(value))
-	var quoted strings.Builder
-	for _, character := range value {
-		if strings.ContainsRune(`\*?[]!`, character) {
-			quoted.WriteByte('\\')
-		}
-		quoted.WriteRune(character)
+	if !utf8.ValidString(value) || strings.ContainsRune(value, '\n') {
+		return "", fmt.Errorf("literal context exclusion %q cannot be represented in an ignore file", value)
 	}
-	return quoted.String()
+	var quoted strings.Builder
+	for _, character := range regexp.QuoteMeta(value) {
+		switch {
+		case unicode.IsSpace(character):
+			// The matcher trims whitespace before compiling its glob.
+			quoted.WriteByte('[')
+			quoted.WriteRune(character)
+			quoted.WriteByte(']')
+		case character == '!' || character == '#':
+			quoted.WriteByte('\\')
+			quoted.WriteRune(character)
+		default:
+			quoted.WriteRune(character)
+		}
+	}
+	return quoted.String(), nil
 }
 
 func appendUnique(values []string, value string) []string {

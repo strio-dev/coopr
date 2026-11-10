@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -87,6 +88,7 @@ func TestSecretValueChangeReusesInstructionCache(t *testing.T) {
 	}
 	plan := testPlan(t, fmt.Sprintf(`from %q {
     run "cat /run/secrets/token >/proof" network="none" { mount "secret" id="token" required="true" }
+    label after="run"
 }
 `, base.reference))
 	build := func(name, value string) string {
@@ -105,7 +107,14 @@ func TestSecretValueChangeReusesInstructionCache(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		manifest, _ := readPlanImage(t, layout)
+		manifest, image := readPlanImage(t, layout)
+		if len(image.History) < 2 {
+			t.Fatalf("secret RUN/LABEL history too short: %+v", image.History)
+		}
+		tail := image.History[len(image.History)-2:]
+		if !strings.HasPrefix(tail[0].CreatedBy, "RUN ") || tail[0].EmptyLayer || tail[1].CreatedBy != "LABEL after=run" || !tail[1].EmptyLayer {
+			t.Fatalf("secret RUN/LABEL history order = %+v", tail)
+		}
 		last := manifest.Layers[len(manifest.Layers)-1]
 		return readLayerFile(t, filepath.Join(layout, "blobs", "sha256", last.Digest.Encoded()), "proof")
 	}

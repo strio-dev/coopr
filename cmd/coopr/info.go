@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	// Info templates render plain-text CLI output, not HTML.
+	// nosemgrep: cache.semgrep-rules.go.lang.security.audit.xss.import-text-template
 	"text/template"
 
 	"github.com/strio-dev/coopr/internal/buildah"

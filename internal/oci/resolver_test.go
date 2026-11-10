@@ -94,6 +94,9 @@ func assertPackageSnapshot(t *testing.T, snapshot []byte, contents string, confi
 // not part of an individual fixture's inputs.
 func testResolver(t *testing.T, options Options) (*Resolver, error) {
 	t.Helper()
+	if options.ComponentStoreDir == "" {
+		options.ComponentStoreDir = filepath.Join(t.TempDir(), "components")
+	}
 	resolver, err := NewResolver(options)
 	if err == nil {
 		resolver.system.BlobInfoCacheDir = t.TempDir()
@@ -648,33 +651,19 @@ func TestDockerReferenceAndPlatformCompatibility(t *testing.T) {
 	}
 }
 
-func TestNormalizePullPolicy(t *testing.T) {
-	for _, test := range []struct {
-		policy string
-		pull   bool
-		want   PullPolicy
-	}{
-		{"", false, PullMissing},
-		{"missing", false, PullMissing},
-		{"always", false, PullAlways},
-		{"missing", true, PullAlways},
-		{"", true, PullAlways},
-		{"never", false, PullNever},
-		{"newer", false, PullNewer},
-		{"ifnewer", false, PullNewer},
-	} {
-		got, err := NormalizePullPolicy(test.policy, test.pull)
-		if err != nil || got != test.want {
-			t.Errorf("NormalizePullPolicy(%q, %v) = %q, %v; want %q", test.policy, test.pull, got, err, test.want)
+func TestResolverPullPolicy(t *testing.T) {
+	for _, policy := range []string{"", "missing", "always", "never", "newer"} {
+		resolver, err := NewResolver(Options{PullPolicy: policy, ComponentStoreDir: t.TempDir()})
+		want := PullPolicy(policy)
+		if policy == "" {
+			want = PullMissing
+		}
+		if err != nil || resolver.PullPolicy() != want || resolver.RegistryOptions().PullPolicy != string(want) {
+			t.Fatalf("pull policy %q: resolver=%+v err=%v", policy, resolver, err)
 		}
 	}
-	for _, test := range []struct {
-		policy string
-		pull   bool
-	}{{"sometimes", false}, {"never", true}, {"newer", true}} {
-		if _, err := NormalizePullPolicy(test.policy, test.pull); err == nil {
-			t.Errorf("NormalizePullPolicy(%q, %v) accepted invalid policy", test.policy, test.pull)
-		}
+	if _, err := NewResolver(Options{PullPolicy: "sometimes"}); err == nil {
+		t.Fatal("invalid pull policy accepted")
 	}
 }
 

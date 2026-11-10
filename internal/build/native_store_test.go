@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 
 	"github.com/containerd/platforms"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/strio-dev/coopr/internal/buildah"
-	"github.com/strio-dev/coopr/internal/imagestore"
 	"github.com/strio-dev/coopr/internal/oci"
 	"go.podman.io/storage"
 )
@@ -68,8 +68,15 @@ func testStoredSoleImage(ctx context.Context, store buildah.StoreOptions, refere
 
 func testNativeNames(store buildah.StoreOptions) (names []string, err error) {
 	err = buildah.WithStore(store, func(backend storage.Store) error {
-		names, err = imagestore.FromStore(backend).Names()
-		return err
+		images, err := backend.Images()
+		if err != nil {
+			return err
+		}
+		for _, image := range images {
+			names = append(names, image.Names...)
+		}
+		slices.Sort(names)
+		return nil
 	})
 	return names, err
 }

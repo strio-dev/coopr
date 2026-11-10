@@ -34,7 +34,7 @@ func TestDynamicComponentOnbuildMaterializesLateExternalImageAndContext(t *testi
 			localConfigComponentResolver(t, ctx, root, fmt.Sprintf(`extend {
     onbuild { copy "/bin/busybox" "/late-tool" from=%q }
 }
-`, from), false)
+`, from))
 			def := parseWorkerDefinition(t, fmt.Sprintf(`from %q as="base" {
     component "config"
 }

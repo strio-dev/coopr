@@ -72,29 +72,11 @@ func exportDockerTestImage(t *testing.T, ctx context.Context, store buildah.Stor
 	if _, err := transfer.Copy(ctx, oci.Image, name, transfer.Destination{Transport: "oci-archive", Name: path}, transfer.Options{BuildStore: store}); err != nil {
 		t.Fatalf("export stored Docker fixture: %v", err)
 	}
-	file, err := os.Open(path)
+	root, err := oci.ArchiveRoot(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = file.Close() }()
-	reader := tar.NewReader(file)
-	var index v1.Index
-	for {
-		header, err := reader.Next()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if strings.TrimPrefix(header.Name, "./") == "index.json" {
-			if err := json.NewDecoder(reader).Decode(&index); err != nil {
-				t.Fatal(err)
-			}
-			break
-		}
-	}
-	if len(index.Manifests) != 1 {
-		t.Fatalf("exported image roots: %+v", index.Manifests)
-	}
-	return index.Manifests[0]
+	return root
 }
 
 func dockerArchiveHasPath(t *testing.T, ctx context.Context, path, name string) bool {

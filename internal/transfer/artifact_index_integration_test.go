@@ -80,7 +80,12 @@ func TestNativeOCIArchiveSaveOptions(t *testing.T) {
 	if err := localstore.CopyGraphLayout(ctx, layoutPath, layout, root); err != nil {
 		t.Fatal(err)
 	}
-	id, err := buildah.ImportLayoutSupervised(ctx, store, layoutPath, root)
+	var id string
+	err = buildah.WithStore(store, func(backend storage.Store) error {
+		var importErr error
+		id, importErr = buildah.ImportSelectedImage(ctx, backend, &types.SystemContext{BigFilesTemporaryDir: t.TempDir()}, layoutPath, root)
+		return importErr
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

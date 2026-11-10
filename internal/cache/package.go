@@ -92,9 +92,8 @@ func (k PackageKey) Digest() (digest.Digest, error) {
 	return digest.FromBytes(data), nil
 }
 
-// PackageRecord is deliberately separate from an invocation-result Record:
-// the portable boundary is the completed component package tar and its
-// authoritative one-layer image configuration.
+// PackageRecord carries a completed component package tar and its authoritative
+// one-layer image configuration. ImageRecord carries complete runnable images.
 type PackageRecord struct {
 	CreatedAt  time.Time       `json:"created_at"`
 	Version    string          `json:"version"`
@@ -281,12 +280,9 @@ func (s *OCIStore) LookupPackage(ctx context.Context, key PackageKey) (*PackageR
 	if err != nil {
 		return nil, "", err
 	}
-	defer func() { _ = stream.Close() }()
 	verified := content.NewVerifyReader(stream, record.Descriptor)
-	if _, err := file.ReadFrom(&contextReader{ctx: ctx, reader: verified}); err != nil {
-		return nil, "", err
-	}
-	if err := verified.Verify(); err != nil {
+	_, copyErr := file.ReadFrom(&contextReader{ctx: ctx, reader: verified})
+	if err := errors.Join(copyErr, verified.Verify(), stream.Close()); err != nil {
 		return nil, "", fmt.Errorf("package cache snapshot: %w", err)
 	}
 	if err := file.Sync(); err != nil {

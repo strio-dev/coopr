@@ -61,7 +61,7 @@ func TestManifestAppendPreservesNativeHandleAndHistoricalDigest(t *testing.T) {
 			return err
 		}
 		originalID := handle.ID()
-		if _, err := imagestore.FromStore(store).TagExisting("combined", "combined-alias"); err != nil {
+		if _, err := imagestore.FromStore(store).Tag(originalID, "combined-alias"); err != nil {
 			return err
 		}
 		if _, _, _, _, err := appendManifest(ctx, "combined", "oci", options, map[string]oci.StoredSelection{"linux/arm64": arm}); err != nil {

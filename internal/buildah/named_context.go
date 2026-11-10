@@ -517,6 +517,8 @@ func extractRemoteNamedContext(ctx context.Context, directory string, archiveRea
 	}
 	// Consume the compressed stream to validate its footer without staging
 	// trailing bytes that cannot contribute to the extracted tar.
+	// Authored archives have no expansion quota; callers bound input preparation.
+	// nosemgrep: cache.semgrep-rules.go.lang.security.potential-dos-via-decompression-bomb
 	if _, err := io.Copy(io.Discard, &contextReader{ctx: ctx, reader: stream}); err != nil {
 		return time.Time{}, fmt.Errorf("finish remote context archive: %w", err)
 	}
@@ -545,7 +547,7 @@ func materializeLocalNamedContext(ctx context.Context, spec buildcontext.Spec, p
 	if err != nil {
 		return ResolvedImageSource{}, fmt.Errorf("prepare local named context %q: %w", spec.Name, err)
 	}
-	snapshot, cleanupSnapshot, err := snapshotContext(options.ContextDir, options.Excludes, nil, nil)
+	snapshot, cleanupSnapshot, err := snapshotContext(ctx, options.ContextDir, options.Excludes, nil, nil)
 	if err != nil {
 		return ResolvedImageSource{}, fmt.Errorf("snapshot local named context %q: %w", spec.Name, err)
 	}

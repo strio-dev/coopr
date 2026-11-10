@@ -65,7 +65,7 @@ func TestCacheGapHostGatewayCacheMatchesNative(t *testing.T) {
 		t.Fatal(err)
 	}
 	remote, _ := newLiveBusyBoxRegistry(t, ctx)
-	resolver := localConfigComponentResolver(t, ctx, root, fmt.Sprintf("extend { run %q network=\"none\"; }", command), false)
+	resolver := localConfigComponentResolver(t, ctx, root, fmt.Sprintf("extend { run %q network=\"none\"; }", command))
 	for _, scope := range []string{"instruction", "component"} {
 		t.Run(scope, func(t *testing.T) {
 			var first string

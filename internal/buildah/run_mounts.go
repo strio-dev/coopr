@@ -20,8 +20,13 @@ import (
 // mount vocabulary until apply time, where it is validated and serialized for
 // Buildah's Builder.Run API.
 type RunMount struct {
-	Type       string
-	Properties map[string]string
+	// HostPath is an explicitly admitted live host directory, never a context.
+	HostPath string
+	// Artifact identifies the verified raw-file view selected for this bind.
+	Artifact     *ResolvedImageSource
+	artifactRoot string
+	Type         string
+	Properties   map[string]string
 	// BoundFrom marks a graph-resolved, immutable storage image ID. Authored
 	// from= values never reach Buildah without this executor-owned binding.
 	BoundFrom bool
@@ -56,7 +61,7 @@ func lowerRunMounts(operation planner.Operation, resolve CacheMountIDResolver, b
 		}
 		switch mountType {
 		case "bind":
-			if imageID == "" && operation.MountContexts[index] == "" {
+			if imageID == "" && operation.MountContexts[index] == "" && operation.HostMounts[index] == "" {
 				return nil, fmt.Errorf("RUN mount %d: bind mount has no validated context", index+1)
 			}
 		case "cache":
@@ -78,7 +83,7 @@ func lowerRunMounts(operation planner.Operation, resolve CacheMountIDResolver, b
 		default:
 			return nil, fmt.Errorf("RUN mount %d: mount type %q is not supported", index+1, mountType)
 		}
-		mounts = append(mounts, RunMount{Type: mountType, Properties: properties, BoundFrom: imageID != ""})
+		mounts = append(mounts, RunMount{Type: mountType, Properties: properties, BoundFrom: imageID != "", HostPath: operation.HostMounts[index]})
 	}
 	return mounts, nil
 }
@@ -96,6 +101,10 @@ func serializeRunMounts(mounts []RunMount, contextDir string) ([]string, error) 
 }
 
 func serializeRunMount(mount RunMount, contextDir string) (string, error) {
+	if mount.HostPath != "" {
+		_, err := validateLiveHostMount(mount)
+		return "", err
+	}
 	properties, err := normalizeRunMountProperties(mount.Type, mount.Properties)
 	if err != nil {
 		return "", err
@@ -330,7 +339,7 @@ func normalizeContextMountSource(source string) (string, error) {
 }
 
 func validateStageMountSource(source string) error {
-	cleaned := filepath.Clean(strings.TrimPrefix(source, string(filepath.Separator)))
+	cleaned := filepath.Clean(strings.TrimLeft(source, string(filepath.Separator)))
 	if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("bind mount source %q escapes the source stage", source)
 	}

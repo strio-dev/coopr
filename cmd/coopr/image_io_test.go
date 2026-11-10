@@ -17,9 +17,9 @@ import (
 
 	"github.com/strio-dev/coopr/internal/buildah"
 	"github.com/strio-dev/coopr/internal/definition"
-	"github.com/strio-dev/coopr/internal/imagestore"
 	"github.com/strio-dev/coopr/internal/oci"
 	"github.com/strio-dev/coopr/internal/planner"
+	"github.com/strio-dev/coopr/internal/testutil/nativeimage"
 
 	"github.com/google/go-containerregistry/pkg/registry"
 	"github.com/opencontainers/go-digest"
@@ -27,6 +27,8 @@ import (
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/common/libimage"
 	"go.podman.io/storage"
+	"oras.land/oras-go/v2"
+	orasoci "oras.land/oras-go/v2/content/oci"
 )
 
 func TestImageIOCommandFlags(t *testing.T) {
@@ -76,16 +78,7 @@ func TestImagePushNativeDestinationsWriteDigest(t *testing.T) {
 	ctx := context.Background()
 	options := maintenanceStoreOptions(t.TempDir())
 	layout, root, _ := maintenanceImageLayout(t, v1.Platform{OS: "linux", Architecture: runtime.GOARCH}, "native-push")
-	store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(options))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.WriteLayout(ctx, layout, root, "source"); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
+	maintenanceWriteLayout(t, options, layout, root, "source")
 	for _, transport := range []string{"dir", "oci", "docker-archive", "oci-archive", "containers-storage"} {
 		t.Run(transport, func(t *testing.T) {
 			output := filepath.Join(t.TempDir(), "image@artifact")
@@ -99,9 +92,7 @@ func TestImagePushNativeDestinationsWriteDigest(t *testing.T) {
 			}
 			digestFile := filepath.Join(t.TempDir(), "digest")
 			var out, errs bytes.Buffer
-			if status := run(imageIOArgs(options, "push", "--quiet", "--digestfile", digestFile, "source", destination), &out, &errs); status != 0 {
-				t.Fatalf("push %s status=%d: %s", destination, status, &errs)
-			}
+			maintenanceRun(t, imageIOArgs(options, "push", "--quiet", "--digestfile", digestFile, "source", destination), &out, &errs)
 			if out.Len() != 0 || errs.Len() != 0 {
 				t.Fatalf("quiet push printed stdout=%q stderr=%q", &out, &errs)
 			}
@@ -113,9 +104,7 @@ func TestImagePushNativeDestinationsWriteDigest(t *testing.T) {
 				t.Fatalf("invalid pushed digest %q: %v", data, err)
 			}
 			if transport != "containers-storage" {
-				if status := run(imageIOArgs(loaded, "load", "--quiet", "--input", output), &out, &errs); status != 0 {
-					t.Fatalf("load %s status=%d: %s", destination, status, &errs)
-				}
+				maintenanceRun(t, imageIOArgs(loaded, "load", "--quiet", "--input", output), &out, &errs)
 			}
 			err = buildah.WithStore(loaded, func(backend storage.Store) error {
 				selected, err := oci.ResolveStoredImage(ctx, backend, string(data), v1.Platform{OS: "linux", Architecture: runtime.GOARCH})
@@ -145,16 +134,7 @@ func TestImageIOExistsTagAndArchiveRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	options := maintenanceStoreOptions(t.TempDir())
 	layout, root, _ := maintenanceImageLayout(t, v1.Platform{OS: "linux", Architecture: runtime.GOARCH}, "image-io")
-	store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(options))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.WriteLayout(ctx, layout, root, "source"); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
+	maintenanceWriteLayout(t, options, layout, root, "source")
 	var out, errs bytes.Buffer
 	for _, test := range []struct {
 		args   []string
@@ -178,20 +158,14 @@ func TestImageIOExistsTagAndArchiveRoundTrip(t *testing.T) {
 	pushed := filepath.Join(t.TempDir(), "pushed.oci.tar")
 	out.Reset()
 	errs.Reset()
-	if status := run(imageIOArgs(options, "push", "--quiet", "source", "oci-archive:"+pushed+":pushed-image"), &out, &errs); status != 0 {
-		t.Fatalf("push archive status=%d: %s", status, &errs)
-	}
+	maintenanceRun(t, imageIOArgs(options, "push", "--quiet", "source", "oci-archive:"+pushed+":pushed-image"), &out, &errs)
 	archivedRoot, err := oci.ArchiveRoot(pushed)
 	if err != nil || archivedRoot.Annotations[v1.AnnotationRefName] != "pushed-image" {
 		t.Fatalf("image archive suffix annotation = %v, %v", archivedRoot.Annotations, err)
 	}
 	loaded := maintenanceStoreOptions(t.TempDir())
-	if status := run(imageIOArgs(loaded, "load", "--quiet", "--input", pushed), &out, &errs); status != 0 {
-		t.Fatalf("load image archive with suffix status=%d: %s", status, &errs)
-	}
-	if status := run(imageIOArgs(loaded, "exists", "pushed-image"), &out, &errs); status != 0 {
-		t.Fatalf("archive suffix name missing after load: status=%d stderr=%s", status, &errs)
-	}
+	maintenanceRun(t, imageIOArgs(loaded, "load", "--quiet", "--input", pushed), &out, &errs)
+	maintenanceRun(t, imageIOArgs(loaded, "exists", "pushed-image"), &out, &errs)
 	if info, err := os.Stat(pushed); err != nil || info.Size() == 0 {
 		t.Fatalf("image push archive missing or empty: %v", err)
 	}
@@ -203,22 +177,16 @@ func TestImageIOExistsTagAndArchiveRoundTrip(t *testing.T) {
 			archive := filepath.Join(t.TempDir(), format+".tar")
 			out.Reset()
 			errs.Reset()
-			if status := run(imageIOArgs(options, "save", "--quiet", "--format", format, "--output", archive, "tagged"), &out, &errs); status != 0 {
-				t.Fatalf("save %s status=%d: %s", format, status, &errs)
-			}
+			maintenanceRun(t, imageIOArgs(options, "save", "--quiet", "--format", format, "--output", archive, "tagged"), &out, &errs)
 			destination := maintenanceStoreOptions(t.TempDir())
 			out.Reset()
 			errs.Reset()
-			if status := run(imageIOArgs(destination, "load", "--quiet", "--input", archive), &out, &errs); status != 0 {
-				t.Fatalf("load %s status=%d: %s", format, status, &errs)
-			}
+			maintenanceRun(t, imageIOArgs(destination, "load", "--quiet", "--input", archive), &out, &errs)
 			if format == "oci-archive" {
 				server := httptest.NewServer(http.FileServer(http.Dir(filepath.Dir(archive))))
 				defer server.Close()
 				urlDestination := maintenanceStoreOptions(t.TempDir())
-				if status := run(imageIOArgs(urlDestination, "load", "--quiet", "--input", server.URL+"/"+filepath.Base(archive)), &out, &errs); status != 0 {
-					t.Fatalf("URL load status=%d: %s", status, &errs)
-				}
+				maintenanceRun(t, imageIOArgs(urlDestination, "load", "--quiet", "--input", server.URL+"/"+filepath.Base(archive)), &out, &errs)
 			}
 			err := buildah.WithStore(destination, func(backend storage.Store) error {
 				if _, err := oci.StoredImageName(backend, "tagged"); err != nil && !strings.HasSuffix(format, "-dir") {
@@ -258,24 +226,13 @@ func TestImageIOPullPushWithNativeRegistry(t *testing.T) {
 	ctx := context.Background()
 	options := maintenanceStoreOptions(t.TempDir())
 	layout, root, _ := maintenanceImageLayout(t, v1.Platform{OS: "linux", Architecture: runtime.GOARCH}, "registry")
-	store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(options))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.WriteLayout(ctx, layout, root, "source"); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
+	maintenanceWriteLayout(t, options, layout, root, "source")
 	server := httptest.NewServer(registry.New())
 	defer server.Close()
 	reference := strings.TrimPrefix(server.URL, "http://") + "/coopr/image-io:test"
 	digestFile := filepath.Join(t.TempDir(), "digest")
 	var out, errs bytes.Buffer
-	if status := run(imageIOArgs(options, "push", "--tls-verify=false", "--digestfile", digestFile, "source", reference), &out, &errs); status != 0 {
-		t.Fatalf("push status=%d: %s", status, &errs)
-	}
+	maintenanceRun(t, imageIOArgs(options, "push", "--tls-verify=false", "--digestfile", digestFile, "source", reference), &out, &errs)
 	if out.Len() != 0 || !strings.Contains(errs.String(), "Writing manifest") {
 		t.Fatalf("push stdout=%q stderr=%q", &out, &errs)
 	}
@@ -289,9 +246,7 @@ func TestImageIOPullPushWithNativeRegistry(t *testing.T) {
 	destination := maintenanceStoreOptions(t.TempDir())
 	out.Reset()
 	errs.Reset()
-	if status := run(imageIOArgs(destination, "pull", "--tls-verify=false", reference), &out, &errs); status != 0 {
-		t.Fatalf("pull status=%d: %s", status, &errs)
-	}
+	maintenanceRun(t, imageIOArgs(destination, "pull", "--tls-verify=false", reference), &out, &errs)
 	if !strings.Contains(errs.String(), "Writing manifest") || len(strings.TrimSpace(out.String())) != 64 {
 		t.Fatalf("pull stdout=%q stderr=%q", &out, &errs)
 	}
@@ -315,13 +270,9 @@ func TestImageIOPullPushWithNativeRegistry(t *testing.T) {
 	t.Run("all tags", func(t *testing.T) {
 		second := strings.TrimSuffix(reference, ":test") + ":second"
 		var stdout, stderr bytes.Buffer
-		if status := run(imageIOArgs(options, "push", "--quiet", "--tls-verify=false", "source", second), &stdout, &stderr); status != 0 {
-			t.Fatalf("push second tag: %s", &stderr)
-		}
+		maintenanceRun(t, imageIOArgs(options, "push", "--quiet", "--tls-verify=false", "source", second), &stdout, &stderr)
 		target := maintenanceStoreOptions(t.TempDir())
-		if status := run(imageIOArgs(target, "pull", "--all-tags", "--quiet", "--tls-verify=false", strings.TrimSuffix(reference, ":test")), &stdout, &stderr); status != 0 {
-			t.Fatalf("all-tags: %s", &stderr)
-		}
+		maintenanceRun(t, imageIOArgs(target, "pull", "--all-tags", "--quiet", "--tls-verify=false", strings.TrimSuffix(reference, ":test")), &stdout, &stderr)
 		if len(strings.Fields(stdout.String())) != 2 {
 			t.Fatalf("all-tags IDs=%q", &stdout)
 		}
@@ -335,9 +286,7 @@ func TestImageIOPullPushWithNativeRegistry(t *testing.T) {
 	t.Run("converted manifest digest", func(t *testing.T) {
 		converted := strings.TrimSuffix(reference, ":test") + ":docker"
 		var stdout, stderr bytes.Buffer
-		if status := run(imageIOArgs(options, "push", "--quiet", "--format=v2s2", "--tls-verify=false", "--digestfile", digestFile, "source", converted), &stdout, &stderr); status != 0 {
-			t.Fatalf("converted push: %s", &stderr)
-		}
+		maintenanceRun(t, imageIOArgs(options, "push", "--quiet", "--format=v2s2", "--tls-verify=false", "--digestfile", digestFile, "source", converted), &stdout, &stderr)
 		recorded, err := os.ReadFile(digestFile)
 		if err != nil {
 			t.Fatal(err)
@@ -383,16 +332,7 @@ func TestImagePushReportsFailureOnce(t *testing.T) {
 	}
 	options := maintenanceStoreOptions(t.TempDir())
 	layout, root, _ := maintenanceImageLayout(t, v1.Platform{OS: "linux", Architecture: runtime.GOARCH}, "failed-push")
-	store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(options))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.WriteLayout(context.Background(), layout, root, "failed-push"); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
+	maintenanceWriteLayout(t, options, layout, root, "failed-push")
 	server := httptest.NewServer(registry.New())
 	destination := strings.TrimPrefix(server.URL, "http://") + "/coopr/failure:test"
 	server.Close()
@@ -435,9 +375,7 @@ func TestImageIOHistoryUsesNativeConfigAndSizes(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out, errs bytes.Buffer
-	if status := run(imageIOArgs(options, "history", "--format", "json", "history"), &out, &errs); status != 0 {
-		t.Fatalf("history status=%d: %s", status, &errs)
-	}
+	maintenanceRun(t, imageIOArgs(options, "history", "--format", "json", "history"), &out, &errs)
 	var actual []libimage.ImageHistory
 	if err := json.Unmarshal(out.Bytes(), &actual); err != nil {
 		t.Fatal(err)
@@ -447,58 +385,115 @@ func TestImageIOHistoryUsesNativeConfigAndSizes(t *testing.T) {
 	}
 }
 
-func TestImageIOLoadRestoresExactMultiPlatformIndex(t *testing.T) {
+func TestImageIOLoadPreservesNativeIndexes(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping native indexed archive loading in short mode")
 	}
-	ctx := context.Background()
-	options := maintenanceStoreOptions(t.TempDir())
-	native := v1.Platform{OS: "linux", Architecture: runtime.GOARCH}
-	foreign := v1.Platform{OS: "linux", Architecture: "arm64"}
-	if native.Architecture == "arm64" {
-		foreign.Architecture = "amd64"
-	}
-	layoutA, rootA, _ := maintenanceImageLayout(t, native, "native")
-	layoutB, rootB, _ := maintenanceImageLayout(t, foreign, "foreign")
-	store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(options))
-	if err != nil {
-		t.Fatal(err)
-	}
-	indexLayout := filepath.Join(t.TempDir(), "index")
-	root, _, err := oci.AssembleImageIndex(ctx, indexLayout, []oci.ImageVariant{{Layout: layoutA, Manifest: rootA, Platform: native}, {Layout: layoutB, Manifest: rootB, Platform: foreign}}, "oci")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = store.WriteIndexLayout(ctx, indexLayout, root, "multi")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	archive := filepath.Join(t.TempDir(), "multi.tar")
-	var out, errs bytes.Buffer
-	if status := run(imageIOArgs(options, "save", "--format", "oci-archive", "--output", archive, "multi"), &out, &errs); status != 0 {
-		t.Fatalf("save index status=%d: %s", status, &errs)
-	}
-	destination := maintenanceStoreOptions(t.TempDir())
-	out.Reset()
-	errs.Reset()
-	if status := run(imageIOArgs(destination, "load", "--input", archive), &out, &errs); status != 0 {
-		t.Fatalf("load index status=%d: %s", status, &errs)
-	}
-	err = buildah.WithStore(destination, func(backend storage.Store) error {
-		loaded, _, selections, err := oci.StoredImageSelections(ctx, backend, root.Digest.String())
-		if err != nil {
-			return err
-		}
-		if loaded.Digest != root.Digest || len(selections) != 2 {
-			t.Fatalf("loaded root=%s platforms=%d want %s and 2", loaded.Digest, len(selections), root.Digest)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
+	for _, mode := range []string{"multi-platform", "foreign-only", "duplicate-platform"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := context.Background()
+			native := v1.Platform{OS: "linux", Architecture: runtime.GOARCH}
+			foreign := v1.Platform{OS: "linux", Architecture: "arm64"}
+			if native.Architecture == foreign.Architecture {
+				foreign.Architecture = "amd64"
+			}
+			platforms := []v1.Platform{native, foreign}
+			switch mode {
+			case "foreign-only":
+				if foreign.Architecture == "arm64" {
+					foreign.Variant = "v8"
+				}
+				platforms = []v1.Platform{foreign}
+			case "duplicate-platform":
+				native.OSFeatures = []string{"z", "a"}
+				platforms = []v1.Platform{native, native}
+			}
+			var variants []oci.ImageVariant
+			var members []v1.Descriptor
+			for i, platform := range platforms {
+				label := fmt.Sprintf("member-%d", i)
+				layout, child, _ := maintenanceImageLayout(t, platform, label)
+				child.Platform = &platform
+				if mode == "duplicate-platform" {
+					child.Annotations = map[string]string{"example.com/member": label}
+				}
+				members = append(members, child)
+				variants = append(variants, oci.ImageVariant{Layout: layout, Manifest: child, Platform: platform})
+			}
+			indexLayout := filepath.Join(t.TempDir(), "index")
+			var root v1.Descriptor
+			var data []byte
+			if mode == "multi-platform" {
+				var err error
+				root, data, err = oci.ImageIndexDescriptor(variants, "oci")
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				var err error
+				data, err = json.Marshal(v1.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: v1.MediaTypeImageIndex, Manifests: members})
+				if err != nil {
+					t.Fatal(err)
+				}
+				root = oci.Descriptor(v1.MediaTypeImageIndex, data)
+			}
+			writeImageIndexFixture(t, ctx, indexLayout, root, data, variants)
+			source := maintenanceStoreOptions(t.TempDir())
+			if err := buildah.WithStore(source, func(backend storage.Store) error {
+				_, err := nativeimage.BorrowStore(backend).SeedIndex(ctx, indexLayout, root, "multi")
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			var out, errs bytes.Buffer
+			for round := 0; round < 2; round++ {
+				archive := filepath.Join(t.TempDir(), "index.tar")
+				out.Reset()
+				errs.Reset()
+				maintenanceRun(t, imageIOArgs(source, "save", "--format=oci-archive", "--output", archive, "multi"), &out, &errs)
+				if !strings.Contains(errs.String(), "Writing manifest") {
+					t.Fatalf("missing real OCI save progress: %s", &errs)
+				}
+				destination := maintenanceStoreOptions(t.TempDir())
+				maintenanceRun(t, imageIOArgs(destination, "load", "--input", archive), &out, &errs)
+				if err := buildah.WithStore(destination, func(backend storage.Store) error {
+					for _, reference := range []string{"multi", root.Digest.String()} {
+						loaded, _, selections, err := oci.StoredImageSelections(ctx, backend, reference)
+						if err != nil {
+							return err
+						}
+						if loaded.Digest != root.Digest || len(selections) != len(members) {
+							t.Fatalf("round %d: loaded root=%s members=%d want %s and %d", round, loaded.Digest, len(selections), root.Digest, len(members))
+						}
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				source = destination
+				if mode != "duplicate-platform" {
+					break
+				}
+			}
+			if mode == "duplicate-platform" {
+				server := httptest.NewServer(registry.New())
+				defer server.Close()
+				remote := strings.TrimPrefix(server.URL, "http://") + "/duplicate:test"
+				maintenanceRun(t, imageIOArgs(source, "push", "--quiet", "--tls-verify=false", "multi", remote), &out, &errs)
+				response, err := http.Get(server.URL + "/v2/duplicate/manifests/test")
+				if err != nil {
+					t.Fatal(err)
+				}
+				data, readErr := io.ReadAll(response.Body)
+				_ = response.Body.Close()
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if digest.FromBytes(data) != root.Digest {
+					t.Fatalf("pushed duplicate index changed %s to %s", root.Digest, digest.FromBytes(data))
+				}
+			}
+		})
 	}
 }
 
@@ -511,16 +506,7 @@ func TestImageIOArchiveStandardStreams(t *testing.T) {
 			ctx := context.Background()
 			options := maintenanceStoreOptions(t.TempDir())
 			layout, root, config := maintenanceImageLayout(t, v1.Platform{OS: "linux", Architecture: runtime.GOARCH}, "streams")
-			store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(options))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := store.WriteLayout(ctx, layout, root, "streams"); err != nil {
-				t.Fatal(err)
-			}
-			if err := store.Close(); err != nil {
-				t.Fatal(err)
-			}
+			maintenanceWriteLayout(t, options, layout, root, "streams")
 			var archive, errs bytes.Buffer
 			if status := run(imageIOArgs(options, "save", "--format", format, "streams"), &archive, &errs); status != 0 {
 				t.Fatalf("stdout save status=%d: %s", status, &errs)
@@ -553,7 +539,16 @@ func TestImageIOArchiveStandardStreams(t *testing.T) {
 			if err := command.ExecuteContext(ctx); !errors.Is(err, outputErr) {
 				t.Fatalf("load writer error = %v", err)
 			}
-			err = buildah.WithStore(destination, func(backend storage.Store) error {
+
+			command = newRootCommand()
+			command.SetArgs(imageIOArgs(destination, "load", "--quiet"))
+			command.SetIn(strings.NewReader("not an OCI archive"))
+			command.SetOut(&out)
+			command.SetErr(&errs)
+			if err := command.ExecuteContext(ctx); err == nil {
+				t.Fatal("malformed archive accepted by public load")
+			}
+			err := buildah.WithStore(destination, func(backend storage.Store) error {
 				selector := root.Digest.String()
 				if format == "docker-archive" {
 					selector = "streams"
@@ -574,80 +569,10 @@ func TestImageIOArchiveStandardStreams(t *testing.T) {
 	}
 }
 
-func TestImageIOLoadForeignOnlyIndex(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping native archive loading in short mode")
-	}
-	ctx := context.Background()
-	foreign := v1.Platform{OS: "linux", Architecture: "arm64"}
-	if runtime.GOARCH == "arm64" {
-		foreign.Architecture = "amd64"
-	}
-	if foreign.Architecture == "arm64" {
-		foreign.Variant = "v8"
-	}
-	layout, child, _ := maintenanceImageLayout(t, foreign, "foreign-only")
-	indexLayout := filepath.Join(t.TempDir(), "index")
-	child.Platform = &foreign
-	variants := []oci.ImageVariant{{Layout: layout, Manifest: child, Platform: foreign}}
-	root, data, err := oci.RetainedImageIndexDescriptor(variants, "oci")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := oci.RestoreImageIndex(ctx, indexLayout, root, data, variants); err != nil {
-		t.Fatal(err)
-	}
-	source := maintenanceStoreOptions(t.TempDir())
-	store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(source))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.WriteIndexLayout(ctx, indexLayout, root, "foreign-only"); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	archive := filepath.Join(t.TempDir(), "foreign-only.tar")
-	var out, errs bytes.Buffer
-	if status := run(imageIOArgs(source, "save", "--format", "oci-archive", "--output", archive, "foreign-only"), &out, &errs); status != 0 {
-		t.Fatalf("save foreign-only status=%d: %s", status, &errs)
-	}
-	destination := maintenanceStoreOptions(t.TempDir())
-	out.Reset()
-	errs.Reset()
-	if status := run(imageIOArgs(destination, "load", "--input", archive), &out, &errs); status != 0 {
-		t.Fatalf("load foreign-only status=%d: %s", status, &errs)
-	}
-	err = buildah.WithStore(destination, func(backend storage.Store) error {
-		loaded, _, selections, err := oci.StoredImageSelections(ctx, backend, "foreign-only")
-		if err != nil {
-			return err
-		}
-		if loaded.Digest != root.Digest || len(selections) != 1 {
-			t.Fatalf("foreign-only root=%s selections=%d", loaded.Digest, len(selections))
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestImageIOExistsLocalStatus(t *testing.T) {
 	options := maintenanceStoreOptions(t.TempDir())
 	layout, root, _ := maintenanceImageLayout(t, v1.Platform{OS: "linux", Architecture: runtime.GOARCH}, "exists")
-	store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(options))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.WriteLayout(context.Background(), layout, root, "exists-local"); err != nil {
-		_ = store.Close()
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
+	maintenanceWriteLayout(t, options, layout, root, "exists-local")
 	for _, test := range []struct {
 		name   string
 		status int
@@ -682,29 +607,16 @@ func TestImageIODockerSaveDigestAndForeignSinglePlatform(t *testing.T) {
 			}
 			layout, root, id := maintenanceImageLayout(t, platform, "docker-save-selector")
 			source := maintenanceStoreOptions(t.TempDir())
-			store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(source))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := store.WriteLayout(ctx, layout, root, "archive-source"); err != nil {
-				t.Fatal(err)
-			}
-			if err := store.Close(); err != nil {
-				t.Fatal(err)
-			}
+			maintenanceWriteLayout(t, source, layout, root, "archive-source")
 			for _, selector := range []string{root.Digest.String(), "archive-source"} {
 				archive := filepath.Join(t.TempDir(), "image.tar")
 				var out, errs bytes.Buffer
-				if status := run(imageIOArgs(source, "save", "--quiet", "--output", archive, selector), &out, &errs); status != 0 {
-					t.Fatalf("Docker save %s %s status=%d: %s", selector, platform.Architecture, status, &errs)
-				}
+				maintenanceRun(t, imageIOArgs(source, "save", "--quiet", "--output", archive, selector), &out, &errs)
 				destination := maintenanceStoreOptions(t.TempDir())
 				out.Reset()
 				errs.Reset()
-				if status := run(imageIOArgs(destination, "load", "--quiet", "--input", archive), &out, &errs); status != 0 {
-					t.Fatalf("Docker load status=%d: %s", status, &errs)
-				}
-				err = buildah.WithStore(destination, func(backend storage.Store) error {
+				maintenanceRun(t, imageIOArgs(destination, "load", "--quiet", "--input", archive), &out, &errs)
+				err := buildah.WithStore(destination, func(backend storage.Store) error {
 					selected, err := oci.ResolveStoredImage(ctx, backend, id.Encoded(), platform)
 					if err != nil {
 						return err
@@ -726,23 +638,13 @@ func TestImageIODockerSaveSharedConfigSelections(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping native archive operations in short mode")
 	}
-	ctx := context.Background()
 	platform := v1.Platform{OS: "linux", Architecture: runtime.GOARCH}
 	layout, first, id := maintenanceImageLayout(t, platform, "shared-config")
 	source := maintenanceStoreOptions(t.TempDir())
-	store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(source))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.WriteLayout(ctx, layout, first, "shared"); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
+	maintenanceWriteLayout(t, source, layout, first, "shared")
 	var second v1.Descriptor
 	var secondData []byte
-	err = buildah.WithStore(source, func(backend storage.Store) error {
+	err := buildah.WithStore(source, func(backend storage.Store) error {
 		original, err := backend.ImageBigData(id.Encoded(), storage.ImageDigestBigDataKey)
 		if err != nil {
 			return err
@@ -767,9 +669,7 @@ func TestImageIODockerSaveSharedConfigSelections(t *testing.T) {
 	}
 	var out, errs bytes.Buffer
 	archive := filepath.Join(t.TempDir(), "shared.tar")
-	if status := run(imageIOArgs(source, "save", "--quiet", "--multi-image-archive", "--output", archive, first.Digest.String(), second.Digest.String()), &out, &errs); status != 0 {
-		t.Fatalf("shared-config save status=%d: %s", status, &errs)
-	}
+	maintenanceRun(t, imageIOArgs(source, "save", "--quiet", "--multi-image-archive", "--output", archive, first.Digest.String(), second.Digest.String()), &out, &errs)
 	err = buildah.WithStore(source, func(backend storage.Store) error {
 		actual, err := backend.ImageBigData(id.Encoded(), storage.ImageDigestBigDataKey)
 		if err != nil {
@@ -786,9 +686,7 @@ func TestImageIODockerSaveSharedConfigSelections(t *testing.T) {
 	destination := maintenanceStoreOptions(t.TempDir())
 	out.Reset()
 	errs.Reset()
-	if status := run(imageIOArgs(destination, "load", "--quiet", "--input", archive), &out, &errs); status != 0 {
-		t.Fatalf("shared-config load status=%d: %s", status, &errs)
-	}
+	maintenanceRun(t, imageIOArgs(destination, "load", "--quiet", "--input", archive), &out, &errs)
 	err = buildah.WithStore(destination, func(backend storage.Store) error {
 		images, err := backend.Images()
 		if err != nil {
@@ -796,101 +694,6 @@ func TestImageIODockerSaveSharedConfigSelections(t *testing.T) {
 		}
 		if len(images) != 1 || images[0].ID != id.Encoded() {
 			t.Fatalf("native Docker archive should deduplicate shared configs: %+v", images)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestImageIOLoadRetainsDuplicatePlatformMembers(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping native indexed archive loading in short mode")
-	}
-	ctx := context.Background()
-	options := maintenanceStoreOptions(t.TempDir())
-	native := v1.Platform{OS: "linux", Architecture: runtime.GOARCH}
-	native.OSFeatures = []string{"z", "a"}
-	foreign := native
-	layoutA, rootA, _ := maintenanceImageLayout(t, native, "native")
-	layoutB, rootB, _ := maintenanceImageLayout(t, foreign, "foreign")
-	rootA.Platform = &native
-	rootB.Platform = &foreign
-	rootA.Annotations = map[string]string{"example.com/member": "first"}
-	rootB.Annotations = map[string]string{"example.com/member": "second"}
-
-	store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(options))
-	if err != nil {
-		t.Fatal(err)
-	}
-	indexLayout := filepath.Join(t.TempDir(), "index")
-	rootData, err := json.Marshal(v1.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: v1.MediaTypeImageIndex, Manifests: []v1.Descriptor{func() v1.Descriptor { d := rootA; d.Platform = &native; return d }(), func() v1.Descriptor { d := rootB; d.Platform = &foreign; return d }()}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	root := oci.Descriptor(v1.MediaTypeImageIndex, rootData)
-	if err := oci.RestoreImageIndex(ctx, indexLayout, root, rootData, []oci.ImageVariant{{Layout: layoutA, Manifest: rootA, Platform: native}, {Layout: layoutB, Manifest: rootB, Platform: foreign}}); err != nil {
-		t.Fatal(err)
-	}
-	_, err = store.WriteIndexLayout(ctx, indexLayout, root, "multi")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	archive := filepath.Join(t.TempDir(), "multi.tar")
-	var out, errs bytes.Buffer
-	if status := run(imageIOArgs(options, "save", "--format", "oci-archive", "--output", archive, "multi"), &out, &errs); status != 0 {
-		t.Fatalf("save index status=%d: %s", status, &errs)
-	}
-	destination := maintenanceStoreOptions(t.TempDir())
-	out.Reset()
-	errs.Reset()
-	if status := run(imageIOArgs(destination, "load", "--input", archive), &out, &errs); status != 0 {
-		t.Fatalf("load index status=%d: %s", status, &errs)
-	}
-	saved := filepath.Join(t.TempDir(), "duplicate-roundtrip.tar")
-	out.Reset()
-	errs.Reset()
-	if status := run(imageIOArgs(destination, "save", "--output", saved, "--format=oci-archive", "multi"), &out, &errs); status != 0 {
-		t.Fatalf("duplicate-platform save status=%d: %s", status, &errs)
-	}
-	if !strings.Contains(errs.String(), "Writing manifest") {
-		t.Fatalf("missing real OCI save progress: %s", &errs)
-	}
-	reloaded := maintenanceStoreOptions(t.TempDir())
-	if status := run(imageIOArgs(reloaded, "load", "--quiet", "--input", saved), &out, &errs); status != 0 {
-		t.Fatalf("duplicate-platform reload status=%d: %s", status, &errs)
-	}
-	destination = reloaded
-	server := httptest.NewServer(registry.New())
-	defer server.Close()
-	remote := strings.TrimPrefix(server.URL, "http://") + "/duplicate:test"
-	if status := run(imageIOArgs(destination, "push", "--quiet", "--tls-verify=false", "multi", remote), &out, &errs); status != 0 {
-		t.Fatalf("duplicate-platform push status=%d: %s", status, &errs)
-	}
-	response, err := http.Get(server.URL + "/v2/duplicate/manifests/test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, readErr := io.ReadAll(response.Body)
-	_ = response.Body.Close()
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	if digest.FromBytes(data) != root.Digest {
-		t.Fatalf("pushed duplicate index changed %s to %s", root.Digest, digest.FromBytes(data))
-	}
-
-	err = buildah.WithStore(destination, func(backend storage.Store) error {
-		loaded, _, selections, err := oci.StoredImageSelections(ctx, backend, root.Digest.String())
-		if err != nil {
-			return err
-		}
-		if loaded.Digest != root.Digest || len(selections) != 2 {
-			t.Fatalf("loaded root=%s platforms=%d want %s and 2", loaded.Digest, len(selections), root.Digest)
 		}
 		return nil
 	})
@@ -923,9 +726,7 @@ func TestImageIOSaveExplicitUncompressed(t *testing.T) {
 	for _, uncompressed := range []bool{true, false} {
 		target := filepath.Join(t.TempDir(), "saved")
 		var stdout, stderr bytes.Buffer
-		if status := run(imageIOArgs(store, "save", "--format=oci-dir", "--output", target, fmt.Sprintf("--uncompressed=%t", uncompressed), built.ImageID), &stdout, &stderr); status != 0 {
-			t.Fatalf("save uncompressed=%t: %s", uncompressed, &stderr)
-		}
+		maintenanceRun(t, imageIOArgs(store, "save", "--format=oci-dir", "--output", target, fmt.Sprintf("--uncompressed=%t", uncompressed), built.ImageID), &stdout, &stderr)
 		top, err := oci.LayoutRoot(target)
 		if err != nil {
 			t.Fatal(err)
@@ -948,5 +749,32 @@ func TestImageIOSaveExplicitUncompressed(t *testing.T) {
 		if uncompressed && top.Digest.String() != built.ManifestDigest {
 			t.Fatalf("uncompressed save changed manifest %s to %s", built.ManifestDigest, top.Digest)
 		}
+	}
+}
+
+func writeImageIndexFixture(t *testing.T, ctx context.Context, path string, root v1.Descriptor, data []byte, variants []oci.ImageVariant) {
+	t.Helper()
+	target, err := orasoci.NewWithContext(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobs, err := orasoci.NewStorage(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, variant := range variants {
+		source, err := orasoci.NewWithContext(ctx, variant.Layout)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := oras.CopyGraph(ctx, source, blobs, variant.Manifest, oras.CopyGraphOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := target.Push(ctx, root, bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+	if err := target.Tag(ctx, root, root.Digest.String()); err != nil {
+		t.Fatal(err)
 	}
 }

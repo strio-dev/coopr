@@ -10,34 +10,8 @@ import (
 	"github.com/strio-dev/coopr/internal/oci"
 
 	"github.com/spf13/cobra"
-	buildahcli "go.podman.io/buildah/pkg/cli"
 	commonconfig "go.podman.io/common/pkg/config"
 )
-
-func TestBuildRegistryParsersMatchNativeBeforeHelp(t *testing.T) {
-	for _, factory := range []func() *cobra.Command{newBuildCommand, newComponentBuildCommand} {
-		for _, args := range [][]string{{"--pull=a,b"}, {"--pull="}, {"--pull=false"}, {"--retry=-1"}, {"--retry-delay=bad"}, {"--retry-delay="}} {
-			cmd := factory()
-			native := buildahcli.GetBudFlags(new(buildahcli.BudResults))
-			common, err := buildahcli.GetFromAndBudFlags(new(buildahcli.FromAndBudResults), new(buildahcli.UserNSResults), new(buildahcli.NameSpaceResults))
-			if err != nil {
-				t.Fatal(err)
-			}
-			native.AddFlagSet(&common)
-			if err := native.Parse(args); err != nil {
-				t.Fatal(err)
-			}
-			if err := cmd.ParseFlags(args); err != nil {
-				t.Fatalf("%s %v: %v", cmd.Name(), args, err)
-			}
-			name := strings.Split(strings.TrimPrefix(args[0], "--"), "=")[0]
-			got, want := cmd.Flags().Lookup(name), native.Lookup(name)
-			if got.Value.Type() != want.Value.Type() || got.Value.String() != want.Value.String() {
-				t.Fatalf("%s %v got %s:%s want %s:%s", cmd.Name(), args, got.Value.Type(), got.Value.String(), want.Value.Type(), want.Value.String())
-			}
-		}
-	}
-}
 
 func TestInvalidRegistryValuesDoNotPreventHelp(t *testing.T) {
 	for _, args := range [][]string{{"build", "--pull=bad"}, {"build", "--retry=-1"}, {"build", "--retry-delay=bad"}, {"pull", "--retry-delay=bad"}, {"push", "--retry-delay=bad"}} {

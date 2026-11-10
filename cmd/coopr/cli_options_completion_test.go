@@ -10,18 +10,12 @@ import (
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/spf13/cobra"
 	"github.com/strio-dev/coopr/internal/buildah"
-	"github.com/strio-dev/coopr/internal/imagestore"
+	"github.com/strio-dev/coopr/internal/testutil/nativeimage"
 	"github.com/strio-dev/coopr/internal/transfer"
 	imagecopy "go.podman.io/image/v5/copy"
 )
 
 func TestPullNativePlatformFlags(t *testing.T) {
-	for _, args := range [][]string{{"--arch=arm64"}, {"--os=linux", "--arch=arm", "--variant=v7"}, {"--platform=linux/arm/v7"}} {
-		cmd := newImagePullCommand()
-		if err := cmd.ParseFlags(args); err != nil {
-			t.Errorf("%v: %v", args, err)
-		}
-	}
 	cmd := newImagePullCommand()
 	cmd.SetArgs([]string{"--platform=linux/arm64", "--arch=amd64", "example.invalid/image"})
 	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "platform") {
@@ -59,12 +53,12 @@ func TestPushNativeCompressionSwitches(t *testing.T) {
 func TestImagesNativeHistoryPresentation(t *testing.T) {
 	ctx := context.Background()
 	options := maintenanceStoreOptions(t.TempDir())
-	store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(options))
+	store, err := nativeimage.NewStore(buildah.NativeStoreOptions(options))
 	if err != nil {
 		t.Fatal(err)
 	}
 	layout, manifest, _ := maintenanceImageLayout(t, v1.Platform{OS: "linux", Architecture: "amd64"}, "history")
-	if _, err := store.WriteLayout(ctx, layout, manifest, "history-current"); err != nil {
+	if _, err := store.SeedLayout(ctx, layout, manifest, "history-current"); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {

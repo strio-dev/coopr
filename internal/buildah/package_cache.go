@@ -19,14 +19,12 @@ import (
 	"github.com/strio-dev/coopr/internal/imageconfig"
 	"github.com/strio-dev/coopr/internal/oci"
 	"github.com/strio-dev/coopr/internal/planner"
-	upstream "go.podman.io/buildah"
-	"go.podman.io/buildah/copier"
 	"go.podman.io/buildah/define"
 	"go.podman.io/buildah/pkg/parse"
 	"go.podman.io/storage"
 )
 
-const packageCacheLoweringVersion = "coopr-buildah-package-v3"
+const packageCacheLoweringVersion = "coopr-buildah-package-v6"
 
 var errPackageCacheDriverUnknown = errors.New("package cache storage driver is unknown")
 var errPackageContextUnselected = errors.New("named context was not selected during planning")
@@ -116,11 +114,14 @@ func (c *packageResultCache) close() error {
 // descriptors. Selected CDI names and declared devices participate; live
 // hardware state remains a session input. Authorization and selection are
 // checked before aggregate lookup, including device and privileged RUNs.
-func packageCacheEligibility(stages []planner.Stage) (needsContext bool, eligible bool) {
+func packageCacheEligibility(stages []planner.Stage, controls RunControls) (needsContext bool, eligible bool) {
 	for _, stage := range stages {
 		for _, operation := range stage.Operations {
 			switch operation.Name {
 			case "run":
+				if len(operation.HostMounts) != 0 || len(controls.Volumes) != 0 {
+					return false, false
+				}
 				for _, child := range operation.Children {
 					if child.Name == "device" {
 						continue
@@ -286,27 +287,6 @@ func resolvePackageClosureBases(closure []planner.Stage, selected map[ResolvedBa
 	return bases, nil
 }
 
-func packageContextIdentity(ctx context.Context, contextDir string, artifacts []string, ignoreFile string) (digest.Digest, error) {
-	policy, err := prepareContextPolicyWithIgnore(contextDir, artifacts, ignoreFile)
-	if err != nil {
-		return "", err
-	}
-	options, err := policy.apply(upstream.AddAndCopyOptions{})
-	if err != nil {
-		return "", err
-	}
-	snapshot, cleanup, err := snapshotContext(options.ContextDir, options.Excludes, nil, nil)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = cleanup() }()
-	digester := digest.Canonical.Digester()
-	if err := copier.Get(snapshot, snapshot, copier.GetOptions{}, []string{"."}, cacheContextWriter{ctx: ctx, writer: digester.Hash()}); err != nil {
-		return "", fmt.Errorf("hash filtered package context: %w", err)
-	}
-	return digester.Digest(), nil
-}
-
 func packageCacheExecutor(options PlanOptions, runtimeIdentity string) (string, error) {
 	modules, err := cacheModuleVersions()
 	if err != nil {
@@ -342,7 +322,7 @@ func packageCacheExecutor(options PlanOptions, runtimeIdentity string) (string, 
 	return "buildah-" + digest.FromString(base+"\x00"+executionOptions.String()+"\x00"+runControls.String()).Encoded(), nil
 }
 
-func packageCacheKeys(ctx context.Context, options PlanOptions, plan *planner.Plan, stages []planner.Stage, outputs map[string]packageOutput, artifacts []string) (map[string]cache.PackageKey, bool, error) {
+func packageCacheKeys(ctx context.Context, options PlanOptions, plan *planner.Plan, stages []planner.Stage, outputs map[string]packageOutput, input *capturedContext) (map[string]cache.PackageKey, bool, error) {
 	for _, stage := range stages {
 		if stage.Kind != "from" || stage.InheritedOnBuildPlanned || strings.EqualFold(stage.Source, "scratch") {
 			continue
@@ -369,7 +349,7 @@ func packageCacheKeys(ctx context.Context, options PlanOptions, plan *planner.Pl
 			return nil, false, nil
 		}
 	}
-	needsContext, eligible := packageCacheEligibility(stages)
+	needsContext, eligible := packageCacheEligibility(stages, options.RunControls)
 	var deviceInputs map[string]digest.Digest
 	if eligible {
 		allowed, err := allowedEntitlements(options.Allow)
@@ -396,12 +376,11 @@ func packageCacheKeys(ctx context.Context, options PlanOptions, plan *planner.Pl
 		return nil, false, nil
 	}
 	var contextIdentity digest.Digest
-	var err error
 	if needsContext {
-		contextIdentity, err = packageContextIdentity(ctx, options.ContextDir, artifacts, options.IgnoreFile)
-		if err != nil {
-			return nil, false, err
+		if input == nil || input.directory != options.ContextDir || input.identity == "" {
+			return nil, false, errors.New("package cache requires the retained captured context identity")
 		}
+		contextIdentity = input.identity
 	}
 	executorIdentity, err := packageCacheExecutor(options, runtimeIdentity)
 	if err != nil {

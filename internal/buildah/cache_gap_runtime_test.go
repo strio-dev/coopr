@@ -31,7 +31,7 @@ func TestCacheGapAggregateRunAuthorizationAndFreshStoreReuse(t *testing.T) {
 			defer cancel()
 			root := t.TempDir()
 			base, _ := newLiveBusyBoxRegistry(t, ctx)
-			resolver := localConfigComponentResolver(t, ctx, root, `extend { run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" `+test.properties+`; }`, false)
+			resolver := localConfigComponentResolver(t, ctx, root, `extend { run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" `+test.properties+`; }`)
 			policy := writeComponentTestPolicy(t, root)
 			cache := []CacheSpec{{Transport: "oci-layout", Reference: filepath.Join(root, "cache")}}
 			source := testPlan(t, fmt.Sprintf("from %q { component \"config\"; }", base))
@@ -69,7 +69,7 @@ func TestCacheGapAggregateRunAuthorizationAndFreshStoreReuse(t *testing.T) {
 func TestCacheGapNamedContextWholeComponentReuse(t *testing.T) {
 	f := newLocalComponentFixture(t)
 	base, _ := newLiveBusyBoxRegistry(t, f.ctx)
-	f.options.Resolver = localConfigComponentResolver(t, f.ctx, f.root, `extend { from "tools" { run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" network="none"; } }`, false)
+	f.options.Resolver = localConfigComponentResolver(t, f.ctx, f.root, `extend { from "tools" { run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" network="none"; } }`)
 	resolver, err := oci.NewResolver(oci.Options{ComponentStoreDir: f.options.Resolver.ComponentStoreDir(), TLSVerify: new(false)})
 	if err != nil {
 		t.Fatal(err)
@@ -214,7 +214,7 @@ func TestCacheGapNamedContextContentInvalidation(t *testing.T) {
 	} {
 		t.Run(source, func(t *testing.T) {
 			f := newLocalComponentFixture(t)
-			f.options.Resolver = localConfigComponentResolver(t, f.ctx, f.root, source, false)
+			f.options.Resolver = localConfigComponentResolver(t, f.ctx, f.root, source)
 			f.options.BuildContexts = []buildcontext.Spec{{Name: "assets", Kind: buildcontext.Local, Path: filepath.Join(f.contextDir, "assets")}}
 			for _, attempt := range []struct {
 				name, value string

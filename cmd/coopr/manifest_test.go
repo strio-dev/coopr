@@ -16,8 +16,8 @@ import (
 	"testing"
 
 	"github.com/strio-dev/coopr/internal/buildah"
-	"github.com/strio-dev/coopr/internal/imagestore"
 	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/testutil/nativeimage"
 	"github.com/strio-dev/coopr/internal/transfer"
 
 	"github.com/containerd/platforms"
@@ -73,19 +73,21 @@ func TestManifestNativeLifecycleAndCooprMutationVisibility(t *testing.T) {
 	options := maintenanceStoreOptions(t.TempDir())
 	native := v1.Platform{OS: "linux", Architecture: runtime.GOARCH}
 	layout, child, _ := maintenanceImageLayout(t, native, "manifest")
-	store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(options))
+	store, err := nativeimage.NewStore(buildah.NativeStoreOptions(options))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.WriteLayout(ctx, layout, child, "child"); err != nil {
+	if _, err := store.SeedLayout(ctx, layout, child, "child"); err != nil {
 		t.Fatal(err)
 	}
 	indexLayout := filepath.Join(t.TempDir(), "index")
-	original, _, err := oci.AssembleImageIndex(ctx, indexLayout, []oci.ImageVariant{{Layout: layout, Manifest: child, Platform: native}}, "oci")
+	originalFixtureVariants := []oci.ImageVariant{{Layout: layout, Manifest: child, Platform: native}}
+	original, originalFixtureData, err := oci.ImageIndexDescriptor(originalFixtureVariants, "oci")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.WriteIndexLayout(ctx, indexLayout, original, "original"); err != nil {
+	writeImageIndexFixture(t, ctx, indexLayout, original, originalFixtureData, originalFixtureVariants)
+	if _, err := store.SeedIndex(ctx, indexLayout, original, "original"); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {

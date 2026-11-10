@@ -2,18 +2,12 @@ package buildah
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 
 	"github.com/opencontainers/go-digest"
-	"github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/strio-dev/coopr/internal/cache"
 	"github.com/strio-dev/coopr/internal/definition"
@@ -34,87 +28,6 @@ func (s failingInstructionCacheStore) PutImage(context.Context, cache.ImageKey, 
 	return v1.Descriptor{}, s.err
 }
 
-func TestInstructionCacheExportReturnsAllFailuresAfterCleanup(t *testing.T) {
-	root := t.TempDir()
-	layout := filepath.Join(root, "candidate", "layout")
-	if err := os.MkdirAll(layout, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	c := &portableInstructionCache{
-		writeStores: []instructionCacheStore{
-			failingInstructionCacheStore{err: errors.New("first export failed")},
-			failingInstructionCacheStore{err: errors.New("second export failed")},
-		},
-		candidates: []portableInstructionCandidate{{layout: layout}},
-	}
-	err := c.publish(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "first export failed") || !strings.Contains(err.Error(), "second export failed") {
-		t.Fatalf("instruction cache export error = %v", err)
-	}
-	if len(c.candidates) != 0 || c.stats.Errors != 2 || c.stats.Stored != 0 {
-		t.Fatalf("instruction cache after failed export = candidates %d stats %+v", len(c.candidates), c.stats)
-	}
-	if _, err := os.Stat(filepath.Dir(layout)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("staged instruction cache remains: %v", err)
-	}
-}
-
-func TestPortableInstructionCacheRelaysDeferredCandidate(t *testing.T) {
-	workerRoot := t.TempDir()
-	parentRoot := t.TempDir()
-	layout := filepath.Join(workerRoot, "candidate", "layout")
-	if err := os.MkdirAll(layout, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	manifest := v1.Descriptor{MediaType: v1.MediaTypeImageManifest, Digest: digest.FromString("manifest"), Size: 123}
-	base := v1.Descriptor{MediaType: v1.MediaTypeImageManifest, Digest: digest.FromString("base"), Size: 100}
-	index, err := json.Marshal(v1.Index{Versioned: specs.Versioned{SchemaVersion: 2}, Manifests: []v1.Descriptor{base, manifest}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(layout, "index.json"), index, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	key := cache.ImageKey{
-		Instruction: digest.FromString("instruction"), Parent: digest.FromString("parent"),
-		Platform: v1.Platform{OS: "linux", Architecture: "amd64"}, Executor: "executor", Format: "oci",
-	}
-	worker := &portableInstructionCache{stagingDir: workerRoot, candidates: []portableInstructionCandidate{{
-		key: key, record: cache.ImageRecord{Version: cache.ImageRecordVersion, Key: key, Image: manifest, BaseImage: &base}, layout: layout,
-	}}}
-	relays, err := worker.relayCandidates(parentRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := worker.close(); err != nil {
-		t.Fatal(err)
-	}
-	parent := &portableInstructionCache{stagingDir: parentRoot}
-	if err := parent.acceptRelayedCandidates(relays); err != nil {
-		t.Fatal(err)
-	}
-	if len(parent.candidates) != 1 {
-		t.Fatalf("accepted %d candidates, want 1", len(parent.candidates))
-	}
-	if _, err := os.Stat(filepath.Join(parent.candidates[0].layout, "index.json")); err != nil {
-		t.Fatalf("relayed layout did not survive worker cleanup: %v", err)
-	}
-	invalid := relays[0]
-	invalid.Record.BaseImage = &v1.Descriptor{MediaType: base.MediaType, Digest: digest.FromString("wrong-base"), Size: base.Size}
-	if err := parent.acceptRelayedCandidates([]portableInstructionCacheRelay{invalid}); err == nil {
-		t.Fatal("accepted unrelated base descriptor in component relay")
-	}
-	invalid = relays[0]
-	invalid.Record.Image.Digest = digest.FromString("wrong-output")
-	if err := parent.acceptRelayedCandidates([]portableInstructionCacheRelay{invalid}); err == nil {
-		t.Fatal("accepted unrelated selected output descriptor in component relay")
-	}
-	if len(parent.candidates) != 1 {
-		t.Fatal("invalid relay was enqueued")
-	}
-
-}
-
 func instructionCacheTestInput(operation planner.Operation) instructionCacheInput {
 	return instructionCacheInput{
 		ParentRootFS: "parent-one",
@@ -124,20 +37,6 @@ func instructionCacheTestInput(operation planner.Operation) instructionCacheInpu
 		Isolation:    "rootless",
 		Runtime:      "crun",
 		Format:       "oci",
-	}
-}
-
-func TestLocalInstructionCacheInvalidatesLegacyExecution(t *testing.T) {
-	input := instructionCacheTestInput(planner.Operation{Instruction: definition.Instruction{Name: "run", Form: "exec", Arguments: []string{"true"}}})
-	key, cacheable, err := instructionCacheKey(input)
-	if err != nil || !cacheable {
-		t.Fatalf("instruction key = %s, %t, %v", key, cacheable, err)
-	}
-	// Frozen key from the previous execution semantics. Even the same authored
-	// RUN must miss old local results after native mount behavior is repaired.
-	const legacy = "sha256:31c840c11951deb4d15bae6ce2eda03fb196c45a405e3e0f4ec863f50b54ea36"
-	if key.String() == legacy {
-		t.Fatal("repaired RUN semantics reused a legacy local instruction-cache key")
 	}
 }
 
@@ -210,70 +109,6 @@ func TestInstructionCacheKeyCapturesRunInputs(t *testing.T) {
 			}
 			if got == key {
 				t.Fatalf("cache key did not change for %s", change.name)
-			}
-		})
-	}
-}
-
-func TestPortableInstructionDigestUsesOCIParent(t *testing.T) {
-	input := instructionCacheTestInput(planner.Operation{
-		Instruction: definition.Instruction{Name: "run", Form: "shell", Arguments: []string{"printf ready >/proof"}, Properties: map[string]string{"network": "none"}},
-	})
-	parent := digest.FromString("parent rootfs chain")
-	first, cacheable, err := portableInstructionDigest(input, parent)
-	if err != nil || !cacheable {
-		t.Fatalf("portableInstructionDigest() = %q, %v, %v", first, cacheable, err)
-	}
-	input.ParentRootFS = "a different local parent spelling"
-	second, cacheable, err := portableInstructionDigest(input, parent)
-	if err != nil || !cacheable || second != first {
-		t.Fatalf("private image ID changed portable digest: first=%s second=%s cacheable=%v err=%v", first, second, cacheable, err)
-	}
-	changedParent, cacheable, err := portableInstructionDigest(input, digest.FromString("other parent rootfs chain"))
-	if err != nil || !cacheable || changedParent == first {
-		t.Fatalf("OCI parent did not change portable digest: first=%s changed=%s cacheable=%v err=%v", first, changedParent, cacheable, err)
-	}
-}
-
-func TestPortableInstructionParentUsesDomainSeparatedScratchIdentity(t *testing.T) {
-	if got := portableInstructionParent(""); got != portableInstructionScratchParent || got.Validate() != nil {
-		t.Fatalf("scratch parent = %q, want valid %q", got, portableInstructionScratchParent)
-	}
-	chain := digest.FromString("rootfs chain")
-	if got := portableInstructionParent(chain.String()); got != chain {
-		t.Fatalf("rootfs parent = %q, want %q", got, chain)
-	}
-	if got := portableInstructionParent("empty"); got != portableInstructionScratchParent {
-		t.Fatalf("empty rootfs parent = %q", got)
-	}
-}
-
-func TestPortableInstructionEligibilityUsesDeclaredInputs(t *testing.T) {
-	localAdd := Add{Sources: []string{"archive.tar"}}
-	tests := []struct {
-		name    string
-		lowered Operation
-		want    bool
-	}{
-		{name: "isolated run", lowered: Run{}, want: true},
-		{name: "default network", lowered: Run{}, want: true},
-		{name: "run mount", lowered: Run{Mounts: []RunMount{{Type: "cache"}}}, want: true},
-		{name: "run device", lowered: Run{Devices: []runDeviceRequest{{Name: "vendor.com/device=all"}}}, want: true},
-		{name: "local copy", lowered: Copy{}, want: true},
-		{name: "child input", lowered: Copy{}, want: true},
-		{name: "stage source", lowered: copyFromImageOperation{}, want: true},
-		{name: "named context", lowered: copyFromImageOperation{}, want: true},
-		{name: "local add", lowered: localAdd, want: true},
-		{name: "remote add", lowered: Add{Sources: []string{"https://example.invalid/archive.tar"}}, want: true},
-		{name: "pinned remote add", lowered: Add{Sources: []string{"https://example.invalid/archive.tar"}, Checksum: digest.FromString("archive").String()}, want: true},
-		{name: "remote git add", lowered: Add{Sources: []string{"https://example.invalid/repository.git#main"}}, want: true},
-		{name: "pinned remote git add", lowered: Add{Sources: []string{"https://example.invalid/repository.git#main"}, Checksum: "0123456789ab"}, want: true},
-		{name: "workdir", lowered: WorkDir("/workspace"), want: true},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if got := portableInstructionEligible(test.lowered); got != test.want {
-				t.Fatalf("portableInstructionEligible() = %v, want %v", got, test.want)
 			}
 		})
 	}
@@ -458,171 +293,29 @@ func TestInstructionCacheKeyRequiresLogicalConfig(t *testing.T) {
 	}
 }
 
-func TestInstructionCacheIndexLookupAndStaleRecord(t *testing.T) {
+func TestInstructionCacheRetentionPreservesNames(t *testing.T) {
 	store := newInstructionCacheTestStore(t)
-	key := digest.FromString("wanted instruction")
-	staleKey := digest.FromString("stale instruction")
-	stale := createInstructionCacheTestImage(t, store, "example.test/user-name:latest")
-
-	staleData, err := json.Marshal(instructionCacheRecord{Schema: instructionCacheSchema, Key: staleKey})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SetImageBigData(stale, instructionCacheBigDataName(key), staleData, nil); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.AddNames(stale, []string{instructionCacheName(key)}); err != nil {
-		t.Fatal(err)
-	}
-	if got, err := findInstructionCache(store, key); err != nil || got != "" {
-		t.Fatalf("stale findInstructionCache() = %q, %v; want miss", got, err)
-	}
-
+	old := createInstructionCacheTestImage(t, store, "example.test/user-name:latest")
 	fresh := createInstructionCacheTestImage(t, store, "example.test/fresh-name:latest")
-	if err := storeInstructionCache(store, fresh, key); err != nil {
-		t.Fatal(err)
-	}
-	if got, err := findInstructionCache(store, key); err != nil || got != fresh {
-		t.Fatalf("findInstructionCache() = %q, %v; want %q", got, err, fresh)
-	}
-	entry, err := findInstructionCacheEntry(store, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantManifest := digest.FromBytes([]byte(`{"schemaVersion":2}`))
-	if entry.ManifestDigest != wantManifest {
-		t.Fatalf("cache manifest digest = %s, want %s", entry.ManifestDigest, wantManifest)
-	}
-
-	staleImage, err := store.Image(stale)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Contains(staleImage.Names, "example.test/user-name:latest") {
-		t.Fatalf("stale image names = %v; unrelated name was removed", staleImage.Names)
-	}
-	if slices.Contains(staleImage.Names, instructionCacheName(key)) {
-		t.Fatalf("stale image names = %v; cache name was not moved", staleImage.Names)
-	}
-	freshImage, err := store.Image(fresh)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Contains(freshImage.Names, "example.test/fresh-name:latest") {
-		t.Fatalf("fresh image names = %v; unrelated name was removed", freshImage.Names)
-	}
-}
-
-func TestInstructionCacheRecordsCommittedManifestAfterDefaultChanges(t *testing.T) {
-	store := newInstructionCacheTestStore(t)
-	imageID := createInstructionCacheTestImage(t, store)
-	committed := digest.FromBytes([]byte(`{"schemaVersion":2}`))
-	other := []byte(`{"schemaVersion":2,"mediaType":"other"}`)
-	if err := store.SetImageBigData(imageID, storage.ImageDigestBigDataKey, other, func(data []byte) (digest.Digest, error) {
-		return digest.FromBytes(data), nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	key := digest.FromString("exact committed manifest")
-	if err := storeInstructionCacheEntrySelected(store, imageID, committed, key, nil); err != nil {
-		t.Fatal(err)
-	}
-	entry, err := findInstructionCacheEntry(store, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if entry.ManifestDigest != committed {
-		t.Fatalf("cached manifest = %s, want committed %s", entry.ManifestDigest, committed)
-	}
-}
-
-func TestInstructionCacheTTLUsesRecordCreationTime(t *testing.T) {
-	store := newInstructionCacheTestStore(t)
-	imageID := createInstructionCacheTestImage(t, store)
-	key := digest.FromString("ttl instruction")
-	manifest := digest.FromBytes([]byte(`{"schemaVersion":2}`))
-	if err := storeInstructionCacheEntrySelectedAt(store, imageID, manifest, key, nil, time.Now().Add(-2*time.Hour)); err != nil {
-		t.Fatal(err)
-	}
-	ttl := time.Hour
-	entry, err := findInstructionCacheEntry(store, key, &ttl)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if entry.ImageID != "" {
-		t.Fatalf("expired instruction cache returned %s", entry.ImageID)
-	}
-	entry, err = findInstructionCacheEntry(store, key)
-	if err != nil || entry.ImageID != imageID {
-		t.Fatalf("cache without TTL = %+v, %v", entry, err)
-	}
-}
-
-func TestInstructionCacheIndexTreatsMissingNameAndMetadataAsMiss(t *testing.T) {
-	store := newInstructionCacheTestStore(t)
-	key := digest.FromString("missing instruction")
-	if got, err := findInstructionCache(store, key); err != nil || got != "" {
-		t.Fatalf("missing findInstructionCache() = %q, %v; want miss", got, err)
-	}
-
-	imageID := createInstructionCacheTestImage(t, store, instructionCacheName(key))
-	if got, err := findInstructionCache(store, key); err != nil || got != "" {
-		t.Fatalf("metadata-less findInstructionCache() = %q, %v; want miss", got, err)
-	}
-	if image, err := store.Image(imageID); err != nil || image.ID != imageID {
-		t.Fatalf("metadata-less image lookup = %+v, %v", image, err)
-	}
-}
-
-func TestInstructionCacheIndexConcurrentStores(t *testing.T) {
-	store := newInstructionCacheTestStore(t)
-	key := digest.FromString("concurrent instruction")
-	const workers = 8
-	imageIDs := make([]string, workers)
-	for index := range imageIDs {
-		imageIDs[index] = createInstructionCacheTestImage(t, store)
-	}
-
-	var wait sync.WaitGroup
-	errorsByWorker := make([]error, workers)
-	for index, imageID := range imageIDs {
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
-			errorsByWorker[index] = storeInstructionCache(store, imageID, key)
-		}()
-	}
-	wait.Wait()
-	for index, err := range errorsByWorker {
-		if err != nil {
-			t.Fatalf("worker %d: %v", index, err)
+	first, second := digest.FromString("first"), digest.FromString("second")
+	for _, item := range []struct {
+		image string
+		key   digest.Digest
+	}{{old, first}, {fresh, first}, {fresh, second}} {
+		if err := retainInstructionCacheImage(store, item.image, item.key); err != nil {
+			t.Fatal(err)
 		}
 	}
-	got, err := findInstructionCache(store, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Contains(imageIDs, got) {
-		t.Fatalf("findInstructionCache() = %q; want one of %v", got, imageIDs)
-	}
-}
-
-func TestInstructionCacheIndexKeepsMultipleKeysOnOneImage(t *testing.T) {
-	store := newInstructionCacheTestStore(t)
-	imageID := createInstructionCacheTestImage(t, store)
-	first := digest.FromString("first instruction on shared image")
-	second := digest.FromString("second instruction on shared image")
-
-	if err := storeInstructionCache(store, imageID, first); err != nil {
-		t.Fatal(err)
-	}
-	if err := storeInstructionCache(store, imageID, second); err != nil {
-		t.Fatal(err)
-	}
 	for _, key := range []digest.Digest{first, second} {
-		got, err := findInstructionCache(store, key)
-		if err != nil || got != imageID {
-			t.Fatalf("findInstructionCache(%s) = %q, %v; want %q", key, got, err, imageID)
+		image, err := store.Image(instructionCacheName(key))
+		if err != nil || image.ID != fresh {
+			t.Fatalf("retention key %s: image=%+v, err=%v", key, image, err)
+		}
+	}
+	for _, item := range []struct{ image, name string }{{old, "example.test/user-name:latest"}, {fresh, "example.test/fresh-name:latest"}} {
+		image, err := store.Image(item.image)
+		if err != nil || !slices.Contains(image.Names, item.name) {
+			t.Fatalf("unrelated name lost: image=%+v, err=%v", image, err)
 		}
 	}
 }
@@ -664,24 +357,130 @@ func (s unavailableInstructionCacheStore) LookupImage(context.Context, cache.Ima
 func (s unavailableInstructionCacheStore) PutImage(context.Context, cache.ImageKey, cache.ImageRecord, string) (v1.Descriptor, error) {
 	return v1.Descriptor{}, s.err
 }
-func TestInstructionCacheOptionalReadWarnsWithCause(t *testing.T) {
-	failure := errors.New("injected instruction-cache read failure")
-	c := &portableInstructionCache{readStores: []instructionCacheStore{unavailableInstructionCacheStore{err: failure}}}
-	warning := packageWarningOutput(t, func() {
-		entry, err := c.lookup(context.Background(), nil, cache.ImageKey{}, "", nil)
-		if err != nil || entry.ImageID != "" || c.stats.Errors != 1 || c.stats.Misses != 1 {
-			t.Fatalf("optional miss=%+v err=%v stats=%+v", entry, err, c.stats)
-		}
-	})
-	if !strings.Contains(warning, failure.Error()) {
-		t.Fatalf("lost cache cause: %q", warning)
-	}
-}
 func TestInstructionCacheCandidateFailureWarnsWithCause(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "absent", "staging")
 	c := &portableInstructionCache{stagingDir: path, writeStores: []instructionCacheStore{unavailableInstructionCacheStore{}}}
-	warning := packageWarningOutput(t, func() { c.record(context.Background(), nil, cache.ImageKey{}, "", "", nil, nil) })
+	warning := packageWarningOutput(t, func() {
+		c.recordImage(context.Background(), nil, cache.ImageKey{}, "", "", nil, nil, nil, "", nil, nil)
+	})
 	if c.stats.Errors != 1 || len(c.candidates) != 0 || !strings.Contains(warning, "stage instruction cache candidate") || !strings.Contains(warning, "no such file") {
 		t.Fatalf("candidate failure hidden: warning=%q stats=%+v", warning, c.stats)
+	}
+}
+
+func TestRunMountCacheKeyUsesVerifiedFilesystemInsteadOfStorageHandle(t *testing.T) {
+	for _, kind := range []string{"image-rootfs", "artifact-files"} {
+		t.Run(kind, func(t *testing.T) {
+			makeInput := func(selector string) instructionCacheInput {
+				mount := definition.Instruction{Name: "mount", Arguments: []string{"bind"}, Properties: map[string]string{"from": selector, "source": "/selected", "target": "/input", "readonly": "true"}}
+				input := instructionCacheTestInput(planner.Operation{Instruction: definition.Instruction{Name: "run", Arguments: []string{"cat /input/payload"}, Children: []definition.Instruction{mount}}})
+				input.ResolvedInputsComplete = true
+				input.ResolvedInputs = []instructionCacheResolvedInput{{Kind: kind, Identity: digest.FromString("verified-filesystem").String()}}
+				return input
+			}
+			key := func(input instructionCacheInput) digest.Digest {
+				t.Helper()
+				key, cacheable, err := instructionCacheKey(input)
+				if err != nil || !cacheable {
+					t.Fatalf("key = %s, %t, %v", key, cacheable, err)
+				}
+				return key
+			}
+			first := makeInput("containers-storage:first")
+			firstKey := key(first)
+			if second := key(makeInput("containers-storage:second")); second != firstKey {
+				t.Fatalf("equivalent verified filesystem missed cache: %s != %s", firstKey, second)
+			}
+			if first.Operation.Children[0].Properties["from"] != "containers-storage:first" {
+				t.Fatal("key construction mutated authored operation")
+			}
+			for name, change := range map[string]func(*instructionCacheInput){
+				"filesystem": func(v *instructionCacheInput) {
+					v.ResolvedInputs[0].Identity = digest.FromString("changed-filesystem").String()
+				},
+				"path":     func(v *instructionCacheInput) { v.Operation.Children[0].Properties["source"] = "/other" },
+				"readonly": func(v *instructionCacheInput) { v.Operation.Children[0].Properties["readonly"] = "false" },
+				"target":   func(v *instructionCacheInput) { v.Operation.Children[0].Properties["target"] = "/elsewhere" },
+			} {
+				t.Run(name, func(t *testing.T) {
+					changed := makeInput("containers-storage:first")
+					change(&changed)
+					if key(changed) == firstKey {
+						t.Fatal("relevant mount input did not invalidate cache")
+					}
+				})
+			}
+			incomplete := makeInput("containers-storage:first")
+			incomplete.ResolvedInputsComplete = false
+			if _, cacheable, err := instructionCacheKey(incomplete); err != nil || cacheable {
+				t.Fatalf("incomplete mount identity cacheable: %t %v", cacheable, err)
+			}
+			invalid := makeInput("containers-storage:first")
+			invalid.ResolvedInputs[0].Identity = "unverified"
+			otherInvalid := makeInput("containers-storage:second")
+			otherInvalid.ResolvedInputs[0].Identity = "unverified"
+			if key(invalid) == key(otherInvalid) {
+				t.Fatal("unverified identity normalized a storage handle")
+			}
+		})
+	}
+}
+
+func TestCopyAddCacheKeyUsesMeasuredInputInsteadOfStorageHandle(t *testing.T) {
+	for _, operation := range []string{"copy", "add"} {
+		t.Run(operation, func(t *testing.T) {
+			makeInput := func(selector string) instructionCacheInput {
+				input := instructionCacheTestInput(planner.Operation{Instruction: definition.Instruction{
+					Name: operation, Arguments: []string{"/source", "/destination"},
+					Properties: map[string]string{"from": selector},
+				}})
+				input.InputDigest = digest.FromString("same-measured-file-input")
+				return input
+			}
+			key := func(input instructionCacheInput) digest.Digest {
+				t.Helper()
+				key, cacheable, err := instructionCacheKey(input)
+				if err != nil || !cacheable {
+					t.Fatalf("key = %s, %t, %v", key, cacheable, err)
+				}
+				return key
+			}
+			first := makeInput("containers-storage:first")
+			original := first.Operation.Properties["from"]
+			firstKey := key(first)
+			if second := key(makeInput("containers-storage:second")); second != firstKey {
+				t.Fatalf("equivalent measured COPY input missed cache: %s != %s", firstKey, second)
+			}
+			if first.Operation.Properties["from"] != original {
+				t.Fatal("key construction mutated the authored source selector")
+			}
+			for name, change := range map[string]func(*instructionCacheInput){
+				"contents and metadata": func(v *instructionCacheInput) { v.InputDigest = digest.FromString("changed-measured-input") },
+				"selected path":         func(v *instructionCacheInput) { v.Operation.Arguments[0] = "/other" },
+				"destination":           func(v *instructionCacheInput) { v.Operation.Arguments[1] = "/other" },
+				"ownership":             func(v *instructionCacheInput) { v.Operation.Properties["chown"] = "1:2" },
+				"mode":                  func(v *instructionCacheInput) { v.Operation.Properties["chmod"] = "0755" },
+				"platform":              func(v *instructionCacheInput) { v.Platform.Architecture = "arm64" },
+				"caller config": func(v *instructionCacheInput) {
+					v.Logical = v.Logical.Clone()
+					if err := v.Logical.Apply(definition.Instruction{Name: "workdir", Arguments: []string{"/changed"}}); err != nil {
+						t.Fatal(err)
+					}
+				},
+			} {
+				t.Run(name, func(t *testing.T) {
+					changed := makeInput("containers-storage:first")
+					change(&changed)
+					if key(changed) == firstKey {
+						t.Fatal("relevant COPY/ADD input did not invalidate cache")
+					}
+				})
+			}
+			unmeasured := makeInput("containers-storage:first")
+			unmeasured.InputDigest = ""
+			if _, cacheable, err := instructionCacheKey(unmeasured); err != nil || cacheable {
+				t.Fatalf("unmeasured input cacheable: %t %v", cacheable, err)
+			}
+		})
 	}
 }

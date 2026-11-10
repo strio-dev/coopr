@@ -1,7 +1,6 @@
-package imagestore
+package imagestore_test
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -14,7 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/strio-dev/coopr/internal/imagestore"
 	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/testutil/nativeimage"
 
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/specs-go"
@@ -26,68 +27,11 @@ import (
 	"go.podman.io/storage"
 	"go.podman.io/storage/pkg/homedir"
 	"go.podman.io/storage/pkg/unshare"
+	"oras.land/oras-go/v2"
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
 
-func testArchive(t *testing.T, filename, label string) (string, digest.Digest) {
-	t.Helper()
-	config, err := json.Marshal(v1.Image{
-		Platform: v1.Platform{OS: "linux", Architecture: "amd64"},
-		RootFS:   v1.RootFS{Type: "layers"},
-		Config:   v1.ImageConfig{Labels: map[string]string{"test": label}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	imageID := digest.FromBytes(config)
-	configDesc := v1.Descriptor{MediaType: v1.MediaTypeImageConfig, Digest: imageID, Size: int64(len(config))}
-	manifest, err := json.Marshal(v1.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: v1.MediaTypeImageManifest, Config: configDesc, Layers: []v1.Descriptor{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	manifestID := digest.FromBytes(manifest)
-	manifestDesc := v1.Descriptor{MediaType: v1.MediaTypeImageManifest, Digest: manifestID, Size: int64(len(manifest))}
-	index, err := json.Marshal(v1.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: v1.MediaTypeImageIndex, Manifests: []v1.Descriptor{manifestDesc}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(t.TempDir(), filename)
-	file, err := os.Create(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	w := tar.NewWriter(file)
-	for _, name := range []string{"blobs", "blobs/sha256"} {
-		if err := w.WriteHeader(&tar.Header{Name: name + "/", Typeflag: tar.TypeDir, Mode: 0755, Uid: os.Getuid(), Gid: os.Getgid()}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, entry := range []struct {
-		name string
-		data []byte
-	}{
-		{"oci-layout", []byte(`{"imageLayoutVersion":"1.0.0"}`)},
-		{"blobs/sha256/" + imageID.Encoded(), config},
-		{"blobs/sha256/" + manifestID.Encoded(), manifest},
-		{"index.json", index},
-	} {
-		if err := w.WriteHeader(&tar.Header{Name: entry.name, Mode: 0644, Size: int64(len(entry.data)), Uid: os.Getuid(), Gid: os.Getgid()}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := w.Write(entry.data); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := w.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := file.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return path, imageID
-}
-
-func testVFSStore(t *testing.T) *Store {
+func testVFSStore(t *testing.T) *nativeimage.Store {
 	t.Helper()
 	root := t.TempDir()
 	backend, err := storage.GetStore(storage.StoreOptions{
@@ -102,7 +46,7 @@ func testVFSStore(t *testing.T) *Store {
 	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	s := &Store{backend: backend, system: &types.SystemContext{SignaturePolicyPath: policy, BigFilesTemporaryDir: root}}
+	s := &nativeimage.Store{Store: imagestore.FromStore(backend), Backend: backend, System: &types.SystemContext{SignaturePolicyPath: policy, BigFilesTemporaryDir: root}}
 	t.Cleanup(func() {
 		if err := s.Close(); err != nil {
 			t.Errorf("close test store: %v", err)
@@ -120,48 +64,26 @@ func TestNormalizeTag(t *testing.T) {
 		{"localhost/app", "localhost/app:latest"},
 		{"example.com:5000/team/app:v1", "example.com:5000/team/app:v1"},
 	} {
-		got, err := NormalizeTag(tc.input)
+		got, err := imagestore.NormalizeTag(tc.input)
 		if err != nil || got != tc.want {
 			t.Errorf("NormalizeTag(%q) = %q, %v; want %q", tc.input, got, err, tc.want)
 		}
 	}
 	for _, tag := range []string{"-foo:bar", "bad tag", "app:dev\n--privileged", "app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "app:dev@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "docker://example.com/app:dev"} {
-		if _, err := NormalizeTag(tag); err == nil {
+		if _, err := imagestore.NormalizeTag(tag); err == nil {
 			t.Errorf("accepted %q", tag)
 		}
-	}
-}
-
-func TestWriteToVFSStorage(t *testing.T) {
-	store := testVFSStore(t)
-	archive, imageID := testArchive(t, "image with spaces.oci.tar", "named")
-	name, err := store.Write(context.Background(), archive, "app:dev")
-	if err != nil || name != "localhost/app:dev" {
-		t.Fatalf("named Write = %q, %v", name, err)
-	}
-	image, err := store.backend.Image(imageID.Encoded())
-	if err != nil || image.ID != imageID.Encoded() || len(image.Names) != 1 || image.Names[0] != name {
-		t.Fatalf("named image: %+v, %v", image, err)
-	}
-	unnamedArchive, unnamedID := testArchive(t, "unnamed.oci.tar", "unnamed")
-	gotID, err := store.Write(context.Background(), unnamedArchive, "")
-	if err != nil || gotID != unnamedID.String() {
-		t.Fatalf("unnamed Write = %q, %v", gotID, err)
-	}
-	image, err = store.backend.Image(unnamedID.Encoded())
-	if err != nil || image.ID != unnamedID.Encoded() || len(image.Names) != 0 {
-		t.Fatalf("unnamed image: %+v, %v", image, err)
 	}
 }
 
 func TestWriteLayoutToVFSStorage(t *testing.T) {
 	store := testVFSStore(t)
 	layout, root, imageID := testLayout(t, "layout")
-	name, err := store.WriteLayout(context.Background(), layout, root, "layout-app:dev")
+	name, err := store.SeedLayout(context.Background(), layout, root, "layout-app:dev")
 	if err != nil || name != "localhost/layout-app:dev" {
 		t.Fatalf("WriteLayout = %q, %v", name, err)
 	}
-	image, err := store.backend.Image(imageID.Encoded())
+	image, err := store.Backend.Image(imageID.Encoded())
 	if err != nil || image.ID != imageID.Encoded() || len(image.Names) != 1 || image.Names[0] != name {
 		t.Fatalf("layout image: %+v, %v", image, err)
 	}
@@ -170,10 +92,10 @@ func TestWriteLayoutToVFSStorage(t *testing.T) {
 func TestResolveStoredImageByPodmanName(t *testing.T) {
 	store := testVFSStore(t)
 	layout, root, imageID := testLayout(t, "native")
-	if _, err := store.WriteLayout(context.Background(), layout, root, "native-base:dev"); err != nil {
+	if _, err := store.SeedLayout(context.Background(), layout, root, "native-base:dev"); err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := oci.ResolveStoredImage(context.Background(), store.backend, "native-base:dev", v1.Platform{OS: "linux", Architecture: "amd64"})
+	resolved, err := oci.ResolveStoredImage(context.Background(), store.Backend, "native-base:dev", v1.Platform{OS: "linux", Architecture: "amd64"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,13 +105,13 @@ func TestResolveStoredImageByPodmanName(t *testing.T) {
 	if _, err := store.Tag(imageID.Encoded(), "renamed:latest"); err != nil {
 		t.Fatal(err)
 	}
-	if removed, err := store.RemoveTag("native-base:dev"); err != nil || !removed {
-		t.Fatalf("remove old name = %t, %v", removed, err)
+	if err := store.Backend.RemoveNames(imageID.Encoded(), []string{"localhost/native-base:dev"}); err != nil {
+		t.Fatalf("remove old name: %v", err)
 	}
-	if _, err := oci.ResolveStoredImage(context.Background(), store.backend, "native-base:dev", v1.Platform{OS: "linux", Architecture: "amd64"}); !errors.Is(err, storage.ErrImageUnknown) {
+	if _, err := oci.ResolveStoredImage(context.Background(), store.Backend, "native-base:dev", v1.Platform{OS: "linux", Architecture: "amd64"}); !errors.Is(err, storage.ErrImageUnknown) {
 		t.Fatalf("removed name resolved: %v", err)
 	}
-	if _, err := oci.ResolveStoredImage(context.Background(), store.backend, "renamed:latest", v1.Platform{OS: "linux", Architecture: "amd64"}); err != nil {
+	if _, err := oci.ResolveStoredImage(context.Background(), store.Backend, "renamed:latest", v1.Platform{OS: "linux", Architecture: "amd64"}); err != nil {
 		t.Fatalf("renamed image did not resolve: %v", err)
 	}
 }
@@ -198,22 +120,22 @@ func TestStoreCanReopenAfterCloseInOneProcess(t *testing.T) {
 	root := t.TempDir()
 	options := storage.StoreOptions{GraphDriverName: "vfs", GraphRoot: filepath.Join(root, "graph"), RunRoot: filepath.Join(root, "run")}
 	layout, descriptor, imageID := testLayout(t, "reopen")
-	first, err := NewWithOptions(options)
+	first, err := nativeimage.NewStore(options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := first.WriteLayout(context.Background(), layout, descriptor, "reopen"); err != nil {
+	if _, err := first.SeedLayout(context.Background(), layout, descriptor, "reopen"); err != nil {
 		t.Fatal(err)
 	}
 	if err := first.Close(); err != nil {
 		t.Fatal(err)
 	}
-	second, err := NewWithOptions(options)
+	second, err := nativeimage.NewStore(options)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = second.Close() }()
-	if resolved, err := second.Resolve(context.Background(), "reopen", v1.Platform{OS: "linux", Architecture: "amd64"}); err != nil || resolved.StorageImageID != imageID.Encoded() {
+	if resolved, err := oci.ResolveStoredImage(context.Background(), second.Backend, "reopen", v1.Platform{OS: "linux", Architecture: "amd64"}); err != nil || resolved.StorageImageID != imageID.Encoded() {
 		t.Fatalf("resolve after reopen = %+v, %v", resolved, err)
 	}
 	if _, err := second.Tag(imageID.Encoded(), "reopened"); err != nil {
@@ -225,22 +147,22 @@ func TestShortNativeNamePrefersLocalhostBeforeDockerHub(t *testing.T) {
 	store := testVFSStore(t)
 	localLayout, localRoot, localID := testLayout(t, "local")
 	dockerLayout, dockerRoot, dockerID := testLayout(t, "docker")
-	if _, err := store.WriteLayout(context.Background(), localLayout, localRoot, "localhost/collision:latest"); err != nil {
+	if _, err := store.SeedLayout(context.Background(), localLayout, localRoot, "localhost/collision:latest"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.WriteLayout(context.Background(), dockerLayout, dockerRoot, "docker.io/library/collision:latest"); err != nil {
+	if _, err := store.SeedLayout(context.Background(), dockerLayout, dockerRoot, "docker.io/library/collision:latest"); err != nil {
 		t.Fatal(err)
 	}
 	matched, err := store.MatchedName("collision")
 	if err != nil || matched != "localhost/collision:latest" {
 		t.Fatalf("short name matched %q, %v", matched, err)
 	}
-	resolved, err := store.Resolve(context.Background(), "collision", v1.Platform{OS: "linux", Architecture: "amd64"})
+	resolved, err := oci.ResolveStoredImage(context.Background(), store.Backend, "collision", v1.Platform{OS: "linux", Architecture: "amd64"})
 	if err != nil || resolved.StorageImageID != localID.Encoded() {
 		t.Fatalf("short name resolved %+v, %v; local=%s docker=%s", resolved, err, localID, dockerID)
 	}
-	if removed, err := store.RemoveTag("collision"); err != nil || !removed {
-		t.Fatalf("remove preferred local name = %t, %v", removed, err)
+	if err := store.Backend.RemoveNames(localID.Encoded(), []string{matched}); err != nil {
+		t.Fatalf("remove preferred local name: %v", err)
 	}
 	matched, err = store.MatchedName("collision")
 	if err != nil || matched != "docker.io/library/collision:latest" {
@@ -299,14 +221,16 @@ func TestWriteIndexLayoutResolvesEveryStoredPlatform(t *testing.T) {
 	amdLayout, amdManifest, amdID := testLayoutPlatform(t, "amd64", amd)
 	armLayout, armManifest, armID := testLayoutPlatform(t, "arm64", arm)
 	indexLayout := filepath.Join(t.TempDir(), "index")
-	root, _, err := oci.AssembleImageIndex(ctx, indexLayout, []oci.ImageVariant{
+	rootFixtureVariants := []oci.ImageVariant{
 		{Layout: amdLayout, Manifest: amdManifest, Platform: amd},
 		{Layout: armLayout, Manifest: armManifest, Platform: arm},
-	}, "oci")
+	}
+	root, rootFixtureData, err := oci.ImageIndexDescriptor(rootFixtureVariants, "oci")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.WriteIndexLayout(ctx, indexLayout, root, "multi:latest"); err != nil {
+	writeStoredIndexFixture(t, ctx, indexLayout, root, rootFixtureData, rootFixtureVariants)
+	if _, err := store.SeedIndex(ctx, indexLayout, root, "multi:latest"); err != nil {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
@@ -314,7 +238,7 @@ func TestWriteIndexLayoutResolvesEveryStoredPlatform(t *testing.T) {
 		id       digest.Digest
 		manifest v1.Descriptor
 	}{{amd, amdID, amdManifest}, {arm, armID, armManifest}} {
-		resolved, err := store.Resolve(ctx, "multi:latest", test.platform)
+		resolved, err := oci.ResolveStoredImage(ctx, store.Backend, "multi:latest", test.platform)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -333,29 +257,31 @@ func TestWriteIndexLayoutRetagReusesNativeList(t *testing.T) {
 	platform := v1.Platform{OS: "linux", Architecture: "arm64", Variant: "v8", OSVersion: "test-version", OSFeatures: []string{"test-feature"}}
 	childLayout, child, _ := testLayoutPlatform(t, "retag", platform)
 	indexLayout := filepath.Join(t.TempDir(), "index")
-	root, _, err := oci.AssembleImageIndex(ctx, indexLayout, []oci.ImageVariant{{Layout: childLayout, Manifest: child, Platform: platform}}, "oci")
+	rootFixtureVariants := []oci.ImageVariant{{Layout: childLayout, Manifest: child, Platform: platform}}
+	root, rootFixtureData, err := oci.ImageIndexDescriptor(rootFixtureVariants, "oci")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.WriteIndexLayout(ctx, indexLayout, root, "first:latest"); err != nil {
+	writeStoredIndexFixture(t, ctx, indexLayout, root, rootFixtureData, rootFixtureVariants)
+	if _, err := store.SeedIndex(ctx, indexLayout, root, "first:latest"); err != nil {
 		t.Fatal(err)
 	}
-	first, err := store.backend.Image("localhost/first:latest")
+	first, err := store.Backend.Image("localhost/first:latest")
 	if err != nil {
 		t.Fatal(err)
 	}
-	before, err := store.backend.Images()
+	before, err := store.Backend.Images()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.WriteIndexLayout(ctx, indexLayout, root, "second:latest"); err != nil {
+	if _, err := store.SeedIndex(ctx, indexLayout, root, "second:latest"); err != nil {
 		t.Fatal(err)
 	}
-	second, err := store.backend.Image("localhost/second:latest")
+	second, err := store.Backend.Image("localhost/second:latest")
 	if err != nil {
 		t.Fatal(err)
 	}
-	after, err := store.backend.Images()
+	after, err := store.Backend.Images()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,11 +295,10 @@ func TestWriteUntaggedIndexRemainsNativeAfterReopen(t *testing.T) {
 	store := testVFSStore(t)
 	platform := v1.Platform{OS: "linux", Architecture: "amd64"}
 	layout, manifest, imageID := testLayoutPlatform(t, "unnamed", platform)
-	if _, err := store.WriteLayout(ctx, layout, manifest, ""); err != nil {
+	if _, err := store.SeedLayout(ctx, layout, manifest, ""); err != nil {
 		t.Fatal(err)
 	}
-	indexLayout := filepath.Join(t.TempDir(), "index")
-	root, data, err := oci.AssembleImageIndex(ctx, indexLayout, []oci.ImageVariant{{Layout: layout, Manifest: manifest, Platform: platform}}, "oci")
+	root, data, err := oci.ImageIndexDescriptor([]oci.ImageVariant{{Layout: layout, Manifest: manifest, Platform: platform}}, "oci")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,11 +306,11 @@ func TestWriteUntaggedIndexRemainsNativeAfterReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	options := storage.StoreOptions{GraphRoot: store.backend.GraphRoot(), RunRoot: store.backend.RunRoot(), GraphDriverName: "vfs"}
+	options := storage.StoreOptions{GraphRoot: store.Backend.GraphRoot(), RunRoot: store.Backend.RunRoot(), GraphDriverName: "vfs"}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	store, err = NewWithOptions(options)
+	store, err = nativeimage.NewStore(options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,24 +319,13 @@ func TestWriteUntaggedIndexRemainsNativeAfterReopen(t *testing.T) {
 			t.Error(err)
 		}
 	}()
-	gotRoot, gotData, found, err := store.Index(ctx, id)
+	gotRoot, gotData, found, err := oci.StoredImageIndex(ctx, store.Backend, id)
 	if err != nil || !found || gotRoot.Digest != root.Digest || !bytes.Equal(gotData, data) {
 		t.Fatalf("reopened unnamed index: root=%+v found=%t err=%v", gotRoot, found, err)
 	}
-	resolved, err := store.Resolve(ctx, id, platform)
+	resolved, err := oci.ResolveStoredImage(ctx, store.Backend, id, platform)
 	if err != nil || resolved.StorageImageID != imageID.Encoded() {
 		t.Fatalf("reopened index child: resolved=%+v err=%v", resolved, err)
-	}
-}
-
-func TestWriteRejectsInvalidArchiveBeforeStorage(t *testing.T) {
-	store := testVFSStore(t)
-	path := filepath.Join(t.TempDir(), "invalid.oci.tar")
-	if err := os.WriteFile(path, []byte("not an OCI archive"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.Write(context.Background(), path, "app:dev"); err == nil || !strings.Contains(err.Error(), "identify OCI image") {
-		t.Fatalf("invalid archive: %v", err)
 	}
 }
 
@@ -419,14 +333,14 @@ func TestTagSelectedPreservesExistingNativeAliases(t *testing.T) {
 	ctx := context.Background()
 	store := testVFSStore(t)
 	layout, original, imageID := testLayoutPlatform(t, "alias-preservation", v1.Platform{OS: "linux", Architecture: "amd64"})
-	if _, err := store.WriteLayout(ctx, layout, original, ""); err != nil {
+	if _, err := store.SeedLayout(ctx, layout, original, ""); err != nil {
 		t.Fatal(err)
 	}
 	// These names are native Podman-style aliases without Coopr origin metadata.
-	if err := store.backend.AddNames(imageID.Encoded(), []string{"localhost/podman-created:latest", "localhost/another:latest", "localhost/destination:latest"}); err != nil {
+	if err := store.Backend.AddNames(imageID.Encoded(), []string{"localhost/podman-created:latest", "localhost/another:latest", "localhost/destination:latest"}); err != nil {
 		t.Fatal(err)
 	}
-	data, err := store.backend.ImageBigData(imageID.Encoded(), storage.ImageDigestBigDataKey)
+	data, err := store.Backend.ImageBigData(imageID.Encoded(), storage.ImageDigestBigDataKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -440,7 +354,7 @@ func TestTagSelectedPreservesExistingNativeAliases(t *testing.T) {
 		t.Fatal(err)
 	}
 	alternate := oci.Descriptor(v1.MediaTypeImageManifest, alternateData)
-	if err := store.backend.SetImageBigData(imageID.Encoded(), storage.ImageDigestManifestBigDataNamePrefix+"-"+alternate.Digest.String(), alternateData, func([]byte) (digest.Digest, error) { return alternate.Digest, nil }); err != nil {
+	if err := store.Backend.SetImageBigData(imageID.Encoded(), storage.ImageDigestManifestBigDataNamePrefix+"-"+alternate.Digest.String(), alternateData, func([]byte) (digest.Digest, error) { return alternate.Digest, nil }); err != nil {
 		t.Fatal(err)
 	}
 	originalSignature := []byte("\x00sigstore-json\n" + `{"mimeType":"application/vnd.dev.cosign.simplesigning.v1+json","payload":"b3JpZ2luYWw=","annotations":{"variant":"original"}}`)
@@ -449,11 +363,11 @@ func TestTagSelectedPreservesExistingNativeAliases(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.backend.SetMetadata(imageID.Encoded(), string(metadata)); err != nil {
+	if err := store.Backend.SetMetadata(imageID.Encoded(), string(metadata)); err != nil {
 		t.Fatal(err)
 	}
 	for key, blob := range map[string][]byte{"signatures": originalSignature, "signature-" + alternate.Digest.Encoded(): alternateSignature} {
-		if err := store.backend.SetImageBigData(imageID.Encoded(), key, blob, nil); err != nil {
+		if err := store.Backend.SetImageBigData(imageID.Encoded(), key, blob, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -462,16 +376,16 @@ func TestTagSelectedPreservesExistingNativeAliases(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	destination, err := store.backend.Image("localhost/destination:latest")
+	destination, err := store.Backend.Image("localhost/destination:latest")
 	if err != nil {
 		t.Fatal(err)
 	}
 	additionalSignature := []byte("\x00sigstore-json\n" + `{"mimeType":"application/vnd.dev.cosign.simplesigning.v1+json","payload":"ZXh0cmE=","annotations":{"variant":"additional"}}`)
-	state, err := oci.CaptureStoredSignatures(store.backend, destination.ID)
+	state, err := oci.CaptureStoredSignatures(store.Backend, destination.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := oci.WriteStoredManifestSignatures(store.backend, destination.ID, alternate.Digest, true, [][]byte{alternateSignature, additionalSignature}, state); err != nil {
+	if err := oci.WriteStoredManifestSignatures(store.Backend, destination.ID, alternate.Digest, true, [][]byte{alternateSignature, additionalSignature}, state); err != nil {
 		t.Fatal(err)
 	}
 	for range 2 {
@@ -485,18 +399,18 @@ func TestTagSelectedPreservesExistingNativeAliases(t *testing.T) {
 		"destination:latest":        alternate,
 		"second-destination:latest": alternate,
 	} {
-		resolved, err := store.Resolve(ctx, name, v1.Platform{OS: "linux", Architecture: "amd64"})
+		resolved, err := oci.ResolveStoredImage(ctx, store.Backend, name, v1.Platform{OS: "linux", Architecture: "amd64"})
 		if err != nil || resolved.Selected.Digest != want.Digest {
 			t.Fatalf("Coopr alias %s = %+v, %v; want %s", name, resolved, err, want.Digest)
 		}
-		image, err := store.backend.Image("localhost/" + name)
+		image, err := store.Backend.Image("localhost/" + name)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if resolved.StorageImageID != image.ID {
 			t.Fatalf("resolved storage record = %s, want %s", resolved.StorageImageID, image.ID)
 		}
-		state, err := oci.CaptureStoredSignatures(store.backend, image.ID)
+		state, err := oci.CaptureStoredSignatures(store.Backend, image.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -513,11 +427,11 @@ func TestTagSelectedPreservesExistingNativeAliases(t *testing.T) {
 		if wantCount == 2 && !bytes.Equal(signatures[1], additionalSignature) {
 			t.Fatalf("retag removed additional signature from %s", name)
 		}
-		ref, err := imagestorage.Transport.NewStoreReference(store.backend, nil, image.ID)
+		ref, err := imagestorage.Transport.NewStoreReference(store.Backend, nil, image.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		source, err := ref.NewImageSource(ctx, store.system)
+		source, err := ref.NewImageSource(ctx, store.System)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -527,11 +441,11 @@ func TestTagSelectedPreservesExistingNativeAliases(t *testing.T) {
 			t.Fatalf("native alias %s = %s, %v/%v; want %s", name, digest.FromBytes(data), err, closeErr, want.Digest)
 		}
 	}
-	if _, err := store.backend.DeleteImage(imageID.Encoded(), true); err != nil {
+	if _, err := store.Backend.DeleteImage(imageID.Encoded(), true); err != nil {
 		t.Fatal(err)
 	}
 	for _, selector := range []string{"destination:latest", destination.ID, "sha256:" + destination.ID} {
-		if resolved, err := store.Resolve(ctx, selector, v1.Platform{OS: "linux", Architecture: "amd64"}); err != nil || resolved.Selected.Digest != alternate.Digest {
+		if resolved, err := oci.ResolveStoredImage(ctx, store.Backend, selector, v1.Platform{OS: "linux", Architecture: "amd64"}); err != nil || resolved.Selected.Digest != alternate.Digest {
 			t.Fatalf("surviving alias %s after original removal = %+v, %v", selector, resolved, err)
 		}
 	}
@@ -588,7 +502,7 @@ func TestWriteStoredIndexPreservesExactChildrenAndRetags(t *testing.T) {
 				}
 				siblingData[selected.Digest] = otherData
 				for _, child := range []v1.Descriptor{selected, sibling} {
-					if _, err := store.WriteLayout(ctx, layoutPath, child, ""); err != nil {
+					if _, err := store.SeedLayout(ctx, layoutPath, child, ""); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -614,30 +528,30 @@ func TestWriteStoredIndexPreservesExactChildrenAndRetags(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			first, err := store.backend.Image("localhost/current:latest")
+			first, err := store.Backend.Image("localhost/current:latest")
 			if err != nil {
 				t.Fatal(err)
 			}
 			if nativeID != first.ID {
 				t.Fatalf("tagged index returned %s, native ID %s", nativeID, first.ID)
 			}
-			if err := store.backend.SetImageBigData(first.ID, "test-preserved", []byte("existing metadata"), nil); err != nil {
+			if err := store.Backend.SetImageBigData(first.ID, "test-preserved", []byte("existing metadata"), nil); err != nil {
 				t.Fatal(err)
 			}
 			for _, name := range []string{"alias:latest", "alias:latest", "another:latest"} {
 				if got, err := store.WriteStoredIndex(ctx, root, data, imageIDs, name); err != nil || got != first.ID {
 					t.Fatalf("reused index ID=%s err=%v want=%s", got, err, first.ID)
 				}
-				image, err := store.backend.Image("localhost/" + name)
+				image, err := store.Backend.Image("localhost/" + name)
 				if err != nil || image.ID != first.ID {
 					t.Fatalf("retag %s = %+v, %v; want %s", name, image, err, first.ID)
 				}
 			}
-			images, err := store.backend.Images()
+			images, err := store.Backend.Images()
 			if err != nil || len(images) != 3 {
 				t.Fatalf("stored images = %d, %v; want two children plus one list", len(images), err)
 			}
-			metadata, err := store.backend.ImageBigData(first.ID, "test-preserved")
+			metadata, err := store.Backend.ImageBigData(first.ID, "test-preserved")
 			if err != nil || string(metadata) != "existing metadata" {
 				t.Fatalf("retag changed metadata = %q, %v", metadata, err)
 			}
@@ -645,25 +559,25 @@ func TestWriteStoredIndexPreservesExactChildrenAndRetags(t *testing.T) {
 			// record's default manifest. Reopen the native list afterwards.
 			for _, child := range children {
 				id := imageIDs[child.Digest]
-				selectedData, err := store.backend.ImageBigData(id, storage.ImageDigestManifestBigDataNamePrefix+"-"+child.Digest.String())
+				selectedData, err := store.Backend.ImageBigData(id, storage.ImageDigestManifestBigDataNamePrefix+"-"+child.Digest.String())
 				if err != nil {
 					t.Fatal(err)
 				}
 				for _, data := range [][]byte{selectedData, siblingData[child.Digest]} {
-					if err := store.backend.SetImageBigData(id, storage.ImageDigestManifestBigDataNamePrefix, data, func(data []byte) (digest.Digest, error) { return digest.FromBytes(data), nil }); err != nil {
+					if err := store.Backend.SetImageBigData(id, storage.ImageDigestManifestBigDataNamePrefix, data, func(data []byte) (digest.Digest, error) { return digest.FromBytes(data), nil }); err != nil {
 						t.Fatal(err)
 					}
 				}
 			}
-			id, list, err := manifests.LoadFromImage(store.backend, first.ID)
+			id, list, err := manifests.LoadFromImage(store.Backend, first.ID)
 			if err != nil || id != first.ID {
 				t.Fatalf("load native list = %s, %v", id, err)
 			}
-			ref, err := list.Reference(store.backend, imagecopy.CopyAllImages, nil)
+			ref, err := list.Reference(store.Backend, imagecopy.CopyAllImages, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			source, err := ref.NewImageSource(ctx, store.system)
+			source, err := ref.NewImageSource(ctx, store.System)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -675,7 +589,7 @@ func TestWriteStoredIndexPreservesExactChildrenAndRetags(t *testing.T) {
 				}
 			}
 			for _, child := range children {
-				resolved, err := store.Resolve(ctx, "alias:latest", *child.Platform)
+				resolved, err := oci.ResolveStoredImage(ctx, store.Backend, "alias:latest", *child.Platform)
 				if err != nil || resolved.Selected.Digest != child.Digest || resolved.StorageImageID != imageIDs[child.Digest] {
 					t.Fatalf("native selected child %s = %+v, %v", child.Digest, resolved, err)
 				}
@@ -683,7 +597,7 @@ func TestWriteStoredIndexPreservesExactChildrenAndRetags(t *testing.T) {
 			updated, updatedData := makeIndex("updated")
 			// Failure after reading the first child must preserve the prior tag
 			// and avoid leaving a partially created list record.
-			childBefore, err := store.backend.Image(imageIDs[children[0].Digest])
+			childBefore, err := store.Backend.Image(imageIDs[children[0].Digest])
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -694,18 +608,18 @@ func TestWriteStoredIndexPreservesExactChildrenAndRetags(t *testing.T) {
 			if _, err := store.WriteStoredIndex(ctx, updated, updatedData, missing, "failed:latest"); err == nil {
 				t.Fatal("missing child unexpectedly published a new tag")
 			}
-			childAfter, err := store.backend.Image(imageIDs[children[0].Digest])
+			childAfter, err := store.Backend.Image(imageIDs[children[0].Digest])
 			if err != nil || !slices.Equal(childBefore.Names, childAfter.Names) {
 				t.Fatalf("failed index retained child names: before=%v after=%v, %v", childBefore.Names, childAfter.Names, err)
 			}
-			if _, err := store.backend.Image("localhost/failed:latest"); !errors.Is(err, storage.ErrImageUnknown) {
+			if _, err := store.Backend.Image("localhost/failed:latest"); !errors.Is(err, storage.ErrImageUnknown) {
 				t.Fatalf("failed native tag lookup = %v", err)
 			}
-			current, err := store.backend.Image("localhost/current:latest")
+			current, err := store.Backend.Image("localhost/current:latest")
 			if err != nil || current.ID != first.ID {
 				t.Fatalf("failed update retargeted tag: %+v, %v", current, err)
 			}
-			images, err = store.backend.Images()
+			images, err = store.Backend.Images()
 			if err != nil || len(images) != 3 {
 				t.Fatalf("failed update left images = %d, %v", len(images), err)
 			}
@@ -716,11 +630,11 @@ func TestWriteStoredIndexPreservesExactChildrenAndRetags(t *testing.T) {
 				name string
 				data []byte
 			}{{"localhost/alias:latest", data}, {"localhost/current:latest", updatedData}} {
-				image, err := store.backend.Image(expected.name)
+				image, err := store.Backend.Image(expected.name)
 				if err != nil {
 					t.Fatal(err)
 				}
-				stored, err := store.backend.ImageBigData(image.ID, storage.ImageDigestManifestBigDataNamePrefix)
+				stored, err := store.Backend.ImageBigData(image.ID, storage.ImageDigestManifestBigDataNamePrefix)
 				if err != nil || !bytes.Equal(stored, expected.data) {
 					t.Fatalf("native index %s changed exact bytes: %v", expected.name, err)
 				}
@@ -747,14 +661,14 @@ func TestWriteIndexLayoutAcceptsOmittedMediaType(t *testing.T) {
 	if err := layout.Push(ctx, root, bytes.NewReader(data)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.WriteIndexLayout(ctx, layoutPath, root, "omitted:latest"); err != nil {
+	if _, err := store.SeedIndex(ctx, layoutPath, root, "omitted:latest"); err != nil {
 		t.Fatal(err)
 	}
-	image, err := store.backend.Image("localhost/omitted:latest")
+	image, err := store.Backend.Image("localhost/omitted:latest")
 	if err != nil {
 		t.Fatal(err)
 	}
-	stored, err := store.backend.ImageBigData(image.ID, storage.ImageDigestManifestBigDataNamePrefix)
+	stored, err := store.Backend.ImageBigData(image.ID, storage.ImageDigestManifestBigDataNamePrefix)
 	if err != nil || !bytes.Equal(stored, data) {
 		t.Fatalf("index with omitted mediaType changed bytes: %v", err)
 	}
@@ -787,7 +701,7 @@ func TestWriteStoredIndexFailedWriterPreservesConcurrentIndexNames(t *testing.T)
 	store := testVFSStore(t)
 	platform := v1.Platform{OS: "linux", Architecture: "amd64"}
 	layout, child, imageID := testLayoutPlatform(t, "concurrent-child", platform)
-	if _, err := store.WriteLayout(ctx, layout, child, ""); err != nil {
+	if _, err := store.SeedLayout(ctx, layout, child, ""); err != nil {
 		t.Fatal(err)
 	}
 	child.Platform = &platform
@@ -804,8 +718,9 @@ func TestWriteStoredIndexFailedWriterPreservesConcurrentIndexNames(t *testing.T)
 	}
 	failedRoot, failedData := makeIndex([]v1.Descriptor{child, second})
 	goodRoot, goodData := makeIndex([]v1.Descriptor{child})
-	paused := &pausedIndexNameStore{Store: store.backend, added: make(chan struct{}), resume: make(chan struct{})}
-	store.backend = paused
+	paused := &pausedIndexNameStore{Store: store.Backend, added: make(chan struct{}), resume: make(chan struct{})}
+	store.Backend = paused
+	store.Store = imagestore.FromStore(paused)
 	failed := make(chan error, 1)
 	good := make(chan error, 1)
 	imageIDs := map[digest.Digest]string{child.Digest: imageID.Encoded()}
@@ -837,11 +752,11 @@ func TestWriteStoredIndexFailedWriterPreservesConcurrentIndexNames(t *testing.T)
 	if goodErr != nil {
 		t.Fatalf("concurrent good index: %v", goodErr)
 	}
-	resolved, err := store.Resolve(ctx, "race:good", platform)
+	resolved, err := oci.ResolveStoredImage(ctx, store.Backend, "race:good", platform)
 	if err != nil || resolved.Root.Digest != goodRoot.Digest || resolved.Selected.Digest != child.Digest {
 		t.Fatalf("failed writer broke concurrent native index: %+v, %v", resolved, err)
 	}
-	if _, err := store.backend.Image("localhost/race:failed"); !errors.Is(err, storage.ErrImageUnknown) {
+	if _, err := store.Backend.Image("localhost/race:failed"); !errors.Is(err, storage.ErrImageUnknown) {
 		t.Fatalf("failed native index name exists: %v", err)
 	}
 }
@@ -874,7 +789,7 @@ func TestWriteStoredIndexFailedCreatorPreservesCrossRepositoryRetag(t *testing.T
 	store := testVFSStore(t)
 	platform := v1.Platform{OS: "linux", Architecture: "amd64"}
 	layout, child, imageID := testLayoutPlatform(t, "cross-repository-child", platform)
-	if _, err := store.WriteLayout(ctx, layout, child, ""); err != nil {
+	if _, err := store.SeedLayout(ctx, layout, child, ""); err != nil {
 		t.Fatal(err)
 	}
 	child.Platform = &platform
@@ -883,8 +798,9 @@ func TestWriteStoredIndexFailedCreatorPreservesCrossRepositoryRetag(t *testing.T
 		t.Fatal(err)
 	}
 	root := v1.Descriptor{MediaType: v1.MediaTypeImageIndex, Digest: digest.FromBytes(data), Size: int64(len(data))}
-	paused := &pausedIndexManifestStore{Store: store.backend, root: root.Digest, saved: make(chan struct{}), resume: make(chan struct{})}
-	store.backend = paused
+	paused := &pausedIndexManifestStore{Store: store.Backend, root: root.Digest, saved: make(chan struct{}), resume: make(chan struct{})}
+	store.Backend = paused
+	store.Store = imagestore.FromStore(paused)
 	failedCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	failed := make(chan error, 1)
@@ -917,15 +833,15 @@ func TestWriteStoredIndexFailedCreatorPreservesCrossRepositoryRetag(t *testing.T
 	if goodErr != nil {
 		t.Fatalf("cross-repository index = %v", goodErr)
 	}
-	resolved, err := store.Resolve(ctx, "reuser:good", platform)
+	resolved, err := oci.ResolveStoredImage(ctx, store.Backend, "reuser:good", platform)
 	if err != nil || resolved.Root.Digest != root.Digest || resolved.Selected.Digest != child.Digest {
 		t.Fatalf("creator rollback deleted successful retag: %+v, %v", resolved, err)
 	}
-	images, err := store.backend.Images()
+	images, err := store.Backend.Images()
 	if err != nil || len(images) != 2 {
 		t.Fatalf("native records after failed creator/successful retag = %d, %v", len(images), err)
 	}
-	childImage, err := store.backend.Image(imageID.Encoded())
+	childImage, err := store.Backend.Image(imageID.Encoded())
 	if err != nil || slices.Contains(childImage.Names, "localhost/creator@"+child.Digest.String()) {
 		t.Fatalf("failed creator retained child names: %+v, %v", childImage, err)
 	}
@@ -938,37 +854,32 @@ func TestWriteStoredIndexAcceptsEmptyIndex(t *testing.T) {
 	if _, err := store.WriteStoredIndex(context.Background(), root, data, nil, "empty:latest"); err != nil {
 		t.Fatal(err)
 	}
-	image, err := store.backend.Image("localhost/empty:latest")
+	image, err := store.Backend.Image("localhost/empty:latest")
 	if err != nil {
 		t.Fatal(err)
 	}
-	stored, err := store.backend.ImageBigData(image.ID, storage.ImageDigestManifestBigDataNamePrefix)
+	stored, err := store.Backend.ImageBigData(image.ID, storage.ImageDigestManifestBigDataNamePrefix)
 	if err != nil || !bytes.Equal(stored, data) {
 		t.Fatalf("empty native index changed exact bytes: %v", err)
 	}
 }
 
-func TestNamesIncludesMutableNamesAndPreservesDirectDigestLookup(t *testing.T) {
+func TestDirectDigestLookupWithMutableAliases(t *testing.T) {
 	ctx := context.Background()
 	store := testVFSStore(t)
 	layout, manifest, imageID := testLayout(t, "visible-names")
-	if _, err := store.WriteLayout(ctx, layout, manifest, "visible:dev"); err != nil {
+	if _, err := store.SeedLayout(ctx, layout, manifest, "visible:dev"); err != nil {
 		t.Fatal(err)
 	}
 	canonical := "localhost/visible@" + manifest.Digest.String()
-	if err := store.backend.AddNames(imageID.Encoded(), []string{canonical, "localhost/name-only", "localhost/second:latest"}); err != nil {
+	if err := store.Backend.AddNames(imageID.Encoded(), []string{canonical, "localhost/name-only", "localhost/second:latest"}); err != nil {
 		t.Fatal(err)
-	}
-	names, err := store.Names()
-	want := []string{"localhost/name-only", "localhost/second:latest", "localhost/visible:dev"}
-	if err != nil || !slices.Equal(names, want) {
-		t.Fatalf("mutable names = %v, %v; want %v", names, err, want)
 	}
 	matched, err := store.MatchedName(canonical)
 	if err != nil || matched != canonical {
 		t.Fatalf("direct digest name = %q, %v", matched, err)
 	}
-	resolved, err := store.Resolve(ctx, canonical, v1.Platform{OS: "linux", Architecture: "amd64"})
+	resolved, err := oci.ResolveStoredImage(ctx, store.Backend, canonical, v1.Platform{OS: "linux", Architecture: "amd64"})
 	if err != nil || resolved.Selected.Digest != manifest.Digest || resolved.StorageImageID != imageID.Encoded() {
 		t.Fatalf("direct digest resolve = %+v, %v", resolved, err)
 	}
@@ -989,7 +900,7 @@ additionalimagestores = ["/usr/lib/containers/storage"]
 	}
 	t.Setenv("CONTAINERS_STORAGE_CONF", config)
 	t.Setenv("STORAGE_OPTS", "")
-	opts, err := DefaultStoreOptions()
+	opts, err := imagestore.DefaultStoreOptions()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -998,7 +909,7 @@ additionalimagestores = ["/usr/lib/containers/storage"]
 	}
 	// STORAGE_OPTS overrides the configured list, exactly as native parsing does.
 	t.Setenv("STORAGE_OPTS", "imagestore=/usr/lib/containers/storage")
-	opts, err = DefaultStoreOptions()
+	opts, err = imagestore.DefaultStoreOptions()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1035,7 +946,7 @@ func TestDefaultStoreOptionsUsesNativeDefaults(t *testing.T) {
 			if err := os.WriteFile(config, []byte("[storage]\ndriver = \"vfs\"\n"+tc.paths), 0600); err != nil {
 				t.Fatal(err)
 			}
-			options, err := DefaultStoreOptions()
+			options, err := imagestore.DefaultStoreOptions()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1043,5 +954,32 @@ func TestDefaultStoreOptionsUsesNativeDefaults(t *testing.T) {
 				t.Fatalf("native defaults = graph %q run %q, want %q/%q", options.GraphRoot, options.RunRoot, wantGraph, wantRun)
 			}
 		})
+	}
+}
+
+func writeStoredIndexFixture(t *testing.T, ctx context.Context, path string, root v1.Descriptor, data []byte, variants []oci.ImageVariant) {
+	t.Helper()
+	target, err := orasoci.NewWithContext(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobs, err := orasoci.NewStorage(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, variant := range variants {
+		source, err := orasoci.NewWithContext(ctx, variant.Layout)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := oras.CopyGraph(ctx, source, blobs, variant.Manifest, oras.CopyGraphOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := target.Push(ctx, root, bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+	if err := target.Tag(ctx, root, root.Digest.String()); err != nil {
+		t.Fatal(err)
 	}
 }

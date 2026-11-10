@@ -8,6 +8,7 @@ let
   categories = {
     quality.x86_64-linux = lib.getAttrs [
       "go-check"
+      "client-consumer"
       "formatting"
       "scripts"
       "justfile"
@@ -25,6 +26,10 @@ let
         [
           "build"
           "container"
+          "nix-image"
+          "nix-composition"
+          "nix-component"
+          "nix-exporter"
           "release-binary"
           "sequoia-helper"
         ]

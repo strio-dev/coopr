@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"oras.land/oras-go/v2/content"
 
@@ -45,38 +46,22 @@ func TestInstructionImageKeyInvalidatesEveryInput(t *testing.T) {
 
 func TestInstructionImageStorePreservesExactGraph(t *testing.T) {
 	ctx := context.Background()
-	staging := t.TempDir()
-	sourcePath := filepath.Join(staging, "source")
-	source, err := orasoci.New(sourcePath)
+	fixture, key, descriptors, _ := imageLookupFixture(t, time.Now())
+	_, sourcePath, err := fixture.LookupImage(ctx, key)
 	if err != nil {
 		t.Fatal(err)
 	}
-	layerData := []byte("exact layer")
-	layer := oci.Descriptor(v1.MediaTypeImageLayer, layerData)
-	layer.Annotations = map[string]string{"io.github.containers.zstd-chunked.manifest-checksum": digest.FromString("chunk table").String()}
-	configData, _ := json.Marshal(v1.Image{Platform: v1.Platform{OS: "linux", Architecture: "amd64"}, RootFS: v1.RootFS{Type: "layers", DiffIDs: []digest.Digest{layer.Digest}}})
-	config := oci.Descriptor(v1.MediaTypeImageConfig, configData)
-	manifestData, _ := json.Marshal(oci.VersionedManifest(config, []v1.Descriptor{layer}, ""))
-	manifest := oci.Descriptor(v1.MediaTypeImageManifest, manifestData)
-	for _, item := range []struct {
-		desc v1.Descriptor
-		data []byte
-	}{{layer, layerData}, {config, configData}, {manifest, manifestData}} {
-		if err := source.Push(ctx, item.desc, bytes.NewReader(item.data)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := source.Tag(ctx, manifest, manifest.Digest.String()); err != nil {
+	t.Cleanup(func() { _ = os.RemoveAll(sourcePath) })
+	manifest, config, layer := descriptors[0], descriptors[1], descriptors[2]
+	configData, err := os.ReadFile(filepath.Join(sourcePath, "blobs", "sha256", config.Digest.Encoded()))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if raw, err := os.ReadFile(filepath.Join(sourcePath, "blobs", "sha256", config.Digest.Encoded())); err != nil || len(raw) != len(configData) {
-		t.Fatalf("stored config bytes = %d, %v; want %d", len(raw), err, len(configData))
-	}
+	staging := t.TempDir()
 	store, err := NewLocalStore(ctx, filepath.Join(staging, "cache"), staging, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := ImageKey{Instruction: digest.FromString("instruction"), Parent: digest.FromString("parent"), Platform: v1.Platform{OS: "linux", Architecture: "amd64"}, Executor: "buildah-test", Format: "oci"}
 	record := ImageRecord{Key: key, Image: manifest, RootMetadata: json.RawMessage(`{"mode":493}`)}
 	if _, err := store.PutImage(ctx, key, record, sourcePath); err != nil {
 		t.Fatal(err)

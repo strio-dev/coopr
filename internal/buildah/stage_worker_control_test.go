@@ -34,7 +34,7 @@ func controlPair(t *testing.T, handler componentReturnHandler, selection compone
 		cancel()
 		control.close()
 		select {
-		case <-done:
+		case <-done: //nolint:errcheck // Cancellation cleanup only waits for server shutdown.
 		case <-time.After(5 * time.Second):
 			t.Error("control server did not stop")
 		}

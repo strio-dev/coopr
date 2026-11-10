@@ -47,7 +47,7 @@ func (executor *graphExecutor) finalizeOutput(ctx context.Context, result Result
 	}
 	finalOptions := builderOptions
 	finalOptions.FromImage = result.ImageID
-	finalOptions.Container = ""
+	finalOptions.Container = executor.builderContainerName("final")
 	if output.Squash && !output.SquashAll && len(output.SBOM) == 0 && !squashFilesystemNoop {
 		finalOptions.FromImage = baseID
 	}
@@ -90,7 +90,7 @@ func (executor *graphExecutor) finalizeOutput(ctx context.Context, result Result
 				return Result{}, err
 			}
 			uidMap, gidMap := contextSnapshotIDMaps(nativeBuilder{Builder: builder})
-			contextDir, remove, err := snapshotContext(copyOptions.ContextDir, copyOptions.Excludes, uidMap, gidMap)
+			contextDir, remove, err := snapshotContext(ctx, copyOptions.ContextDir, copyOptions.Excludes, uidMap, gidMap)
 			if err != nil {
 				return Result{}, err
 			}

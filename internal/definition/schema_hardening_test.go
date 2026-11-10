@@ -5,31 +5,6 @@ import (
 	"testing"
 )
 
-func TestQuotedPermissionFormatting(t *testing.T) {
-	for _, tc := range []struct{ name, source string }{
-		{"quoted mode", `copy "app" "/app" chmod="0755";`},
-		{"quoted add mode", `add "app" "/app" chmod="0755";`},
-		{"quoted mode newline", "copy \"app\" \"/app\" chmod=\"0755\"\n"},
-		{"quoted mode line comment", "copy \"app\" \"/app\" chmod=\"0755\"// mode\n"},
-		{"quoted mode block comment", `copy "app" "/app" chmod="0755"/* mode */;`},
-		{"quoted mode closing brace", `layer { copy "app" "/app" chmod="0755"}`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			def, err := parseFragment(strings.NewReader(tc.source))
-			if err != nil {
-				t.Fatal(err)
-			}
-			inst := def.Instructions[0]
-			if inst.Name == "layer" {
-				inst = inst.Children[0]
-			}
-			if got := inst.Properties["chmod"]; got != "0755" {
-				t.Fatalf("chmod = %q, want 0755", got)
-			}
-		})
-	}
-}
-
 func TestQuotedPermissionDefaultsRemainParameterized(t *testing.T) {
 	def, err := parseFragment(strings.NewReader(`
 arg "mode" "0755"

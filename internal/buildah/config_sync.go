@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
-	"sort"
 	"strings"
 
 	"github.com/strio-dev/coopr/internal/imageconfig"
@@ -99,34 +99,16 @@ func syncBuilderConfig(builder *upstream.Builder, logical *imageconfig.Config) e
 	}
 
 	builder.ClearLabels()
-	for _, name := range sortedMapKeys(document.Config.Labels) {
+	for _, name := range slices.Sorted(maps.Keys(document.Config.Labels)) {
 		builder.SetLabel(name, document.Config.Labels[name])
 	}
 	builder.ClearPorts()
-	for _, port := range sortedSetKeys(document.Config.ExposedPorts) {
+	for _, port := range slices.Sorted(maps.Keys(document.Config.ExposedPorts)) {
 		builder.SetPort(port)
 	}
 	builder.ClearVolumes()
-	for _, volume := range sortedSetKeys(document.Config.Volumes) {
+	for _, volume := range slices.Sorted(maps.Keys(document.Config.Volumes)) {
 		builder.AddVolume(volume)
 	}
 	return nil
-}
-
-func sortedMapKeys(values map[string]string) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-func sortedSetKeys(values map[string]struct{}) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
 }

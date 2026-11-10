@@ -33,7 +33,7 @@ func TestChrootNetworkPolicyRejectsCachedImageAndComponent(t *testing.T) {
 				_ = localConfigComponentResolver(t, ctx, root, `extend {
     `+run+`
 }
-`, false)
+`)
 				source += "component \"config\"\n"
 			} else {
 				source += run
@@ -207,17 +207,4 @@ func TestChrootNetworkPolicyRejectsLegacyInheritedOnBuild(t *testing.T) {
 	options.Output = Output{Path: filepath.Join(root, "rejected")}
 	_, err = BuildPlan(ctx, plan, options)
 	assertChrootNetworkRejected(t, err, options.Output.Path)
-}
-
-func TestChrootNetworkPolicyRejectsDirectBuild(t *testing.T) {
-	run := Run{Command: []string{"/bin/sh", "-c", "printf executed"}, Network: "none"}
-	for _, operation := range []Operation{run, &run} {
-		root := t.TempDir()
-		output := filepath.Join(root, "rejected")
-		_, err := Build(context.Background(), Request{
-			Store: cacheTestStore(root), ContextDir: root, Isolation: "chroot",
-			Operations: []Operation{operation}, Output: Output{Path: output},
-		})
-		assertChrootNetworkRejected(t, err, output)
-	}
 }

@@ -278,8 +278,8 @@ func TestBuildDefinitionUsesSelectedForeignExternalBase(t *testing.T) {
 		Mode: planner.Build, Platform: platformName,
 	}, SupervisedPlanOptions{
 		Store: store, ContextDir: contextDir, Isolation: "rootless", Output: Output{Path: output},
-		Pull: false, SignaturePolicyPath: policy,
-		Stdout: io.Discard, Stderr: io.Discard,
+		SignaturePolicyPath: policy,
+		Stdout:              io.Discard, Stderr: io.Discard,
 	})
 	if err != nil {
 		t.Fatal(err)

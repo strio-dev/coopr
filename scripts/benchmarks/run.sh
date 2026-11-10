@@ -22,7 +22,11 @@ fail() {
 for tool in busybox date go podman; do
   command -v "$tool" >/dev/null 2>&1 || fail "missing $tool"
 done
+[[ $(date +%s%N) =~ ^[0-9]{15,}$ ]] || \
+  fail 'date must support numeric +%s%N timestamps'
 [[ $(podman info --format '{{.Host.Security.Rootless}}') == true ]] || fail 'rootless Podman is required'
+storage_driver=$(podman info --format '{{.Store.GraphDriverName}}')
+[[ $storage_driver =~ ^[a-z0-9_-]+$ ]] || fail 'invalid native storage driver'
 
 case $(uname -m) in
   x86_64)
@@ -45,53 +49,80 @@ if [[ $multiplatform == 1 ]]; then
   command -v jq >/dev/null 2>&1 || fail 'multi-platform benchmark requires jq'
 fi
 
-bench_root=$(mktemp -d /tmp/coopr-parity-benchmark.XXXXXX)
-image_tags=()
-manifest_tags=()
-runtime_image_tags=()
-runtime_image_data_homes=()
+bench_parent=$(mktemp -d "${TMPDIR:-/tmp}/coopr-parity-benchmark.XXXXXX")
+bench_root="$bench_parent/data"
+mkdir "$bench_root"
+# A fresh operation-owned config prevents inherited writable image stores and
+# driver options from escaping scratch. Keep the host's driver for both builders;
+# overlay retains upstream native/fuse-overlayfs capability selection.
+unset CONTAINERS_STORAGE_CONF_OVERRIDE STORAGE_OPTS STORAGE_DRIVER
+write_storage_config() {
+  local prefix=$1 driver=${2:-$storage_driver}
+  # Escape path characters for TOML basic strings; argv stays literal below.
+  local escaped=${prefix//\\/\\\\}
+  escaped=${escaped//\"/\\\"}
+  escaped=${escaped//$'\n'/\\n}
+  escaped=${escaped//$'\r'/\\r}
+  escaped=${escaped//$'\t'/\\t}
+  escaped=${escaped//$'\b'/\\b}
+  escaped=${escaped//$'\f'/\\f}
+  cat >"$prefix.conf" <<EOF
+[storage]
+driver = "$driver"
+graphroot = "$escaped-graph"
+runroot = "$escaped-run"
+imagestore = ""
+[storage.options]
+additionalimagestores = []
+additionallayerstores = []
+EOF
+}
+export CONTAINERS_STORAGE_CONF="$bench_parent/control.conf"
+in_coopr_store() {
+  local iteration=$1
+  shift
+  env "CONTAINERS_STORAGE_CONF=$bench_root/coopr-$iteration.conf" \
+    "XDG_DATA_HOME=$bench_root/coopr-data-$iteration" "$@"
+}
 cleanup() {
   local status=$?
-  local child_digest tag
-  local -a child_digests=()
   trap - EXIT INT TERM
-  for tag in "${image_tags[@]}"; do
-    podman image rm "$tag" >/dev/null 2>&1 || true
-  done
-  for tag in "${manifest_tags[@]}"; do
-    mapfile -t child_digests < <(
-      podman manifest inspect "$tag" 2>/dev/null | jq -r '.manifests[].digest'
-    )
-    podman manifest rm --ignore "$tag" >/dev/null 2>&1 || true
-    for child_digest in "${child_digests[@]}"; do
-      podman image rm "$child_digest" >/dev/null 2>&1 || true
-    done
-  done
-  for ((i=0; i<${#runtime_image_tags[@]}; i++)); do
-    env "XDG_DATA_HOME=${runtime_image_data_homes[$i]}" \
-      podman image rm "${runtime_image_tags[$i]}" >/dev/null 2>&1 || true
-  done
-  if [[ $bench_root == /tmp/coopr-parity-benchmark.* ]]; then
-    podman unshare rm -rf -- "$bench_root"
+  # The only asynchronous jobs are measure_concurrent's two native commands.
+  # Bash job IDs avoid signaling an already-reaped PID that another process reused.
+  kill -TERM %1 %2 2>/dev/null || true
+  wait
+  # Podman opens storage before unshare and shuts it down after the child.
+  # Keep its empty VFS control store outside the data being removed.
+  if ! env CONTAINERS_STORAGE_CONF="$bench_parent/control.conf" \
+    podman --root "$bench_parent/control-graph" --runroot "$bench_parent/control-run" \
+      --storage-driver vfs unshare rm -rf -- "$bench_root"; then
+    printf 'benchmark cleanup failed; retained scratch: %s\n' "$bench_parent" >&2
+    ((status != 0)) || status=1
+  elif ! rm -rf -- "$bench_parent"; then
+    printf 'benchmark control cleanup failed; retained scratch: %s\n' "$bench_parent" >&2
+    ((status != 0)) || status=1
   fi
   exit "$status"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+write_storage_config "$bench_parent/control" vfs
 
-(cd "$repo_root" && go build -o "$bench_root/coopr" ./cmd/coopr)
+(cd "$repo_root" && GOMAXPROCS=2 go build -p=1 -o "$bench_root/coopr" ./cmd/coopr)
 if [[ $multiplatform == 1 ]]; then
   proof_context="$bench_root/multi-platform-proof"
   mkdir -p "$proof_context"
   for arch in amd64 arm64; do
-    GOOS=linux GOARCH=$arch CGO_ENABLED=0 \
-      go build -trimpath -ldflags='-s -w' -o "$proof_context/proof-$arch" \
+    GOOS=linux GOARCH=$arch CGO_ENABLED=0 GOMAXPROCS=2 \
+      go build -p=1 -trimpath -ldflags='-s -w' -o "$proof_context/proof-$arch" \
         "$repo_root/scripts/benchmarks/fixtures/platform-proof/main.go"
   done
 fi
 printf 'builder,iteration,phase,seconds\n'
 
+# ShellCheck does not follow assignments through the caller's nameref.
+# shellcheck disable=SC2034
 build_command() {
   local builder=$1 iteration=$2 phase=$3 definition=$4 context=$5 tag=$6
   local -n result=$7
@@ -100,32 +131,24 @@ build_command() {
     build_args=(--build-arg suffix=changed)
   fi
   if [[ $builder == coopr ]]; then
-    # Return the command array through the caller's nameref.
-    # shellcheck disable=SC2034
+    result=(env "CONTAINERS_STORAGE_CONF=$bench_root/coopr-$iteration.conf"
+      "XDG_DATA_HOME=$bench_root/coopr-data-$iteration" "$bench_root/coopr" build
+      --file "$definition" --tag "$tag" "${build_args[@]}")
     if [[ $phase == multi-platform-* ]]; then
-      # shellcheck disable=SC2034
-      result=(env "XDG_DATA_HOME=$bench_root/coopr-data-$iteration"
-        "$bench_root/coopr" build --file "$definition" "$context"
-        --platform linux/amd64 --platform linux/arm64 --tag "$tag")
+      result+=(--platform linux/amd64 --platform linux/arm64)
     else
-      # shellcheck disable=SC2034
-      result=(env "XDG_DATA_HOME=$bench_root/coopr-data-$iteration"
-        "$bench_root/coopr" build --file "$definition" "$context"
-        --platform "$platform" --tag "$tag" "${build_args[@]}")
+      result+=(--platform "$platform")
     fi
   else
+    result=(podman build --layers --pull=never --network=none --format oci
+      --file "$definition" "${build_args[@]}")
     if [[ $phase == multi-platform-* ]]; then
-      # shellcheck disable=SC2034
-      result=(podman build --layers --pull=never --network=none --format oci
-        --platform "linux/amd64,linux/arm64" --jobs=2 --manifest "$tag"
-        --file "$definition" "$context")
+      result+=(--platform "linux/amd64,linux/arm64" --jobs=2 --manifest "$tag")
     else
-      # shellcheck disable=SC2034
-      result=(podman build --layers --pull=never --network=none --format oci
-        --platform "$platform" --file "$definition" --tag "$tag"
-        "${build_args[@]}" "$context")
+      result+=(--platform "$platform" --tag "$tag")
     fi
   fi
+  result+=("$context")
 }
 
 measure() {
@@ -244,18 +267,13 @@ EOF
 
 verify_image() {
   local builder=$1 iteration=$2 name=$3 tag=$4 expected=$5
-  local actual runtime_tag=$tag runtime_data_home=''
+  local actual
   if [[ $builder == coopr ]]; then
-    runtime_data_home="$bench_root/coopr-data-$iteration"
-    runtime_image_tags+=("$runtime_tag")
-    runtime_image_data_homes+=("$runtime_data_home")
-  fi
-  if [[ -n $runtime_data_home ]]; then
-    actual=$(env "XDG_DATA_HOME=$runtime_data_home" podman run --rm --network=none \
-      --entrypoint /bin/busybox "$runtime_tag" cat /result)
+    actual=$(in_coopr_store "$iteration" podman run --rm --network=none \
+      --entrypoint /bin/busybox "$tag" cat /result)
   else
     actual=$(podman run --rm --network=none --entrypoint /bin/busybox \
-      "$runtime_tag" cat /result)
+      "$tag" cat /result)
   fi
   [[ $actual == "$expected" ]] || \
     fail "$builder iteration $iteration $name result differs: $actual"
@@ -263,26 +281,23 @@ verify_image() {
 
 verify_multi_platform_image() {
   local builder=$1 iteration=$2 tag=$3 marker=$4
-  local arch actual actual_platform runtime_tag runtime_data_home manifest_json runtime_archive
+  local arch actual actual_platform runtime_tag manifest_json runtime_archive
   if [[ $builder == coopr ]]; then
-    runtime_data_home="$bench_root/coopr-data-$iteration"
     for arch in amd64 arm64; do
       runtime_tag="localhost/coopr-parity-benchmark-$(id -u)-$$-$iteration-multi-$arch-runtime:latest"
-      runtime_image_tags+=("$runtime_tag")
-      runtime_image_data_homes+=("$runtime_data_home")
       runtime_archive="$bench_root/coopr-$iteration-multi-$arch.oci.tar"
-      env "XDG_DATA_HOME=$runtime_data_home" \
+      in_coopr_store "$iteration" \
         "$bench_root/coopr" push "$tag" "oci-archive:$runtime_archive:$runtime_tag" --platform "linux/$arch" \
         >"$bench_root/coopr-$iteration-multi-$arch-push.log" 2>&1 || \
         fail "could not export iteration $iteration Coopr linux/$arch native image"
-      env "XDG_DATA_HOME=$runtime_data_home" podman load --input "$runtime_archive" \
+      in_coopr_store "$iteration" podman load --input "$runtime_archive" \
         >"$bench_root/coopr-$iteration-multi-$arch-load.log" 2>&1 || \
         fail "could not load iteration $iteration Coopr linux/$arch native image"
-      actual_platform=$(env "XDG_DATA_HOME=$runtime_data_home" \
+      actual_platform=$(in_coopr_store "$iteration" \
         podman image inspect --format '{{.Os}}/{{.Architecture}}' "$runtime_tag")
       [[ $actual_platform == "linux/$arch" ]] || \
         fail "Coopr iteration $iteration child is $actual_platform, expected linux/$arch"
-      actual=$(env "XDG_DATA_HOME=$runtime_data_home" podman run --rm --network=none \
+      actual=$(in_coopr_store "$iteration" podman run --rm --network=none \
         --platform "linux/$arch" "$runtime_tag")
       [[ $actual == "$arch:$marker" ]] || \
         fail "Coopr iteration $iteration linux/$arch proof differs: $actual"
@@ -302,8 +317,11 @@ verify_multi_platform_image() {
 }
 
 for ((iteration=1; iteration<=iterations; iteration++)); do
+  write_storage_config "$bench_root/coopr-$iteration"
+  write_storage_config "$bench_root/podman-$iteration"
+  export CONTAINERS_STORAGE_CONF="$bench_root/podman-$iteration.conf"
   work="$bench_root/work-$iteration"
-  benchmark_marker="${bench_root##*/}-$iteration"
+  benchmark_marker="${bench_parent##*/}-$iteration"
   write_fixture "$work" "$benchmark_marker" "payload for iteration $iteration" 0
 
   concurrent_a="$bench_root/concurrent-$iteration-a"
@@ -320,9 +338,6 @@ for ((iteration=1; iteration<=iterations; iteration++)); do
 
   for builder in coopr podman; do
     tag="localhost/coopr-parity-benchmark-$(id -u)-$$-$iteration-$builder:latest"
-    if [[ $builder == podman ]]; then
-      image_tags+=("$tag")
-    fi
     for phase in cold warm changed-final-run; do
       if [[ $builder == coopr ]]; then
         measure "$builder" "$iteration" "$phase" "$work/image.coopr" "$work" "$tag"
@@ -336,7 +351,6 @@ for ((iteration=1; iteration<=iterations; iteration++)); do
     concurrent_tag_a="localhost/coopr-parity-benchmark-$(id -u)-$$-$iteration-$builder-concurrent-a:latest"
     concurrent_tag_b="localhost/coopr-parity-benchmark-$(id -u)-$$-$iteration-$builder-concurrent-b:latest"
     if [[ $builder == podman ]]; then
-      image_tags+=("$concurrent_tag_a" "$concurrent_tag_b")
       measure_concurrent "$builder" "$iteration" \
         "$concurrent_a/Containerfile" "$concurrent_a" "$concurrent_tag_a" \
         "$concurrent_b/Containerfile" "$concurrent_b" "$concurrent_tag_b"
@@ -373,8 +387,7 @@ from "scratch" {
   component "benchmark-component"
 }
 EOF
-      env "XDG_DATA_HOME=$bench_root/coopr-data-$iteration" \
-        "$bench_root/coopr" component build "$component_work/component.coopr" \
+      in_coopr_store "$iteration" "$bench_root/coopr" component build "$component_work/component.coopr" \
         --tag benchmark-component --platform "$platform" \
         >"$bench_root/component-$iteration-publish.log" 2>&1 || { cat "$bench_root/component-$iteration-publish.log" >&2; fail "component publication failed"; }
       component_tag="localhost/coopr-parity-benchmark-$(id -u)-$$-$iteration-component:latest"
@@ -385,9 +398,6 @@ EOF
 
     if [[ $multiplatform == 1 ]]; then
       multi_tag="localhost/coopr-parity-benchmark-$(id -u)-$$-$iteration-$builder-multi:latest"
-      if [[ $builder == podman ]]; then
-        manifest_tags+=("$multi_tag")
-      fi
       if [[ $builder == coopr ]]; then
         multi_definition="$multi_work/image.coopr"
       else

@@ -11,9 +11,11 @@ coopr build examples/first-image/image.coopr --tag hello:cached
 coopr build examples/first-image/image.coopr --tag hello:cached
 ```
 
-The second build reports `Using cache` for reused checkpoints. Coopr matches the input image state, arguments, platform, execution settings, and declared sources. Changed inputs can invalidate a result and the instructions that depend on it.
+The second build reports `Using cache` for reused checkpoints. Coopr matches operation definitions, their dependencies, arguments, platform, execution settings, and declared sources. Changed inputs can invalidate a result and the instructions that depend on it.
 
 Local instruction snapshots live in the [native image store](storage.md). They work with the default `--layers=true`; `--layers=false` reruns filesystem instructions instead of reading those snapshots. See [layer and cache behavior](../reference/execution.md#layers-storage-and-copying).
+
+Local COPY/ADD can still read and extract files on a cache hit. Keep source files stable while building. Live host-directory binds, including native `--volume` settings, force their RUNs to execute even when read-only. Use contexts, images or artifacts for reusable inputs.
 
 ## Share results through a registry
 
@@ -51,9 +53,13 @@ Paths are relative to the command’s working directory. Coopr creates the direc
 
 Portable caches store eligible instruction snapshots, component outputs, and package results. Restored components retain their selected image’s layers, configuration, and root metadata. RUN cache-mount contents remain local and are **not uploaded** by `--cache-to` or restored by `--cache-from`.
 
-Portable instruction results include device-backed RUNs and remote ADD. HTTP sources are measured and Git refs resolved before an unpinned ADD can reuse a result. Dynamic bases and nested components still resolve their dependencies while reusing individual instructions. See [cache scopes](../reference/execution.md#cache-scopes) for whole-component, package and layer-group behavior.
+Portable instruction results include device-backed RUNs and remote ADD. Coopr checks HTTP source contents and resolves Git refs before reusing an unpinned ADD result. Dynamic bases and nested components still resolve their dependencies while reusing individual instructions. See [cache scopes](../reference/execution.md#cache-scopes) for whole-component, package and layer-group behavior.
 
 Trust cache repositories as you would other build inputs. Intermediate results may contain files removed from the final image.
+
+## Misses and failures
+
+Missing or invalid cache entries cause a rebuild. Coopr warns about invalid entries; if imported content is corrupt, it also skips publishing the affected cache and leaves its existing tag unchanged. A build can therefore succeed without refreshing its cache. Cache export and destination-write failures still fail the command.
 
 ## Refresh deliberately
 
@@ -64,13 +70,15 @@ coopr build examples/first-image/image.coopr --no-cache
 coopr build examples/first-image/image.coopr --cache-ttl 24h
 ```
 
-`--no-cache` bypasses result reads and saves fresh results. It does not clear cache mounts or refresh a base image; use `--pull` to refresh registry image inputs. `--cache-ttl` limits reuse by cache-record age, not image timestamps. `--cache-ttl 0` disables result reads while saving fresh results.
+`--no-cache` forces instruction execution and saves fresh results. It does not clear cache mounts or refresh a base image; use `--pull` to refresh registry image inputs. `--cache-ttl` limits reuse by cache-record age, not image timestamps. `--cache-ttl 0` disables result reuse while saving fresh results.
 
-Network responses, credential values, cache-mount contents, and mutable host-volume/device contents do not invalidate conventional results. Secret and SSH declarations do enter cache identity, but their contents do not. Use `--no-cache` or change a consumed build argument when these inputs must force a rebuild. A cache hit is not a reproducibility guarantee, and required entitlements are checked even on a hit.
+Stored component packages are immutable artifact inputs, not cache entries. Neither flag rebuilds those packages or supplies packages missing from the component. Rebuild the component when its packaged inputs need to change.
+
+Network responses, credential values, cache-mount contents, and live device contents do not invalidate cached RUN results. Changing a secret or SSH mount declaration can invalidate a result; changing its contents does not. Use `--no-cache` or change a consumed build argument when these inputs must force a rebuild. A cache hit is not a reproducibility guarantee, and required entitlements are checked even on a hit.
 
 Writable primary-context bind mounts execute each time so their context changes remain visible to later instructions. Components using caller-context binds also bypass whole-component reuse. See [RUN mounts](../reference/execution.md#run-mounts) for context lifetime and measurement.
 
-Sources may still need resolution before a cache lookup, so a hit does not guarantee an offline build. Changing [output compression](../reference/execution.md#output-compression) changes portable-cache representation without invalidating instruction results.
+Sources may still need resolution before a cache lookup, so a hit does not guarantee an offline build. [Output compression](../reference/execution.md#output-compression) controls the final image export, not cached instruction snapshots.
 
 ## Cache mounts
 

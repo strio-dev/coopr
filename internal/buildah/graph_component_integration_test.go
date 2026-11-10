@@ -94,7 +94,7 @@ func TestBuildPlanOverlapsIndependentComponentStages(t *testing.T) {
     arg "branch"
     add %q "/component-proof"
 }
-`, server.URL+"/${branch}"), false)
+`, server.URL+"/${branch}"))
 	policy := writeComponentTestPolicy(t, root)
 	plan := testPlan(t, fmt.Sprintf(`
 from %q as="left" {
@@ -149,7 +149,7 @@ extend {
         copy "/right" "/right" from="right"
     }
 }
-`, cacheID, cacheID), false)
+`, cacheID, cacheID))
 	policy := writeComponentTestPolicy(t, root)
 	plan := testPlan(t, fmt.Sprintf(`from %q {
     component "config"
@@ -225,7 +225,7 @@ extend {
         copy "/c" "/c" from="c"
     }
 }
-`, server.URL+"/a", server.URL+"/b", server.URL+"/c"), false)
+`, server.URL+"/a", server.URL+"/b", server.URL+"/c"))
 	policy := writeComponentTestPolicy(t, root)
 	if _, err := BuildPlan(ctx, testPlan(t, `from "scratch" {
     component "config"
@@ -290,7 +290,7 @@ extend {
     }
 }
 `, cacheSuffix, test.sharing, critical, cacheSuffix, test.sharing, critical, cacheSuffix, test.sharing, test.assertion, cacheSuffix, test.sharing)
-			resolver := localConfigComponentResolver(t, ctx, root, source, false)
+			resolver := localConfigComponentResolver(t, ctx, root, source)
 			_, err := ResolveComponentPlan(ctx, ComponentPlanRequest{
 				Resolver: resolver, Reference: "config", Platform: v1.Platform{OS: "linux", Architecture: runtime.GOARCH},
 				ResolveBase: func(context.Context, string, v1.Platform) (ResolvedImageSource, error) {
@@ -333,7 +333,7 @@ func TestCallerAndComponentCanSequenceSameLockedCacheMount(t *testing.T) {
     }
 }
 `, cacheID)
-	resolver := localConfigComponentResolver(t, ctx, root, componentSource, false)
+	resolver := localConfigComponentResolver(t, ctx, root, componentSource)
 	policy := writeComponentTestPolicy(t, root)
 	plan := testPlan(t, fmt.Sprintf(`from %q {
     component "config"
@@ -364,7 +364,7 @@ func TestBuildPlanReplansFromCompletedComponentConfiguration(t *testing.T) {
     onbuild { env TRIGGERED="$COMPONENT_VALUE" }
     onbuild { copy "/payload" "/inherited" from="helper" }
 }
-`, false)
+`)
 	policy := writeComponentTestPolicy(t, root)
 	if err := os.WriteFile(filepath.Join(root, "payload"), []byte("component-onbuild\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -406,7 +406,7 @@ from "base" as="final" {
 			},
 			ContextDir: root, Isolation: "rootless", Output: Output{Path: layout},
 			ComponentStoreDir: filepath.Join(root, "components"),
-			CacheLocalDir:     cacheDir, Pull: false, SignaturePolicyPath: policy,
+			CacheLocalDir:     cacheDir, SignaturePolicyPath: policy,
 			Stdout: io.Discard, Stderr: io.Discard,
 		})
 		if err != nil {
@@ -513,7 +513,7 @@ func TestComponentCacheReusesNonemptyCaller(t *testing.T) {
 	resolver := localConfigComponentResolver(t, ctx, root, `extend {
     env CACHE_BASE="yes"
 }
-`, false)
+`)
 	policy := writeComponentTestPolicy(t, root)
 	plan := testPlan(t, "from \""+base.reference+`" {
     component "config"
@@ -593,7 +593,7 @@ func TestBuildPlanInvokesConfigOnlyComponentFromScratch(t *testing.T) {
 	resolver := localConfigComponentResolver(t, ctx, root, `extend {
     env CONFIG_ONLY="yes"
 }
-`, false)
+`)
 	policy := writeComponentTestPolicy(t, root)
 	plan := testPlan(t, `from "scratch" {
     component "config"
@@ -623,7 +623,7 @@ func TestBuildPlanReusesPortableConfigOnlyComponentCache(t *testing.T) {
 	resolver := localConfigComponentResolver(t, ctx, root, `extend {
     env CACHE_PROOF="yes"
 }
-`, false)
+`)
 	policy := writeComponentTestPolicy(t, root)
 	plan := testPlan(t, `from "scratch" {
     component "config"
@@ -718,7 +718,7 @@ func TestSupervisedBuildReusesComponentCacheAcrossWorkers(t *testing.T) {
 	_ = localConfigComponentResolver(t, ctx, root, `extend {
     env WORKER_CACHE="yes"
 }
-`, false)
+`)
 	policy := writeComponentTestPolicy(t, root)
 	plan := testPlan(t, `from "scratch" {
     component "config"
@@ -834,7 +834,7 @@ func TestBuildPlanUsesComponentShellForFollowingRun(t *testing.T) {
 	resolver := localConfigComponentResolver(t, ctx, root, `extend {
     shell "/bin/sh" "-c" "printf component-shell >/shell-selected"
 }
-`, false)
+`)
 	policy := writeComponentTestPolicy(t, root)
 	plan := testPlan(t, "from \""+base.reference+`" {
     component "config"
@@ -869,7 +869,7 @@ func TestBuildPlanAppliesNetworkOptionsToComponentRun(t *testing.T) {
     run "found=; while read ip name rest; do if test x$ip = x127.0.0.43 && test x$name = xcomponent.test; then found=yes; fi; done </etc/hosts; test x$found = xyes || exit 1; printf component-host >/component-proof"
 }
 `
-	resolver := localConfigComponentResolver(t, ctx, root, component, false)
+	resolver := localConfigComponentResolver(t, ctx, root, component)
 	policy := writeComponentTestPolicy(t, root)
 	plan := testPlan(t, "from \""+base.reference+`" {
     component "config"
@@ -912,7 +912,7 @@ func TestBuildPlanInvokesNestedComponentsAndRejectsCycles(t *testing.T) {
     component "cycle"
 }
 `},
-	}, false)
+	})
 	policy := writeComponentTestPolicy(t, root)
 	plan := testPlan(t, `from "scratch" {
     component "outer"
@@ -945,11 +945,11 @@ type componentDefinitionFixture struct {
 	source string
 }
 
-func localConfigComponentResolver(t *testing.T, ctx context.Context, root, source string, pull bool) *oci.Resolver {
-	return localConfigComponentResolverWithDefinitions(t, ctx, root, []componentDefinitionFixture{{name: "config", source: source}}, pull)
+func localConfigComponentResolver(t *testing.T, ctx context.Context, root, source string) *oci.Resolver {
+	return localConfigComponentResolverWithDefinitions(t, ctx, root, []componentDefinitionFixture{{name: "config", source: source}})
 }
 
-func localConfigComponentResolverWithDefinitions(t *testing.T, ctx context.Context, root string, fixtures []componentDefinitionFixture, pull bool) *oci.Resolver {
+func localConfigComponentResolverWithDefinitions(t *testing.T, ctx context.Context, root string, fixtures []componentDefinitionFixture) *oci.Resolver {
 	t.Helper()
 	platform := v1.Platform{OS: "linux", Architecture: runtime.GOARCH}
 	componentDir := filepath.Join(root, "components")
@@ -978,7 +978,7 @@ func localConfigComponentResolverWithDefinitions(t *testing.T, ctx context.Conte
 		}
 	}
 	resolver, err := oci.NewResolver(oci.Options{
-		ComponentStoreDir: componentDir, Pull: pull,
+		ComponentStoreDir: componentDir,
 	})
 	if err != nil {
 		t.Fatal(err)

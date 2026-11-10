@@ -768,7 +768,7 @@ func storeDirectory(kind oci.Kind, opts Options) (string, error) {
 func localSelector(value string, kind oci.Kind) (string, error) {
 	if strings.HasPrefix(value, "sha256:") {
 		parsed := digest.Digest(value)
-		if parsed.Algorithm() != digest.SHA256 || parsed.Validate() != nil {
+		if parsed.Validate() != nil || parsed.Algorithm() != digest.SHA256 {
 			return "", fmt.Errorf("invalid local digest %q", value)
 		}
 		return value, nil

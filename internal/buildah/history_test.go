@@ -388,68 +388,6 @@ from %q {
 	}
 }
 
-func TestBuildPlanOrdersMetadataAfterNonCacheableRun(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping live non-cacheable RUN history coverage in short mode")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	root := t.TempDir()
-	store := cacheTestStore(root)
-	base := newLiveBusyBoxStorage(t, ctx, root, store)
-	secret := filepath.Join(root, "secret")
-	if err := os.WriteFile(secret, []byte("proof\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	plan := testPlan(t, fmt.Sprintf(`
-from %q {
-    run "cat /run/secrets/token >/proof" network="none" { mount "secret" id="token" required="true" }
-    label after="run"
-}
-`, base.reference))
-	layout := filepath.Join(root, "layout")
-	_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
-		Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-		Output:  Output{Path: layout},
-		Secrets: []string{"id=token,src=" + secret}, Stdout: io.Discard, Stderr: io.Discard,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, image := readPlanImage(t, layout)
-	tail := image.History[len(image.History)-2:]
-	if !strings.HasPrefix(tail[0].CreatedBy, "RUN ") || tail[0].EmptyLayer || tail[1].CreatedBy != "LABEL after=run" || !tail[1].EmptyLayer {
-		t.Fatalf("RUN/LABEL history order = %+v", tail)
-	}
-}
-
-func TestBuildPlanLinkedCopyUsesPlannedHistory(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping live linked COPY history coverage in short mode")
-	}
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "payload"), []byte("linked\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	plan := testPlan(t, `from "scratch" {
-    copy "payload" "/payload" link="true"
-}
-`)
-	layout := filepath.Join(root, "layout")
-	_, err := BuildPlan(context.Background(), plan, PlanOptions{
-		Store:      StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"},
-		ContextDir: root, Isolation: "rootless", Output: Output{Path: layout},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, image := readPlanImage(t, layout)
-	last := image.History[len(image.History)-1]
-	if last.CreatedBy != "COPY --link=true payload /payload" || last.EmptyLayer {
-		t.Fatalf("linked COPY history = %+v", last)
-	}
-}
-
 func TestBuildPlanComponentMetadataTailKeepsLayerHistory(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live component history coverage in short mode")

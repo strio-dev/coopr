@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -128,20 +129,44 @@ func TestBuildDefinitionCancellationCleansSlirp4netns(t *testing.T) {
 	def, err := definition.Parse(strings.NewReader(fmt.Sprintf(`from %q {
     run %q
 }
-`, fixture.base.reference, "trap 'exit 0' TERM; sleep 60")))
+`, fixture.base.reference, "trap 'exit 0' TERM; echo SLIRP_RUN_READY; sleep 60")))
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(fixture.ctx, 30*time.Second)
 	defer cancel()
+	output, writer := io.Pipe()
+	defer func() { _ = output.Close(); _ = writer.Close() }()
+	reached := make(chan bool, 1)
+	layout := filepath.Join(fixture.root, "layout-cancel")
+	go func() {
+		ready := false
+		scanner := bufio.NewScanner(output)
+		for scanner.Scan() {
+			if scanner.Text() == "SLIRP_RUN_READY" && !ready {
+				ready = true
+				cancel()
+			}
+		}
+		// Continue draining even if a log line exceeded Scanner's token limit.
+		_, _ = io.Copy(io.Discard, output)
+		reached <- ready
+	}()
 	_, err = BuildDefinitionSupervised(ctx, def, planner.Options{Mode: planner.Build, Platform: "linux/" + runtime.GOARCH}, SupervisedPlanOptions{
 		Store: fixture.store, ContextDir: fixture.root, Isolation: "rootless", Runtime: runtimePath,
-		Network: "slirp4netns:enable_ipv6=false", Output: Output{Path: filepath.Join(fixture.root, "layout-cancel")},
+		Network: "slirp4netns:enable_ipv6=false", Output: Output{Path: layout},
 		RunControls: controls,
-		Stdout:      os.Stdout, Stderr: os.Stderr,
+		Stdout:      writer, Stderr: os.Stderr,
 	})
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("cancelled slirp build error = %v, want deadline exceeded", err)
+	_ = writer.Close()
+	if !<-reached {
+		t.Fatalf("Slirp RUN never became ready: %v", err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled Slirp build error = %v, want cancellation", err)
+	}
+	if _, err := os.Stat(layout); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cancelled Slirp build retained output: %v", err)
 	}
 	assertNoSlirpRuntimeDirectories(t, fixture.store.GraphRoot+"-tmp")
 }

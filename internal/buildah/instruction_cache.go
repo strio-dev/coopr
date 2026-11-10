@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,7 +28,6 @@ import (
 
 const (
 	instructionCacheSchema     = "coopr.buildah.instruction-cache.v11"
-	instructionCacheBigData    = "coopr-instruction-cache-v11"
 	instructionCacheNamePrefix = "coopr.internal/instruction-cache/v11/"
 )
 
@@ -96,17 +96,9 @@ type instructionCacheExecutionConfig struct {
 	ArgsEscaped bool                `json:"ArgsEscaped,omitempty"`
 }
 
-type instructionCacheRecord struct {
-	Schema         string               `json:"schema"`
-	CreatedAt      time.Time            `json:"created_at"`
-	Key            digest.Digest        `json:"key"`
-	ManifestDigest digest.Digest        `json:"manifest_digest"`
-	RootMetadata   *PackageRootMetadata `json:"root_metadata,omitempty"`
-}
-
 type instructionCacheEntry struct {
 	CommandSet     *bool
-	LogicalConfig  json.RawMessage
+	LogicalConfig  json.RawMessage `json:",omitempty"`
 	BaseImageID    string
 	RetainsCaller  *bool
 	ImageID        string
@@ -115,13 +107,13 @@ type instructionCacheEntry struct {
 }
 
 type portableInstructionCache struct {
-	validateHit func(context.Context, *graphExecutor, *cache.ImageRecord, instructionCacheEntry, *types.SystemContext) error
-	readStores  []instructionCacheStore
-	writeStores []instructionCacheStore
-	stagingDir  string
-	candidates  []portableInstructionCandidate
-	stats       CacheStats
-	cacheTTL    *time.Duration
+	readStores     []instructionCacheStore
+	readBindingIDs []digest.Digest
+	writeStores    []instructionCacheStore
+	stagingDir     string
+	candidates     []portableInstructionCandidate
+	stats          CacheStats
+	cacheTTL       *time.Duration
 }
 
 type instructionCacheStore interface {
@@ -143,8 +135,6 @@ type portableInstructionCacheRelay struct {
 	RelativeLayout string            `json:"relative_layout"`
 }
 
-var portableInstructionScratchParent = digest.FromString("coopr.strio.dev/instruction-image-cache-parent/scratch/v1")
-
 func cacheStats(c *componentCache) CacheStats {
 	if c == nil {
 		return CacheStats{}
@@ -164,6 +154,10 @@ func addCacheStats(a, b CacheStats) CacheStats {
 }
 
 func newPortableInstructionCache(ctx context.Context, options PlanOptions) (*portableInstructionCache, error) {
+	return newPortableImageCache(ctx, options, "instruction")
+}
+
+func newPortableImageCache(ctx context.Context, options PlanOptions, name string) (*portableInstructionCache, error) {
 	bindings, err := cacheBindings(options)
 	if err != nil {
 		return nil, err
@@ -171,7 +165,7 @@ func newPortableInstructionCache(ctx context.Context, options PlanOptions) (*por
 	if len(bindings) == 0 {
 		return nil, nil
 	}
-	dir, err := os.MkdirTemp("", "coopr-instruction-cache-*")
+	dir, err := os.MkdirTemp("", "coopr-"+name+"-cache-*")
 	if err != nil {
 		return nil, err
 	}
@@ -184,15 +178,19 @@ func newPortableInstructionCache(ctx context.Context, options PlanOptions) (*por
 			store, err = cache.NewRegistryStore(options.Resolver, binding.spec.Reference, dir, options.CacheTTL)
 		}
 		if err != nil {
-			if binding.write || binding.spec.Transport == "registry" {
-				return nil, errors.Join(fmt.Errorf("open instruction cache %s:%s: %w", binding.spec.Transport, binding.spec.Reference, err), os.RemoveAll(dir))
+			if ctx.Err() != nil {
+				return nil, errors.Join(ctx.Err(), os.RemoveAll(dir))
 			}
-			packageCacheWarning("open read-only instruction cache", err)
+			if binding.write || binding.spec.Transport == "registry" {
+				return nil, errors.Join(fmt.Errorf("open %s cache %s:%s: %w", name, binding.spec.Transport, binding.spec.Reference, err), os.RemoveAll(dir))
+			}
+			packageCacheWarning("open read-only "+name+" cache", err)
 			result.stats.Errors++
 			continue
 		}
 		if binding.read {
 			result.readStores = append(result.readStores, store)
+			result.readBindingIDs = append(result.readBindingIDs, instructionReadBindingID(binding.spec))
 		}
 		if binding.write {
 			result.writeStores = append(result.writeStores, store)
@@ -288,71 +286,6 @@ func (c *portableInstructionCache) acceptRelayedCandidates(relays []portableInst
 	return nil
 }
 
-func portableInstructionEligible(lowered Operation) bool {
-	switch lowered.(type) {
-	case Run, WorkDir, Copy, copyFromImageOperation, Add:
-		// Complete mount/device selections and exact consumed COPY/ADD inputs are
-		// required by instructionCacheKey before portable lookup.
-		return true
-	default:
-		return false
-	}
-}
-
-func portableInstructionParent(parent string) digest.Digest {
-	if parent == "" || parent == "empty" {
-		return portableInstructionScratchParent
-	}
-	return digest.Digest(parent)
-}
-
-func portableInstructionKey(executor *graphExecutor, input instructionCacheInput, parentIdentity string) (cache.ImageKey, bool, error) {
-	if executor == nil || executor.instructionPortableCache == nil {
-		return cache.ImageKey{}, false, nil
-	}
-	parent := portableInstructionParent(parentIdentity)
-	if parent.Validate() != nil {
-		return cache.ImageKey{}, false, nil
-	}
-	instruction, cacheable, err := portableInstructionDigest(input, parent)
-	if err != nil || !cacheable {
-		return cache.ImageKey{}, false, err
-	}
-	modules, err := cacheModuleVersions()
-	if err != nil {
-		return cache.ImageKey{}, false, err
-	}
-	runtimeIdentity := executor.instructionRuntime
-	if runtimeIdentity == "" {
-		runtimeIdentity = "none"
-	}
-	semantics, err := componentCacheExecutorSemantics(upstreamdefine.Version, modules, executor.isolation.String(), executor.store.GraphDriverName(), executor.store.GraphOptions(), runtimeIdentity, executor.options.Output.Format)
-	if err != nil {
-		return cache.ImageKey{}, false, err
-	}
-	format, err := normalizedOutputFormat(executor.options.Output.Format)
-	if err != nil {
-		return cache.ImageKey{}, false, err
-	}
-	key := cache.ImageKey{Instruction: instruction, Parent: parent, Platform: input.Platform, Executor: semantics, Format: format}
-	_, err = key.Digest()
-	return key, err == nil, err
-}
-
-func portableInstructionDigest(input instructionCacheInput, parent digest.Digest) (digest.Digest, bool, error) {
-	if parent.Validate() != nil {
-		return "", false, nil
-	}
-	// Use the same ordered OCI layer identity across stores. The scratch
-	// sentinel needs a domain-separated digest for the portable record.
-	input.ParentRootFS = parent.String()
-	return instructionCacheKey(input)
-}
-
-func (c *portableInstructionCache) lookup(ctx context.Context, executor *graphExecutor, key cache.ImageKey, localKey digest.Digest, system *types.SystemContext) (instructionCacheEntry, error) {
-	return c.lookupValidated(ctx, executor, key, localKey, system, c.validateHit)
-}
-
 func (c *portableInstructionCache) lookupValidated(ctx context.Context, executor *graphExecutor, key cache.ImageKey, localKey digest.Digest, system *types.SystemContext, validateHit func(context.Context, *graphExecutor, *cache.ImageRecord, instructionCacheEntry, *types.SystemContext) error) (instructionCacheEntry, error) {
 	for _, store := range c.readStores {
 		if err := ctx.Err(); err != nil {
@@ -380,7 +313,7 @@ func (c *portableInstructionCache) lookupValidated(ctx context.Context, executor
 		}
 		baseImageID := ""
 		if record.BaseImage != nil {
-			baseImageID, err = ImportSelectedImage(ctx, executor.store, system, layout, *record.BaseImage)
+			baseImageID, err = importInstructionCacheImage(ctx, executor.store, system, layout, *record.BaseImage)
 			if err != nil {
 				packageCacheWarning("import cached base image", err)
 				_ = os.RemoveAll(layout)
@@ -388,7 +321,7 @@ func (c *portableInstructionCache) lookupValidated(ctx context.Context, executor
 				continue
 			}
 		}
-		imageID, err := ImportSelectedImage(ctx, executor.store, system, layout, record.Image)
+		imageID, err := importInstructionCacheImage(ctx, executor.store, system, layout, record.Image)
 		if err != nil {
 			packageCacheWarning("import instruction cache image", err)
 			_ = os.RemoveAll(layout)
@@ -426,7 +359,7 @@ func (c *portableInstructionCache) lookupValidated(ctx context.Context, executor
 				continue
 			}
 		}
-		if err := storeInstructionCacheEntrySelectedAt(executor.store, imageID, record.Image.Digest, localKey, root, record.CreatedAt); err != nil {
+		if err := retainInstructionCacheImage(executor.store, imageID, localKey); err != nil {
 			_ = os.RemoveAll(layout)
 			return instructionCacheEntry{}, err
 		}
@@ -460,8 +393,18 @@ func (c *portableInstructionCache) lookupValidated(ctx context.Context, executor
 	return instructionCacheEntry{}, nil
 }
 
-func (c *portableInstructionCache) record(ctx context.Context, executor *graphExecutor, key cache.ImageKey, imageID string, manifest digest.Digest, root *PackageRootMetadata, system *types.SystemContext) {
-	c.recordImage(ctx, executor, key, imageID, manifest, root, system, nil, "", nil, nil)
+// Cache checkpoints promise the exact selected manifest. Native storage keeps
+// unpacked layers, so retain compressed representations before the verified
+// portable layout is removed; otherwise a later export can change its digest.
+func importInstructionCacheImage(ctx context.Context, store storage.Store, system *types.SystemContext, layout string, selected v1.Descriptor) (string, error) {
+	imageID, err := ImportSelectedImage(ctx, store, system, layout, selected)
+	if err != nil {
+		return "", err
+	}
+	if err := retainStoredLayoutLayers(store, imageID, layout, selected.Digest); err != nil {
+		return "", fmt.Errorf("retain selected instruction cache layers: %w", err)
+	}
+	return imageID, nil
 }
 
 func (c *portableInstructionCache) recordImage(ctx context.Context, executor *graphExecutor, key cache.ImageKey, imageID string, manifest digest.Digest, root *PackageRootMetadata, system *types.SystemContext, logical json.RawMessage, baseImageID string, retainsCaller *bool, commandSet *bool) {
@@ -575,6 +518,9 @@ func (c *portableInstructionCache) publish(ctx context.Context) error {
 func instructionCacheKey(input instructionCacheInput) (digest.Digest, bool, error) {
 	switch input.Operation.Name {
 	case "run":
+		if len(input.RunControls.Volumes) != 0 {
+			return "", false, nil
+		}
 		if len(input.Operation.Children) != 0 && !completeResolvedInstructionInputs(input.Operation, input.ResolvedInputs, input.ResolvedInputsComplete) {
 			return "", false, nil
 		}
@@ -611,10 +557,11 @@ func instructionCacheKey(input instructionCacheInput) (digest.Digest, bool, erro
 			return "", false, nil
 		}
 	}
+	operation := canonicalInstructionCacheOperation(input.Operation, input.ResolvedInputs, input.ResolvedInputsComplete)
 	document, err := json.Marshal(instructionCacheDocument{
 		CooprExecution: cooprExecutionRevision,
 		Schema:         instructionCacheSchema, BuildahVersion: upstreamdefine.Version,
-		ParentRootFS: input.ParentRootFS, ExecutionConfig: config, Operation: input.Operation,
+		ParentRootFS: input.ParentRootFS, ExecutionConfig: config, Operation: operation,
 		Platform: input.Platform, Isolation: input.Isolation, Runtime: input.Runtime, Format: format,
 		InputDigest: input.InputDigest, ResolvedInputs: input.ResolvedInputs,
 		RootMetadata: rootMetadata, Timestamp: input.Timestamp,
@@ -626,6 +573,44 @@ func instructionCacheKey(input instructionCacheInput) (digest.Digest, bool, erro
 		return "", false, fmt.Errorf("marshal instruction cache key: %w", err)
 	}
 	return digest.FromBytes(document), true, nil
+}
+
+// canonicalInstructionCacheOperation is shared by cache keys and persisted
+// instruction history. Runtime execution retains the authored operation.
+func canonicalInstructionCacheOperation(operation planner.Operation, inputs []instructionCacheResolvedInput, complete bool) planner.Operation {
+	if (operation.Name == "copy" || operation.Name == "add") && operation.Properties["from"] != "" {
+		// COPY/ADD cacheability requires the exact measured input stream. The
+		// delivery selector does not add filesystem semantics to those bytes;
+		// in particular, native image IDs can differ for configuration changes
+		// that COPY does not inherit. Paths, options and InputDigest stay keyed.
+		operation.Properties = maps.Clone(operation.Properties)
+		operation.Properties["from"] = "resolved:copy-input"
+	}
+	if operation.Name == "run" && len(operation.Children) != 0 && completeResolvedInstructionInputs(operation, inputs, complete) {
+		// A mounted filesystem does not inherit its source image's config.
+		// Its verified resolved identity supersedes temporary storage handles,
+		// while every authored path and mount option still participates.
+		operation.Children = slices.Clone(operation.Children)
+		resolvedIndex := 0
+		for index, child := range operation.Children {
+			if child.Name != "mount" {
+				continue
+			}
+			for inputs[resolvedIndex].Kind == "devices" {
+				resolvedIndex++
+			}
+			resolved := inputs[resolvedIndex]
+			resolvedIndex++
+			filesystem := resolved.Kind == "image-rootfs" || resolved.Kind == "artifact-files"
+			verified := digest.Digest(resolved.Identity).Validate() == nil || (resolved.Kind == "image-rootfs" && resolved.Identity == "empty")
+			if filesystem && verified && child.Properties["from"] != "" {
+				child.Properties = maps.Clone(child.Properties)
+				child.Properties["from"] = "resolved:" + resolved.Kind + ":" + resolved.Identity
+				operation.Children[index] = child
+			}
+		}
+	}
+	return operation
 }
 
 func instructionExecutionConfig(logical *imageconfig.Config) (instructionCacheExecutionConfig, error) {
@@ -698,103 +683,15 @@ func instructionRuntimeIdentity(configured string) (string, error) {
 	return path + "@" + binary.String(), nil
 }
 
-func findInstructionCache(store storage.Store, key digest.Digest) (string, error) {
-	entry, err := findInstructionCacheEntry(store, key, nil)
-	return entry.ImageID, err
-}
-
-func findInstructionCacheEntry(store storage.Store, key digest.Digest, ttlValues ...*time.Duration) (instructionCacheEntry, error) {
-	var ttl *time.Duration
-	if len(ttlValues) != 0 {
-		ttl = ttlValues[0]
-	}
-	image, err := store.Image(instructionCacheName(key))
-	if err != nil {
-		if errors.Is(err, storage.ErrImageUnknown) {
-			return instructionCacheEntry{}, nil
-		}
-		return instructionCacheEntry{}, fmt.Errorf("find instruction cache image: %w", err)
-	}
-	data, err := store.ImageBigData(image.ID, instructionCacheBigDataName(key))
-	if err != nil {
-		// A name can outlive partially written metadata after an interrupted or
-		// concurrent cache update. Treat that state like any other cache miss.
-		if errors.Is(err, os.ErrNotExist) || errors.Is(err, storage.ErrImageUnknown) {
-			return instructionCacheEntry{}, nil
-		}
-		return instructionCacheEntry{}, fmt.Errorf("read instruction cache metadata for %s: %w", image.ID, err)
-	}
-	var record instructionCacheRecord
-	if err := json.Unmarshal(data, &record); err != nil {
-		return instructionCacheEntry{}, fmt.Errorf("decode instruction cache metadata for %s: %w", image.ID, err)
-	}
-	if record.Schema != instructionCacheSchema || record.Key != key {
-		return instructionCacheEntry{}, nil
-	}
-	if !cache.RecordFresh(record.CreatedAt, ttl, time.Now()) {
-		return instructionCacheEntry{}, nil
-	}
-	if record.RootMetadata != nil {
-		var ok bool
-		record.RootMetadata, ok = cacheablePackageRootMetadata(record.RootMetadata)
-		if !ok {
-			return instructionCacheEntry{}, nil
-		}
-	}
-	if record.ManifestDigest.Validate() != nil {
-		return instructionCacheEntry{}, nil
-	}
-	return instructionCacheEntry{ImageID: image.ID, ManifestDigest: record.ManifestDigest, RootMetadata: record.RootMetadata}, nil
-}
-
-func storeInstructionCache(store storage.Store, imageID string, key digest.Digest) error {
-	return storeInstructionCacheEntry(store, imageID, key, nil)
-}
-
-func storeInstructionCacheEntry(store storage.Store, imageID string, key digest.Digest, root *PackageRootMetadata) error {
-	manifestDigest, err := storedImageDefaultManifestDigest(store, imageID)
-	if err != nil {
-		return fmt.Errorf("read instruction cache manifest for %s: %w", imageID, err)
-	}
-	return storeInstructionCacheEntrySelected(store, imageID, manifestDigest, key, root)
-}
-
-func storeInstructionCacheEntrySelected(store storage.Store, imageID string, manifestDigest, key digest.Digest, root *PackageRootMetadata) error {
-	return storeInstructionCacheEntrySelectedAt(store, imageID, manifestDigest, key, root, time.Now().UTC())
-}
-
-func storeInstructionCacheEntrySelectedAt(store storage.Store, imageID string, manifestDigest, key digest.Digest, root *PackageRootMetadata, createdAt time.Time) error {
-	if err := manifestDigest.Validate(); err != nil {
-		return fmt.Errorf("invalid instruction cache manifest %q: %w", manifestDigest, err)
-	}
-	var rootMetadata *PackageRootMetadata
-	if root != nil {
-		var ok bool
-		rootMetadata, ok = cacheablePackageRootMetadata(root)
-		if !ok {
-			return errors.New("instruction cache root metadata is not portable")
-		}
-	}
-	data, err := json.Marshal(instructionCacheRecord{Schema: instructionCacheSchema, CreatedAt: createdAt.UTC(), Key: key, ManifestDigest: manifestDigest, RootMetadata: rootMetadata})
-	if err != nil {
-		return fmt.Errorf("marshal instruction cache metadata: %w", err)
-	}
-	if err := store.SetImageBigData(imageID, instructionCacheBigDataName(key), data, nil); err != nil {
-		return fmt.Errorf("store instruction cache metadata for %s: %w", imageID, err)
-	}
-	// AddNames preserves every existing name on this image. The storage image
-	// index atomically moves this one private key name if concurrent workers
-	// publish the same cache entry, so lookups never require a full image scan.
+// The OCI cache owns identity, restoration metadata and expiry. Native storage
+// needs only a retention name; this is not a second cache-record index.
+func retainInstructionCacheImage(store storage.Store, imageID string, key digest.Digest) error {
 	if err := store.AddNames(imageID, []string{instructionCacheName(key)}); err != nil {
-		return fmt.Errorf("index instruction cache image %s: %w", imageID, err)
+		return fmt.Errorf("retain cached image %s: %w", imageID, err)
 	}
 	return nil
 }
 
 func instructionCacheName(key digest.Digest) string {
 	return instructionCacheNamePrefix + key.String()
-}
-
-func instructionCacheBigDataName(key digest.Digest) string {
-	return instructionCacheBigData + "/" + key.String()
 }

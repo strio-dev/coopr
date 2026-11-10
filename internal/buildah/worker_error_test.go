@@ -116,3 +116,73 @@ func TestWorkerDirectoryCleanupPreservesIncompleteWork(t *testing.T) {
 		})
 	}
 }
+
+func TestWorkerCleanupProofRejectsLostAndInvalidResponses(t *testing.T) {
+	for _, fixture := range []struct {
+		name, message string
+		accepted      bool
+	}{
+		{"lost-worker", "", false},
+		{"missing-proof", `{}`, false},
+		{"false-proof", `{"cleanup_complete":false}`, false},
+		{"invalid-proof", `{"cleanup_complete":"true"}`, false},
+		{"confirmed", `{"cleanup_complete":true}`, true},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			directory := t.TempDir()
+			path := filepath.Join(directory, "response.json")
+			if fixture.message != "" {
+				if err := os.WriteFile(path, []byte(fixture.message), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			response, readErr := readWorkerResponse(path)
+			err := requireWorkerCleanup(response.CleanupComplete, readErr)
+			if fixture.accepted {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrWorkerWaitIncomplete) {
+				t.Fatalf("lost cleanup uncertainty: %v", err)
+			}
+			if readErr != nil && !errors.Is(err, readErr) {
+				t.Fatalf("lost protocol cause: %v", err)
+			}
+			if cleanupErr := RemoveWorkerDirectory(directory, err); !errors.Is(cleanupErr, ErrWorkerWaitIncomplete) {
+				t.Fatalf("lost retention error: %v", cleanupErr)
+			}
+			if _, err := os.Stat(directory); err != nil {
+				t.Fatalf("unproven worker files removed: %v", err)
+			}
+		})
+	}
+}
+
+func TestWorkerFailureResponsesUseStructuredDiagnosticOnly(t *testing.T) {
+	failure := WorkerFailure(errors.Join(context.Canceled, ErrWorkerWaitIncomplete))
+	for _, response := range []any{
+		planWorkerResponse{Failure: failure},
+		stageWorkerResponse{Failure: failure},
+	} {
+		data, err := json.Marshal(response)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(data, &fields); err != nil {
+			t.Fatal(err)
+		}
+		if _, duplicate := fields["error"]; duplicate {
+			t.Fatalf("%T serialized duplicate diagnostic: %s", response, data)
+		}
+		var decoded workerError
+		if err := json.Unmarshal(fields["failure"], &decoded); err != nil {
+			t.Fatal(err)
+		}
+		if decoded.Message != failure.Message || decoded.Code != failure.Code || !errors.Is(&decoded, ErrWorkerWaitIncomplete) {
+			t.Fatalf("%T lost structured failure: %s", response, data)
+		}
+	}
+}

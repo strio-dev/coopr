@@ -13,8 +13,8 @@ import (
 	"testing"
 
 	"github.com/strio-dev/coopr/internal/buildah"
-	"github.com/strio-dev/coopr/internal/imagestore"
 	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/testutil/nativeimage"
 
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -30,11 +30,11 @@ func TestManifestMemberTransportRouting(t *testing.T) {
 	options := maintenanceStoreOptions(t.TempDir())
 	platform := v1.Platform{OS: "linux", Architecture: runtime.GOARCH}
 	layout, image, _ := maintenanceImageLayout(t, platform, "routing")
-	store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(options))
+	store, err := nativeimage.NewStore(buildah.NativeStoreOptions(options))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.WriteLayout(ctx, layout, image, "docker:tag"); err != nil {
+	if _, err := store.SeedLayout(ctx, layout, image, "docker:tag"); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
@@ -137,14 +137,14 @@ func TestManifestPushFilesystemTransports(t *testing.T) {
 	if native.Architecture == "arm64" {
 		foreign.Architecture = "amd64"
 	}
-	store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(options))
+	store, err := nativeimage.NewStore(buildah.NativeStoreOptions(options))
 	if err != nil {
 		t.Fatal(err)
 	}
 	expected := make(map[digest.Digest]v1.Platform)
 	for i, platform := range []v1.Platform{native, foreign} {
 		layout, root, _ := maintenanceImageLayout(t, platform, "manifest-push")
-		if _, err := store.WriteLayout(ctx, layout, root, []string{"member-native", "member-foreign"}[i]); err != nil {
+		if _, err := store.SeedLayout(ctx, layout, root, []string{"member-native", "member-foreign"}[i]); err != nil {
 			t.Fatal(err)
 		}
 		expected[root.Digest] = platform

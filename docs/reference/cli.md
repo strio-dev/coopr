@@ -32,6 +32,7 @@ Commands below follow `coopr`. Images use the [native container store](../guides
 | `component push SOURCE DESTINATION` | Transfer a stored component to a registry or OCI archive. |
 | `component tag SOURCE NAME...`, `component copy` | Add local component names; `copy` is an alias for `tag`. |
 | `component save REF`, `component load` | Export/import a component OCI archive. |
+| `component bundle REF --origin ORIGIN -o DIRECTORY` | Bundle a locally built component and its dependencies for Bale delivery. |
 | `component exists REF` | Test local component presence without pulling. |
 | `component ls`, `components` | List locally named components. |
 | `component inspect REF`, `component rm NAME...` | Inspect components or remove names. |
@@ -43,6 +44,7 @@ Commands below follow `coopr`. Images use the [native container store](../guides
 | `login [REGISTRY]`, `logout [REGISTRY]` | Use the native containers authentication file and credential helpers. |
 | `manifest create`, `add`, `annotate`, `inspect`, `push`, `remove`, `rm`, `exists` | Manage [image manifest lists](#manifest-lists). |
 | `info` | Show host, runtime, version, and storage information; `--format` (`-f`) accepts JSON or a Go template. |
+| `system service --socket PATH [--parent-fd FD]` | Serve the local execution API on a private Unix socket; see [API guide](../guides/api.md). |
 | `system df`, `system prune` | Report storage usage or prune images and unnamed component content. |
 | `completion SHELL` | Generate [shell completion](#shell-completion). |
 
@@ -80,7 +82,7 @@ The first command uses the definition's parent directory as context; the second 
 | `--mount SPEC` | Add a comma-separated RUN mount specification to every RUN, after its authored mounts. Repeatable; stage sources create graph dependencies. |
 | `--stdin` | Pass command stdin to RUN; cannot also read the definition or context from stdin. |
 | `--source-date-epoch`, `--timestamp`, `--rewrite-timestamp` | Set creation time, force new-layer file times, or clamp newer times. Timestamp and a nonempty source date epoch are mutually exclusive. |
-| `--metadata-file` | Write result/platform/destination metadata. |
+| `--metadata-file` | Write result/platform/destination metadata and bounded operation timings. |
 | `--quiet`, `--logfile`, `--logsplit` | Suppress progress, redirect output to a file, or use one logfile per platform. See [build output](#build-output). |
 
 ### Image output controls
@@ -108,6 +110,17 @@ Scanner, signing, and confidential-workload options may require external tools, 
 `--iidfile PATH` writes the algorithm-prefixed native image ID, or native manifest-list ID for an aggregate output. `--iidfile-raw PATH` (alias `--raw-iidfile`) writes the image ID without its prefix and requires one platform. Neither adds a trailing newline. Either option suppresses the build's final ID line.
 
 Image-layer compression controls are `--compression-format gzip|zstd|zstd:chunked`, `--compression-level N`, and `--force-compression`. Specifying a format defaults force-compression to true; set `--force-compression=false` to permit reuse of compatible compressed blobs. See [output compression](execution.md#output-compression) for format and storage behavior.
+
+### Operation timings
+
+Successful build metadata includes phase timings in `coopr.operation.progress`. The list has a size limit; `coopr.operation.progress.dropped` counts omitted entries. For example:
+
+```sh
+coopr build examples/first-image/image.coopr --metadata-file result.json
+jq '."coopr.operation.progress"[] | select(.state == "completed") | {instruction, phase, cache, durationNanos}' result.json
+```
+
+Each entry records the instruction, phase, cache outcome and duration. Cache lookup time can include restoring or saving a checkpoint, so durations overlap: do not add them to calculate total build time. Killing a worker can leave the trace incomplete.
 
 ### Named inputs
 
@@ -166,15 +179,38 @@ Image `save --format` accepts:
 
 | Format | Output |
 | --- | --- |
-| `docker-archive` (default) | Docker image archive. Operands after the first image are additional tags; `--multi-image-archive` (`-m`) selects multiple images instead. |
+| `docker-archive` (default) | Docker image archive. Extra operands add tags with `--multi-image-archive=false`, or select separate images with `--multi-image-archive` (`-m`). |
 | `oci-archive` | OCI archive containing one image or a complete stored index. |
 | `docker-dir`, `oci-dir` | Image directory; requires `--output DIRECTORY`. |
+
+When `--multi-image-archive` is omitted, its value comes from `[engine] multi_image_archive` in `containers.conf`. If enabled there, set `--multi-image-archive=false` to save an OCI archive or directory format.
 
 `--compress` applies to Docker directory output; `--uncompressed` controls OCI output. Native image export may change compression and manifest/index digests while retaining filesystem layers and their order. A build's `--output` exports a [flattened filesystem](../guides/builds.md#export-an-image-or-its-files), without an image's configuration or layer structure.
 
 Image `load --input` accepts a local archive, image directory, or HTTP(S) archive URL; omission reads stdin. Loading retains configuration and layers, including distinct members that share a platform in an OCI index. Component archives retain the complete component index and its packages. Loading a named component archive restores its name; `component load --tag NAME` overrides it. Pulling a component without `--tag` prints its locally usable digest.
 
 Image loading imports runnable platforms. When an image descriptor omits its optional platform, Coopr reads it from the verified image configuration and retains the original descriptor. Non-image artifacts and `unknown` platforms, such as BuildKit attestations, are omitted from the stored index; its digest changes when descriptors are removed. Runnable-only indexes retain their original metadata in native storage. Export updates member descriptors if their layer representation changes.
+
+### Complete component bundles
+
+`component bundle` packages a locally built component and its dependencies in a complete Bale OCI layout, then prints the bundle digest. Supply the component's registry reference with `--origin`. This assigns a reference for delivery without contacting the registry or publishing anything. If you use a digest reference, it must match the local component's digest.
+
+```sh
+coopr component bundle local-tools \
+  --origin registry.example/team/tools:development \
+  --input-bundle ./dependencies.bale \
+  --output ./tools.bale
+bale inspect --layout ./tools.bale
+bale push --layout ./tools.bale registry.example/team/delivery:development --dry-run
+```
+
+Repeat `--input-bundle` for complete local Bale layouts and `--input-component IMMUTABLE_REF=LOCAL_NAME` to select a locally loaded child. All dependencies must be available locally. Missing or conflicting dependencies fail without replacing existing output. The parent must be a locally built component that has not been delivered through Bale. To move a delivered component, keep and use its original complete bundle.
+
+Coopr discovers dependencies for the component's default invocation, not every retained recipe or possible argument value, and rejects incomplete discovery. A complete bundle therefore does not guarantee that every invocation works offline. See [dependency discovery limits](../guides/components.md#capture-dependencies-with-bale) and include the inputs required by the invocation you intend to run.
+
+`component build --bundle-output DIRECTORY` creates a bundle from the same build. `--bundle-origin` optionally sets its registry reference; otherwise Coopr assigns one under `coopr.invalid/components/`. The same input flags apply. Children delivered through Bale require their original complete bundles. Deliver the bundle when using local children; `--push` of the parent alone does not include them.
+
+With `--metadata-file`, `coopr.bundle` records the bundle path, descriptor and any packaging error. If bundling fails, the command retains the built local component but returns an error. An ordinary `component save` archive contains the component's own packages, not its external dependency closure. See [Nix components](../guides/nix.md#package-nix-tools-as-a-reusable-component) for a packaging example.
 
 ## Manifest lists
 
@@ -196,11 +232,17 @@ coopr manifest push --format oci app-artifacts oci:./app-artifacts:latest
 
 The input file must exist. `--artifact-annotation` sets manifest metadata; `--annotation` sets the member’s index metadata. Artifact-specific flags require `--artifact`. Layer title annotations use filenames unless `--artifact-exclude-titles` is set. An explicit `--artifact-type=` suppresses the artifact type.
 
+`manifest inspect` checks the local list before fetching a registry manifest, with registry authentication and TLS options. `manifest rm --ignore` tolerates missing lists; `manifest push --rm` removes the local list only after a successful push. Registry options use the same authentication, TLS configuration, and retry settings as builds, pull, and push.
+
+### Sign images and manifests
+
 Image and manifest publication support GPG signing with `--sign-by` and Sigstore signing with `--sign-by-sigstore-private-key` or `--sign-by-sigstore PARAMETER_FILE`. Native push transports validate signature support and signing identity; named `containers-storage` destinations support signatures, while unnamed directory and OCI destinations cannot supply a Docker signing identity. Bare local tags retain the existing GPG-only signing behavior.
 
 Parameter files use the native containers/image Sigstore format for private keys, Fulcio/OIDC and Rekor settings. A parameter-file passphrase file takes precedence over the fallback `--sign-passphrase-file` or `COSIGN_PASSWORD`. Multiple signing modes can be combined; an explicit `--sign-passphrase-file` can select at most one of `--sign-by`, `--sign-by-sq-fingerprint` and `--sign-by-sigstore-private-key`. The Sigstore environment password does not supply a GPG passphrase. Quiet mode retains required authentication instructions and interactive input.
 
-Sequoia-PGP signing automatically discovers the optional `coopr-sequoia-signing` package beside Coopr, under `libexec/coopr`, or on `PATH`. Install that package to use `--sign-by-sq-fingerprint`; the static Coopr package keeps its existing host-GPG and Sigstore support. The optional helper owns the complete native transfer, including manifest transformations and signatures. Missing or incompatible helpers fail Sequoia requests without publishing unsigned output. Key fingerprints use the user-managed Sequoia key store; credentials and password bytes cross the helper boundary only through private temporary files.
+#### Use Sequoia-PGP
+
+Install the optional `coopr-sequoia-signing` package to use `--sign-by-sq-fingerprint`. Coopr finds the helper beside its executable, under `libexec/coopr`, or on `PATH`. The static Coopr package supports host-GPG and Sigstore signing without this helper. The helper performs the whole transfer, including manifest conversion and signing. Missing or incompatible helpers fail Sequoia requests without publishing unsigned output. Key fingerprints use the user-managed Sequoia key store; credentials and password bytes cross the helper boundary only through private temporary files.
 
 ```sh
 nix profile install github:strio-dev/coopr#coopr-sequoia-signing
@@ -210,9 +252,7 @@ nix profile install path:.#coopr-sequoia-signing
 
 Manage keys with `sq` in your Sequoia key store, then pass the signing key fingerprint to `--sign-by-sq-fingerprint`. Sequoia signing and native `signedBy` policy verification during these helper-routed transfers use the optional backend. Verification in other static Coopr operations continues to use the existing GPG backend.
 
-The optional backend currently pins `podman-sequoia` 0.4.0. Passphrase-protected keys support single-image signing, but reusing one during a multi-image transfer can fail on the second signature with `Device is already unlocked`. Coopr preserves this upstream error; protected multi-image signing is a known limitation.
-
-`manifest inspect` checks the local list before fetching a registry manifest, with registry authentication and TLS options. `manifest rm --ignore` tolerates missing lists; `manifest push --rm` removes the local list only after a successful push. Registry options use the same authentication, TLS configuration, and retry settings as builds, pull, and push.
+With the bundled `podman-sequoia` 0.4.0 backend, a passphrase-protected key can sign one image but may fail on the second image in a multi-image transfer with `Device is already unlocked`. Coopr reports that upstream error; it does not continue with unsigned output.
 
 ## Image reports
 
@@ -303,3 +343,9 @@ Repeatable `--filter label=KEY[=VALUE]`, `label!=KEY[=VALUE]`, and `until=TIME` 
 `system df --verbose` shows per-image usage, and `--format json` or a Go template formats the summary; format and verbose cannot be combined. Recursive pruning can remove additional parent images. See [storage](../guides/storage.md#inspect-and-maintain) for examples and cache-mount scope.
 
 Build-container cleanup, saved stages, volume compatibility, and `--layers` are covered in the [execution control index](execution.md#build-request-controls). These settings apply to both build commands.
+
+## Local execution service
+
+`coopr system service --socket ABSOLUTE_PATH` runs the versioned HTTP execution API on a Unix socket. Choose a socket path that does not already exist, inside a directory owned by the service account with permissions 0700. Coopr creates the socket with permissions 0600. `--parent-fd FD` optionally supplies an inherited pipe descriptor numbered 3 or above; pipe EOF cancels active work and drains the service. SIGTERM also requests shutdown. No TCP listener or persistent daemon is required for ordinary CLI use.
+
+See [the protocol reference](api.md) for execution requests, limits, cancellation acknowledgements and authority boundaries.

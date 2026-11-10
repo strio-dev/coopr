@@ -26,7 +26,7 @@ func (g *graph) mapExternalInput(kind, source string, packagePhase bool) (string
 		_, stage := g.resolveStageReference(mapped)
 		_, context := g.contextForSource(mapped, g.contextsAvailable(packagePhase))
 		_, numericErr := strconv.Atoi(mapped)
-		if stage || context || numericErr == nil || strings.EqualFold(mapped, "scratch") || g.reservedStageNames[canonicalStageName(mapped)] {
+		if stage || context || numericErr == nil || strings.EqualFold(mapped, "scratch") {
 			return "", fmt.Errorf("external image %q mapped to local source %q", source, mapped)
 		}
 	}

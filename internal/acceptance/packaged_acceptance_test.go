@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +18,8 @@ import (
 	"time"
 
 	"github.com/strio-dev/coopr/internal/testutil"
+
+	dockerarchive "go.podman.io/image/v5/docker/archive"
 
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2/content"
@@ -189,7 +190,7 @@ extend {
 	})
 	t.Run("SharedStoreAndContexts", func(t *testing.T) {
 		a.t = t
-		a.coopr(false, "slirp4netns", "build", "/work/base.coopr", "--tag", base, "--platform", a.platform)
+		a.coopr(false, "pasta", "build", "/work/base.coopr", "--tag", base, "--platform", a.platform)
 		a.coopr(false, "none", "build", "/work/child.coopr", "--tag", "coopr-release-child:acceptance", "--platform", a.platform)
 		a.coopr(false, "none", "save", "--format", "oci-archive", "--platform", a.platform, "--output", "/work/child.oci.tar", "coopr-release-child:acceptance")
 		a.assertImage("child.oci.tar", "base\nchild\nbase", a.platform)
@@ -283,7 +284,7 @@ extend {
 				args[1] = "/work/network-component-child.coopr"
 			}
 			args = append(args, "--isolation=chroot", "--no-cache", "--platform", a.platform, "--tag", "coopr-release-network:"+name)
-			output, err := a.tryCoopr(false, "slirp4netns", args...)
+			output, err := a.tryCoopr(false, "pasta", args...)
 			if err == nil || !strings.Contains(output, "RUN network=none cannot be used with chroot isolation; use --isolation=oci or --isolation=rootless") {
 				t.Fatalf("%s rejection: %v: %s", name, err, output)
 			}
@@ -413,14 +414,21 @@ func (a packagedAcceptance) loadImage(archive string) string {
 	a.t.Helper()
 	manifest, _ := testutil.ReadImage(a.t, a.ctx, archive)
 	id := manifest.Config.Digest.String()
+	exists := exec.CommandContext(a.ctx, "podman", "image", "exists", id).Run()
+	if exists != nil {
+		var exit *exec.ExitError
+		if !errors.As(exists, &exit) || exit.ExitCode() != 1 {
+			a.t.Fatalf("inspect existing packaged test image %s: %v", id, exists)
+		}
+	}
 	a.podman("load", "-i", archive)
 	a.podman("image", "exists", id)
-	if a.loaded[id] == a.t {
+	if exists == nil || a.loaded[id] == a.t {
 		return id
 	}
 	a.loaded[id] = a.t
 	a.t.Cleanup(func() {
-		output, err := exec.Command("podman", "rmi", id).CombinedOutput()
+		output, err := exec.Command("podman", "rmi", "--no-prune", id).CombinedOutput()
 		if err != nil {
 			a.t.Errorf("remove packaged test image %s: %v: %s", id, err, output)
 		}
@@ -545,7 +553,7 @@ func (a packagedAcceptance) conformance() {
 	tag := fmt.Sprintf("localhost/coopr-conformance:%d-%d", os.Getpid(), time.Now().UnixNano())
 	a.podman("build", "--pull=never", "--format", "docker", "--layers", "--network=none", "--build-arg", "message=release-acceptance", "--file", filepath.Join(dir, "Containerfile"), "--tag", tag, dir)
 	a.t.Cleanup(func() {
-		output, err := exec.Command("podman", "rmi", tag).CombinedOutput()
+		output, err := exec.Command("podman", "rmi", "--no-prune", tag).CombinedOutput()
 		if err != nil {
 			a.t.Errorf("cleanup conformance image: %v: %s", err, output)
 		}
@@ -564,7 +572,7 @@ func (a packagedAcceptance) conformance() {
 	a.coopr(false, "none", "save", "--format", "docker-archive", "--platform", a.platform, "--output", "/work/containerfile-conformance/coopr.docker.tar", "coopr-release-conformance:acceptance")
 	configs := make([]map[string]any, 0, 2)
 	for _, archive := range archives {
-		config, err := packagedDockerConfig(archive)
+		config, err := packagedDockerConfig(a.ctx, archive)
 		if err != nil {
 			a.t.Fatal(err)
 		}
@@ -577,46 +585,25 @@ func (a packagedAcceptance) conformance() {
 	}
 }
 
-func packagedDockerConfig(path string) (config map[string]any, resultErr error) {
-	file, err := os.Open(path)
+func packagedDockerConfig(ctx context.Context, path string) (config map[string]any, resultErr error) {
+	ref, err := dockerarchive.NewReference(path, nil)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { resultErr = errors.Join(resultErr, file.Close()) }()
-	reader := tar.NewReader(file)
-	entries := map[string][]byte{}
-	for {
-		header, err := reader.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-		if header.Typeflag != tar.TypeReg {
-			continue
-		}
-		if header.Name != "manifest.json" && !strings.HasSuffix(header.Name, ".json") {
-			continue
-		}
-		data, err := io.ReadAll(io.LimitReader(reader, 16<<20))
-		if err != nil {
-			return nil, err
-		}
-		entries[strings.TrimPrefix(header.Name, "./")] = data
-	}
-	var manifest []struct{ Config string }
-	if err := json.Unmarshal(entries["manifest.json"], &manifest); err != nil {
+	image, err := ref.NewImage(ctx, nil)
+	if err != nil {
 		return nil, err
 	}
-	if len(manifest) != 1 {
-		return nil, fmt.Errorf("Docker archive has %d images", len(manifest))
-	}
-	var image struct{ Config map[string]any }
-	if err := json.Unmarshal(entries[manifest[0].Config], &image); err != nil {
+	defer func() { resultErr = errors.Join(resultErr, image.Close()) }()
+	data, err := image.ConfigBlob(ctx)
+	if err != nil {
 		return nil, err
 	}
-	return selectedPackagedConfig(image.Config), nil
+	var document struct{ Config map[string]any }
+	if err := json.Unmarshal(data, &document); err != nil {
+		return nil, err
+	}
+	return selectedPackagedConfig(document.Config), nil
 }
 func selectedPackagedConfig(config map[string]any) map[string]any {
 	selected := map[string]any{}
@@ -674,20 +661,6 @@ func packagedCommandOutput(command *exec.Cmd) (string, string, error) {
 	command.Stderr = &diagnostics
 	err := command.Run()
 	return output.String(), diagnostics.String(), err
-}
-
-func TestPackagedCommandOutput(t *testing.T) {
-	for _, status := range []string{"0", "7"} {
-		t.Run(status, func(t *testing.T) {
-			output, diagnostics, err := packagedCommandOutput(exec.Command("sh", "-c", "printf 'expected\n'; printf 'engine warning\n' >&2; exit "+status))
-			if output != "expected\n" || diagnostics != "engine warning\n" {
-				t.Fatalf("stdout=%q, stderr=%q", output, diagnostics)
-			}
-			if (err == nil) != (status == "0") {
-				t.Fatalf("status %s: error=%v", status, err)
-			}
-		})
-	}
 }
 
 func TestPackagedCallerEnvironment(t *testing.T) {

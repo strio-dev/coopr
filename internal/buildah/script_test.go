@@ -19,14 +19,14 @@ func TestMixedRunCommandsUseSelectedShell(t *testing.T) {
   script "test -s /proof"
  }
 }`)
-	request, err := RequestFromPlan(plan, PlanOptions{})
+	operations, err := lowerGraphOperations((plan).Stages[0].Operations, nil, nil, nil, []string{"/bin/sh", "-c"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(request.Operations) != 2 {
-		t.Fatalf("operations = %v, want SHELL and one RUN", request.Operations)
+	if len(operations) != 2 {
+		t.Fatalf("operations = %v, want SHELL and one RUN", operations)
 	}
-	run := request.Operations[1].(Run)
+	run := operations[1].(Run)
 	want := [][]string{
 		{"/custom/shell", "-euc", "echo $value > /proof"},
 		{"/tool", "$value", ""},
@@ -40,21 +40,21 @@ func TestMixedRunCommandsUseSelectedShell(t *testing.T) {
 func TestScriptChildLowersLikeShellText(t *testing.T) {
 	for _, name := range []string{"run", "cmd", "entrypoint", "healthcheck"} {
 		t.Run(name, func(t *testing.T) {
-			lower := func(instruction string) Request {
+			lower := func(instruction string) []Operation {
 				plan := testPlan(t, `from "scratch" {
  shell "/custom/shell" "-ec"
  `+instruction+`
 }`)
-				request, err := RequestFromPlan(plan, PlanOptions{})
+				operations, err := lowerGraphOperations((plan).Stages[0].Operations, nil, nil, nil, []string{"/bin/sh", "-c"}, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
-				return request
+				return operations
 			}
 			text := lower(name + ` "echo $value"`)
 			child := lower(name + ` { script "echo $value" }`)
-			if !reflect.DeepEqual(child.Operations, text.Operations) {
-				t.Fatalf("script child = %#v, shell text = %#v", child.Operations, text.Operations)
+			if !reflect.DeepEqual(child, text) {
+				t.Fatalf("script child = %#v, shell text = %#v", child, text)
 			}
 		})
 	}
@@ -95,7 +95,7 @@ func TestLowerMixedRunRejectsInvalidDecodedCommands(t *testing.T) {
 		{Form: "unknown", Arguments: []string{"true"}},
 	} {
 		inst := definition.Instruction{Name: "run", Commands: []definition.Command{command, {Form: "exec", Arguments: []string{"/tool"}}}}
-		_, _, err := lowerOperation(planner.Operation{Instruction: inst}, []string{"/bin/sh", "-c"})
+		_, _, err := lowerOperationWithCacheMountIDs(planner.Operation{Instruction: inst}, []string{"/bin/sh", "-c"}, nil, nil)
 		if err == nil {
 			t.Fatalf("invalid command %#v: err = %v", command, err)
 		}

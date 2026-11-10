@@ -44,6 +44,7 @@ func imageLookupFixture(t *testing.T, created time.Time) (*OCIStore, ImageKey, [
 	}
 	layerData := []byte("exact layer")
 	layer := oci.Descriptor(v1.MediaTypeImageLayer, layerData)
+	layer.Annotations = map[string]string{"io.github.containers.zstd-chunked.manifest-checksum": digest.FromString("chunk table").String()}
 	configData, _ := json.Marshal(v1.Image{Platform: v1.Platform{OS: "linux", Architecture: "amd64"}, RootFS: v1.RootFS{Type: "layers", DiffIDs: []digest.Digest{layer.Digest}}})
 	config := oci.Descriptor(v1.MediaTypeImageConfig, configData)
 	manifestData, _ := json.Marshal(oci.VersionedManifest(config, []v1.Descriptor{layer}, ""))

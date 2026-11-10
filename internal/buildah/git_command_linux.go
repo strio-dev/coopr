@@ -16,6 +16,8 @@ import (
 )
 
 func gitCommandContext(ctx context.Context, executable string, arguments ...string) *exec.Cmd {
+	// Git comes from the operator's PATH; parsed inputs remain separate argv elements.
+	// nosemgrep: cache.semgrep-rules.go.lang.security.audit.dangerous-exec-command
 	command := exec.CommandContext(ctx, executable, arguments...)
 	// Keep Git and its helpers in the worker's process group so the supervising
 	// parent can always terminate the complete build. For cancellation scoped to

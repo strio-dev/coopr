@@ -11,7 +11,6 @@ import (
 	"io"
 	"regexp"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 
@@ -155,27 +154,11 @@ func (c *Config) Apply(inst definition.Instruction) error {
 			return err
 		}
 		values := properties(inst)
+		overrides := make([]string, 0, len(values))
 		for _, key := range propertyKeys(inst) {
-			value := values[key]
-			found := false
-			updated := current[:0]
-			for _, existing := range current {
-				name, _, _ := strings.Cut(existing, "=")
-				if name == key {
-					if !found {
-						updated = append(updated, key+"="+value)
-						found = true
-					}
-					continue
-				}
-				updated = append(updated, existing)
-			}
-			current = updated
-			if !found {
-				current = append(current, key+"="+value)
-			}
+			overrides = append(overrides, key+"="+values[key])
 		}
-		return c.setNested(nested, "Env", current)
+		return c.setNested(nested, "Env", setEnvironment(current, overrides))
 	case "label":
 		current := make(map[string]string)
 		if err := decode(nested, "Labels", &current); err != nil {
@@ -345,15 +328,7 @@ func (c *Config) ClearOnBuild() error {
 		return err
 	}
 	delete(nested, "OnBuild")
-	raw, err := json.Marshal(nested)
-	if err != nil {
-		return err
-	}
-	if c.root == nil {
-		c.root = make(map[string]json.RawMessage)
-	}
-	c.root["config"] = raw
-	return nil
+	return c.storeNested(nested)
 }
 
 // Shell returns the configured shell or a copy of fallback when the image does
@@ -705,12 +680,7 @@ func (c *Config) setNested(nested map[string]json.RawMessage, key string, value 
 	if err := setRaw(nested, key, value); err != nil {
 		return err
 	}
-	raw, err := json.Marshal(nested)
-	if err != nil {
-		return err
-	}
-	c.root["config"] = raw
-	return nil
+	return c.storeNested(nested)
 }
 
 func setRaw(object map[string]json.RawMessage, key string, value any) error {
@@ -750,13 +720,7 @@ func propertyKeys(inst definition.Instruction) []string {
 	if len(inst.Properties) != 0 {
 		return definition.OrderedPropertyKeys(inst)
 	}
-	props := properties(inst)
-	keys := make([]string, 0, len(props))
-	for key := range props {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
+	return []string{inst.Arguments[0]}
 }
 
 func canonicalFields(names ...string) map[string]string {
@@ -777,7 +741,6 @@ func decodeObject(raw []byte, label string, fields map[string]string, rejectUnkn
 		return nil, fmt.Errorf("%s must be an object", label)
 	}
 	result := make(map[string]json.RawMessage)
-	seenCanonical := make(map[string]string)
 	for decoder.More() {
 		token, err := decoder.Token()
 		if err != nil {
@@ -795,10 +758,6 @@ func decodeObject(raw []byte, label string, fields map[string]string, rejectUnkn
 			if key != canonical {
 				return nil, fmt.Errorf("%s field %q must be spelled %q", label, key, canonical)
 			}
-			if previous, exists := seenCanonical[canonical]; exists {
-				return nil, fmt.Errorf("%s fields %q and %q collide", label, previous, key)
-			}
-			seenCanonical[canonical] = key
 		} else if rejectUnknown {
 			return nil, fmt.Errorf("%s has unsupported field %q", label, key)
 		}

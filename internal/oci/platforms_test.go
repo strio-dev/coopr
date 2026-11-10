@@ -1,18 +1,21 @@
 package oci
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
-	"encoding/json"
 	"github.com/containerd/platforms"
 	"github.com/google/go-containerregistry/pkg/registry"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	nativemanifest "go.podman.io/image/v5/manifest"
 	"go.podman.io/image/v5/types"
+	"oras.land/oras-go/v2"
+	orasoci "oras.land/oras-go/v2/content/oci"
 )
 
 func TestImagePlatformsReadsRegistryAndLayoutMetadata(t *testing.T) {
@@ -22,8 +25,32 @@ func TestImagePlatformsReadsRegistryAndLayoutMetadata(t *testing.T) {
 	amdLayout, amdManifest := imageIndexTestLayout(t, ctx, amd64, "amd", false)
 	armLayout, armManifest := imageIndexTestLayout(t, ctx, arm64, "arm", false)
 	indexLayout := filepath.Join(t.TempDir(), "index")
-	root, _, err := AssembleImageIndex(ctx, indexLayout, []ImageVariant{{Layout: armLayout, Manifest: armManifest, Platform: arm64}, {Layout: amdLayout, Manifest: amdManifest, Platform: amd64}}, "")
+	rootFixtureVariants := []ImageVariant{{Layout: armLayout, Manifest: armManifest, Platform: arm64}, {Layout: amdLayout, Manifest: amdManifest, Platform: amd64}}
+	root, rootFixtureData, err := ImageIndexDescriptor(rootFixtureVariants, "")
 	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := orasoci.NewWithContext(ctx, indexLayout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobs, err := orasoci.NewStorage(indexLayout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, variant := range rootFixtureVariants {
+		source, err := orasoci.NewWithContext(ctx, variant.Layout)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := oras.CopyGraph(ctx, source, blobs, variant.Manifest, oras.CopyGraphOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := target.Push(ctx, root, bytes.NewReader(rootFixtureData)); err != nil {
+		t.Fatal(err)
+	}
+	if err := target.Tag(ctx, root, root.Digest.String()); err != nil {
 		t.Fatal(err)
 	}
 	_, _, resolver, name := testRepository(t, registry.New())

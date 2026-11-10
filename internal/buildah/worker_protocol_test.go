@@ -15,7 +15,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -23,7 +22,6 @@ import (
 
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
-	"github.com/strio-dev/coopr/internal/buildcontext"
 	"github.com/strio-dev/coopr/internal/definition"
 	"github.com/strio-dev/coopr/internal/oci"
 	"github.com/strio-dev/coopr/internal/planner"
@@ -49,7 +47,15 @@ func TestWorkerJobIDValidation(t *testing.T) {
 
 func TestWorkerRequestsPreserveTLSVerifyPolicy(t *testing.T) {
 	for _, verify := range []*bool{nil, new(true), new(false)} {
-		for _, request := range []any{planWorkerRequest{TLSVerify: verify}, stageWorkerRequest{TLSVerify: verify}} {
+		for _, request := range []any{planWorkerRequest{
+			workerExecutionOptions: workerExecutionOptions{
+				TLSVerify: verify,
+			},
+		}, stageWorkerRequest{
+			workerExecutionOptions: workerExecutionOptions{
+				TLSVerify: verify,
+			},
+		}} {
 			data, err := json.Marshal(request)
 			if err != nil {
 				t.Fatal(err)
@@ -191,56 +197,6 @@ func TestPlanOptionsPreserveExecutionOrigin(t *testing.T) {
 	}
 }
 
-func TestPlanWorkerMessagePreservesRequestExecutionOptions(t *testing.T) {
-	root := t.TempDir()
-	request := planWorkerRequest{
-		ExecutableOrigin: "/opt/coopr/bin/coopr",
-		Mode:             "build", NoCache: true, Network: "none", AddHosts: []string{"example.test:127.0.0.1"}, RewriteTimestamp: true, Allow: []string{"network.host"},
-		RunControls: RunControls{HTTPProxy: true, Memory: 64 << 20, DNSServers: []string{"1.1.1.1"}}, Jobs: 3,
-		AuthFile: "/tmp/auth.json", CertDir: "/tmp/certs", TLSVerify: new(false),
-		PullPolicy:    string(oci.PullNever),
-		CacheFrom:     []CacheSpec{{Transport: "registry", Reference: "registry.example/read"}},
-		CacheTo:       []CacheSpec{{Transport: "registry", Reference: "registry.example/write"}},
-		BuildContexts: []buildcontext.Spec{{Name: "base", Kind: buildcontext.DockerImage, Reference: "example.com/base:latest"}},
-		ResultPath:    filepath.Join(root, "result.json"),
-	}
-	path := filepath.Join(root, "request.json")
-	if err := writeWorkerJSON(path, request); err != nil {
-		t.Fatal(err)
-	}
-	var decoded planWorkerRequest
-	if err := readWorkerJSON(path, &decoded); err != nil {
-		t.Fatal(err)
-	}
-	if !decoded.NoCache {
-		t.Fatal("plan worker request lost no-cache setting")
-	}
-	if decoded.ExecutableOrigin != request.ExecutableOrigin {
-		t.Fatalf("plan worker request executable origin = %q", decoded.ExecutableOrigin)
-	}
-	if decoded.Network != "none" || !slices.Equal(decoded.AddHosts, request.AddHosts) {
-		t.Fatalf("plan worker request network options = %q, %#v", decoded.Network, decoded.AddHosts)
-	}
-	if !decoded.RunControls.HTTPProxy || decoded.RunControls.Memory != 64<<20 || decoded.Jobs != 3 {
-		t.Fatalf("plan worker request controls = %+v, jobs=%d", decoded.RunControls, decoded.Jobs)
-	}
-	if decoded.AuthFile != request.AuthFile || decoded.CertDir != request.CertDir || decoded.TLSVerify == nil || *decoded.TLSVerify {
-		t.Fatalf("plan worker request registry options = %q, %q, %v", decoded.AuthFile, decoded.CertDir, decoded.TLSVerify)
-	}
-	if decoded.PullPolicy != request.PullPolicy || !slices.Equal(decoded.CacheFrom, request.CacheFrom) || !slices.Equal(decoded.CacheTo, request.CacheTo) {
-		t.Fatalf("plan worker request pull/cache options = %q, %#v, %#v", decoded.PullPolicy, decoded.CacheFrom, decoded.CacheTo)
-	}
-	if !decoded.RewriteTimestamp {
-		t.Fatal("plan worker request lost rewrite-timestamp setting")
-	}
-	if !slices.Equal(decoded.Allow, []string{"network.host"}) {
-		t.Fatalf("plan worker request allow = %#v", decoded.Allow)
-	}
-	if !slices.Equal(decoded.BuildContexts, request.BuildContexts) {
-		t.Fatalf("plan worker request build contexts = %#v", decoded.BuildContexts)
-	}
-}
-
 func TestPlanWorkerRequestRequiresExactlyOneBuildInput(t *testing.T) {
 	def := parseWorkerDefinition(t, `from "scratch" {}
 `)
@@ -271,17 +227,12 @@ func TestPlanWorkerRequestRequiresExactlyOneBuildInput(t *testing.T) {
 	}
 }
 
-func TestPlanWorkerImportRequestRequiresLayoutAndManifest(t *testing.T) {
-	request := planWorkerRequest{
-		Mode: "import", ResultPath: "/result", Output: Output{Path: "/layout"},
-		ManifestDescriptor: v1.Descriptor{Digest: digest.FromString("manifest"), MediaType: v1.MediaTypeImageManifest, Size: 1},
-	}
-	if err := validatePlanWorkerRequest(request); err != nil {
-		t.Fatalf("valid import request rejected: %v", err)
-	}
-	request.Output.Path = ""
-	if err := validatePlanWorkerRequest(request); err == nil {
-		t.Fatal("import request without layout accepted")
+func TestPlanWorkerRequestRejectsRemovedModes(t *testing.T) {
+	for _, mode := range []string{"import", "export"} {
+		request := planWorkerRequest{Mode: mode, ResultPath: "/result", Output: Output{Path: "/layout"}, ImageID: strings.Repeat("0", 64), ManifestDescriptor: v1.Descriptor{Digest: digest.FromString("manifest"), MediaType: v1.MediaTypeImageManifest, Size: 1}}
+		if err := validatePlanWorkerRequest(request); err == nil {
+			t.Fatalf("removed %s mode accepted", mode)
+		}
 	}
 }
 
@@ -313,7 +264,7 @@ func TestPromoteCompleteOutputNeverReplacesExistingDestination(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(destination, "owned"), []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := promoteCompleteOutput(source, destination); !errors.Is(err, os.ErrExist) {
+	if err := promoteCompleteOutput(source, destination, true); !errors.Is(err, os.ErrExist) {
 		t.Fatalf("promote over existing destination: %v", err)
 	}
 	if _, err := os.Stat(source); err != nil {
@@ -329,71 +280,55 @@ func TestBuildPlanSupervisedPromotesCompleteLayout(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping a live rootless Buildah worker in short mode")
 	}
-	root := t.TempDir()
-	contextDir := filepath.Join(root, "context")
-	if err := os.Mkdir(contextDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(contextDir, "proof"), []byte("supervised\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	plan := testPlan(t, `from "scratch" {
-    copy "proof" "/proof"
-}
-`)
-	layout := filepath.Join(root, "layout")
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	result, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
-		Store:      StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"},
-		ContextDir: contextDir, Isolation: "rootless", Output: Output{Path: layout}, Stdout: io.Discard, Stderr: io.Discard,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Layout != layout || result.ManifestDigest == "" {
-		t.Fatalf("supervised result = %+v", result)
-	}
-	manifest, _ := readPlanImage(t, layout)
-	if len(manifest.Layers) != 1 {
-		t.Fatalf("supervised layers = %d, want 1", len(manifest.Layers))
-	}
-}
-
-func TestBuildDefinitionSupervisedMatchesPlannedBuildBehavior(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping a live rootless Buildah worker in short mode")
-	}
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "proof"), []byte("raw supervised\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	def := parseWorkerDefinition(t, `from "scratch" {
-    copy "proof" "/proof"
-}
-`)
-	layout := filepath.Join(root, "layout")
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	result, err := BuildDefinitionSupervised(ctx, def, planner.Options{
-		Mode: planner.Build, Platform: runtime.GOOS + "/" + runtime.GOARCH,
-	}, SupervisedPlanOptions{
-		Store:      StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"},
-		ContextDir: root, Isolation: "rootless", Output: Output{Path: layout}, Stdout: io.Discard, Stderr: io.Discard,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Layout != layout || result.ManifestDigest == "" {
-		t.Fatalf("raw supervised result = %+v", result)
-	}
-	manifest, _ := readPlanImage(t, layout)
-	if len(manifest.Layers) != 1 {
-		t.Fatalf("raw supervised layers = %d, want 1", len(manifest.Layers))
+	for _, raw := range []bool{false, true} {
+		t.Run(fmt.Sprintf("raw=%t", raw), func(t *testing.T) {
+			root := t.TempDir()
+			contextDir := filepath.Join(root, "context")
+			if err := os.Mkdir(contextDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(contextDir, "proof"), []byte("supervised\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			def := parseWorkerDefinition(t, `from "scratch" { copy "proof" "/proof" }`)
+			planning := planner.Options{Mode: planner.Build, Platform: runtime.GOOS + "/" + runtime.GOARCH}
+			layout := filepath.Join(root, "layout")
+			options := SupervisedPlanOptions{
+				Store:      StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"},
+				ContextDir: contextDir, Isolation: "rootless", Output: Output{Path: layout}, Stdout: io.Discard, Stderr: io.Discard,
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			var result Result
+			var err error
+			if raw {
+				result, err = BuildDefinitionSupervised(ctx, def, planning, options)
+			} else {
+				plan, planErr := planner.Create(def, planning)
+				if planErr != nil {
+					t.Fatal(planErr)
+				}
+				result, err = BuildPlanSupervised(ctx, plan, options)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Layout != layout || result.ManifestDigest == "" || result.Platform != planning.Platform {
+				t.Fatalf("supervised result = %+v", result)
+			}
+			manifest, _ := readPlanImage(t, layout)
+			if len(manifest.Layers) != 1 {
+				t.Fatalf("supervised layers = %d, want 1", len(manifest.Layers))
+			}
+			layer := manifest.Layers[0]
+			if got := readLayerFile(t, filepath.Join(layout, "blobs", layer.Digest.Algorithm().String(), layer.Digest.Encoded()), "proof"); got != "supervised\n" {
+				t.Fatalf("promoted layer proof = %q", got)
+			}
+		})
 	}
 }
 
-func TestPublishPlanSupervisedPromotesSortedComponentLayout(t *testing.T) {
+func TestPublishDefinitionSupervisedPromotesSortedComponentLayout(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping a live rootless Buildah worker in short mode")
 	}
@@ -405,7 +340,7 @@ func TestPublishPlanSupervisedPromotesSortedComponentLayout(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(contextDir, "proof"), []byte("supervised publication\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	plan := testPublicationPlan(t, `
+	def := parseWorkerDefinition(t, `
 package as="z-last" {
     copy "proof" "/z"
 }
@@ -420,7 +355,7 @@ extend {
 	layout := filepath.Join(root, "layout")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	result, err := PublishPlanSupervised(ctx, plan, SupervisedPlanOptions{
+	result, err := PublishDefinitionSupervised(ctx, def, planner.Options{Mode: planner.Publish, Platform: runtime.GOOS + "/" + runtime.GOARCH}, SupervisedPlanOptions{
 		Store:      StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"},
 		ContextDir: contextDir, Isolation: "rootless", Output: Output{Path: layout}, Stdout: io.Discard, Stderr: io.Discard,
 	})
@@ -441,46 +376,12 @@ extend {
 	if len(metadata.Packages) != 2 || metadata.Packages[0].Stage != "a-first" || metadata.Packages[1].Stage != "z-last" {
 		t.Fatalf("component packages are not sorted: %+v", metadata.Packages)
 	}
-}
-
-func TestPublishDefinitionSupervisedMatchesPlannedPublicationBehavior(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping a live rootless Buildah worker in short mode")
-	}
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "proof"), []byte("raw publication\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	def := parseWorkerDefinition(t, `
-package as="z-last" {
-    copy "proof" "/z"
-}
-package as="a-first" {
-    copy "proof" "/a"
-}
-extend {
-    copy "/z" "/z" from="z-last"
-    copy "/a" "/a" from="a-first"
-}
-`)
-	layout := filepath.Join(root, "layout")
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	result, err := PublishDefinitionSupervised(ctx, def, planner.Options{
-		Mode: planner.Publish, Platform: runtime.GOOS + "/" + runtime.GOARCH,
-	}, SupervisedPlanOptions{
-		Store:      StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"},
-		ContextDir: root, Isolation: "rootless", Output: Output{Path: layout}, Stdout: io.Discard, Stderr: io.Discard,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Layout != layout || result.Root.Digest == "" {
-		t.Fatalf("raw supervised publication result = %+v", result)
-	}
-	metadata := readComponentMetadata(t, ctx, layout, result.Root)
-	if len(metadata.Packages) != 2 || metadata.Packages[0].Stage != "a-first" || metadata.Packages[1].Stage != "z-last" {
-		t.Fatalf("raw component packages are not sorted: %+v", metadata.Packages)
+	for _, pack := range metadata.Packages {
+		name := map[string]string{"a-first": "a", "z-last": "z"}[pack.Stage]
+		blob := filepath.Join(layout, "blobs", pack.Descriptor.Digest.Algorithm().String(), pack.Descriptor.Digest.Encoded())
+		if got := readLayerFile(t, blob, name); got != "supervised publication\n" {
+			t.Fatalf("published package %s proof = %q", pack.Stage, got)
+		}
 	}
 }
 
@@ -627,8 +528,8 @@ from %q {
 	started := time.Now()
 	_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 		Store: storeOptions, ContextDir: root, Isolation: "rootless", Runtime: "crun", Output: Output{Path: layout},
-		Pull: false, SignaturePolicyPath: policy,
-		Stdout: io.Discard, Stderr: io.Discard,
+		SignaturePolicyPath: policy,
+		Stdout:              io.Discard, Stderr: io.Discard,
 	})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("cancelled build error = %v", err)
@@ -662,13 +563,13 @@ from %q {
 	}
 }
 
-func TestVerifyStoredImageSupervisedRejectsMissingImage(t *testing.T) {
+func TestVerifyStoredImageSelectedSupervisedRejectsMissingImage(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live Buildah storage checks in short mode")
 	}
 	root := t.TempDir()
 	options := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
-	if err := VerifyStoredImageSupervised(context.Background(), options, strings.Repeat("0", 64)); err == nil {
+	if err := VerifyStoredImageSelectedSupervised(context.Background(), options, strings.Repeat("0", 64), v1.Descriptor{}); err == nil {
 		t.Fatal("missing storage image was accepted")
 	}
 }
@@ -701,7 +602,7 @@ func TestCleanupNamedBuildersOnlyRemovesItsJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, id := range []string{jobID, otherID} {
-		builderOptions, err := newBuilderOptions("scratch", define.IsolationChroot, rootCapabilities(), network, root, "")
+		builderOptions, err := newBuilderOptionsWithHosts("scratch", define.IsolationChroot, rootCapabilities(), network, root, "", nil, RunControls{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -736,124 +637,149 @@ func TestBuildPlanSupervisedCancelsStalledRemoteAdd(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live stalled ADD cancellation in short mode")
 	}
-	started := make(chan struct{})
-	var once sync.Once
-	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
-		once.Do(func() { close(started) })
-		<-request.Context().Done()
-	}))
-	defer func() {
-		server.CloseClientConnections()
-		server.Close()
-	}()
-	root := t.TempDir()
-	plan := testPlan(t, fmt.Sprintf(`from "scratch" {
-    add %q "/hang"
-}
-`, server.URL+"/hang"))
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
-	defer cancel()
-	go func() {
-		select {
-		case <-started:
-			cancel()
-		case <-ctx.Done():
-		}
-	}()
-	layout := filepath.Join(root, "layout")
-	storeOptions := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
-	_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
-		Store: storeOptions, ContextDir: root, Isolation: "rootless", Output: Output{Path: layout},
-		Stdout: io.Discard, Stderr: io.Discard,
-	})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("stalled ADD cancellation error = %v", err)
-	}
-	if _, err := os.Lstat(layout); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("stalled ADD published output: %v", err)
-	}
-	store, err := storage.GetStore(storage.StoreOptions{
-		RunRoot: storeOptions.RunRoot, GraphRoot: storeOptions.GraphRoot, GraphDriverName: storeOptions.GraphDriverName,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if _, err := store.Shutdown(false); err != nil {
-			t.Errorf("shutdown stalled ADD store: %v", err)
-		}
-		store.Free()
-	}()
-	containers, err := store.Containers()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(containers) != 0 {
-		t.Fatalf("stalled ADD left %d working containers", len(containers))
+	for _, mode := range []planner.Mode{planner.Build, planner.Publish} {
+		t.Run(string(mode), func(t *testing.T) {
+			started := make(chan struct{})
+			var once sync.Once
+			server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+				once.Do(func() { close(started) })
+				<-request.Context().Done()
+			}))
+			defer func() {
+				server.CloseClientConnections()
+				server.Close()
+			}()
+			root := t.TempDir()
+			source := fmt.Sprintf(`from "scratch" { add %q "/hang" }`, server.URL+"/hang")
+			if mode == planner.Publish {
+				source = fmt.Sprintf(`package as="payload" { add %q "/payload" }; extend { copy "/payload" "/payload" from="payload" }`, server.URL+"/hang")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+			defer cancel()
+			go func() {
+				select {
+				case <-started:
+					cancel()
+				case <-ctx.Done():
+				}
+			}()
+			layout := filepath.Join(root, "layout")
+			storeOptions := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
+			options := SupervisedPlanOptions{Store: storeOptions, ContextDir: root, Isolation: "rootless", Output: Output{Path: layout}, Stdout: io.Discard, Stderr: io.Discard}
+			var err error
+			if mode == planner.Build {
+				_, err = BuildPlanSupervised(ctx, testPlan(t, source), options)
+			} else {
+				_, err = PublishDefinitionSupervised(ctx, parseWorkerDefinition(t, source), planner.Options{Mode: mode, Platform: runtime.GOOS + "/" + runtime.GOARCH}, options)
+			}
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("stalled ADD cancellation error = %v", err)
+			}
+			if _, err := os.Lstat(layout); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("stalled ADD published output: %v", err)
+			}
+			store, err := storage.GetStore(NativeStoreOptions(storeOptions))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if _, err := store.Shutdown(false); err != nil {
+					t.Errorf("shutdown stalled ADD store: %v", err)
+				}
+				store.Free()
+			}()
+			containers, err := store.Containers()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(containers) != 0 {
+				t.Fatalf("stalled ADD left %d working containers", len(containers))
+			}
+		})
 	}
 }
 
-func TestPublishPlanSupervisedCancelsStalledRemoteAdd(t *testing.T) {
+// Corrupt the actual telemetry transport while a real worker waits for ADD.
+// Neither a plan nor a stage progress failure invalidates its final cleanup proof.
+func TestSupervisedWorkerProgressFailurePreservesCleanupProof(t *testing.T) {
 	if testing.Short() {
-		t.Skip("skipping live stalled component ADD cancellation in short mode")
+		t.Skip("requires native rootless worker execution")
 	}
-	started := make(chan struct{})
-	var once sync.Once
-	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
-		once.Do(func() { close(started) })
-		<-request.Context().Done()
-	}))
-	defer func() {
-		server.CloseClientConnections()
-		server.Close()
-	}()
-	root := t.TempDir()
-	plan := testPublicationPlan(t, fmt.Sprintf(`
-package as="payload" {
-    add %q "/payload"
-}
-extend {
-    copy "/payload" "/payload" from="payload"
-}
-`, server.URL+"/hang"))
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
-	defer cancel()
-	go func() {
-		select {
-		case <-started:
-			cancel()
-		case <-ctx.Done():
-		}
-	}()
-	layout := filepath.Join(root, "layout")
-	storeOptions := StoreOptions{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs"}
-	_, err := PublishPlanSupervised(ctx, plan, SupervisedPlanOptions{
-		Store: storeOptions, ContextDir: root, Isolation: "rootless", Output: Output{Path: layout},
-		Stdout: io.Discard, Stderr: io.Discard,
-	})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("stalled component ADD cancellation error = %v", err)
-	}
-	if _, err := os.Lstat(layout); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("stalled component ADD published output: %v", err)
-	}
-	store, err := storage.GetStore(storage.StoreOptions{
-		RunRoot: storeOptions.RunRoot, GraphRoot: storeOptions.GraphRoot, GraphDriverName: storeOptions.GraphDriverName,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if _, err := store.Shutdown(false); err != nil {
-			t.Errorf("shutdown stalled publication store: %v", err)
-		}
-		store.Free()
-	}()
-	containers, err := store.Containers()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(containers) != 0 {
-		t.Fatalf("stalled publication left %d working containers", len(containers))
+	for _, kind := range []string{"plan", "stage"} {
+		t.Run(kind, func(t *testing.T) {
+			root := t.TempDir()
+			ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
+			defer cancel()
+			corrupted := make(chan error, 4)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				pattern := filepath.Join(root, ".coopr-build-worker-*", "progress.ndjson")
+				if kind == "stage" {
+					pattern = filepath.Join(root, ".coopr-build-worker-*", ".coopr-stage-worker-*", "progress.ndjson")
+				}
+				paths, err := filepath.Glob(pattern)
+				if err == nil && len(paths) == 0 {
+					err = errors.New("no active worker progress transport")
+				}
+				for _, path := range paths {
+					file, openErr := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+					if errors.Is(openErr, os.ErrNotExist) {
+						continue // An unrelated stage may have completed meanwhile.
+					}
+					if openErr != nil {
+						err = errors.Join(err, openErr)
+						continue
+					}
+					_, writeErr := file.WriteString("{broken-progress}\n")
+					err = errors.Join(err, writeErr, file.Close())
+				}
+				select {
+				case corrupted <- err:
+				default:
+				}
+				_, _ = w.Write([]byte("proof"))
+			}))
+			defer server.Close()
+			source := fmt.Sprintf(`from "scratch" { add %q "/proof" }`, server.URL+"/proof")
+			jobs := 1
+			if kind == "stage" {
+				jobs = 2
+				source = fmt.Sprintf(`from "scratch" as="source" { add %q "/proof" }
+from "scratch" as="other" { copy "local-proof" "/proof" }
+from "scratch" {
+ copy "/proof" "/source" from="source"
+ copy "/proof" "/other" from="other"
+}`, server.URL+"/proof")
+				if err := os.WriteFile(filepath.Join(root, "local-proof"), []byte("proof"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			output := filepath.Join(root, "output")
+			_, err := BuildPlanSupervised(ctx, testPlan(t, source), SupervisedPlanOptions{
+				Store: cacheTestStore(filepath.Join(root, "store")), ContextDir: root,
+				Isolation: "rootless", Jobs: jobs, Progress: func(OperationProgress) {},
+				Output: Output{Path: output}, Stdout: io.Discard, Stderr: io.Discard,
+			})
+			select {
+			case corruptErr := <-corrupted:
+				if corruptErr != nil {
+					t.Fatal(corruptErr)
+				}
+			default:
+				t.Fatalf("worker did not reach telemetry corruption fixture: %v", err)
+			}
+			if err == nil || !strings.Contains(err.Error(), "live worker progress") {
+				t.Fatalf("lost telemetry failure: %v", err)
+			}
+			if errors.Is(err, ErrWorkerWaitIncomplete) {
+				t.Fatalf("progress failure invalidated completed cleanup: %v", err)
+			}
+			if _, statErr := os.Stat(output); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("failed worker promoted output: %v", statErr)
+			}
+			remaining, globErr := filepath.Glob(filepath.Join(root, ".coopr-build-worker-*"))
+			if globErr != nil || len(remaining) != 0 {
+				t.Fatalf("completed worker files retained: %v (%v)", remaining, globErr)
+			}
+		})
 	}
 }

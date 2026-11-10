@@ -23,8 +23,8 @@ import (
 	"oras.land/oras-go/v2/content"
 )
 
-func TestArtifactRegistryNetworkManifestReadRetry(t *testing.T) {
-	for _, fault := range []string{"eof", "reset", "body-reset"} {
+func TestArtifactRegistryManifestReadRetries(t *testing.T) {
+	for _, fault := range []string{"http-503", "eof", "reset", "body-reset"} {
 		for _, retries := range []uint{0, 1} {
 			t.Run(fmt.Sprintf("%s/retries=%d", fault, retries), func(t *testing.T) {
 				backend := registryserver.New()
@@ -37,6 +37,10 @@ func TestArtifactRegistryNetworkManifestReadRetry(t *testing.T) {
 					w.Header().Set("Connection", "close")
 					if request.Method == http.MethodGet && strings.Contains(request.URL.Path, "/manifests/") && failNext.CompareAndSwap(true, false) {
 						failures.Add(1)
+						if fault == "http-503" {
+							http.Error(w, "manifest temporarily unavailable", http.StatusServiceUnavailable)
+							return
+						}
 						if fault == "body-reset" {
 							manifest := httptest.NewRecorder()
 							backend.ServeHTTP(manifest, request)
@@ -77,16 +81,16 @@ func TestArtifactRegistryNetworkManifestReadRetry(t *testing.T) {
 				failNext.Store(true)
 				resolved, err := resolver.Resolve(t.Context(), reference, metadata.Platform, Component)
 				if failures.Load() != 1 {
-					t.Fatal("failed connection was not exercised exactly once")
+					t.Fatal("manifest fault was not exercised exactly once")
 				}
 				if retries == 0 {
 					if err == nil {
-						t.Fatal("network failure recovered with zero retry budget")
+						t.Fatal("manifest fault recovered with zero retry budget")
 					}
 					return
 				}
 				if err != nil || !content.Equal(resolved.Root, root) {
-					t.Fatalf("configured retry did not recover failed manifest connection: %+v, %v", resolved, err)
+					t.Fatalf("configured retry did not recover failed manifest read: %+v, %v", resolved, err)
 				}
 			})
 		}

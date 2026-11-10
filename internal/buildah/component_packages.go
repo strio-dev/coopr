@@ -98,7 +98,7 @@ func (importer *ComponentPackageImporter) Import(ctx context.Context, resolved *
 	if stageID == "" {
 		return ImportedComponentPackage{}, errors.New("component package stage ID is required")
 	}
-	if resolved.Identity.Algorithm() != digest.SHA256 || resolved.Identity.Validate() != nil || resolved.Artifact.Selected.Digest != resolved.Identity {
+	if resolved.Identity.Validate() != nil || resolved.Identity.Algorithm() != digest.SHA256 || resolved.Artifact.Selected.Digest != resolved.Identity {
 		return ImportedComponentPackage{}, errors.New("resolved component identity does not match its selected artifact")
 	}
 	pkg, ok := resolved.PackageInputs[stageID]

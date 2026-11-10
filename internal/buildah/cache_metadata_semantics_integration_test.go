@@ -16,7 +16,7 @@ import (
 	"go.podman.io/buildah/imagebuildah"
 )
 
-func TestAggregateCachesInvalidateOldWorkdirSemantics(t *testing.T) {
+func TestAggregateCachesPreserveWorkdirSemantics(t *testing.T) {
 	f := newLocalComponentFixture(t)
 	const workdir = "/a/../b/"
 	lease, err := acquireStore(f.options.Store)
@@ -51,15 +51,6 @@ func TestAggregateCachesInvalidateOldWorkdirSemantics(t *testing.T) {
 	t.Logf("actual native WORKDIR %q produces %q", workdir, expected)
 
 	t.Run("component", func(t *testing.T) {
-		legacy, _ := f.build(t, "legacy-component", `from "scratch" { workdir "/b"; }`)
-		raw, err := packageImageConfig(f.ctx, lease.store, legacy.ImageID, f.options.SystemContext)
-		if err != nil {
-			t.Fatal(err)
-		}
-		logical, err := imageconfig.Parse(raw)
-		if err != nil {
-			t.Fatal(err)
-		}
 		staging := t.TempDir()
 		store, err := cache.NewLocalStore(f.ctx, filepath.Join(f.root, "component-semantic-cache"), staging, nil)
 		if err != nil {
@@ -71,34 +62,17 @@ func TestAggregateCachesInvalidateOldWorkdirSemantics(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		old := current
-		old.Lowering = "coopr-buildah-component-image-v7"
-		producer := &componentCache{stagingDir: staging, writeStores: []cache.Store{store}}
-		producer.record(f.ctx, executor, old, legacy.ImageID, digest.Digest(legacy.ManifestDigest), logical, &PackageRootMetadata{Mode: 0755}, f.options.SystemContext, legacy.ImageID, false)
-		if err := producer.publish(f.ctx); err != nil {
-			t.Fatal(err)
-		}
-		if producer.stats.Errors != 0 || producer.stats.Stored != 1 {
-			t.Fatalf("legacy cache not published: %+v", producer.stats)
-		}
-		consumer := &componentCache{stagingDir: t.TempDir(), readStores: []cache.Store{store}}
-		entry, _, err := consumer.lookup(f.ctx, executor, current, f.options.SystemContext, componentCacheCaller{ImageID: legacy.ImageID})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if entry.ImageID != "" {
-			t.Fatal("current component semantics reused normalized legacy WORKDIR image")
-		}
+		producer := &componentCache{stagingDir: staging, writeStores: []instructionCacheStore{store}}
 		fresh, layout := f.build(t, "current-component", `from "scratch" { workdir "/a/../b/"; }`)
 		_, image := readPlanImage(t, layout)
 		if image.Config.WorkingDir != expected {
 			t.Fatalf("fresh component config=%q native=%q", image.Config.WorkingDir, expected)
 		}
-		raw, err = packageImageConfig(f.ctx, lease.store, fresh.ImageID, f.options.SystemContext)
+		raw, err := packageImageConfig(f.ctx, lease.store, fresh.ImageID, f.options.SystemContext)
 		if err != nil {
 			t.Fatal(err)
 		}
-		logical, err = imageconfig.Parse(raw)
+		logical, err := imageconfig.Parse(raw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -106,7 +80,7 @@ func TestAggregateCachesInvalidateOldWorkdirSemantics(t *testing.T) {
 		if err := producer.publish(f.ctx); err != nil {
 			t.Fatal(err)
 		}
-		warm := &componentCache{stagingDir: t.TempDir(), readStores: []cache.Store{store}}
+		warm := &componentCache{stagingDir: t.TempDir(), readStores: []instructionCacheStore{store}}
 		entry, config, err := warm.lookup(f.ctx, executor, current, f.options.SystemContext, componentCacheCaller{ImageID: fresh.ImageID})
 		if err != nil || entry.ImageID == "" || config == nil || warm.stats.Hits != 1 {
 			t.Fatalf("current component warm lookup: %+v %+v %v", entry, warm.stats, err)
@@ -142,64 +116,8 @@ func TestAggregateCachesInvalidateOldWorkdirSemantics(t *testing.T) {
 	t.Run("package", func(t *testing.T) {
 		plan := testPublicationPlan(t, `package as="bundle" { workdir "/a/../b/"; }
 extend { copy "/b" "/b" from="bundle"; }`)
-		originalTar := filepath.Join(f.root, "original-package.tar")
-		options := f.options
-		options.CacheLocalDir = filepath.Join(f.root, "original-package-cache")
-		_, err := PublishPlan(f.ctx, plan, PublicationOptions{PlanOptions: options, PackagePaths: map[string]string{"bundle": originalTar}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		data, err := os.ReadFile(filepath.Join(options.CacheLocalDir, "index.json"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var index v1.Index
-		if err := json.Unmarshal(data, &index); err != nil {
-			t.Fatal(err)
-		}
-		var record cache.PackageRecord
-		for _, artifact := range index.Manifests {
-			data, err := os.ReadFile(filepath.Join(options.CacheLocalDir, "blobs", "sha256", artifact.Digest.Encoded()))
-			if err != nil {
-				t.Fatal(err)
-			}
-			var manifest v1.Manifest
-			if err := json.Unmarshal(data, &manifest); err != nil {
-				t.Fatal(err)
-			}
-			if manifest.ArtifactType != cache.PackageArtifactType {
-				continue
-			}
-			data, err = os.ReadFile(filepath.Join(options.CacheLocalDir, "blobs", "sha256", manifest.Config.Digest.Encoded()))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := json.Unmarshal(data, &record); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if record.Stage == "" {
-			t.Fatal("missing actual producer package cache record")
-		}
-		record.Key.Lowering = "coopr-buildah-package-v2"
-		var old v1.Image
-		if err := json.Unmarshal(record.Config, &old); err != nil {
-			t.Fatal(err)
-		}
-		old.Config.WorkingDir = "/b"
-		record.Config, err = json.Marshal(old)
-		if err != nil {
-			t.Fatal(err)
-		}
 		cacheDir := filepath.Join(f.root, "package-semantic-cache")
-		store, err := cache.NewLocalStore(f.ctx, cacheDir, t.TempDir(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := store.PutPackage(f.ctx, record.Key, record, originalTar); err != nil {
-			t.Fatal(err)
-		}
-		for attempt, name := range []string{"current", "warm"} {
+		for attempt, name := range []string{"cold", "warm"} {
 			root := filepath.Join(f.root, name+"-package")
 			options := f.options
 			options.Store = cacheTestStore(root)
@@ -213,7 +131,7 @@ extend { copy "/b" "/b" from="bundle"; }`)
 				t.Fatal(err)
 			}
 			if image.Config.WorkingDir != expected {
-				t.Fatalf("%s package reused stale config=%q native=%q", name, image.Config.WorkingDir, expected)
+				t.Fatalf("%s package config=%q native=%q", name, image.Config.WorkingDir, expected)
 			}
 			lease, err := acquireStore(options.Store)
 			if err != nil {

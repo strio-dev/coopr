@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -161,6 +162,37 @@ func TestResolveOCITransportKeepsConfigAndManifest(t *testing.T) {
 	if name, err := sourceBaseName(store, stored); err != nil || name != namedStorageReference {
 		t.Fatalf("native ID transport lost stored Docker name %q: %v", name, err)
 	}
+
+	graphName := graphResultNamePrefix + strings.Repeat("a", 64)
+	instructionName := instructionCacheNamePrefix + "sha256:" + strings.Repeat("b", 64)
+	for _, tc := range []struct {
+		name, reference, want string
+		names                 []string
+	}{
+		{name: "graph-retention-only", names: []string{graphName}},
+		{name: "instruction-retention-only", names: []string{instructionName}},
+		{name: "graph-retention-before-user", names: []string{graphName, namedStorageReference}, want: namedStorageReference},
+		{name: "instruction-retention-before-user", names: []string{instructionName, namedStorageReference}, want: namedStorageReference},
+		{name: "user-before-retention", names: []string{namedStorageReference, graphName, instructionName}, want: namedStorageReference},
+		{name: "native-graph-reference-fallback", reference: "containers-storage:" + graphName},
+		{name: "native-instruction-reference-fallback", reference: "containers-storage:" + instructionName},
+		{name: "native-user-reference-fallback", reference: "containers-storage:" + namedStorageReference, want: namedStorageReference},
+		{name: "native-user-reference-with-only-retention", reference: "containers-storage:" + namedStorageReference, names: []string{graphName, instructionName}, want: namedStorageReference},
+		{name: "registry-reference-with-retention", reference: "docker://" + namedStorageReference, names: []string{graphName, namedStorageReference}, want: namedStorageReference},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := store.SetNames(stored.ImageID, tc.names); err != nil {
+				t.Fatal(err)
+			}
+			source := stored
+			if tc.reference != "" {
+				source.Reference = tc.reference
+			}
+			if name, err := sourceBaseName(store, source); err != nil || name != tc.want {
+				t.Fatalf("base name = %q, want %q: %v", name, tc.want, err)
+			}
+		})
+	}
 }
 
 func TestFilesystemBaseRejectsEscapingLinks(t *testing.T) {
@@ -217,7 +249,12 @@ func TestSourcePolicyAppliesAfterNamedImageContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	options := planner.Options{Mode: planner.Build, BuildContexts: []buildcontext.Spec{{Name: "tools", Kind: buildcontext.DockerImage, Reference: "registry.invalid/base:latest"}}}
-	_, _, _, err = planDefinitionInWorker(context.Background(), planWorkerRequest{Definition: def, PlannerOptions: &options, SourcePolicyFile: policy, Store: cacheTestStore(root), ResultPath: filepath.Join(root, "result.json")})
+	_, _, _, err = planDefinitionInWorker(context.Background(), planWorkerRequest{
+		workerExecutionOptions: workerExecutionOptions{
+			SourcePolicyFile: policy, Store: cacheTestStore(root),
+		},
+		Definition: def, PlannerOptions: &options, ResultPath: filepath.Join(root, "result.json"),
+	})
 	if err == nil || !strings.Contains(err.Error(), "denied") {
 		t.Fatalf("named image context ignored policy: %v", err)
 	}
@@ -301,7 +338,11 @@ func TestSourcePolicySnapshotSurvivesFileMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	encoded, err := json.Marshal(stageWorkerRequest{SourcePolicyFile: file, SourcePolicy: policy})
+	encoded, err := json.Marshal(stageWorkerRequest{
+		workerExecutionOptions: workerExecutionOptions{
+			SourcePolicyFile: file, SourcePolicy: policy,
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,7 +362,12 @@ func TestSourcePolicySnapshotSurvivesFileMutation(t *testing.T) {
 		t.Fatal(err)
 	}
 	options := planner.Options{Mode: planner.Build, BuildContexts: []buildcontext.Spec{{Name: "tools", Kind: buildcontext.DockerImage, Reference: "registry.invalid/base:latest"}}}
-	_, _, _, err = planDefinitionInWorker(context.Background(), planWorkerRequest{Definition: def, PlannerOptions: &options, SourcePolicyFile: file, SourcePolicy: child.SourcePolicy, Store: cacheTestStore(root), ResultPath: filepath.Join(root, "result.json")})
+	_, _, _, err = planDefinitionInWorker(context.Background(), planWorkerRequest{
+		workerExecutionOptions: workerExecutionOptions{
+			SourcePolicyFile: file, SourcePolicy: child.SourcePolicy, Store: cacheTestStore(root),
+		},
+		Definition: def, PlannerOptions: &options, ResultPath: filepath.Join(root, "result.json"),
+	})
 	if err == nil || !strings.Contains(err.Error(), "denied") {
 		t.Fatalf("planning reloaded mutable host policy: %v", err)
 	}
@@ -353,7 +399,12 @@ func TestSourcePolicyConvertsNamedImageContextToOCI(t *testing.T) {
 		t.Fatal(err)
 	}
 	options := planner.Options{Mode: planner.Build, BuildContexts: []buildcontext.Spec{{Name: "tools", Kind: buildcontext.DockerImage, Reference: "registry.invalid/base:latest"}}}
-	plan, _, selected, err := planDefinitionInWorker(ctx, planWorkerRequest{Definition: def, PlannerOptions: &options, SourcePolicyFile: policy, SignaturePolicyPath: signaturePolicy, ContextDir: root, Store: cacheTestStore(root), ResultPath: filepath.Join(root, "result.json")})
+	plan, _, selected, err := planDefinitionInWorker(ctx, planWorkerRequest{
+		workerExecutionOptions: workerExecutionOptions{
+			SourcePolicyFile: policy, ContextDir: root, Store: cacheTestStore(root),
+		},
+		Definition: def, PlannerOptions: &options, SignaturePolicyPath: signaturePolicy, ResultPath: filepath.Join(root, "result.json"),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -393,26 +444,64 @@ func TestImageSourceDirectoryLinksStayInsideSnapshot(t *testing.T) {
 }
 
 func TestFilterImageArchiveCancellationDuringEntry(t *testing.T) {
-	var source bytes.Buffer
-	writer := tar.NewWriter(&source)
-	body := bytes.Repeat([]byte("x"), 64*1024)
-	if err := writer.WriteHeader(&tar.Header{Name: "layer.tar", Typeflag: tar.TypeReg, Mode: 0600, Size: int64(len(body))}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := writer.Write(body); err != nil {
-		t.Fatal(err)
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	input := &cancelingImageArchiveReader{Reader: bytes.NewReader(source.Bytes()), cancel: cancel}
-	if err := filterImageArchive(ctx, input, io.Discard); !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context cancellation, got %v", err)
-	}
-	if input.bytesRead >= 512+len(body) {
-		t.Fatalf("cancellation consumed the entire entry: read %d bytes", input.bytesRead)
+	const sparseSize = 8 << 20
+	for _, name := range []string{"regular", "sparse"} {
+		t.Run(name, func(t *testing.T) {
+			var source bytes.Buffer
+			writer := tar.NewWriter(&source)
+			body := []byte("x")
+			var records map[string]string
+			if name == "regular" {
+				body = bytes.Repeat(body, 64*1024)
+			} else {
+				records = map[string]string{
+					"FIX.sparse.map":       strconv.Itoa(sparseSize-1) + ",1",
+					"FIX.sparse.numblocks": "1",
+					"FIX.sparse.size":      strconv.Itoa(sparseSize),
+				}
+			}
+			if err := writer.WriteHeader(&tar.Header{Name: "layer.tar", Typeflag: tar.TypeReg, Mode: 0600, Size: int64(len(body)), PAXRecords: records}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := writer.Write(body); err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+			// The standard writer omits GNU sparse records. Equal-length keys
+			// preserve its PAX record lengths when exposing the real sparse map.
+			data := bytes.ReplaceAll(source.Bytes(), []byte("FIX.sparse."), []byte("GNU.sparse."))
+			encoded := bytes.NewReader(data)
+			probe := tar.NewReader(encoded)
+			header, err := probe.Next()
+			if err != nil {
+				t.Fatal(err)
+			}
+			headerBytes := len(data) - encoded.Len()
+			cancelAfter := headerBytes + 1
+			if name == "sparse" {
+				remaining := encoded.Len()
+				var first [1]byte
+				if n, err := probe.Read(first[:]); err != nil || n != 1 || first[0] != 0 || header.Size != sparseSize || encoded.Len() != remaining {
+					t.Fatalf("fixture did not synthesize a sparse hole: header=%+v, first=%v, err=%v", header, first, err)
+				}
+				cancelAfter = headerBytes
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			input := &cancelingImageArchiveReader{Reader: bytes.NewReader(data), cancel: cancel, cancelAfter: cancelAfter}
+			output := &countingWriter{writer: io.Discard}
+			if err := filterImageArchive(ctx, input, output); !errors.Is(err, context.Canceled) {
+				t.Fatalf("expected context cancellation, got %v", err)
+			}
+			if input.bytesRead >= headerBytes+len(body) {
+				t.Fatalf("cancellation consumed the entire entry: read %d bytes", input.bytesRead)
+			}
+			if output.count > int64(headerBytes+1024) {
+				t.Fatalf("cancellation expanded entry after the read that canceled: wrote %d bytes", output.count)
+			}
+		})
 	}
 }
 
@@ -497,8 +586,9 @@ func TestSanitizeTransportSourceValidatesGzipFooter(t *testing.T) {
 
 type cancelingImageArchiveReader struct {
 	*bytes.Reader
-	cancel    context.CancelFunc
-	bytesRead int
+	cancel      context.CancelFunc
+	cancelAfter int
+	bytesRead   int
 }
 
 func (reader *cancelingImageArchiveReader) Read(buffer []byte) (int, error) {
@@ -507,7 +597,7 @@ func (reader *cancelingImageArchiveReader) Read(buffer []byte) (int, error) {
 	}
 	n, err := reader.Reader.Read(buffer)
 	reader.bytesRead += n
-	if reader.bytesRead > 512 {
+	if reader.bytesRead >= reader.cancelAfter {
 		reader.cancel()
 	}
 	return n, err
@@ -555,4 +645,17 @@ func TestBaseTransportRejectionMatchesNativeBuildah(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), `unexpected container image transport "tarball"`) {
 		t.Fatalf("Coopr tarball FROM diverges from native rejection: %+v %v", selected, err)
 	}
+}
+
+func policyBaseSource(reference, policyFile string) (string, error) {
+	policy, err := loadSourcePolicy(policyFile)
+	if err != nil {
+		return "", err
+	}
+	return policyImageSource(reference, policy)
+}
+
+func validateSourcePolicy(file string) error {
+	_, err := loadSourcePolicy(file)
+	return err
 }

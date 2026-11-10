@@ -2,7 +2,6 @@ package transfer
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	imagecli "go.podman.io/image/v5/pkg/cli"
@@ -352,23 +351,4 @@ func readPassphraseFile(path string) ([]byte, error) {
 		return nil, fmt.Errorf("read signing passphrase file: %w", err)
 	}
 	return []byte(value), nil
-}
-
-func sigstoreAttachmentsConfig() (string, error) {
-	dir, err := os.MkdirTemp("", "coopr-registries.d-*")
-	if err != nil {
-		return "", fmt.Errorf("create signature registry configuration: %w", err)
-	}
-	config, err := json.Marshal(map[string]any{
-		"default-docker": map[string]bool{"use-sigstore-attachments": true},
-	})
-	if err != nil {
-		_ = os.RemoveAll(dir)
-		return "", err
-	}
-	if err := os.WriteFile(filepath.Join(dir, "coopr-signing.yaml"), config, 0600); err != nil {
-		_ = os.RemoveAll(dir)
-		return "", fmt.Errorf("write signature registry configuration: %w", err)
-	}
-	return dir, nil
 }

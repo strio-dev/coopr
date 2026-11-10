@@ -4,14 +4,13 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 	"time"
 
+	"github.com/moby/buildkit/solver"
 	"github.com/opencontainers/go-digest"
 	"github.com/strio-dev/coopr/internal/planner"
 )
@@ -182,7 +181,7 @@ func TestBuildDefinitionCachesExternalImageCopy(t *testing.T) {
 			Mode: planner.Build, Platform: "linux/" + runtime.GOARCH,
 		}, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Output: Output{Path: layout},
-			Pull: false, SignaturePolicyPath: policy,
+			SignaturePolicyPath: policy,
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -225,10 +224,6 @@ func instructionCacheRecordCount(t *testing.T, options StoreOptions) int {
 			t.Errorf("close instruction cache store: %v", err)
 		}
 	}()
-	images, err := lease.store.Images()
-	if err != nil {
-		t.Fatal(err)
-	}
 	containers, err := lease.store.Containers()
 	if err != nil {
 		t.Fatal(err)
@@ -236,31 +231,35 @@ func instructionCacheRecordCount(t *testing.T, options StoreOptions) int {
 	if len(containers) != 0 {
 		t.Fatalf("instruction cache builders leaked: %+v", containers)
 	}
-	keys := map[digest.Digest]bool{}
-	for _, image := range images {
-		for _, name := range image.Names {
-			if !strings.HasPrefix(name, instructionCacheNamePrefix) {
-				continue
-			}
-			key, err := digest.Parse(strings.TrimPrefix(name, instructionCacheNamePrefix))
-			if err != nil {
-				t.Fatal(err)
-			}
-			data, err := lease.store.ImageBigData(image.ID, instructionCacheBigDataName(key))
-			if err != nil {
-				t.Fatal(err)
-			}
-			var record instructionCacheRecord
-			if err := json.Unmarshal(data, &record); err != nil {
-				t.Fatal(err)
-			}
-			if record.Schema != instructionCacheSchema || record.Key != key {
-				t.Fatalf("invalid instruction cache record for %s", name)
-			}
-			keys[key] = true
-		}
+	dir := filepath.Join(lease.store.GraphRoot(), "coopr-graph-cache-v1")
+	keys, err := newGraphCacheKeyStorage(t.Context(), filepath.Join(dir, "keys.db"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	return len(keys)
+	results := &instructionResultStorage{ctx: t.Context(), store: lease.store, dir: filepath.Join(dir, "results")}
+	// Count logical instruction keys, not physical alternatives or source
+	// vertices. A forced refresh can add another result to the same key.
+	count := 0
+	if err := keys.Walk(func(id string) error {
+		instruction := false
+		if err := keys.WalkResults(id, func(result solver.CacheResult) error {
+			r, err := results.read(result.ID)
+			if err != nil {
+				return err
+			}
+			instruction = instruction || r.Boundary == "" && r.Entry.ImageID != ""
+			return nil
+		}); err != nil {
+			return err
+		}
+		if instruction {
+			count++
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return count
 }
 
 func digestSlicesEqual(left, right []digest.Digest) bool {

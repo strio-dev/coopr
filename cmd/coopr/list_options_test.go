@@ -6,82 +6,28 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
-	buildahcli "go.podman.io/buildah/pkg/cli"
 )
 
-func TestBuildListOptionsMatchBuildah(t *testing.T) {
-	tests := []struct{ name, first, second string }{
-		{"dns", "192.0.2.1,192.0.2.2", "2001:db8::1"},
-		{"dns-search", "one.test,two.test", "three.test"},
-		{"dns-option", "ndots:2,timeout:3", "attempts:2"},
-		{"ulimit", "nofile=1024:2048,nproc=512:1024", "core=0:0"},
-		{"add-host", "one.test:192.0.2.1,two.test:192.0.2.2", "three.test:192.0.2.3"},
-		{"decryption-key", "one.pem,two.pem", "three.pem"},
-		{"unsetenv", "ONE,TWO", "THREE"},
-		{"unsetlabel", "one,two", "three"},
-		{"unsetannotation", "one,two", "three"},
-		{"platform", "linux/amd64,linux/arm64", "linux/386"},
-		{"env", "VALUES=one,two", "OTHER=three"},
-		{"label", "values=one,two", "other=three"},
-		{"annotation", "values=one,two", "other=three"},
-		{"build-arg", "VALUES=one,two", "OTHER=three"},
-		{"build-arg-file", "one,two.env", "three.env"},
-		{"build-context", "source=one,two", "other=three"},
-		{"secret", "id=one,src=one.txt", "id=two,src=two.txt"},
-		{"ssh", "default=one,two", "other=three"},
-		{"cache-from", "one,two", "three"},
-		{"cache-to", "one,two", "three"},
-		{"mount", "type=bind,src=one,target=/one", "type=bind,src=two,target=/two"},
-		{"volume", "/one:/one:ro,z", "/two:/two:ro"},
-		{"device", "/dev/one:/dev/one:r,w", "/dev/two"},
-		{"security-opt", "label=level:s0:c1,c2", "no-new-privileges"},
-		{"hooks-dir", "one,two", "three"},
-		{"layer-label", "values=one,two", "other=three"},
-		{"os-feature", "one,two", "three"},
-		{"tag", "one,two", "three"},
-	}
-	for _, command := range []struct {
-		name string
-		new  func() *cobra.Command
-	}{
-		{"image", newBuildCommand},
-		{"component", newComponentBuildCommand},
-	} {
-		for _, test := range tests {
-			if command.name == "component" {
-				switch test.name {
-				case "env", "label", "annotation", "layer-label", "os-feature", "unsetenv", "unsetlabel", "unsetannotation":
-					continue
-				}
+// These list flags are declared by Coopr rather than imported as native flags.
+func TestBuildOwnedListOptions(t *testing.T) {
+	for _, factory := range []func() *cobra.Command{newBuildCommand, newComponentBuildCommand} {
+		for _, test := range []struct {
+			name, first, second string
+			want                []string
+		}{
+			{"add-host", "one:192.0.2.1,two:192.0.2.2", "three:192.0.2.3", []string{"one:192.0.2.1", "two:192.0.2.2", "three:192.0.2.3"}},
+			{"decryption-key", "one,two.pem", "three.pem", []string{"one", "two.pem", "three.pem"}},
+			{"platform", "linux/amd64,linux/arm64", "linux/386", []string{"linux/amd64", "linux/arm64", "linux/386"}},
+			{"mount", "type=bind,src=one,target=/one", "type=bind,src=two,target=/two", []string{"type=bind,src=one,target=/one", "type=bind,src=two,target=/two"}},
+		} {
+			cmd := factory()
+			if err := cmd.ParseFlags([]string{"--" + test.name, test.first, "--" + test.name, test.second}); err != nil {
+				t.Fatal(err)
 			}
-			t.Run(command.name+"/"+test.name, func(t *testing.T) {
-				var bud buildahcli.BudResults
-				var from buildahcli.FromAndBudResults
-				var userns buildahcli.UserNSResults
-				var namespaces buildahcli.NameSpaceResults
-				upstream := buildahcli.GetBudFlags(&bud)
-				shared, err := buildahcli.GetFromAndBudFlags(&from, &userns, &namespaces)
-				if err != nil {
-					t.Fatal(err)
-				}
-				upstream.AddFlagSet(&shared)
-				cmd := command.new()
-				if cmd.Flags().Lookup(test.name) == nil {
-					t.Fatalf("missing --%s", test.name)
-				}
-				args := []string{"--" + test.name, test.first, "--" + test.name, test.second}
-				if err := upstream.Parse(args); err != nil {
-					t.Fatal(err)
-				}
-				if err := cmd.ParseFlags(args); err != nil {
-					t.Fatal(err)
-				}
-				want := upstream.Lookup(test.name).Value.(pflag.SliceValue).GetSlice()
-				got := cmd.Flags().Lookup(test.name).Value.(pflag.SliceValue).GetSlice()
-				if !reflect.DeepEqual(got, want) {
-					t.Fatalf("--%s = %q, Buildah = %q", test.name, got, want)
-				}
-			})
+			got := cmd.Flags().Lookup(test.name).Value.(pflag.SliceValue).GetSlice()
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("%s --%s = %q, want %q", cmd.Short, test.name, got, test.want)
+			}
 		}
 	}
 }

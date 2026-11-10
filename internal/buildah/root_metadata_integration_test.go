@@ -91,7 +91,7 @@ func TestBuildPlanComponentAcceptsRootMetadataChanges(t *testing.T) {
 	resolver := localConfigComponentResolver(t, ctx, root, `extend {
     run "/bin/busybox echo child control >/child-control; /bin/busybox chmod 0640 /child-control; /bin/busybox chown 3:4 /child-control; /bin/busybox chmod 0711 /; /bin/busybox chown 1:2 /" network="none"
 }
-`, false)
+`)
 	plan := testPlan(t, "from \""+base.reference+`" {
     component "config"
 }

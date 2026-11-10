@@ -113,6 +113,11 @@ func normalizeAddHosts(values []string) ([]string, error) {
 }
 
 func normalizePlanOptions(options PlanOptions) (PlanOptions, error) {
+	var cacheDirErr error
+	options.CacheMountDir, cacheDirErr = validateCacheMountParent(options.CacheMountDir, options.ContextDir, options.Store.RunRoot, options.Store.GraphRoot, options.CacheLocalDir, options.Output.Path, options.Output.Filesystem.Path)
+	if cacheDirErr != nil {
+		return PlanOptions{}, cacheDirErr
+	}
 	if options.executableOrigin == "" {
 		options.executableOrigin = currentRunSequenceOrigin()
 	}

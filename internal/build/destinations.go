@@ -12,6 +12,7 @@ import (
 	"github.com/containerd/platforms"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/buildah"
 	"github.com/strio-dev/coopr/internal/oci"
 	"github.com/strio-dev/coopr/internal/transfer"
 	"go.podman.io/storage/pkg/ioutils"
@@ -131,8 +132,17 @@ type destinationResult struct {
 }
 
 type outputReport struct {
-	References   []string
-	Destinations []destinationResult
+	References      []string
+	Destinations    []destinationResult
+	Progress        []buildah.OperationProgress
+	ProgressDropped uint64
+	Bundle          *bundleOutputResult
+}
+
+type bundleOutputResult struct {
+	Path       string         `json:"path"`
+	Descriptor *v1.Descriptor `json:"descriptor,omitempty"`
+	Error      string         `json:"error,omitempty"`
 }
 
 func applyOutputDestinations(ctx context.Context, kind oci.Kind, layout string, root v1.Descriptor, destinations []transfer.Destination, opts transfer.Options) (outputReport, error) {
@@ -205,6 +215,13 @@ func writeOutputMetadata(path, iidPath string, root v1.Descriptor, variants []oc
 		entries = append(entries, entry)
 	}
 	metadata := map[string]any{"containerimage.digest": root.Digest.String(), "containerimage.descriptor": root, "coopr.platforms": entries, "coopr.references": report.References, "coopr.outputs": report.Destinations}
+	if report.Bundle != nil {
+		metadata["coopr.bundle"] = report.Bundle
+	}
+	if report.Progress != nil || report.ProgressDropped != 0 {
+		metadata["coopr.operation.progress"] = report.Progress
+		metadata["coopr.operation.progress.dropped"] = report.ProgressDropped
+	}
 	imageID := "sha256:" + nativeID
 	if len(entries) == 1 && entries[0].ConfigDigest != "" {
 		metadata["containerimage.config.digest"] = entries[0].ConfigDigest

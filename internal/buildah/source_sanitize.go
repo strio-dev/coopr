@@ -62,7 +62,8 @@ func sanitizeTransportSource(ctx context.Context, reference, contextDir string) 
 			retErr = errors.Join(retErr, decompressed.Close())
 		}
 		if !finished {
-			<-result
+			// Closing the pipe aborts the producer; preserve the primary consumer error.
+			<-result //nolint:errcheck // Failure-only drain after closing the producer pipe.
 		}
 	}()
 	var input io.Reader = stream
@@ -153,6 +154,7 @@ func filterImageArchive(ctx context.Context, input io.Reader, output io.Writer) 
 			return fmt.Errorf("image source contains non-local path %q", header.Name)
 		}
 		header.Name = path.Clean(header.Name)
+		resolvedType := header.Typeflag
 		switch header.Typeflag {
 		case tar.TypeDir, tar.TypeReg:
 		case tar.TypeLink, tar.TypeSymlink:
@@ -167,6 +169,7 @@ func filterImageArchive(ctx context.Context, input io.Reader, output io.Writer) 
 			if !ok || kind == tar.TypeDir && header.Typeflag != tar.TypeSymlink {
 				return fmt.Errorf("image source link %q targets uncopied file %q", header.Name, header.Linkname)
 			}
+			resolvedType = kind
 			if kind == tar.TypeDir {
 				// Upstream keeps directory links inside its frozen snapshot. A
 				// relative target remains confined after the snapshot is moved.
@@ -186,9 +189,13 @@ func filterImageArchive(ctx context.Context, input io.Reader, output io.Writer) 
 		if err := writer.WriteHeader(header); err != nil {
 			return err
 		}
-		if _, err := io.Copy(writer, reader); err != nil {
+		// Large entries are intentional; cancellation also covers tar-synthesized sparse holes.
+		// nosemgrep: cache.semgrep-rules.go.lang.security.potential-dos-via-decompression-bomb
+		if _, err := io.Copy(writer, contextReader{ctx: ctx, reader: reader}); err != nil {
 			return err
 		}
-		seen[header.Name] = header.Typeflag
+		// Retain the target type so later links cannot mistake a directory
+		// alias for a file and copy its relative symlink target via hardlink.
+		seen[header.Name] = resolvedType
 	}
 }

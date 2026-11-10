@@ -89,10 +89,7 @@ from "scratch" as="final" {
     copy "/payload" "/payload" from="0"
     run "true" { mount "bind" from="0" source="/" target="/producer" readonly="true" }
 }
-`), Options{Mode: Build, Target: "final", BuildContexts: []buildcontext.Spec{{Name: "assets", Kind: buildcontext.Local, Path: "/context/assets"}}}, func(source FromSource) (StageBind, error) {
-		t.Fatalf("numeric stage reference resolved externally: %+v", source)
-		return StageBind{}, nil
-	})
+`), Options{Mode: Build, Target: "final", BuildContexts: []buildcontext.Spec{{Name: "assets", Kind: buildcontext.Local, Path: "/context/assets"}}}, unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
 	}

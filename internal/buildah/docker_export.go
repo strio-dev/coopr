@@ -19,7 +19,6 @@ import (
 	"go.podman.io/image/v5/manifest"
 	"go.podman.io/image/v5/oci/layout"
 	"go.podman.io/image/v5/pkg/blobinfocache"
-	"go.podman.io/image/v5/pkg/blobinfocache/none"
 	"go.podman.io/image/v5/signature"
 	imagestorage "go.podman.io/image/v5/storage"
 	"go.podman.io/image/v5/types"
@@ -182,10 +181,6 @@ func exportStoredImageNative(ctx context.Context, store storage.Store, reference
 	return Result{ImageID: imageID, ManifestDigest: root.Digest.String(), Layout: output.Path, Reference: output.Reference}, nil
 }
 
-func exportRawDockerSource(ctx context.Context, source types.ImageSource, imageID string, output Output) (result Result, retErr error) {
-	return exportRawImageSource(ctx, source, imageID, output, nil, true, none.NoCache, nil, nil)
-}
-
 func exportRawImageSource(ctx context.Context, source types.ImageSource, imageID string, output Output, selected *digest.Digest, requireDocker bool, cache types.BlobInfoCache, store storage.Store, retained map[digest.Digest]string) (result Result, retErr error) {
 	manifestData, mediaType, err := source.GetManifest(ctx, selected)
 	if err != nil {
@@ -327,7 +322,7 @@ func pushRawSourceBlob(ctx context.Context, target *orasoci.Store, source types.
 	if reportedSize >= 0 && reportedSize != descriptor.Size {
 		return fmt.Errorf("raw image blob %s reported size %d, want %d", descriptor.Digest, reportedSize, descriptor.Size)
 	}
-	reader := &dockerExportContextReader{ctx: ctx, reader: stream}
+	reader := contextReader{ctx: ctx, reader: stream}
 	pushErr := target.Push(ctx, descriptor, reader)
 	closeErr := stream.Close()
 	closed = true
@@ -377,11 +372,6 @@ func retainedLayerIDs(store storage.Store, imageID string) (map[digest.Digest]st
 		result[parsed] = layerID
 	}
 	return result, nil
-}
-
-type dockerExportContextReader struct {
-	ctx    context.Context
-	reader io.Reader
 }
 
 func convertLayoutToDockerSchema2(ctx context.Context, layout string) (v1.Descriptor, error) {
@@ -464,11 +454,4 @@ func convertLayoutToDockerSchema2(ctx context.Context, layout string) (v1.Descri
 		return v1.Descriptor{}, err
 	}
 	return converted, nil
-}
-
-func (reader *dockerExportContextReader) Read(buffer []byte) (int, error) {
-	if err := reader.ctx.Err(); err != nil {
-		return 0, err
-	}
-	return reader.reader.Read(buffer)
 }

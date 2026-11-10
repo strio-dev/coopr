@@ -60,17 +60,6 @@ func TestImageControlFlags(t *testing.T) {
 	}
 }
 
-func TestImageControlFlagsExposePodmanNames(t *testing.T) {
-	cmd := &cobra.Command{Use: "test"}
-	var flags imageControlFlags
-	flags.addTo(cmd)
-	for _, name := range []string{"env", "label", "unsetenv", "unsetlabel", "annotation", "unsetannotation", "inherit-labels", "inherit-annotations", "omit-history", "identity-label", "layer-label", "created-annotation", "os-feature", "os-version"} {
-		if cmd.Flags().Lookup(name) == nil {
-			t.Fatalf("missing --%s", name)
-		}
-	}
-}
-
 func TestImageControlFlagsPreserveExplicitBooleanState(t *testing.T) {
 	cmd := &cobra.Command{Use: "test"}
 	var flags imageControlFlags

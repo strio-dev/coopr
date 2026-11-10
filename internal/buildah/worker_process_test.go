@@ -81,11 +81,43 @@ func testWorkerBinary(t *testing.T) string {
 	// Nix build sandboxes may omit /proc, while the rootless harness can run
 	// from an anonymous memfd whose synthetic os.Executable path is absent.
 	if executable, err := os.Executable(); err == nil {
-		if _, err := os.Stat(executable); err == nil {
-			return executable
-		}
+		return testWorkerBinaryPath(executable)
 	}
 	return reexec.Self()
+}
+
+func testWorkerBinaryPath(executable string) string {
+	if info, err := os.Stat(executable); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
+		return executable
+	}
+	return reexec.Self()
+}
+
+func TestWorkerBinaryPathSelection(t *testing.T) {
+	root := t.TempDir()
+	for _, test := range []struct {
+		name string
+		mode os.FileMode
+	}{
+		{name: "executable", mode: 0o700},
+		{name: "non-executable", mode: 0o600},
+	} {
+		if err := os.WriteFile(filepath.Join(root, test.name), []byte("fixture"), test.mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{".", "missing", "non-executable", "executable"} {
+		t.Run(name, func(t *testing.T) {
+			candidate := filepath.Join(root, name)
+			want := reexec.Self()
+			if name == "executable" {
+				want = candidate
+			}
+			if got := testWorkerBinaryPath(candidate); got != want {
+				t.Fatalf("worker binary = %q, want %q", got, want)
+			}
+		})
+	}
 }
 
 func startWorkerProcessGrandchild(t *testing.T) {
@@ -729,4 +761,57 @@ func replaceEnv(environment []string, name, value string) []string {
 		}
 	}
 	return append(result, prefix+value)
+}
+
+func TestWorkerCancellationBudgetsCoverNestedDrain(t *testing.T) {
+	nested := stageWorkerGrace + workerProcessKillWait + workerChildDrainTimeout
+	if workerGrace < nested {
+		t.Fatalf("plan grace %s cannot cover nested cleanup %s", workerGrace, nested)
+	}
+	total := workerGrace + workerProcessKillWait + cleanupCanceledTimeout + cleanupWorkerGrace + workerProcessKillWait
+	// The public client's default independent cancellation window is 30s. Keep
+	// margin for IPC/serialization; scheduling and blocked kernel IO can still
+	// require truthful cleanup_failed rather than a false completion response.
+	if total > 28*time.Second {
+		t.Fatalf("worker drain budget %s leaves insufficient client cancellation margin", total)
+	}
+	if cleanupWorkerGrace < workerChildDrainTimeout || cleanupWorkerGrace >= workerGrace {
+		t.Fatalf("cleanup mode has incorrect purpose-specific grace %s", cleanupWorkerGrace)
+	}
+}
+
+func TestWorkerForcedLossRetainsFilesAndCannotPromoteOutput(t *testing.T) {
+	directory := t.TempDir()
+	source := filepath.Join(directory, "output")
+	if err := os.Mkdir(source, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(source, "partial")
+	if err := os.WriteFile(marker, []byte("not-complete"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(testWorkerBinary(t), "-test.run=^TestWorkerProcessHelper$", "-test.short="+strconv.FormatBool(testing.Short()))
+	command.Env = replaceEnv(os.Environ(), workerProcessHelperMode, "self-kill")
+	processErr := runWorkerProcess(context.Background(), command, time.Second)
+	if processErr == nil || command.ProcessState == nil {
+		t.Fatalf("forced process loss was not observed: %v", processErr)
+	}
+	response, readErr := readWorkerResponse(filepath.Join(directory, "missing-response.json"))
+	failure := errors.Join(processErr, requireWorkerCleanup(response.CleanupComplete, readErr))
+	if !errors.Is(failure, ErrWorkerWaitIncomplete) {
+		t.Fatalf("forced loss accepted: %v", failure)
+	}
+	destination := filepath.Join(t.TempDir(), "promoted")
+	if err := promoteCompleteOutput(source, destination, response.CleanupComplete); !errors.Is(err, ErrWorkerWaitIncomplete) {
+		t.Fatalf("unproven output accepted: %v", err)
+	}
+	if err := RemoveWorkerDirectory(directory, failure); !errors.Is(err, ErrWorkerWaitIncomplete) {
+		t.Fatalf("worker evidence not retained: %v", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("partial output removed: %v", err)
+	}
+	if _, err := os.Stat(destination); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("partial output promoted: %v", err)
+	}
 }

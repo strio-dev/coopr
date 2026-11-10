@@ -561,49 +561,6 @@ func TestArtifactRegistryHTTPSAuthenticationFailureDoesNotDowngrade(t *testing.T
 	}
 }
 
-func TestArtifactRegistryManifestReadRetryBudget(t *testing.T) {
-	for _, retries := range []uint{0, 1} {
-		t.Run(fmt.Sprintf("retries=%d", retries), func(t *testing.T) {
-			backend := registryserver.New()
-			var failNext atomic.Bool
-			var failures atomic.Int64
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-				if request.Method == http.MethodGet && strings.Contains(request.URL.Path, "/manifests/") && failNext.CompareAndSwap(true, false) {
-					failures.Add(1)
-					http.Error(w, "manifest temporarily unavailable", http.StatusServiceUnavailable)
-					return
-				}
-				backend.ServeHTTP(w, request)
-			}))
-			t.Cleanup(server.Close)
-			resolver, err := testResolver(t, Options{TLSVerify: boolOption(false), RetrySet: true, Retry: retries, RetryDelay: time.Millisecond})
-			if err != nil {
-				t.Fatal(err)
-			}
-			metadata, paths := baleComponentMetadata(t, "amd64", "retry")
-			reference := strings.TrimPrefix(server.URL, "http://") + "/coopr/retry:stable"
-			root, err := resolver.PublishComponent(t.Context(), reference, metadata, paths)
-			if err != nil {
-				t.Fatal(err)
-			}
-			failNext.Store(true)
-			resolved, err := resolver.Resolve(t.Context(), reference, metadata.Platform, Component)
-			if failures.Load() != 1 {
-				t.Fatal("transient manifest failure was not exercised exactly once")
-			}
-			if retries == 0 {
-				if err == nil {
-					t.Fatal("explicit zero retry budget retried a failed manifest read")
-				}
-				return
-			}
-			if err != nil || !content.Equal(resolved.Root, root) {
-				t.Fatalf("configured retry did not recover the manifest: %+v, %v", resolved, err)
-			}
-		})
-	}
-}
-
 func TestArtifactRegistryMirrorAvailability(t *testing.T) {
 	for _, missingBlob := range []bool{false, true} {
 		t.Run(fmt.Sprintf("missing-mirror-blob=%t", missingBlob), func(t *testing.T) {

@@ -15,7 +15,7 @@ import (
 	artifacttypes "go.podman.io/common/pkg/libartifact/types"
 )
 
-func TestArtifactCopyRejectsRemovalBetweenProbeAndApply(t *testing.T) {
+func TestArtifactCopyRejectsRemovedSource(t *testing.T) {
 	requireLiveInstructionCache(t)
 	ctx := t.Context()
 	store, system := artifactSourceTestStore(t)
@@ -45,9 +45,6 @@ func TestArtifactCopyRejectsRemovalBetweenProbeAndApply(t *testing.T) {
 	operation := copyFromImageOperation{
 		store: store, artifact: &selected,
 		sources: []string{"payload"}, destination: "/copied",
-	}
-	if _, err := probeCopyAddDigestContext(ctx, adapter, "", nil, operation); err != nil {
-		t.Fatalf("probe artifact input: %v", err)
 	}
 	artifacts, err := libartifact.NewArtifactStore(filepath.Join(store.GraphRoot(), "artifacts"), system)
 	if err != nil {

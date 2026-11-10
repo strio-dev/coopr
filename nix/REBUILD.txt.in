@@ -4,6 +4,8 @@ This archive accompanies the Linux binaries and container image in the same rele
 coopr/ contains the application source and its build definitions.
 vendor/ contains the Go dependencies used for that build, including their
 license files. sources/ holds each shared upstream source once.
+nix-exporter-vendor/ contains the independent Go dependencies for the Nix OCI
+exporter. Its pinned nix2container Go library is not a Coopr core dependency.
 libraries/ links to the sources for statically linked native libraries,
 with their applied patches in series order. container/ links to the
 sources supplied for shipped runtime packages and their applied patches.
@@ -52,6 +54,20 @@ through pkgs.pkgsStatic.callPackage's arguments or its stdenv for musl.
 To use the bundled Go dependency sources, copy vendor/ to coopr/vendor/,
 include ../vendor in the fileset in coopr/nix/package.nix, and set
 vendorHash = null in that file. Go then builds with those vendored sources.
+
+The Nix OCI exporter source is under coopr/nix/exporter/. Its module requires
+Go 1.24 or newer; the source-release check uses provisioned Go 1.27. Rebuild it
+offline using its separate dependencies and an already installed compiler:
+
+  cp -r nix-exporter-vendor coopr/nix/exporter/vendor
+  cd coopr/nix/exporter
+  GOWORK=off GOTOOLCHAIN=local CGO_ENABLED=0 GOPROXY=off \
+    go build -mod=vendor -trimpath -o ../../../coopr-nix-export .
+  cd ../../..
+
+The exporter reuses nix2container's layer and configuration functions directly.
+It is used only to materialize Nix-prepared input images; ordinary Coopr still
+composes components and builds final images outside the Nix build sandbox.
 
 The original Nix input source trees can be extracted from build-inputs/.
 Use nix build's --override-input option to select modified local input

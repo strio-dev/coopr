@@ -1,7 +1,8 @@
 package planner
 
 import (
-	"encoding/json"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/strio-dev/coopr/internal/buildcontext"
@@ -61,7 +62,7 @@ extend {
 	if err != nil {
 		t.Fatal(err)
 	}
-	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, func(FromSource) (StageBind, error) {
+	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, emptyPackageBinds(t, publication.Component), func(FromSource) (StageBind, error) {
 		return StageBind{BaseEnvironment: map[string]string{"input": "caller"}}, nil
 	})
 	if err != nil {
@@ -111,7 +112,7 @@ extend {
 	}
 }
 
-func TestLocalOnBuildRetainsNumericReferenceAfterPruning(t *testing.T) {
+func TestLocalOnBuildPreservesOriginalNumericReference(t *testing.T) {
 	for _, trigger := range []string{
 		`copy "/payload" "/payload" from="1"`,
 		`run "true" { mount "bind" from="1" target="/assets"; }`,
@@ -125,47 +126,28 @@ extend { from "helper" {}; }
 			if err != nil {
 				t.Fatal(err)
 			}
-			if publication.Component.SourceStageIDs["1"] != "0" {
-				t.Fatalf("package was not reindexed: %+v", publication.Component.SourceStageIDs)
-			}
-			if _, err := InstantiateDemandDriven(publication.Component, Options{}, nil, func(FromSource) (StageBind, error) {
-				t.Fatal("unexpected invocation resolver")
-				return StageBind{}, nil
-			}); err != nil {
+			projected, err := ProjectPublished(publication.Component)
+			if err != nil {
 				t.Fatal(err)
 			}
-			for _, mutation := range []string{"missing", "target", "ordinal", "numeric"} {
-				data, err := json.Marshal(publication.Component)
-				if err != nil {
-					t.Fatal(err)
-				}
-				var corrupt PublishedComponent
-				if err := json.Unmarshal(data, &corrupt); err != nil {
-					t.Fatal(err)
-				}
-				index := -1
-				for i, ref := range corrupt.StageReferences {
-					if ref.Origin == "local-onbuild" {
-						index = i
-						break
-					}
-				}
-				if index < 0 {
-					t.Fatal("local ONBUILD reference missing")
-				}
-				switch mutation {
-				case "missing":
-					corrupt.StageReferences = append(corrupt.StageReferences[:index], corrupt.StageReferences[index+1:]...)
-				case "target":
-					corrupt.StageReferences[index].Target = corrupt.Output
-				case "ordinal":
-					corrupt.StageReferences[index].Operation = 99
-				case "numeric":
-					corrupt.StageReferences[index].SourceIndex = "0"
-				}
-				if _, err := ValidatePublished(&corrupt); err == nil {
-					t.Fatalf("forged local ONBUILD %s accepted", mutation)
-				}
+			if projected.Stages[1].Name != "assets" || projected.Stages[1].Head.UnavailablePackage || !projected.Stages[0].Head.UnavailablePackage {
+				t.Fatalf("original package identities or capture status changed: %+v", projected.Stages)
+			}
+			invocation, err := InstantiateDemandDriven(publication.Component, Options{}, map[string]StageBind{"1": {}}, unexpectedBindResolver(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			child := invocation.Stages[len(invocation.Stages)-1]
+			if !slices.Contains(child.Dependencies, "1") || len(child.Operations) != 1 {
+				t.Fatalf("local ONBUILD did not select original package: %+v", child)
+			}
+			op := child.Operations[0]
+			source := op.Properties["from"]
+			if op.Name == "run" {
+				source = op.Children[0].Properties["from"]
+			}
+			if source != "1" {
+				t.Fatalf("local ONBUILD numeric source changed: %+v", op)
 			}
 		})
 	}
@@ -184,16 +166,13 @@ extend { from "helper" {}; }
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(publication.Stages) != 1 || publication.Stages[0].Name != "assets" {
-				t.Fatalf("potential dynamic ONBUILD input missing: %+v", publication.Stages)
+			if len(publication.Stages) != 0 || !publication.Component.Definition.Instructions[0].UnavailablePackage {
+				t.Fatalf("unknown dynamic ONBUILD captured an unselected package: %+v", publication.Stages)
 			}
 			if _, err := ValidatePublished(publication.Component); err != nil {
 				t.Fatal(err)
 			}
-			invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, func(FromSource) (StageBind, error) {
-				t.Fatal("unexpected invocation resolver")
-				return StageBind{}, nil
-			})
+			invocation, err := InstantiateDemandDriven(publication.Component, Options{}, emptyPackageBinds(t, publication.Component), unexpectedBindResolver(t))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -210,7 +189,7 @@ extend { from "helper" {}; }
 	}
 }
 
-func TestDynamicScratchBaseRetainsPackagesForDiscoveredOnBuild(t *testing.T) {
+func TestDynamicScratchBaseRejectsUncapturedPackageDiscoveredByOnBuild(t *testing.T) {
 	publication, err := CreateDemandDriven(parse(t, `package as="assets" { copy "payload" "/payload"; }
 from "scratch" as="helper" { component "./replacement.coopr"; }
 extend { from "helper" {}; }
@@ -218,13 +197,10 @@ extend { from "helper" {}; }
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(publication.Stages) != 1 || publication.Stages[0].Name != "assets" {
-		t.Fatalf("potential runtime ONBUILD input was pruned: %+v", publication.Stages)
+	if len(publication.Stages) != 0 || !publication.Component.Definition.Instructions[0].UnavailablePackage {
+		t.Fatalf("unselected package was captured speculatively: %+v", publication.Stages)
 	}
-	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, nil, func(FromSource) (StageBind, error) {
-		t.Fatal("unexpected invocation resolver")
-		return StageBind{}, nil
-	})
+	invocation, err := InstantiateDemandDriven(publication.Component, Options{}, emptyPackageBinds(t, publication.Component), unexpectedBindResolver(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,23 +208,18 @@ extend { from "helper" {}; }
 		if stage.DynamicBaseStage == "" {
 			continue
 		}
-		replanned, err := invocation.ReplanDynamicStage(stage.ID, StageBind{Inherited: []definition.Instruction{
+		_, err := invocation.ReplanDynamicStage(stage.ID, StageBind{Inherited: []definition.Instruction{
 			{Name: "copy", Arguments: []string{"/payload", "/payload"}, Properties: map[string]string{"from": "assets"}},
 		}})
-		if err != nil {
-			t.Fatal(err)
+		if err == nil || !strings.Contains(err.Error(), `package "assets" (original stage 0) was not captured at publication`) {
+			t.Fatalf("late ONBUILD did not reject unavailable package: %v", err)
 		}
-		for _, result := range replanned.Stages {
-			if result.Kind == "package-input" && result.Name == "assets" {
-				return
-			}
-		}
-		t.Fatalf("discovered ONBUILD input did not enter invocation graph: %+v", replanned.Stages)
+		return
 	}
 	t.Fatal("dynamic helper was not deferred")
 }
 
-func TestPackageDerivedLocalOnBuildKeepsExistingProvenance(t *testing.T) {
+func TestPackageDerivedLocalOnBuildUsesOriginalSnapshot(t *testing.T) {
 	publication, err := CreateDemandDriven(parse(t, `package as="assets" {}
 from "assets" as="helper" { onbuild { copy "/payload" "/payload" from="assets"; }; }
 extend { from "helper" {}; }
@@ -256,17 +227,17 @@ extend { from "helper" {}; }
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, ref := range publication.Component.StageReferences {
-		if ref.Origin != "onbuild" {
-			t.Fatalf("package-derived ONBUILD changed existing provenance: %+v", ref)
-		}
-	}
-	if _, err := InstantiateWithPackageBinds(publication.Component, Options{}, map[string]StageBind{"1": {}}); err != nil {
+	invocation, err := InstantiateWithPackageBinds(publication.Component, Options{}, map[string]StageBind{"0": {}})
+	if err != nil {
 		t.Fatal(err)
+	}
+	child := invocation.Stages[len(invocation.Stages)-1]
+	if len(child.Operations) != 1 || child.Operations[0].Properties["from"] != "assets" || !slices.Contains(child.Dependencies, "0") {
+		t.Fatalf("package-derived local ONBUILD was not replayed: %+v", child)
 	}
 }
 
-func TestComponentOnlyOutputDoesNotRetainUnusedPackages(t *testing.T) {
+func TestComponentOnlyOutputDoesNotCaptureUnusedPackages(t *testing.T) {
 	publication, err := CreateDemandDriven(parse(t, `package as="unused" { copy "missing" "/missing"; }
 extend { component "./settings.coopr"; }
 `), Options{Mode: Publish}, func(FromSource) (StageBind, error) { t.Fatal("unexpected resolver"); return StageBind{}, nil })

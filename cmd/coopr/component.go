@@ -16,12 +16,7 @@ import (
 func newComponentCommandWithGlobals(standalone bool) *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "component", Short: "Build and manage reusable OCI components",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) != 0 {
-				return fmt.Errorf("unknown command %q for %q", args[0], cmd.CommandPath())
-			}
-			return cmd.Help()
-		},
+		RunE: helpOnNoArgs,
 	}
 	cmd.AddCommand(
 		newComponentBuildCommandWithGlobals(standalone),
@@ -30,12 +25,9 @@ func newComponentCommandWithGlobals(standalone bool) *cobra.Command {
 		newComponentRemoveCommand(),
 		newComponentPullCommand(), newComponentPushCommand(), newComponentTagCommand(),
 		newComponentSaveCommand(), newComponentLoadCommand(), newComponentExistsCommand(),
+		newComponentBundleCommand(),
 	)
 	return cmd
-}
-
-func newComponentBuildCommand() *cobra.Command {
-	return newComponentBuildCommandWithGlobals(true)
 }
 
 func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
@@ -49,6 +41,7 @@ func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
 	var addHosts []string
 	var times buildTimeFlags
 	var controls buildControlFlags
+	var bundle componentBundleFlags
 	var registry registryFlags
 	var native buildahcli.BudResults
 	nativeFlags := buildahcli.GetBudFlags(&native)
@@ -58,6 +51,17 @@ func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
 		Long: "Build a selected component output into Coopr's local OCI store. Supply a definition file path or --file with a build context; no filename is selected automatically. Use --tag NAME to name the component in the local store. --push publishes the name supplied by --tag to a registry.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, paths []string) error {
+			var bundleOptions *oci.ComponentBundleOptions
+			if bundle.requested() {
+				selected, err := bundle.options()
+				if err != nil {
+					return err
+				}
+				if selected.Output == "" {
+					return fmt.Errorf("--input-bundle, --input-component and --bundle-origin require --bundle-output")
+				}
+				bundleOptions = &selected
+			}
 			argument := ""
 			if len(paths) != 0 {
 				argument = paths[0]
@@ -122,7 +126,8 @@ func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
 				executionStdin = cmd.InOrStdin()
 			}
 			ref, err := build.BuildComponent(cmd.Context(), build.ComponentOptions{
-				File: files[0], Files: files, Context: resolvedContext, DefinitionsInContext: definitionsInContext, SourcePolicyFile: native.SourcePolicyFile, TransientRunMounts: transientRunMounts, From: native.From, IgnoreFile: native.IgnoreFile, Tags: native.Tag, MetadataFile: native.MetadataFile, Push: push, PullPolicy: pullPolicy, NoCache: native.NoCache, Network: network, AddHosts: addHosts,
+				Bundle: bundleOptions,
+				File:   files[0], Files: files, Context: resolvedContext, DefinitionsInContext: definitionsInContext, SourcePolicyFile: native.SourcePolicyFile, TransientRunMounts: transientRunMounts, From: native.From, IgnoreFile: native.IgnoreFile, Tags: native.Tag, MetadataFile: native.MetadataFile, Push: push, PullPolicy: pullPolicy, NoCache: native.NoCache, Network: network, AddHosts: addHosts,
 				Lifecycle: controls.lifecycle(), Quiet: native.Quiet, LogFile: native.Logfile, LogSplit: native.LogSplitByPlatform, LogRusage: native.LogRusage && !native.Quiet, RusageLogFile: native.RusageLogFile,
 				BuildStore:  store,
 				RunControls: runControls, Jobs: controls.Jobs,
@@ -147,6 +152,7 @@ func newComponentBuildCommandWithGlobals(standalone bool) *cobra.Command {
 			return err
 		},
 	}
+	bundle.addTo(cmd, "bundle-")
 	f := cmd.Flags()
 	addNativeFlags(cmd, &nativeFlags, buildahcli.GetBudFlagsCompletions(), "source-policy-file", "metadata-file")
 	f.Lookup("source-policy-file").Usage = "BuildKit-format policy file for base image sources"

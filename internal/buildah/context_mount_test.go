@@ -15,9 +15,88 @@ import (
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	upstream "go.podman.io/buildah"
+	"go.podman.io/buildah/copier"
 	"go.podman.io/buildah/define"
 	"go.podman.io/buildah/imagebuildah"
+	"golang.org/x/sys/unix"
 )
+
+func TestContextSnapshotPreservesNativeRootMetadata(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "source")
+	if err := os.MkdirAll(filepath.Join(source, "source"), 0750); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{"input": "payload", "source/nested": "nested payload", "excluded": "excluded"} {
+		if err := os.WriteFile(filepath.Join(source, name), []byte(value), 0640); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Link(filepath.Join(source, "input"), filepath.Join(source, "hardlink")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("source/nested", filepath.Join(source, "symlink")); err != nil {
+		t.Fatal(err)
+	}
+	stamp := time.Unix(123456789, 0)
+	if err := os.Chtimes(source, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	const attr = "user.coopr-root"
+	value := []byte{0xff, 0, 'x'}
+	xattrs := true
+	if err := unix.Setxattr(source, attr, value, 0); err != nil {
+		if !errors.Is(err, unix.ENOTSUP) && !errors.Is(err, unix.EPERM) {
+			t.Fatal(err)
+		}
+		xattrs = false
+		t.Logf("runner does not permit user xattrs: %v", err)
+	}
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(source, alias); err != nil {
+		t.Fatal(err)
+	}
+	for _, contextDir := range []string{source, source + string(filepath.Separator), alias} {
+		snapshot, cleanup, err := snapshotContext(t.Context(), contextDir, []string{"excluded"}, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := cleanup(); err != nil {
+				t.Error(err)
+			}
+		})
+		info, err := os.Stat(snapshot)
+		if err != nil || info.Mode().Perm() != 0750 || !info.ModTime().Equal(stamp) {
+			t.Fatalf("root metadata not preserved for %s: %v %v", contextDir, info, err)
+		}
+		if xattrs {
+			attrs, err := copier.Lgetxattrs(snapshot)
+			if err != nil || attrs[attr] != string(value) {
+				t.Fatalf("root xattr not preserved: %v %v", attrs, err)
+			}
+		}
+		for name, value := range map[string]string{"input": "payload", "source/nested": "nested payload"} {
+			if data, err := os.ReadFile(filepath.Join(snapshot, name)); err != nil || string(data) != value {
+				t.Fatalf("native rename changed %s: %q %v", name, data, err)
+			}
+		}
+		a, err := os.Stat(filepath.Join(snapshot, "input"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := os.Stat(filepath.Join(snapshot, "hardlink"))
+		if err != nil || !os.SameFile(a, b) {
+			t.Fatalf("native rename lost hardlink: %v", err)
+		}
+		if link, err := os.Readlink(filepath.Join(snapshot, "symlink")); err != nil || link != "source/nested" {
+			t.Fatalf("native rename changed symlink: %q %v", link, err)
+		}
+		if _, err := os.Lstat(filepath.Join(snapshot, "excluded")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("excluded entry captured: %v", err)
+		}
+	}
+}
 
 func TestRootFSIdentity(t *testing.T) {
 	first := digest.FromString("first")
@@ -76,7 +155,7 @@ func TestBuildContextCleanupPreservesIncompleteSnapshot(t *testing.T) {
 		{"incomplete wait", errors.Join(operationErr, ErrWorkerWaitIncomplete)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			prepared, cleanup, err := prepareBuildContext(plan, PlanOptions{ContextDir: contextDir})
+			prepared, cleanup, err := prepareBuildContext(t.Context(), plan, PlanOptions{ContextDir: contextDir})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -124,7 +203,7 @@ func TestPreparedBuildContextCleanupDoesNotOwnCallerContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := testPlan(t, `from "scratch" { run "true" { mount "bind" target="/src" readonly="false" } }`)
-	prepared, cleanup, err := prepareBuildContext(plan, PlanOptions{ContextDir: contextDir, ContextPrepared: true})
+	prepared, cleanup, err := prepareBuildContext(t.Context(), plan, PlanOptions{ContextDir: contextDir, ContextPrepared: true})
 	if err != nil || prepared.ContextDir != contextDir {
 		t.Fatalf("prepared caller context changed: %+v, %v", prepared, err)
 	}
@@ -385,8 +464,8 @@ from %q {
 	_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 		Store:      store,
 		ContextDir: contextDir, Isolation: "rootless", Runtime: "crun", Output: Output{Path: layout},
-		Pull: false, SignaturePolicyPath: policy,
-		Stdout: io.Discard, Stderr: io.Discard,
+		SignaturePolicyPath: policy,
+		Stdout:              io.Discard, Stderr: io.Discard,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -496,7 +575,7 @@ COPY generated /copied
 	}
 }
 
-func TestDirectBuildWritableContextRetainsProtectedExclusions(t *testing.T) {
+func TestBuildPlanWritableContextRetainsProtectedExclusions(t *testing.T) {
 	f := newLocalComponentFixture(t)
 	base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
 	for _, protected := range []bool{false, true} {
@@ -505,34 +584,46 @@ func TestDirectBuildWritableContextRetainsProtectedExclusions(t *testing.T) {
 			source = "protected"
 		}
 		layout := filepath.Join(f.root, fmt.Sprintf("direct-%t", protected))
-		_, err := Build(f.ctx, Request{
-			Base: base.reference, Store: f.options.Store, ContextDir: f.contextDir,
-			ContextArtifacts: []string{filepath.Join(f.contextDir, "protected")},
-			Isolation:        "rootless", Runtime: "crun", Output: Output{Path: layout},
-			Operations: []Operation{
-				Run{Command: []string{"/bin/sh", "-c", "printf generated >/src/generated; /bin/busybox mkdir /src/protected; printf secret >/src/protected/secret"}, Network: "none", Mounts: []RunMount{{Type: "bind", Properties: map[string]string{"target": "/src", "rw": "true"}}}},
-				Copy{Sources: []string{source}, Destination: "/proof"},
+		plan := testPlan(t, fmt.Sprintf(`from %q {
+ run "printf generated >/src/generated; /bin/busybox mkdir /src/protected; printf secret >/src/protected/secret" network="none" { mount "bind" target="/src" rw="true" }
+ copy %q "/proof"
+}`, base.reference, source))
+		platform, err := executionPlatform(plan.Stages[0].Platform)
+		if err != nil {
+			t.Fatal(err)
+		}
+		selected, found, err := nativeFixtureSelection(f.ctx, f.options.Store, base.reference, platform)
+		if err != nil || !found {
+			t.Fatalf("native base lookup found=%t: %v", found, err)
+		}
+		options := f.options
+		options.ResolvedBases = map[ResolvedBaseKey]ResolvedImageSource{
+			{Reference: base.reference, Platform: plan.Stages[0].Platform}: {
+				Reference: base.reference, ImageID: selected.ImageID, Root: selected.Root, Selected: selected.Manifest, SourceManifest: selected.SourceManifest, ConfigData: selected.ConfigData,
 			},
-		})
+		}
+		options.Output = Output{Path: layout}
+		options.ContextArtifacts = append(options.ContextArtifacts, filepath.Join(f.contextDir, "protected"))
+		_, err = BuildPlan(f.ctx, plan, options)
 		if protected {
 			if err == nil || !strings.Contains(err.Error(), "filtered out") {
-				t.Fatalf("direct build copied recreated protected context: %v", err)
+				t.Fatalf("graph build copied recreated protected context: %v", err)
 			}
 		} else {
 			if err != nil {
 				t.Fatal(err)
 			}
 			if got := localComponentLastFile(t, layout, "proof"); got != "generated" {
-				t.Fatalf("direct context result=%q", got)
+				t.Fatalf("graph context result=%q", got)
 			}
 		}
 		if _, err := os.Stat(filepath.Join(f.contextDir, "generated")); !os.IsNotExist(err) {
-			t.Fatalf("direct build modified host context: %v", err)
+			t.Fatalf("graph build modified host context: %v", err)
 		}
 	}
 }
 
-func TestDirectBuildWritableContextHonorsExplicitIgnore(t *testing.T) {
+func TestBuildPlanWritableContextHonorsExplicitIgnore(t *testing.T) {
 	f := newLocalComponentFixture(t)
 	base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
 	f.write(t, ".dockerignore", "keep\ngenerated\n")
@@ -543,14 +634,27 @@ func TestDirectBuildWritableContextHonorsExplicitIgnore(t *testing.T) {
 		t.Fatal(err)
 	}
 	layout := filepath.Join(f.root, "custom-ignore")
-	_, err := Build(f.ctx, Request{
-		Base: base.reference, Store: f.options.Store, ContextDir: f.contextDir, IgnoreFile: ignoreFile,
-		Isolation: "rootless", Runtime: "crun", Output: Output{Path: layout},
-		Operations: []Operation{
-			Run{Command: []string{"/bin/sh", "-c", "test -f /src/keep && test ! -e /src/hidden && printf explicit >/src/generated"}, Network: "none", Mounts: []RunMount{{Type: "bind", Properties: map[string]string{"target": "/src", "rw": "true"}}}},
-			Copy{Sources: []string{"generated"}, Destination: "/proof"},
+	plan := testPlan(t, fmt.Sprintf(`from %q {
+ run "test -f /src/keep && test ! -e /src/hidden && printf explicit >/src/generated" network="none" { mount "bind" target="/src" rw="true" }
+ copy "generated" "/proof"
+}`, base.reference))
+	platform, err := executionPlatform(plan.Stages[0].Platform)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected, found, err := nativeFixtureSelection(f.ctx, f.options.Store, base.reference, platform)
+	if err != nil || !found {
+		t.Fatalf("native base lookup found=%t: %v", found, err)
+	}
+	options := f.options
+	options.ResolvedBases = map[ResolvedBaseKey]ResolvedImageSource{
+		{Reference: base.reference, Platform: plan.Stages[0].Platform}: {
+			Reference: base.reference, ImageID: selected.ImageID, Root: selected.Root, Selected: selected.Manifest, SourceManifest: selected.SourceManifest, ConfigData: selected.ConfigData,
 		},
-	})
+	}
+	options.Output = Output{Path: layout}
+	options.IgnoreFile = ignoreFile
+	_, err = BuildPlan(f.ctx, plan, options)
 	if err != nil {
 		t.Fatal(err)
 	}

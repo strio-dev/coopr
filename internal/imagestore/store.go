@@ -1,4 +1,4 @@
-// Package imagestore writes finished OCI archives into containers-storage.
+// Package imagestore operates on images in borrowed containers-storage handles.
 package imagestore
 
 import (
@@ -10,26 +10,22 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 
 	"github.com/distribution/reference"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/localstore"
 	"github.com/strio-dev/coopr/internal/oci"
-	"go.podman.io/common/libimage"
 	"go.podman.io/common/libimage/manifests"
 	imagecopy "go.podman.io/image/v5/copy"
 	imagereference "go.podman.io/image/v5/docker/reference"
-	ociarchive "go.podman.io/image/v5/oci/archive"
 	ocilayout "go.podman.io/image/v5/oci/layout"
 	"go.podman.io/image/v5/signature"
 	imagestorage "go.podman.io/image/v5/storage"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/storage"
 	storagetypes "go.podman.io/storage/types"
-	"oras.land/oras-go/v2"
 	"oras.land/oras-go/v2/content"
-	orasoci "oras.land/oras-go/v2/content/oci"
 )
 
 // Store provides image operations against containers/storage.
@@ -39,18 +35,9 @@ type Store struct {
 }
 
 // FromStore borrows a native handle for image operations. Its caller owns the
-// handle and must keep it open for the entire operation; do not call Close.
+// handle and must keep it open for the entire operation.
 func FromStore(backend storage.Store) *Store {
 	return &Store{backend: backend, system: &types.SystemContext{BigFilesTemporaryDir: os.TempDir()}}
-}
-
-// NewWithOptions opens an explicitly selected containers/storage graph.
-func NewWithOptions(options storagetypes.StoreOptions) (*Store, error) {
-	backend, err := storage.GetStore(options)
-	if err != nil {
-		return nil, fmt.Errorf("open containers-storage (run root %s, graph root %s): %w", options.RunRoot, options.GraphRoot, err)
-	}
-	return &Store{backend: backend, system: &types.SystemContext{BigFilesTemporaryDir: os.TempDir()}}, nil
 }
 
 // Tag gives an existing storage image a Podman-visible name.
@@ -206,95 +193,11 @@ func (s *Store) TagSelected(ctx context.Context, imageID string, selected v1.Des
 	return result, nil
 }
 
-// TagExisting adds a name to the exact native image or manifest-list record
-// selected by source, without importing or reconstructing any payload.
-func (s *Store) TagExisting(source, tag string) (string, error) {
-	if s == nil || s.backend == nil {
-		return "", errors.New("image store is not initialized")
-	}
-	matched, err := oci.StoredImageName(s.backend, source)
-	if err != nil {
-		return "", err
-	}
-	image, err := s.backend.Image(matched)
-	if err != nil {
-		return "", err
-	}
-	return s.Tag(image.ID, tag)
-}
-
-// RemoveTag removes only one Podman-visible name, never the underlying image.
-func (s *Store) RemoveTag(tag string) (bool, error) {
-	if s == nil || s.backend == nil {
-		return false, errors.New("image store is not initialized")
-	}
-	name, err := oci.StoredImageName(s.backend, tag)
-	if err != nil {
-		if errors.Is(err, storage.ErrImageUnknown) {
-			return false, nil
-		}
-		return false, err
-	}
-	image, err := s.backend.Image(name)
-	if err != nil {
-		return false, err
-	}
-	if err := s.backend.RemoveNames(image.ID, []string{name}); err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
 func (s *Store) MatchedName(name string) (string, error) {
 	if s == nil || s.backend == nil {
 		return "", errors.New("image store is not initialized")
 	}
 	return oci.StoredImageName(s.backend, name)
-}
-
-// Names returns every current mutable image name in the selected native store.
-func (s *Store) Names() ([]string, error) {
-	if s == nil || s.backend == nil {
-		return nil, errors.New("image store is not initialized")
-	}
-	images, err := s.backend.Images()
-	if err != nil {
-		return nil, err
-	}
-	var names []string
-	for _, image := range images {
-		for _, name := range image.Names {
-			if parsed, err := reference.ParseNormalizedNamed(name); err == nil {
-				if _, immutable := parsed.(reference.Canonical); immutable {
-					continue
-				}
-			}
-			names = append(names, name)
-		}
-	}
-	slices.Sort(names)
-	return slices.Compact(names), nil
-}
-
-func (s *Store) Resolve(ctx context.Context, name string, platform v1.Platform) (*oci.Resolved, error) {
-	if s == nil || s.backend == nil {
-		return nil, errors.New("image store is not initialized")
-	}
-	return oci.ResolveStoredImage(ctx, s.backend, name, platform)
-}
-
-func (s *Store) Platforms(ctx context.Context, name string) ([]v1.Platform, error) {
-	if s == nil || s.backend == nil {
-		return nil, errors.New("image store is not initialized")
-	}
-	return oci.StoredImagePlatforms(ctx, s.backend, name)
-}
-
-func (s *Store) Index(ctx context.Context, name string) (v1.Descriptor, []byte, bool, error) {
-	if s == nil || s.backend == nil {
-		return v1.Descriptor{}, nil, false, errors.New("image store is not initialized")
-	}
-	return oci.StoredImageIndex(ctx, s.backend, name)
 }
 
 // DefaultStoreOptions loads the effective Podman containers/storage
@@ -310,159 +213,9 @@ func DefaultStoreOptions() (storagetypes.StoreOptions, error) {
 	return options, nil
 }
 
-// Close releases storage resources without unmounting other users' layers.
-func (s *Store) Close() error {
-	if s == nil || s.backend == nil {
-		return nil
-	}
-	backend := s.backend
-	_, err := backend.Shutdown(false)
-	// A shared store can contain layers mounted by another process. The
-	// non-forced shutdown intentionally leaves those mounts alone.
-	if errors.Is(err, storage.ErrLayerUsedByContainer) {
-		s.backend = nil
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("close containers-storage: %w", err)
-	}
-	backend.Free()
-	s.backend = nil
-	return nil
-}
-
 // NormalizeTag resolves Podman's local-name and latest defaults.
 func NormalizeTag(tag string) (string, error) {
-	if tag == "" {
-		return "", nil
-	}
-	if strings.TrimSpace(tag) != tag || strings.ContainsAny(tag, " \t\r\n") || strings.HasPrefix(tag, "-") || strings.Contains(tag, "://") {
-		return "", fmt.Errorf("invalid local image tag %q", tag)
-	}
-	ref, err := libimage.NormalizeName(tag)
-	if err != nil {
-		return "", fmt.Errorf("invalid local image tag %q: %w", tag, err)
-	}
-	if _, ok := ref.(imagereference.Digested); ok {
-		return "", fmt.Errorf("local image tag %q must not include a digest", tag)
-	}
-	return ref.String(), nil
-}
-
-// Write copies an OCI image into the owned store and returns its normalized
-// name, or its image ID when no name was requested.
-func (s *Store) Write(ctx context.Context, archivePath, tag string) (string, error) {
-	if s == nil || s.backend == nil {
-		return "", errors.New("image store is not initialized")
-	}
-	name, err := NormalizeTag(tag)
-	if err != nil {
-		return "", err
-	}
-	archive, err := filepath.Abs(archivePath)
-	if err != nil {
-		return "", fmt.Errorf("resolve OCI archive path: %w", err)
-	}
-	imageID, err := oci.ArchiveImageConfigDigest(ctx, archive)
-	if err != nil {
-		return "", fmt.Errorf("identify OCI image: %w", err)
-	}
-	return s.writeImage(ctx, imageID, name, func() (types.ImageReference, error) {
-		src, err := ociarchive.NewReference(archive, "")
-		if err != nil {
-			return nil, fmt.Errorf("open OCI archive reference: %w", err)
-		}
-		return src, nil
-	})
-}
-
-// WriteLayout copies one rooted image from an OCI image layout into this
-// containers-storage store without creating an intermediate archive.
-func (s *Store) WriteLayout(ctx context.Context, layoutPath string, root v1.Descriptor, tag string) (string, error) {
-	if s == nil || s.backend == nil {
-		return "", errors.New("image store is not initialized")
-	}
-	name, err := NormalizeTag(tag)
-	if err != nil {
-		return "", err
-	}
-	source, err := orasoci.NewWithContext(ctx, layoutPath)
-	if err != nil {
-		return "", fmt.Errorf("open OCI image layout: %w", err)
-	}
-	imageID, err := imageConfigDigest(ctx, source, root)
-	if err != nil {
-		return "", fmt.Errorf("identify OCI image: %w", err)
-	}
-	return s.writeImage(ctx, imageID, name, func() (types.ImageReference, error) {
-		return LayoutReference(layoutPath, root)
-	})
-}
-
-// WriteIndexLayout copies every instance of a complete OCI index into the
-// selected containers-storage store and saves a manifest list under tag.
-func (s *Store) WriteIndexLayout(ctx context.Context, layoutPath string, root v1.Descriptor, tag string) (_ string, retErr error) {
-	if s == nil || s.backend == nil {
-		return "", errors.New("image store is not initialized")
-	}
-	if root.MediaType != v1.MediaTypeImageIndex && root.MediaType != "application/vnd.docker.distribution.manifest.list.v2+json" {
-		return "", fmt.Errorf("oci layout root is not an image index: %s", root.MediaType)
-	}
-	name, err := NormalizeTag(tag)
-	if err != nil {
-		return "", err
-	}
-	source, err := orasoci.NewWithContext(ctx, layoutPath)
-	if err != nil {
-		return "", fmt.Errorf("open OCI image layout: %w", err)
-	}
-	indexData, err := content.FetchAll(ctx, source, root)
-	if err != nil {
-		return "", fmt.Errorf("read OCI image index: %w", err)
-	}
-	var index v1.Index
-	if err := json.Unmarshal(indexData, &index); err != nil {
-		return "", fmt.Errorf("parse OCI image index: %w", err)
-	}
-	if index.SchemaVersion != 2 {
-		return "", fmt.Errorf("invalid OCI image index schema version %d", index.SchemaVersion)
-	}
-
-	temporary, err := os.MkdirTemp("", "coopr-podman-index-")
-	if err != nil {
-		return "", fmt.Errorf("create temporary OCI layout: %w", err)
-	}
-	defer func() { _ = os.RemoveAll(temporary) }()
-
-	imageIDs := make(map[digest.Digest]string, len(index.Manifests))
-	for i, child := range index.Manifests {
-		childLayout := filepath.Join(temporary, fmt.Sprintf("%d", i))
-		childStore, err := orasoci.NewWithContext(ctx, childLayout)
-		if err != nil {
-			return "", fmt.Errorf("create temporary OCI child layout: %w", err)
-		}
-		if err := oras.CopyGraph(ctx, source, childStore, child, oras.CopyGraphOptions{}); err != nil {
-			return "", fmt.Errorf("copy OCI image child %s: %w", child.Digest, err)
-		}
-		if err := childStore.Tag(ctx, child, child.Digest.String()); err != nil {
-			return "", fmt.Errorf("anchor OCI image child %s: %w", child.Digest, err)
-		}
-		imageID, err := imageConfigDigest(ctx, source, child)
-		if err != nil {
-			return "", fmt.Errorf("identify OCI image child %s: %w", child.Digest, err)
-		}
-		if _, err := s.writeImage(ctx, imageID, "", func() (types.ImageReference, error) {
-			return LayoutReference(childLayout, child)
-		}); err != nil {
-			return "", fmt.Errorf("import OCI image child %s: %w", child.Digest, err)
-		}
-		imageIDs[child.Digest] = imageID.Encoded()
-	}
-	result, err := s.WriteStoredIndex(ctx, root, indexData, imageIDs, name)
-	if err != nil || name == "" {
-		return result, err
-	}
-	return name, nil
+	return localstore.NormalizeNativeImageTag(tag)
 }
 
 var errStoredIndexRetry = errors.New("stored image index appeared during creation")
@@ -757,33 +510,6 @@ func (s *Store) writeStoredIndex(ctx context.Context, existingID string, root v1
 	return indexID, nil
 }
 
-func (s *Store) writeImage(ctx context.Context, imageID digest.Digest, name string, source func() (types.ImageReference, error)) (string, error) {
-	if imageID.Algorithm() != digest.SHA256 {
-		return "", fmt.Errorf("containers-storage image ID must be sha256, got %s", imageID.Algorithm())
-	}
-	src, err := source()
-	if err != nil {
-		return "", err
-	}
-	var named imagereference.Named
-	result := imageID.String()
-	if name != "" {
-		named, err = imagereference.ParseNormalizedNamed(name)
-		if err != nil {
-			return "", fmt.Errorf("local image name %q: %w", name, err)
-		}
-		result = name
-	}
-	dst, err := imagestorage.Transport.NewStoreReference(s.backend, named, imageID.Encoded())
-	if err != nil {
-		return "", fmt.Errorf("local image destination: %w", err)
-	}
-	if err := Copy(ctx, s.system, src, dst, true); err != nil {
-		return "", fmt.Errorf("copy OCI image to containers-storage: %w", err)
-	}
-	return result, nil
-}
-
 // LayoutReference selects root exactly from layoutPath's index.
 func LayoutReference(layoutPath string, root v1.Descriptor) (types.ImageReference, error) {
 	abs, err := filepath.Abs(layoutPath)
@@ -842,23 +568,4 @@ func CopyImages(ctx context.Context, system *types.SystemContext, src, dst types
 		return fmt.Errorf("close image policy: %w", closeErr)
 	}
 	return nil
-}
-
-func imageConfigDigest(ctx context.Context, source content.ReadOnlyStorage, root v1.Descriptor) (digest.Digest, error) {
-	if root.MediaType != v1.MediaTypeImageManifest && root.MediaType != "application/vnd.docker.distribution.manifest.v2+json" {
-		return "", fmt.Errorf("OCI layout root is not a single image manifest: %s", root.MediaType)
-	}
-	manifestData, err := content.FetchAll(ctx, source, root)
-	if err != nil {
-		return "", fmt.Errorf("read image manifest: %w", err)
-	}
-	var manifest v1.Manifest
-	if err := json.Unmarshal(manifestData, &manifest); err != nil || manifest.SchemaVersion != 2 {
-		return "", fmt.Errorf("invalid OCI image manifest: %v", err)
-	}
-	_, err = content.FetchAll(ctx, source, manifest.Config)
-	if err != nil {
-		return "", fmt.Errorf("read image config: %w", err)
-	}
-	return manifest.Config.Digest, nil
 }

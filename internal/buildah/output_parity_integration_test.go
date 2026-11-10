@@ -1,20 +1,24 @@
 package buildah
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/strio-dev/coopr/internal/buildcontext"
+	"github.com/strio-dev/coopr/internal/cache"
 	"github.com/strio-dev/coopr/internal/imageconfig"
 	"github.com/strio-dev/coopr/internal/planner"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"testing"
 	"time"
 
+	digest "github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/buildah/define"
 	"go.podman.io/buildah/imagebuildah"
@@ -553,9 +557,9 @@ from "scratch" {
 	}
 }
 
-func TestPortableInstructionCacheUsesSelectedCompression(t *testing.T) {
+func TestPortableGraphCachePreservesSnapshotsAcrossOutputCompression(t *testing.T) {
 	if testing.Short() {
-		t.Skip("skipping compressed instruction cache in short mode")
+		t.Skip("skipping live graph-cache output compression in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
@@ -580,29 +584,69 @@ func TestPortableInstructionCacheUsesSelectedCompression(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	coldManifest, coldConfig := readPlanImage(t, cold.Layout)
+	if len(coldManifest.Layers) != 2 {
+		t.Fatalf("cold output layer count: %d", len(coldManifest.Layers))
+	}
+	for _, layer := range coldManifest.Layers {
+		if layer.MediaType != v1.MediaTypeImageLayerZstd {
+			t.Fatalf("cold final output ignored requested zstd: %#v", layer)
+		}
+	}
 	entries, err := os.ReadDir(filepath.Join(cacheDir, "blobs", "sha256"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	imageCount := 0
+	graphResults := 0
+	cacheManifests := map[string][]byte{}
 	for _, entry := range entries {
 		data, err := os.ReadFile(filepath.Join(cacheDir, "blobs", "sha256", entry.Name()))
 		if err != nil {
 			t.Fatal(err)
+		}
+		var graph cache.GraphRecord
+		if json.Unmarshal(data, &graph) == nil && graph.Version == cache.GraphRecordVersion {
+			for _, result := range graph.Results {
+				var checkpoint instructionSolverResult
+				if err := json.Unmarshal(result.Metadata, &checkpoint); err != nil {
+					t.Fatal(err)
+				}
+				if checkpoint.Entry.ManifestDigest != result.Image.Digest {
+					t.Fatal("portable export rewrote the selected native manifest")
+				}
+				selected, err := os.ReadFile(filepath.Join(cacheDir, "blobs", result.Image.Digest.Algorithm().String(), result.Image.Digest.Encoded()))
+				if err != nil || digest.FromBytes(selected) != result.Image.Digest {
+					t.Fatalf("selected immutable cache manifest differs: %v", err)
+				}
+				graphResults++
+			}
 		}
 		var manifest v1.Manifest
 		if json.Unmarshal(data, &manifest) != nil || manifest.Config.MediaType != v1.MediaTypeImageConfig {
 			continue
 		}
 		imageCount++
+		cacheManifests[entry.Name()] = data
 		for _, layer := range manifest.Layers {
-			if layer.MediaType != v1.MediaTypeImageLayerZstd {
-				t.Fatalf("cache-to layer compression: %#v", layer)
+			if layer.MediaType != v1.MediaTypeImageLayer && layer.MediaType != v1.MediaTypeImageLayerGzip {
+				t.Fatalf("cache snapshot did not retain native layer representation: %#v", layer)
 			}
 		}
+		configData, err := os.ReadFile(filepath.Join(cacheDir, "blobs", manifest.Config.Digest.Algorithm().String(), manifest.Config.Digest.Encoded()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var checkpoint v1.Image
+		if err := json.Unmarshal(configData, &checkpoint); err != nil {
+			t.Fatal(err)
+		}
+		if len(checkpoint.RootFS.DiffIDs) == 0 || len(checkpoint.RootFS.DiffIDs) > len(coldConfig.RootFS.DiffIDs) || !slices.Equal(checkpoint.RootFS.DiffIDs, coldConfig.RootFS.DiffIDs[:len(checkpoint.RootFS.DiffIDs)]) {
+			t.Fatalf("cached snapshot ancestry differs from exported image: %#v %#v", checkpoint.RootFS, coldConfig.RootFS)
+		}
 	}
-	if imageCount < 2 {
-		t.Fatalf("portable cache images: %d", imageCount)
+	if imageCount < 2 || graphResults < 2 {
+		t.Fatalf("portable graph images=%d results=%d", imageCount, graphResults)
 	}
 	options.Store = cacheTestStore(filepath.Join(root, "warm"))
 	options.Output.Path = filepath.Join(root, "warm-layout")
@@ -612,13 +656,23 @@ func TestPortableInstructionCacheUsesSelectedCompression(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cold.CacheStats.Stored != 2 || warm.CacheStats.Hits != 2 {
+	if cold.CacheStats.Stored != 2 || warm.CacheStats.Hits != 2 || warm.CacheStats.Misses != 0 || cold.CacheStats.Errors != 0 || warm.CacheStats.Errors != 0 {
 		t.Fatalf("compressed cache reuse: cold=%#v warm=%#v", cold.CacheStats, warm.CacheStats)
 	}
-	_, coldConfig := readPlanImage(t, cold.Layout)
-	_, warmConfig := readPlanImage(t, warm.Layout)
-	if len(coldConfig.History) != len(warmConfig.History) || len(warmConfig.RootFS.DiffIDs) != 2 {
+	warmManifest, warmConfig := readPlanImage(t, warm.Layout)
+	for _, layer := range warmManifest.Layers {
+		if layer.MediaType != v1.MediaTypeImageLayerZstd {
+			t.Fatalf("warm final output ignored requested zstd: %#v", layer)
+		}
+	}
+	if len(warmManifest.Layers) != 2 || len(coldConfig.History) != len(warmConfig.History) || len(warmConfig.RootFS.DiffIDs) != 2 || !slices.Equal(coldConfig.RootFS.DiffIDs, warmConfig.RootFS.DiffIDs) {
 		t.Fatalf("compressed cache history/rootfs mismatch: %#v %#v", coldConfig, warmConfig)
+	}
+	for name, original := range cacheManifests {
+		current, err := os.ReadFile(filepath.Join(cacheDir, "blobs", "sha256", name))
+		if err != nil || !bytes.Equal(current, original) {
+			t.Fatalf("cache reuse changed immutable snapshot %s: %v", name, err)
+		}
 	}
 }
 

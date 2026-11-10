@@ -59,6 +59,7 @@ let
     subPackages = [
       "cmd/coopr"
       "internal/build"
+      "internal/apibackend"
       "internal/buildah"
       "internal/transfer"
       "internal/acceptance"
@@ -96,6 +97,7 @@ let
       group ? null,
       acceptance ? null,
       withSequoia ? false,
+      pastaNetwork ? false,
     }:
     let
       testPackages = if group != null then [ "internal/buildah" ] else packages;
@@ -112,6 +114,17 @@ let
           COOPR_TEST_CLI = "${coopr}/bin/coopr";
           COOPR_TEST_BINFMT_HANDLER = foreignSystem;
           COOPR_TEST_FIXTURES = fixtures;
+        }
+        // lib.optionalAttrs (lib.elem "internal/apibackend" testPackages && !pastaNetwork) {
+          COOPR_TEST_SERVICE_BINARY = "${coopr}/bin/coopr";
+        }
+        // lib.optionalAttrs pastaNetwork {
+          COOPR_TEST_PASTA_REQUIRED = "1";
+          COOPR_TEST_PASTA_HOST = "192.168.1.1";
+          COOPR_TEST_PASTA_PACKAGE = "${pkgs.passt}";
+          COOPR_TEST_PASTA_EVIDENCE = "/home/coopr/pasta-proof";
+          GOMAXPROCS = "1";
+          GOMEMLIMIT = "768MiB";
         }
         // lib.optionalAttrs (acceptance != null) {
           COOPR_ACCEPTANCE_IMAGE_COPY = "${container.copyTo}/bin/copy-to";
@@ -149,6 +162,10 @@ let
               '${group}' "$(wc -l < "$selected")"
             selector="^($(paste -sd '|' "$selected"))$"
           ''}
+          ${lib.optionalString pastaNetwork ''
+            selector='^TestPublicClientPastaNetworkWorkload$'
+            mkdir -p "$COOPR_TEST_PASTA_EVIDENCE"
+          ''}
           ${lib.optionalString (lib.elem "internal/build" testPackages) ''
             ${libraryConsumer}/bin/library-consumer \
               -busybox "$(command -v busybox)" -work "$HOME/library-proof" \
@@ -168,7 +185,7 @@ let
                 ${integrationTests}/bin/test2json -t -p "./$package" \
                 ${integrationTests}/bin/"$(basename "$package")".test \
                 -test.v=test2json -test.count=1 -test.timeout=30m ${
-                  lib.optionalString (group != null) ''-test.run "$selector"''
+                  lib.optionalString (group != null || pastaNetwork) ''-test.run "$selector"''
                 })
             done
           ''}
@@ -192,6 +209,46 @@ let
             ${pkgs.jq}/bin/jq -es '
               any(.[]; .Test == "TestPinnedAlwaysPlatformDiscoveryMatchesNativeFrontend" and .Action == "pass")
             ' "$HOME/build.test.json" >/dev/null
+          ''}
+          ${lib.optionalString (lib.elem "internal/apibackend" testPackages && !pastaNetwork) ''
+            for required in \
+              TestPublicClientNativeServiceLifetime \
+              TestPublicClientNativeServiceLifetime/parent-eof \
+              TestPublicClientNativeServiceLifetime/service-sigterm \
+              TestPublicClientNativeServiceLifetime/owner-sigkill \
+              TestPublicClientNativeLiterals \
+              TestPublicClientDefinitionProgressColdWarm \
+              TestAPIWorkersOverlapAndRecoverGraphCacheAcrossRestarts \
+              TestAPICancellationDrainsWorkerBeforeAcknowledgingAndDoesNotCacheRun \
+              TestNativeOperationProgressColdWarmAndFailure \
+              TestNativeDefinitionMetadataContainsOperationTimings \
+              TestNativeHandledFailureRetainsProgressTruncation \
+              TestPublicClientNativeConcurrentCacheInvalidationAndIntegrity \
+              TestPublicClientNativeCancellationWaitsForWorkerDrain \
+              TestPublicClientNativeBuildAndConcurrentPublication \
+              TestPublicClientBaleNestedPackageRelocationWithoutSourceRegistry; do
+              ${pkgs.jq}/bin/jq -es --arg required "$required" '
+                any(.[]; .Test == $required and .Action == "pass")
+              ' "$HOME/apibackend.test.json" >/dev/null
+            done
+          ''}
+          ${lib.optionalString pastaNetwork ''
+            # A top-level pass can contain skipped children. Require every
+            # traffic/freshness/cancellation variant to have actually passed.
+            for required in \
+              TestPublicClientPastaNetworkWorkload \
+              TestPublicClientPastaNetworkWorkload/serial \
+              TestPublicClientPastaNetworkWorkload/serial/fresh-1 \
+              TestPublicClientPastaNetworkWorkload/serial/fresh-2 \
+              TestPublicClientPastaNetworkWorkload/serial/cancel \
+              TestPublicClientPastaNetworkWorkload/isolated-stage \
+              TestPublicClientPastaNetworkWorkload/isolated-stage/fresh-1 \
+              TestPublicClientPastaNetworkWorkload/isolated-stage/fresh-2 \
+              TestPublicClientPastaNetworkWorkload/isolated-stage/cancel; do
+              ${pkgs.jq}/bin/jq -es --arg required "$required" '
+                any(.[]; .Test == $required and .Action == "pass")
+              ' "$HOME/apibackend.test.json" >/dev/null
+            done
           ''}
           ${lib.optionalString (lib.elem "internal/transfer" testPackages) ''
             for required in \
@@ -252,7 +309,7 @@ let
               TestResolveImageSourcePinnedAlwaysUsesNativePolicy \
               TestWorkDirMetadataMatchesNativeBuildah \
               TestInheritedConfigurationAdmissionMatchesNativeBuildah \
-              TestAggregateCachesInvalidateOldWorkdirSemantics \
+              TestAggregateCachesPreserveWorkdirSemantics \
               TestRemoteAddTLSPolicyMatchesNative \
               TestRemoteAddTLSBuildCacheAndEpoch \
               TestRemoteAddTLSCredentialRedirect \
@@ -294,13 +351,49 @@ let
       inherit name;
       requiredFeatures.kvm = true;
       qemu.forceAccel = true;
-      globalTimeout = 90 * 60;
+      globalTimeout = (if pastaNetwork then 15 else 90) * 60;
 
       nodes.machine = {
+        imports = lib.optionals pastaNetwork [
+          {
+            # Pasta copies the primary address. The peer/resolver lives on a
+            # separate VLAN while eth0 retains the ordinary QEMU NAT route.
+            networking.interfaces.eth0.useDHCP = true;
+            networking.nameservers = lib.mkForce [ "192.168.1.1" ];
+            networking.dhcpcd.extraConfig = "nohook resolv.conf";
+            networking.resolvconf.enable = false;
+            networking.useHostResolvConf = false;
+            networking.firewall.allowedUDPPorts = [ 53 ];
+            networking.firewall.allowedTCPPorts = [
+              53
+              18081
+            ];
+            environment.etc."resolv.conf" = {
+              text = "nameserver 192.168.1.1\n";
+              mode = "direct-symlink";
+            };
+            services.resolved.enable = false;
+            services.dnsmasq = {
+              enable = true;
+              resolveLocalQueries = false;
+              settings = {
+                bind-interfaces = true;
+                listen-address = [ "192.168.1.1" ];
+                no-resolv = true;
+                no-hosts = true;
+                local = "/pasta-proof.test/";
+                address = "/pasta-proof.test/192.168.1.1";
+                local-ttl = 0;
+                log-queries = true;
+                log-facility = "-";
+              };
+            };
+          }
+        ];
         virtualisation = {
-          memorySize = 4096;
-          diskSize = 16384;
-          cores = 4;
+          memorySize = if pastaNetwork then 2304 else 4096;
+          diskSize = if pastaNetwork then 8192 else 16384;
+          cores = if pastaNetwork then 1 else 4;
           podman.enable = true;
           containers.storage.settings.storage = {
             graphroot = lib.mkForce "";
@@ -309,9 +402,11 @@ let
           containers.containersConf.settings.engine.helper_binaries_dir = [
             "${pkgs.netavark}/bin"
             "${pkgs.aardvark-dns}/bin"
-          ];
+          ]
+          ++ lib.optionals pastaNetwork [ "${pkgs.passt}/bin" ];
           additionalPaths = [ runTests ];
-        };
+        }
+        // lib.optionalAttrs pastaNetwork { vlans = [ 1 ]; };
         boot.binfmt = {
           emulatedSystems = [ foreignSystem ];
           preferStaticEmulators = true;
@@ -341,7 +436,62 @@ let
         machine.wait_for_unit("user@1000.service")
         machine.succeed("grep -qx enabled /proc/sys/fs/binfmt_misc/${foreignSystem}")
         machine.succeed("grep -q '^flags:.*F' /proc/sys/fs/binfmt_misc/${foreignSystem}")
-        machine.succeed("su - coopr -c '${runner}' 2>&1 | tee /dev/ttyS0", timeout=85 * 60)
+        ${
+          if pastaNetwork then
+            ''
+              import datetime as dt
+              import json
+              import shlex
+
+              machine.wait_for_unit("dnsmasq.service")
+              machine.wait_for_open_port(53, addr="192.168.1.1", timeout=dt.timedelta(seconds=60))
+              machine.wait_until_succeeds("ip -4 route show default | grep -q 'via 10.0.2.2 dev eth0'", timeout=dt.timedelta(seconds=60))
+              routes = json.loads(machine.succeed("ip -j -4 route get 1.1.1.1"))
+              assert routes[0]["dev"] == "eth0" and routes[0].get("prefsrc", routes[0].get("src")) != "192.168.1.1", routes
+              resolver = machine.succeed("cat /etc/resolv.conf")
+              assert [line.split()[1] for line in resolver.splitlines() if line.startswith("nameserver ")] == ["192.168.1.1"], resolver
+              assert "pasta-proof.test" not in machine.succeed("cat /etc/hosts").lower()
+              machine.succeed("install -d -m0700 -o coopr -g users /home/coopr/pasta-proof")
+              observations = {}
+              for key, command in {
+                  "osRelease": "cat /etc/os-release",
+                  "kernel": "uname -a",
+                  "invokingUser": "su - coopr -c id",
+                  "pastaVersion": "${pkgs.passt}/bin/pasta --version",
+                  "pastaResolvedPath": "readlink -f ${pkgs.passt}/bin/pasta",
+                  "pastaPackageHash": "sha256sum ${pkgs.passt}/bin/pasta",
+                  "selinuxEnforce": "if test -r /sys/fs/selinux/enforce; then cat /sys/fs/selinux/enforce; else printf 'unavailable\\n'; fi",
+                  "securityLabels": "ls -LdZ / ${pkgs.passt}/bin/pasta",
+                  "routes": "ip -j -4 route show",
+                  "addresses": "ip -j -4 addr show",
+                  "resolver": "cat /etc/resolv.conf",
+                  "backendTestHash": "sha256sum ${integrationTests}/bin/apibackend.test",
+              }.items():
+                  status, output = machine.execute(command)
+                  observations[key] = {"exit": status, "output": output}
+              machine.succeed("printf '%s' " + shlex.quote(json.dumps(observations, indent=2)) + " > /home/coopr/pasta-environment.json")
+              try:
+                  machine.succeed("bash -o pipefail -c " + shlex.quote("su - coopr -c '${runner}' 2>&1 | tee /dev/ttyS0"), timeout=10 * 60)
+                  messages = [json.loads(line).get("MESSAGE", "") for line in machine.succeed("journalctl -u dnsmasq --no-pager -o json").splitlines()]
+                  for variant in ["serial", "isolated-stage"]:
+                      hostname = variant + ".pasta-proof.test"
+                      queries = [message for message in messages if "query[A]" in message and hostname in message]
+                      assert len(queries) >= 3, (hostname, queries)
+                      result = json.loads(machine.succeed("cat /home/coopr/pasta-proof/" + variant + ".json"))
+                      assert result["status"] == "PASS" and result["httpRequests"] == 3 and result["freshResponses"] == 2 and result["cancelledConnectionClosed"], result
+                      assert len(result["runs"]) == 3 and all(run["cleanupBeforeAcknowledgement"] for run in result["runs"]), result
+              finally:
+                  machine.execute("journalctl -u dnsmasq --no-pager > /home/coopr/pasta-dnsmasq.log")
+                  for path in ["/home/coopr/pasta-environment.json", "/home/coopr/apibackend.test.json", "/home/coopr/pasta-dnsmasq.log", "/home/coopr/pasta-proof/serial.json", "/home/coopr/pasta-proof/isolated-stage.json"]:
+                      if machine.execute("test -f " + shlex.quote(path))[0] == 0:
+                          machine.copy_from_machine(path)
+            ''
+          else
+            ''
+              import shlex
+              machine.succeed("bash -o pipefail -c " + shlex.quote("su - coopr -c '${runner}' 2>&1 | tee /dev/ttyS0"), timeout=85 * 60)
+            ''
+        }
         ${lib.optionalString (builtins.elem "cmd/coopr" testPackages) ''
           machine.copy_from_machine("/home/coopr/coopr.test.json")
         ''}
@@ -351,6 +501,9 @@ let
         ''}
         ${lib.optionalString (builtins.elem "internal/buildah" testPackages) ''
           machine.copy_from_machine("/home/coopr/buildah.test.json")
+        ''}
+        ${lib.optionalString (builtins.elem "internal/apibackend" testPackages && !pastaNetwork) ''
+          machine.copy_from_machine("/home/coopr/apibackend.test.json")
         ''}
         ${lib.optionalString (builtins.elem "internal/transfer" testPackages) ''
           machine.copy_from_machine("/home/coopr/transfer.test.json")
@@ -364,11 +517,16 @@ in
     packages = [
       "cmd/coopr"
       "internal/build"
+      "internal/apibackend"
       "internal/transfer"
     ];
   };
   rootless-packaged = makeTest "coopr-rootless-packaged" { acceptance = "dynamic"; };
   rootless-static = makeTest "coopr-rootless-static" { acceptance = "static"; };
+  rootless-pasta = makeTest "coopr-rootless-pasta" {
+    packages = [ "internal/apibackend" ];
+    pastaNetwork = true;
+  };
 }
 // lib.listToAttrs (
   map (group: {

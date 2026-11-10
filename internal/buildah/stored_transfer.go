@@ -783,6 +783,8 @@ func storedSignatureTopLevel(base *url.URL, named reference.Named) (string, erro
 	if !strings.HasSuffix(result.Path, suffix) {
 		return "", fmt.Errorf("signature lookaside %q does not end in repository path %q", result.Redacted(), suffix)
 	}
+	// result is a value copy above; changing its string Path cannot mutate base.
+	// nosemgrep: cache.semgrep-rules.go.lang.security.shared-url-struct-mutation
 	result.Path = strings.TrimSuffix(result.Path, suffix)
 	return result.String(), nil
 }

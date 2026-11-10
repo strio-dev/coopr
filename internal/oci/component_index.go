@@ -14,16 +14,16 @@ import (
 // several Linux platforms. Each child remains an ordinary component manifest,
 // so existing component resolution selects and verifies it by platform.
 func AssembleComponentIndex(ctx context.Context, outputPath string, variants []IndexVariant) (v1.Descriptor, []byte, error) {
-	normalized, err := normalizeImageVariants(variants, false)
+	normalized, err := normalizeImageVariants(variants)
 	if err != nil {
 		return v1.Descriptor{}, nil, err
 	}
-	root, indexData, err := assembleIndexDescriptor(normalized, v1.MediaTypeImageIndex, false)
+	root, indexData, err := assembleIndexDescriptor(normalized, v1.MediaTypeImageIndex)
 	if err != nil {
 		return v1.Descriptor{}, nil, err
 	}
-	if err := validateImageIndex(root, indexData, normalized); err != nil {
-		return v1.Descriptor{}, nil, err
+	if len(indexData) > maxMetadataBytes {
+		return v1.Descriptor{}, nil, fmt.Errorf("image index exceeds %d bytes", maxMetadataBytes)
 	}
 	if err := restoreIndexGraph(ctx, outputPath, root, indexData, normalized, "component", validateComponentVariant); err != nil {
 		return v1.Descriptor{}, nil, err

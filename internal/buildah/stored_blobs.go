@@ -26,6 +26,9 @@ const retainedLayerMapBigData = oci.StoredLayerBlobsKey
 // containers/storage. The graph keeps the unpacked layer for execution; layer
 // big data keeps the OCI bytes needed to reproduce the committed manifest.
 func retainStoredLayoutLayers(store storage.Store, imageID, layout string, manifestDigest digest.Digest) error {
+	if err := manifestDigest.Validate(); err != nil {
+		return fmt.Errorf("invalid committed image manifest digest %q: %w", manifestDigest, err)
+	}
 	manifestPath := filepath.Join(layout, "blobs", manifestDigest.Algorithm().String(), manifestDigest.Encoded())
 	manifestData, err := os.ReadFile(manifestPath)
 	if err != nil {
@@ -34,6 +37,11 @@ func retainStoredLayoutLayers(store storage.Store, imageID, layout string, manif
 	var manifest v1.Manifest
 	if err := json.Unmarshal(manifestData, &manifest); err != nil {
 		return fmt.Errorf("decode committed image manifest: %w", err)
+	}
+	for _, descriptor := range manifest.Layers {
+		if err := descriptor.Digest.Validate(); err != nil {
+			return fmt.Errorf("invalid committed layer digest %q: %w", descriptor.Digest, err)
+		}
 	}
 	image, err := store.Image(imageID)
 	if err != nil {

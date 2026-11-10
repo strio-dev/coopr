@@ -29,6 +29,7 @@ import (
 	"github.com/strio-dev/coopr/internal/oci"
 	"github.com/strio-dev/coopr/internal/planner"
 	"go.podman.io/common/libimage"
+	"go.podman.io/image/v5/types"
 	cstorage "go.podman.io/storage"
 	"go.podman.io/storage/pkg/reexec"
 	"go.podman.io/storage/pkg/unshare"
@@ -110,7 +111,7 @@ func TestCopyPinnedManifestExportsExactVariantSharingImageID(t *testing.T) {
 			Mode: planner.Build, Platform: platform.OS + "/" + platform.Architecture,
 		}, buildah.SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
-			Output: buildah.Output{Path: filepath.Join(root, name), Format: format}, TLSVerify: new(false), Pull: true,
+			Output: buildah.Output{Path: filepath.Join(root, name), Format: format}, TLSVerify: new(false), PullPolicy: "always",
 		})
 		if err != nil {
 			t.Fatalf("import %s variant: %v", name, err)
@@ -265,7 +266,12 @@ func TestLocalSigningPreservesSiblingManifestSignaturesSharingImageID(t *testing
 	layoutPath, olderOCI, newerDocker := selectedSigningSharedConfigLayoutFixture(t, ctx)
 	importVariant := func(name string, selection oci.StoredSelection) {
 		t.Helper()
-		imageID, err := buildah.ImportLayoutSupervised(ctx, store, layoutPath, selection.Manifest)
+		var imageID string
+		err := buildah.WithStore(store, func(backend cstorage.Store) error {
+			var importErr error
+			imageID, importErr = buildah.ImportSelectedImage(ctx, backend, &types.SystemContext{BigFilesTemporaryDir: t.TempDir()}, layoutPath, selection.Manifest)
+			return importErr
+		})
 		if err != nil {
 			t.Fatalf("import %s variant: %v", name, err)
 		}

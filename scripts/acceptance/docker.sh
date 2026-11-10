@@ -21,20 +21,28 @@ esac
 script_path=$(realpath "${BASH_SOURCE[0]}")
 repo_root=$(cd "$(dirname "$script_path")/../.." && pwd)
 cd "$repo_root"
-coopr_docker_proof_root=$(mktemp -d /tmp/coopr-final-docker.XXXXXX)
+selector='^Test(BuildAndCopy.*DockerEngine|ExplicitDockerImportThenOfflineFrom)$'
+inventory=$(go test -list "$selector" ./internal/acceptance)
+for required in TestBuildAndCopyToDockerEngine TestBuildAndCopyMultiPlatformToDockerEngine TestExplicitDockerImportThenOfflineFrom; do
+  [[ $'\n'"$inventory"$'\n' == *$'\n'"$required"$'\n'* ]] || {
+    printf 'Missing %s; use just docker-acceptance with the dockerintegration development shell.\n' "$required" >&2
+    exit 1
+  }
+done
+coopr_docker_proof_root=$(mktemp -d "${TMPDIR:-/tmp}/coopr-final-docker.XXXXXX")
 coopr_docker_proof_name="coopr-final-docker-$(id -u)-$$"
 coopr_docker_proof_id=''
 cleanup() {
-  local status=$?
+  local status=$? cleanup_failed=0
   trap - EXIT
   if [[ -n $coopr_docker_proof_id ]]; then
-    local actual_id
-    actual_id=$(podman inspect --format '{{.Id}}' "$coopr_docker_proof_name" 2>/dev/null || true)
-    if [[ $actual_id == "$coopr_docker_proof_id" ]]; then
-      podman rm --force --volumes "$coopr_docker_proof_id" >/dev/null
-    fi
+    podman rm --ignore --force --volumes -- "$coopr_docker_proof_id" >/dev/null || cleanup_failed=1
   fi
-  rm -rf -- "$coopr_docker_proof_root"
+  rm -rf -- "$coopr_docker_proof_root" || cleanup_failed=1
+  if ((cleanup_failed)); then
+    printf 'Docker acceptance fixture cleanup incomplete\n' >&2
+    if ((status == 0)); then status=1; fi
+  fi
   exit "$status"
 }
 trap cleanup EXIT
@@ -64,4 +72,4 @@ for ((attempt=0; attempt<60; attempt++)); do
   sleep 0.5
 done
 docker info --format '{{.ServerVersion}} {{json .DriverStatus}}'
-go test -count=1 -v -run 'TestBuildAndCopy.*DockerEngine|TestExplicitDockerImportThenOfflineFrom' ./internal/acceptance
+go test -count=1 -v -run "$selector" ./internal/acceptance

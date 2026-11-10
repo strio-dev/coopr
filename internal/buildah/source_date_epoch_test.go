@@ -44,7 +44,12 @@ func TestPackagePlanDigestIncludesTimestampPolicy(t *testing.T) {
 
 func TestStageWorkerMessagePreservesTimestampPolicy(t *testing.T) {
 	epoch := int64(123)
-	request := stageWorkerRequest{SourceDateEpoch: &epoch, RewriteTimestamp: true, ResultPath: t.TempDir() + "/result"}
+	request := stageWorkerRequest{
+		workerExecutionOptions: workerExecutionOptions{
+			SourceDateEpoch: &epoch, RewriteTimestamp: true,
+		},
+		ResultPath: t.TempDir() + "/result",
+	}
 	path := t.TempDir() + "/request"
 	if err := writeWorkerJSON(path, request); err != nil {
 		t.Fatal(err)

@@ -103,6 +103,7 @@ in
           pkgs.gzip
           pkgs.regclient.regctl
           pkgs.jq
+          pkgs.go_1_27
           sourceImage.copyTo
         ];
       }
@@ -136,6 +137,29 @@ in
         test -d sources/container
         test -d sources/sources
         test -s sources/vendor/modules.txt
+        test -s sources/coopr/nix/exporter/go.mod
+        test -z "$(find sources/coopr/scripts -type f \( -name '*.pyc' -o -name '*.pyo' \) -print -quit)"
+        test -s sources/nix-exporter-vendor/modules.txt
+        test -s sources/nix-exporter-vendor/github.com/nlewo/nix2container/LICENSE
+        # Rebuild the separate Nix exporter from the extracted corresponding
+        # source using the documented vendored command. The sandbox has no
+        # network; no original module cache or checkout is available here.
+        cp -r sources/nix-exporter-vendor sources/coopr/nix/exporter/vendor
+        chmod -R u+w sources/coopr/nix/exporter/vendor
+        export GOMAXPROCS="$NIX_BUILD_CORES" GOMEMLIMIT=1536MiB
+        export GOCACHE="$TMPDIR/exporter-go-cache" GOPATH="$TMPDIR/exporter-go-path"
+        (
+          cd sources/coopr/nix/exporter
+          GOWORK=off GOTOOLCHAIN=local CGO_ENABLED=0 GOPROXY=off \
+            go build -mod=vendor -trimpath -p="$NIX_BUILD_CORES" -o ../../../coopr-nix-export .
+        )
+        if sources/coopr-nix-export > exporter-help 2>&1; then
+          echo 'The Nix exporter accepted missing input/output paths' >&2
+          exit 1
+        else
+          test "$?" = 2
+        fi
+        grep -q 'usage: coopr-nix-export IMAGE_JSON NEW_OCI_DIRECTORY' exporter-help
         test ! -e sources/go
         test -z "$(find sources/container -maxdepth 1 \( -name 'coopr-*' -o -name 'aardvark-dns-*' -o -name 'netavark-*' -o -name 'libkrun*' \) -print -quit)"
         # Source links must remain usable after extracting the archive away from Nix.

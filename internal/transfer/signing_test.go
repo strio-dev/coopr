@@ -32,6 +32,7 @@ import (
 	"go.podman.io/image/v5/signature"
 	"go.podman.io/image/v5/signature/sigstore"
 	"go.podman.io/image/v5/types"
+	"go.podman.io/storage"
 	"go.podman.io/storage/pkg/reexec"
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
@@ -80,46 +81,6 @@ func TestSigningOptionsPassphraseAndDestinationValidation(t *testing.T) {
 	sigstorePassphrase, gpgPassphrase, err = (SigningOptions{SignBy: "fingerprint", PassphraseFile: passphraseFile}).passphrases()
 	if err != nil || sigstorePassphrase != nil || gpgPassphrase != "from-file\r" {
 		t.Fatalf("GPG file passphrases = %q/%q, %v", sigstorePassphrase, gpgPassphrase, err)
-	}
-}
-
-func TestStoredTransferOptionsCaptureCosignPasswordForSanitizedWorker(t *testing.T) {
-	t.Setenv("COSIGN_PASSWORD", "worker-only-passphrase")
-	store, err := buildahbackend.DefaultStoreOptions()
-	if err != nil {
-		t.Fatal(err)
-	}
-	root := t.TempDir()
-	store.RunRoot = filepath.Join(root, "runroot")
-	store.GraphRoot = filepath.Join(root, "graphroot")
-	options, cleanup, err := storedTransferOptions("image-id", digest.FromString("manifest"), Options{
-		BuildStore: store,
-		Signing:    SigningOptions{SigstorePrivateKeyFile: "cosign.key"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	passphraseFile := options.SigstorePassphraseFile
-	defer func() {
-		if err := cleanup(); err != nil {
-			t.Error(err)
-		}
-	}()
-	if passphraseFile == "" {
-		t.Fatal("COSIGN_PASSWORD was not captured for the sanitized worker")
-	}
-	data, err := os.ReadFile(passphraseFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != "worker-only-passphrase" {
-		t.Fatalf("captured passphrase = %q", data)
-	}
-	if err := cleanup(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(passphraseFile); !os.IsNotExist(err) {
-		t.Fatalf("captured passphrase file remains after cleanup: %v", err)
 	}
 }
 
@@ -239,7 +200,12 @@ func TestSignStoredImageWithGPGKey(t *testing.T) {
 	storeOptions := nativeTestStore(storeDir)
 	selections := make(map[string]oci.StoredSelection, len(manifests))
 	for _, selected := range manifests {
-		imageID, err := buildahbackend.ImportLayoutSupervised(ctx, storeOptions, layoutPath, selected)
+		var imageID string
+		err := buildahbackend.WithStore(storeOptions, func(backend storage.Store) error {
+			var importErr error
+			imageID, importErr = buildahbackend.ImportSelectedImage(ctx, backend, &types.SystemContext{BigFilesTemporaryDir: t.TempDir()}, layoutPath, selected)
+			return importErr
+		})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -576,11 +542,10 @@ func TestCopyRootSignsMultiPlatformIndexAndEveryInstance(t *testing.T) {
 
 func verifySignedReference(t *testing.T, ctx context.Context, registryName, publicKey string, selection imagecopy.ImageListSelection, wantAllowed bool) {
 	t.Helper()
-	registriesDir, err := sigstoreAttachmentsConfig()
-	if err != nil {
+	registriesDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(registriesDir, "coopr-signing.yaml"), []byte(`{"default-docker":{"use-sigstore-attachments":true}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = os.RemoveAll(registriesDir) }()
 	system := &types.SystemContext{
 		RegistriesDirPath: registriesDir, DockerInsecureSkipTLSVerify: types.OptionalBoolTrue,
 		BigFilesTemporaryDir: t.TempDir(),

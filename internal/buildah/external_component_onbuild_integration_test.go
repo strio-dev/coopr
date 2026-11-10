@@ -44,7 +44,7 @@ package as="assets" {
     copy "fixture" "/artifact"
 }
 extend {
-    from "${runtime_base}" as="prepared" {}
+    from "${runtime_base}" as="prepared" after="assets" {}
     copy "/inherited" "/selected" from="prepared"
 }
 `)
@@ -125,7 +125,7 @@ from "scratch" {
 }
 `), planner.Options{Mode: planner.Build, Platform: "linux/" + runtime.GOARCH}, SupervisedPlanOptions{
 		Store: store, ContextDir: root, Isolation: "rootless", Output: Output{Path: invokedLayout},
-		ComponentStoreDir: componentDir, Pull: false,
+		ComponentStoreDir:   componentDir,
 		SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
 	})
 	if err != nil {

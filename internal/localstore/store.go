@@ -2,6 +2,7 @@
 package localstore
 
 import (
+	"archive/tar"
 	"context"
 	"encoding/json"
 	"errors"
@@ -121,13 +122,24 @@ func DefaultComponentDir() (string, error) { return defaultDir("components") }
 // images are written to Coopr's local store. An implicit localhost prefix is
 // removed again so a build tagged "base" is later found by FROM base.
 func NormalizeImageTag(tag string) (string, error) {
+	normalized, err := NormalizeNativeImageTag(tag)
+	if err != nil {
+		return "", err
+	}
+	if !strings.HasPrefix(tag, "localhost/") {
+		normalized = strings.TrimPrefix(normalized, "localhost/")
+	}
+	return normalized, nil
+}
+
+// NormalizeNativeImageTag resolves Podman's local-name and latest defaults.
+func NormalizeNativeImageTag(tag string) (string, error) {
 	if tag == "" {
 		return "", nil
 	}
 	if strings.TrimSpace(tag) != tag || strings.ContainsAny(tag, " \t\r\n") || strings.HasPrefix(tag, "-") || strings.Contains(tag, "://") {
 		return "", fmt.Errorf("invalid local image tag %q", tag)
 	}
-	explicitLocalhost := strings.HasPrefix(tag, "localhost/")
 	named, err := libimage.NormalizeName(tag)
 	if err != nil {
 		return "", fmt.Errorf("invalid local image tag %q: %w", tag, err)
@@ -135,11 +147,7 @@ func NormalizeImageTag(tag string) (string, error) {
 	if _, ok := named.(imagereference.Digested); ok {
 		return "", fmt.Errorf("local image tag %q must not include a digest", tag)
 	}
-	normalized := named.String()
-	if !explicitLocalhost && strings.HasPrefix(normalized, "localhost/") {
-		normalized = strings.TrimPrefix(normalized, "localhost/")
-	}
-	return normalized, nil
+	return named.String(), nil
 }
 
 func defaultDir(name string) (string, error) {
@@ -163,44 +171,26 @@ func Put(ctx context.Context, rootDir string, source content.ReadOnlyStorage, ro
 	if source == nil {
 		return errors.New("nil OCI graph source")
 	}
-	dir, err := prepareRoot(rootDir)
-	if err != nil {
-		return err
-	}
-	lock := flock.New(filepath.Join(dir, lockFilename))
-	locked, err := lock.TryLockContext(ctx, 25*time.Millisecond)
-	if err != nil {
-		return err
-	}
-	if !locked {
+	return Update(ctx, rootDir, func(target *orasoci.Store) error {
+		if err := oras.CopyGraph(ctx, source, target, root, oras.CopyGraphOptions{}); err != nil {
+			return fmt.Errorf("copy OCI graph: %w", err)
+		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		return errors.New("local OCI store lock not acquired")
-	}
-	defer func() { _ = lock.Unlock() }()
-	target, err := orasoci.NewWithContext(ctx, dir)
-	if err != nil {
-		return err
-	}
-	if err := oras.CopyGraph(ctx, source, target, root, oras.CopyGraphOptions{}); err != nil {
-		return fmt.Errorf("copy OCI graph: %w", err)
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := target.Tag(ctx, root, root.Digest.String()); err != nil {
-		return fmt.Errorf("anchor local OCI graph: %w", err)
-	}
-	for _, tag := range tags {
-		if tag == "" {
-			continue
+		if err := target.Tag(ctx, root, root.Digest.String()); err != nil {
+			return fmt.Errorf("anchor local OCI graph: %w", err)
 		}
-		if err := target.Tag(ctx, root, tag); err != nil {
-			return fmt.Errorf("tag local OCI graph %q: %w", tag, err)
+		for _, tag := range tags {
+			if tag == "" {
+				continue
+			}
+			if err := target.Tag(ctx, root, tag); err != nil {
+				return fmt.Errorf("tag local OCI graph %q: %w", tag, err)
+			}
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 // TagExisting commits a graph whose blobs were written directly into this
@@ -579,6 +569,34 @@ func prepareRoot(rootDir string) (string, error) {
 		return "", err
 	}
 	return dir, nil
+}
+
+// ReadArchiveIndex reads bounded root metadata without extracting archive paths.
+// Callers retain their image/component schema, media-type and root-count policy.
+func ReadArchiveIndex(path string) (v1.Index, error) {
+	var index v1.Index
+	file, err := os.Open(path)
+	if err != nil {
+		return index, err
+	}
+	defer func() { _ = file.Close() }()
+	reader := tar.NewReader(file)
+	for {
+		header, err := reader.Next()
+		if err != nil {
+			return index, fmt.Errorf("OCI archive has no index.json: %w", err)
+		}
+		if header.Name != "index.json" && header.Name != "./index.json" {
+			continue
+		}
+		if header.Size < 0 || header.Size > 8<<20 {
+			return index, errors.New("OCI index is too large")
+		}
+		if err := json.NewDecoder(io.LimitReader(reader, header.Size)).Decode(&index); err != nil {
+			return index, fmt.Errorf("decode OCI index: %w", err)
+		}
+		return index, nil
+	}
 }
 
 // WriteArchive serializes the selected OCI graph and optional auxiliary roots,

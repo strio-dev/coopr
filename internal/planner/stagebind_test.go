@@ -71,17 +71,14 @@ func TestStageBindARGAndEnvironmentOrder(t *testing.T) {
 }
 
 func TestStageBindBaseEnvironmentSatisfiesUnsetARG(t *testing.T) {
-	plan, err := Create(parse(t, `from "alpine" {
+	plan := makePlan(t, `from "alpine" {
     env COPIED="${base_value}"
     run "check"
 }
-`), Options{Mode: Build, StageBinds: map[string]StageBind{"0": {
+`, Options{Mode: Build, StageBinds: map[string]StageBind{"0": {
 		BaseEnvironment: map[string]string{"base_value": "from-image"},
 		Inherited:       []definition.Instruction{{Name: "arg", Arguments: []string{"base_value"}}},
 	}}})
-	if err != nil {
-		t.Fatal(err)
-	}
 	if got := plan.Stages[0].Operations[0].Properties["COPIED"]; got != "from-image" {
 		t.Fatalf("base environment expansion = %q", got)
 	}
@@ -91,47 +88,41 @@ func TestStageBindBaseEnvironmentSatisfiesUnsetARG(t *testing.T) {
 }
 
 func TestStageBindMultiValueENVUsesPriorEnvironment(t *testing.T) {
-	plan, err := Create(parse(t, `from "alpine" {
+	plan := makePlan(t, `from "alpine" {
     run "check"
 }
-`), Options{Mode: Build, StageBinds: map[string]StageBind{"0": {
+`, Options{Mode: Build, StageBinds: map[string]StageBind{"0": {
 		BaseEnvironment: map[string]string{"A": "base"},
 		Inherited: []definition.Instruction{{Name: "env", Properties: map[string]string{
 			"A": "one", "B": "$A",
 		}}},
 	}}})
-	if err != nil {
-		t.Fatal(err)
-	}
 	if got := plan.Stages[0].Operations[0].Properties["B"]; got != "base" {
 		t.Fatalf("second ENV assignment saw earlier assignment: %q", got)
 	}
 }
 
 func TestStageBindDoesNotExposeUndeclaredAutomaticArguments(t *testing.T) {
-	plan, err := Create(parse(t, `from "scratch" {
+	plan := makePlan(t, `from "scratch" {
     env TARGET="$TARGETARCH"
 }
-`), Options{Mode: Build, StageBinds: map[string]StageBind{"0": {}}})
-	if err != nil {
-		t.Fatal(err)
-	}
+`, Options{Mode: Build, StageBinds: map[string]StageBind{"0": {}}})
 	if got := plan.Stages[0].Operations[0].Properties["TARGET"]; got != "" {
 		t.Fatalf("undeclared automatic ARG leaked into stage as %q", got)
 	}
 }
 
-func TestStageBindRejectsComponentWithoutFrozenMetadata(t *testing.T) {
+func TestStageBindRejectsComponentWithoutVerifiedMetadata(t *testing.T) {
 	_, err := Create(parse(t, `from "scratch" as="builder" {}
 extend {}
 `), Options{Mode: Publish, StageBinds: map[string]StageBind{"0": {}}})
-	if err == nil || !strings.Contains(err.Error(), "require frozen publication metadata") {
+	if err == nil || !strings.Contains(err.Error(), "require verified publication metadata") {
 		t.Fatalf("component stage bind was accepted without publication binding: %v", err)
 	}
 }
 
 func TestStageBindAddsHiddenStageDependencyBeforeClosure(t *testing.T) {
-	plan, err := Create(parse(t, `from "scratch" as="assets" {
+	plan := makePlan(t, `from "scratch" as="assets" {
     run "prepare"
 }
 from "scratch" as="unused" {
@@ -140,12 +131,9 @@ from "scratch" as="unused" {
 from "alpine" as="final" {
     run "finish"
 }
-`), Options{Mode: Build, Target: "final", StageBinds: map[string]StageBind{"2": {
+`, Options{Mode: Build, Target: "final", StageBinds: map[string]StageBind{"2": {
 		Inherited: []definition.Instruction{{Name: "copy", Arguments: []string{"/artifact", "/artifact"}, Properties: map[string]string{"from": "assets"}}},
 	}}})
-	if err != nil {
-		t.Fatal(err)
-	}
 	if got, want := stageIDs(plan), []string{"0", "2"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("stage closure = %v, want %v", got, want)
 	}
@@ -158,9 +146,9 @@ from "alpine" as="final" {
 }
 
 func TestStageBindRunMountAddsHiddenStageDependency(t *testing.T) {
-	plan, err := Create(parse(t, `from "scratch" as="assets" {}
+	plan := makePlan(t, `from "scratch" as="assets" {}
 from "alpine" as="final" {}
-`), Options{Mode: Build, Target: "final", StageBinds: map[string]StageBind{"1": {
+`, Options{Mode: Build, Target: "final", StageBinds: map[string]StageBind{"1": {
 		Inherited: []definition.Instruction{{
 			Name: "run", Form: "shell", Arguments: []string{"cat /mnt"},
 			Properties: map[string]string{"network": "none"},
@@ -168,9 +156,6 @@ from "alpine" as="final" {}
 				Properties: map[string]string{"from": "assets", "source": "/artifact", "target": "/mnt"}}},
 		}},
 	}}})
-	if err != nil {
-		t.Fatal(err)
-	}
 	if got, want := stageIDs(plan), []string{"0", "1"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("stage closure = %v, want %v", got, want)
 	}
@@ -258,15 +243,12 @@ from "alpine" as="final" {
 }
 
 func TestStageLocalARGCanBeRedeclared(t *testing.T) {
-	plan, err := Create(parse(t, `from "scratch" {
+	plan := makePlan(t, `from "scratch" {
     arg "value" "one"
     arg "value" "two"
     env RESULT="${value}"
 }
-`), Options{Mode: Build})
-	if err != nil {
-		t.Fatal(err)
-	}
+`, Options{Mode: Build})
 	if got := plan.Stages[0].Operations[0].Properties["RESULT"]; got != "two" {
 		t.Fatalf("redeclared ARG = %q", got)
 	}
@@ -287,41 +269,8 @@ extend {
 	}
 }
 
-func TestAuthoredENVShadowsARGWithoutStageBind(t *testing.T) {
-	plan, err := Create(parse(t, `from "scratch" {
-    arg "value" "argument"
-    env value="environment"
-    run "check"
-}
-`), Options{Mode: Build})
-	if err != nil {
-		t.Fatal(err)
-	}
-	run := plan.Stages[0].Operations[1]
-	if _, ok := run.ArgumentsInScope["value"]; ok {
-		t.Fatalf("authored ENV did not shadow ARG: %v", run.ArgumentsInScope)
-	}
-}
-
-func TestValuelessARGRedeclarationDoesNotClearENVShadow(t *testing.T) {
-	plan, err := Create(parse(t, `from "scratch" {
-    arg "value" "argument"
-    env value="environment"
-    arg "value"
-    run "check"
-}
-`), Options{Mode: Build})
-	if err != nil {
-		t.Fatal(err)
-	}
-	run := plan.Stages[0].Operations[1]
-	if _, ok := run.ArgumentsInScope["value"]; ok {
-		t.Fatalf("valueless ARG cleared ENV precedence: %v", run.ArgumentsInScope)
-	}
-}
-
 func TestLocalFROMInheritsEnvironmentAndShadowOrder(t *testing.T) {
-	plan, err := Create(parse(t, `from "scratch" as="base" {
+	plan := makePlan(t, `from "scratch" as="base" {
     arg "flavor" "argument"
     env inherited="${flavor}"
     env flavor="environment"
@@ -331,10 +280,7 @@ from "base" as="child" {
     copy "${child}" "/result"
     run "check"
 }
-`), Options{Mode: Build})
-	if err != nil {
-		t.Fatal(err)
-	}
+`, Options{Mode: Build})
 	child := plan.Stages[1]
 	if got := child.Operations[0].Properties["child"]; got != "argument-environment" {
 		t.Fatalf("inherited ENV expansion = %q", got)

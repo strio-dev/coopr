@@ -43,6 +43,8 @@ func TestSupervisedHTTPAddHonorsRetryOption(t *testing.T) {
 				}
 			} else if err != nil || attempts.Load() != 2 {
 				t.Fatalf("supervised retry: attempts=%d error=%v", attempts.Load(), err)
+			} else if got := localComponentLastFile(t, filepath.Join(fixture.root, "result"), "proof"); got != "retried payload" {
+				t.Fatalf("retried payload = %q", got)
 			}
 		})
 	}

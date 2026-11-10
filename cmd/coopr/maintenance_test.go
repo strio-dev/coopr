@@ -27,6 +27,7 @@ import (
 	"github.com/strio-dev/coopr/internal/localstore"
 	"github.com/strio-dev/coopr/internal/oci"
 	"github.com/strio-dev/coopr/internal/storeactivity"
+	"github.com/strio-dev/coopr/internal/testutil/nativeimage"
 	"go.podman.io/common/libimage"
 	imagecopy "go.podman.io/image/v5/copy"
 	"go.podman.io/image/v5/pkg/blobinfocache/none"
@@ -90,42 +91,6 @@ func TestComponentListingSupportsBothCommands(t *testing.T) {
 	}
 }
 
-func TestImageInspectUsesNativeImageData(t *testing.T) {
-	options := maintenanceStoreOptions(t.TempDir())
-	store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(options))
-	if err != nil {
-		t.Fatal(err)
-	}
-	layout, descriptor, imageID := maintenanceImageLayout(t, v1.Platform{OS: "linux", Architecture: "amd64"}, "inspect")
-	if _, err := store.WriteLayout(context.Background(), layout, descriptor, "inspect"); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	var stdout, stderr bytes.Buffer
-	status := run([]string{"--root", options.GraphRoot, "--runroot", options.RunRoot, "--storage-driver", "vfs", "image", "inspect", "inspect"}, &stdout, &stderr)
-	if status != 0 {
-		t.Fatalf("inspect status=%d stderr=%s", status, &stderr)
-	}
-	var inspectedRows []libimage.ImageData
-	if err := json.Unmarshal(stdout.Bytes(), &inspectedRows); err != nil {
-		t.Fatal(err)
-	}
-	if len(inspectedRows) != 1 {
-		t.Fatalf("expected one inspection: %s", &stdout)
-	}
-	inspected := inspectedRows[0]
-	if inspected.ID != imageID.Encoded() || inspected.Digest != descriptor.Digest || inspected.Architecture != "amd64" || inspected.Os != "linux" || inspected.Config == nil || inspected.Config.Labels["test"] != "inspect" {
-		t.Fatalf("inspection lost native identity or configuration: %s", &stdout)
-	}
-	for _, internal := range []string{"ConfigData", "SourceManifest", "platforms"} {
-		if strings.Contains(stdout.String(), `"`+internal+`"`) {
-			t.Fatalf("inspection exposes internal %s: %s", internal, &stdout)
-		}
-	}
-}
-
 func TestComponentListingAlignsNamesAndDigests(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	directory, err := componentstore.DefaultDir()
@@ -141,9 +106,7 @@ func TestComponentListingAlignsNamesAndDigests(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	if status := run([]string{"component", "ls"}, &stdout, &stderr); status != 0 {
-		t.Fatalf("component ls status=%d stderr=%s", status, &stderr)
-	}
+	maintenanceRun(t, []string{"component", "ls"}, &stdout, &stderr)
 	rows := strings.Split(strings.TrimSpace(stdout.String()), "\n")
 	if len(rows) != 3 {
 		t.Fatalf("component listing lost tags: %s", &stdout)
@@ -182,9 +145,7 @@ func TestComponentInspectAcceptsNamesAndDigests(t *testing.T) {
 	for _, reference := range []string{"inspect", "inspect:latest", descriptor.Digest.String()} {
 		t.Run(reference, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			if status := run([]string{"component", "inspect", reference}, &stdout, &stderr); status != 0 {
-				t.Fatalf("inspect status=%d stderr=%s", status, &stderr)
-			}
+			maintenanceRun(t, []string{"component", "inspect", reference}, &stdout, &stderr)
 			var actual v1.Descriptor
 			if err := json.Unmarshal(stdout.Bytes(), &actual); err != nil {
 				t.Fatal(err)
@@ -199,7 +160,7 @@ func TestComponentInspectAcceptsNamesAndDigests(t *testing.T) {
 func TestImageInspectPreservesSelectedManifestFormat(t *testing.T) {
 	ctx := context.Background()
 	options := maintenanceStoreOptions(t.TempDir())
-	store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(options))
+	store, err := nativeimage.NewStore(buildah.NativeStoreOptions(options))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +228,7 @@ func TestImageInspectPreservesSelectedManifestFormat(t *testing.T) {
 		name       string
 		descriptor v1.Descriptor
 	}{{"formats-oci", original}, {"formats-docker", docker}} {
-		if _, err := store.WriteLayout(ctx, layoutPath, variant.descriptor, variant.name); err != nil {
+		if _, err := store.SeedLayout(ctx, layoutPath, variant.descriptor, variant.name); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -279,20 +240,12 @@ func TestImageInspectPreservesSelectedManifestFormat(t *testing.T) {
 		descriptor v1.Descriptor
 	}{{"formats-oci", docker}, {original.Digest.String(), original}, {"localhost/formats-oci@" + original.Digest.String(), original}, {"formats-docker", docker}, {docker.Digest.String(), docker}} {
 		t.Run(variant.name, func(t *testing.T) {
-			var stdout, stderr bytes.Buffer
-			if status := run([]string{"--root", options.GraphRoot, "--runroot", options.RunRoot, "--storage-driver", "vfs", "image", "inspect", variant.name}, &stdout, &stderr); status != 0 {
-				t.Fatalf("inspect status=%d stderr=%s", status, &stderr)
-			}
-			var inspectedRows []libimage.ImageData
-			if err := json.Unmarshal(stdout.Bytes(), &inspectedRows); err != nil {
-				t.Fatal(err)
-			}
-			if len(inspectedRows) != 1 {
-				t.Fatalf("expected one inspection: %s", &stdout)
-			}
-			inspected := inspectedRows[0]
+			inspected := maintenanceInspect(t, options, variant.name)
 			if inspected.ID != imageID.Encoded() || inspected.Digest != variant.descriptor.Digest || inspected.ManifestType != variant.descriptor.MediaType {
 				t.Fatalf("inspect selected wrong variant: id=%s digest=%s mediaType=%s want=%+v", inspected.ID, inspected.Digest, inspected.ManifestType, variant.descriptor)
+			}
+			if inspected.Architecture != "amd64" || inspected.Os != "linux" || inspected.Config == nil || inspected.Config.Labels["test"] != "formats" {
+				t.Fatalf("inspection lost native configuration: %+v", inspected)
 			}
 			if variant.descriptor.MediaType == v1.MediaTypeImageManifest {
 				if inspected.Annotations["inspect-format"] != "oci" || inspected.Comment != "oci-comment" || inspected.HealthCheck != nil {
@@ -308,120 +261,79 @@ func TestImageInspectPreservesSelectedManifestFormat(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	var stdout, stderr bytes.Buffer
-	if status := run([]string{"--root", options.GraphRoot, "--runroot", options.RunRoot, "--storage-driver", "vfs", "image", "inspect", original.Digest.String()}, &stdout, &stderr); status != 0 {
-		t.Fatalf("retained unnamed manifest inspect status=%d stderr=%s", status, &stderr)
-	}
-	var inspectedRows []libimage.ImageData
-	if err := json.Unmarshal(stdout.Bytes(), &inspectedRows); err != nil {
-		t.Fatal(err)
-	}
-	if len(inspectedRows) != 1 {
-		t.Fatalf("expected one inspection: %s", &stdout)
-	}
-	inspected := inspectedRows[0]
+	inspected := maintenanceInspect(t, options, original.Digest.String())
 	if inspected.ID != imageID.Encoded() || inspected.Digest != original.Digest || inspected.ManifestType != original.MediaType || len(inspected.RepoTags) != 0 {
-		t.Fatalf("unnamed manifest inspection lost pinned identity or added names: %s", &stdout)
+		t.Fatalf("unnamed manifest inspection lost pinned identity or added names: %+v", inspected)
 	}
 	t.Run("never-named", func(t *testing.T) {
 		options := maintenanceStoreOptions(t.TempDir())
-		store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(options))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := store.WriteLayout(ctx, layoutPath, original, ""); err != nil {
-			t.Fatal(err)
-		}
-		if err := store.Close(); err != nil {
-			t.Fatal(err)
-		}
-		var stdout, stderr bytes.Buffer
-		if status := run([]string{"--root", options.GraphRoot, "--runroot", options.RunRoot, "--storage-driver", "vfs", "image", "inspect", original.Digest.String()}, &stdout, &stderr); status != 0 {
-			t.Fatalf("never-named inspect status=%d stderr=%s", status, &stderr)
-		}
-		var inspectedRows []libimage.ImageData
-		if err := json.Unmarshal(stdout.Bytes(), &inspectedRows); err != nil {
-			t.Fatal(err)
-		}
-		if len(inspectedRows) != 1 {
-			t.Fatalf("expected one inspection: %s", &stdout)
-		}
-		inspected := inspectedRows[0]
+		maintenanceWriteLayout(t, options, layoutPath, original, "")
+		inspected := maintenanceInspect(t, options, original.Digest.String())
 		if inspected.ID != imageID.Encoded() || inspected.Digest != original.Digest || inspected.ManifestType != original.MediaType || inspected.Annotations["inspect-format"] != "oci" || len(inspected.RepoTags) != 0 {
-			t.Fatalf("never-named inspection lost identity or added names: %s", &stdout)
+			t.Fatalf("never-named inspection lost identity or added names: %+v", inspected)
 		}
 	})
 }
 
-func TestImageRemoveAcceptsNativeOnlyName(t *testing.T) {
-	root := t.TempDir()
-	options := maintenanceStoreOptions(root)
-	store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(options))
-	if err != nil {
-		t.Fatal(err)
-	}
-	layout, descriptor, imageID := maintenanceImageLayout(t, v1.Platform{OS: "linux", Architecture: "amd64"}, "native-only")
-	if _, err := store.WriteLayout(context.Background(), layout, descriptor, "native-only"); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	var stdout, stderr bytes.Buffer
-	status := run([]string{
-		"--root", options.GraphRoot, "--runroot", options.RunRoot, "--storage-driver", "vfs",
-		"image", "rm", "native-only",
-	}, &stdout, &stderr)
-	if status != 0 {
-		t.Fatalf("native-only rm status=%d stdout=%q stderr=%q", status, stdout.String(), stderr.String())
-	}
-	store, err = imagestore.NewWithOptions(buildah.NativeStoreOptions(options))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = store.Close() }()
-	if _, err := store.Resolve(context.Background(), "native-only", v1.Platform{OS: "linux", Architecture: "amd64"}); err == nil {
-		t.Fatal("removed native-only name still resolves")
-	}
-	if _, err := store.Tag(imageID.Encoded(), "retained"); err == nil {
-		t.Fatal("rm retained the final untagged underlying image")
-	}
-	if !strings.Contains(stdout.String(), "Untagged: localhost/native-only:latest") || !strings.Contains(stdout.String(), "Deleted: "+imageID.Encoded()) {
-		t.Fatalf("missing native removal reports: %s", &stdout)
-	}
-
-}
-
-func TestImageRemoveShortNameRemovesMatchedDockerQualifiedTag(t *testing.T) {
-	root := t.TempDir()
-	options := maintenanceStoreOptions(root)
-	store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(options))
-	if err != nil {
-		t.Fatal(err)
-	}
-	layout, descriptor, _ := maintenanceImageLayout(t, v1.Platform{OS: "linux", Architecture: "amd64"}, "docker-qualified")
-	if _, err := store.WriteLayout(context.Background(), layout, descriptor, "docker.io/library/qualified:latest"); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	var stdout, stderr bytes.Buffer
-	status := run([]string{
-		"--root", options.GraphRoot, "--runroot", options.RunRoot, "--storage-driver", "vfs",
-		"image", "rm", "qualified",
-	}, &stdout, &stderr)
-	if status != 0 {
-		t.Fatalf("qualified rm status=%d stdout=%q stderr=%q", status, stdout.String(), stderr.String())
-	}
-	store, err = imagestore.NewWithOptions(buildah.NativeStoreOptions(options))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = store.Close() }()
-	if _, err := store.MatchedName("docker.io/library/qualified:latest"); err == nil {
-		t.Fatal("short removal left the matched Docker-qualified native tag")
+func TestImageRemoveNativeNamesAndRecovery(t *testing.T) {
+	for _, test := range []struct {
+		name, storedName, reference                   string
+		brokenConfig, missingManifest, repeated, byID bool
+	}{
+		{name: "native-only", storedName: "native-only", reference: "native-only"},
+		{name: "docker-qualified", storedName: "docker.io/library/qualified:latest", reference: "qualified"},
+		{name: "bad-config", storedName: "bad-config", reference: "bad-config", brokenConfig: true},
+		{name: "missing-manifest", storedName: "broken", reference: "broken", missingManifest: true},
+		{name: "repeated-name", storedName: "duplicate", reference: "duplicate", repeated: true},
+		{name: "id-and-name", storedName: "duplicate", reference: "duplicate", repeated: true, byID: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			options := maintenanceStoreOptions(t.TempDir())
+			layout, descriptor, id := maintenanceImageLayout(t, v1.Platform{OS: "linux", Architecture: "amd64"}, test.name)
+			if err := buildah.WithStore(options, func(backend storage.Store) error {
+				if test.missingManifest {
+					_, err := backend.CreateImage(id.Encoded(), []string{"localhost/broken:latest"}, "", "", nil)
+					return err
+				}
+				if _, err := nativeimage.BorrowStore(backend).SeedLayout(context.Background(), layout, descriptor, test.storedName); err != nil {
+					return err
+				}
+				if test.brokenConfig {
+					return backend.SetImageBigData(id.Encoded(), id.String(), []byte("broken config"), nil)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			names := []string{test.reference}
+			if test.repeated {
+				names = append(names, test.reference)
+			}
+			if test.byID {
+				names[0] = id.Encoded()
+			}
+			var stdout, stderr bytes.Buffer
+			maintenanceRun(t, imageIOArgs(options, append([]string{"rm"}, names...)...), &stdout, &stderr)
+			if strings.Count(stdout.String(), "Deleted: "+id.Encoded()) != 1 {
+				t.Fatalf("expected exactly one native deletion: %s", &stdout)
+			}
+			if !test.byID {
+				name, err := imagestore.NormalizeTag(test.storedName)
+				if err != nil || !strings.Contains(stdout.String(), "Untagged: "+name) {
+					t.Fatalf("missing removal report for %s: %s (%v)", name, &stdout, err)
+				}
+			}
+			if err := buildah.WithStore(options, func(backend storage.Store) error {
+				for _, reference := range []string{test.storedName, id.Encoded()} {
+					if _, err := backend.Image(reference); !errors.Is(err, storage.ErrImageUnknown) {
+						t.Fatalf("removed image %s remains or lookup failed: %v", reference, err)
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
@@ -429,7 +341,7 @@ func TestNativeImageListingDiscoversAllAndForeignPlatforms(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	options := maintenanceStoreOptions(root)
-	store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(options))
+	store, err := nativeimage.NewStore(buildah.NativeStoreOptions(options))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,18 +350,20 @@ func TestNativeImageListingDiscoversAllAndForeignPlatforms(t *testing.T) {
 	amdLayout, amdManifest, _ := maintenanceImageLayout(t, amd, "amd64")
 	armLayout, armManifest, _ := maintenanceImageLayout(t, arm, "arm64")
 	indexLayout := filepath.Join(t.TempDir(), "index")
-	index, _, err := oci.AssembleImageIndex(ctx, indexLayout, []oci.ImageVariant{
+	indexFixtureVariants := []oci.ImageVariant{
 		{Layout: amdLayout, Manifest: amdManifest, Platform: amd},
 		{Layout: armLayout, Manifest: armManifest, Platform: arm},
-	}, "oci")
+	}
+	index, indexFixtureData, err := oci.ImageIndexDescriptor(indexFixtureVariants, "oci")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.WriteIndexLayout(ctx, indexLayout, index, "multi"); err != nil {
+	writeImageIndexFixture(t, ctx, indexLayout, index, indexFixtureData, indexFixtureVariants)
+	if _, err := store.SeedIndex(ctx, indexLayout, index, "multi"); err != nil {
 		t.Fatal(err)
 	}
 	foreignLayout, foreignManifest, _ := maintenanceImageLayout(t, arm, "foreign")
-	if _, err := store.WriteLayout(ctx, foreignLayout, foreignManifest, "foreign-only"); err != nil {
+	if _, err := store.SeedLayout(ctx, foreignLayout, foreignManifest, "foreign-only"); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
@@ -457,9 +371,7 @@ func TestNativeImageListingDiscoversAllAndForeignPlatforms(t *testing.T) {
 	}
 
 	var listing, listingErr bytes.Buffer
-	if status := run([]string{"--root", options.GraphRoot, "--runroot", options.RunRoot, "--storage-driver", "vfs", "images"}, &listing, &listingErr); status != 0 {
-		t.Fatalf("listing: status=%d stderr=%s", status, &listingErr)
-	}
+	maintenanceRun(t, []string{"--root", options.GraphRoot, "--runroot", options.RunRoot, "--storage-driver", "vfs", "images"}, &listing, &listingErr)
 	if !strings.Contains(listing.String(), "localhost/multi") || !strings.Contains(listing.String(), "localhost/foreign-only") {
 		t.Fatalf("index/foreign images absent: %s", &listing)
 	}
@@ -517,26 +429,26 @@ func TestNativeImageListingDiscoversAllAndForeignPlatforms(t *testing.T) {
 	}
 	stdout.Reset()
 	stderr.Reset()
-	if status := run([]string{"--root", options.GraphRoot, "--runroot", options.RunRoot, "--storage-driver", "vfs", "manifest", "inspect", "multi"}, &stdout, &stderr); status != 0 {
-		t.Fatalf("manifest inspection status=%d stderr=%s", status, &stderr)
-	}
+	maintenanceRun(t, []string{"--root", options.GraphRoot, "--runroot", options.RunRoot, "--storage-driver", "vfs", "manifest", "inspect", "multi"}, &stdout, &stderr)
 	var inspectedIndex v1.Index
 	if err := json.Unmarshal(stdout.Bytes(), &inspectedIndex); err != nil || len(inspectedIndex.Manifests) != 2 {
 		t.Fatalf("manifest inspection lost raw index: %s, %v", &stdout, err)
 	}
 	updatedLayout := filepath.Join(t.TempDir(), "updated-index")
-	updated, _, err := oci.AssembleImageIndex(ctx, updatedLayout, []oci.ImageVariant{
+	updatedFixtureVariants := []oci.ImageVariant{
 		{Layout: armLayout, Manifest: armManifest, Platform: arm},
 		{Layout: amdLayout, Manifest: amdManifest, Platform: amd},
-	}, "oci")
+	}
+	updated, updatedFixtureData, err := oci.ImageIndexDescriptor(updatedFixtureVariants, "oci")
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, err = imagestore.NewWithOptions(buildah.NativeStoreOptions(options))
+	writeImageIndexFixture(t, ctx, updatedLayout, updated, updatedFixtureData, updatedFixtureVariants)
+	store, err = nativeimage.NewStore(buildah.NativeStoreOptions(options))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.WriteIndexLayout(ctx, updatedLayout, updated, "multi"); err != nil {
+	if _, err := store.SeedIndex(ctx, updatedLayout, updated, "multi"); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
@@ -556,6 +468,41 @@ func TestNativeImageListingDiscoversAllAndForeignPlatforms(t *testing.T) {
 	}
 	if inspectedRows[0].Digest != selectedManifest.Digest || inspectedRows[0].Architecture != platforms.DefaultSpec().Architecture {
 		t.Fatalf("retained index inspection lost selected child: %s", &stdout)
+	}
+}
+
+func maintenanceInspect(t *testing.T, options buildah.StoreOptions, reference string) libimage.ImageData {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	maintenanceRun(t, imageIOArgs(options, "inspect", reference), &stdout, &stderr)
+	var rows []libimage.ImageData
+	if err := json.Unmarshal(stdout.Bytes(), &rows); err != nil || len(rows) != 1 {
+		t.Fatalf("expected one native image inspection: %s (%v)", &stdout, err)
+	}
+	for _, internal := range []string{"ConfigData", "SourceManifest", "platforms"} {
+		if strings.Contains(stdout.String(), `"`+internal+`"`) {
+			t.Fatalf("inspection exposes internal %s: %s", internal, &stdout)
+		}
+	}
+	return rows[0]
+}
+
+func maintenanceRun(t *testing.T, args []string, stdout, stderr *bytes.Buffer) {
+	t.Helper()
+	if status := run(args, stdout, stderr); status != 0 {
+		t.Fatalf("%v: status=%d stdout=%q stderr=%q", args, status, stdout.String(), stderr.String())
+	}
+}
+
+func maintenanceWriteLayout(t *testing.T, options buildah.StoreOptions, layout string, root v1.Descriptor, name string) {
+	t.Helper()
+	store, err := nativeimage.NewStore(buildah.NativeStoreOptions(options))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, writeErr := store.SeedLayout(context.Background(), layout, root, name)
+	if err := errors.Join(writeErr, store.Close()); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -664,11 +611,11 @@ func TestMaintenanceCommandsPropagateOutputErrors(t *testing.T) {
 			if test.args[1] == "rm" {
 				layout, descriptor, _ := maintenanceImageLayout(t, v1.Platform{OS: "linux", Architecture: "amd64"}, "output-error")
 				if test.args[0] == "image" {
-					store, err := imagestore.NewWithOptions(buildah.NativeStoreOptions(options))
+					store, err := nativeimage.NewStore(buildah.NativeStoreOptions(options))
 					if err != nil {
 						t.Fatal(err)
 					}
-					_, writeErr := store.WriteLayout(context.Background(), layout, descriptor, "output-error")
+					_, writeErr := store.SeedLayout(context.Background(), layout, descriptor, "output-error")
 					if err := errors.Join(writeErr, store.Close()); err != nil {
 						t.Fatal(err)
 					}
@@ -747,7 +694,7 @@ func TestImagesReportIncludesDanglingAndHidesPrivateRecords(t *testing.T) {
 			{"coopr.internal/cache:private", "cache", false}, {"", "selected", true},
 		} {
 			layout, descriptor, id := maintenanceImageLayout(t, v1.Platform{OS: "linux", Architecture: "amd64"}, fixture.label)
-			if _, err := imagestore.FromStore(backend).WriteLayout(context.Background(), layout, descriptor, fixture.name); err != nil {
+			if _, err := nativeimage.BorrowStore(backend).SeedLayout(context.Background(), layout, descriptor, fixture.name); err != nil {
 				return err
 			}
 			if fixture.label == "digest-only" {
@@ -775,9 +722,7 @@ func TestImagesReportIncludesDanglingAndHidesPrivateRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	if status := run([]string{"--root", options.GraphRoot, "--runroot", options.RunRoot, "--storage-driver", "vfs", "images"}, &stdout, &stderr); status != 0 {
-		t.Fatalf("images status=%d stderr=%s", status, &stderr)
-	}
+	maintenanceRun(t, []string{"--root", options.GraphRoot, "--runroot", options.RunRoot, "--storage-driver", "vfs", "images"}, &stdout, &stderr)
 	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
 	if len(lines) != 4 || !strings.Contains(stdout.String(), "registry.example/team/pinned") || strings.Join(strings.Fields(lines[0]), " ") != "REPOSITORY TAG IMAGE ID CREATED SIZE" || !strings.Contains(stdout.String(), visibleID[:12]) || !strings.Contains(stdout.String(), danglingID[:12]) || !strings.Contains(stdout.String(), "<none>") || strings.Contains(stdout.String(), "coopr.internal") {
 		t.Fatalf("unexpected image table: %s", &stdout)
@@ -792,7 +737,7 @@ func TestImageRemoveRetainsOtherNamesAndCacheIdentity(t *testing.T) {
 			if err := buildah.WithStore(options, func(backend storage.Store) error {
 				layout, descriptor, id := maintenanceImageLayout(t, v1.Platform{OS: "linux", Architecture: "amd64"}, "shared")
 				imageID = id.Encoded()
-				if _, err := imagestore.FromStore(backend).WriteLayout(context.Background(), layout, descriptor, "shared"); err != nil {
+				if _, err := nativeimage.BorrowStore(backend).SeedLayout(context.Background(), layout, descriptor, "shared"); err != nil {
 					return err
 				}
 				return backend.AddNames(imageID, []string{remainingName})
@@ -800,9 +745,7 @@ func TestImageRemoveRetainsOtherNamesAndCacheIdentity(t *testing.T) {
 				t.Fatal(err)
 			}
 			var stdout, stderr bytes.Buffer
-			if status := run([]string{"--root", options.GraphRoot, "--runroot", options.RunRoot, "--storage-driver", "vfs", "image", "rm", "shared"}, &stdout, &stderr); status != 0 {
-				t.Fatalf("rm status=%d stderr=%s", status, &stderr)
-			}
+			maintenanceRun(t, []string{"--root", options.GraphRoot, "--runroot", options.RunRoot, "--storage-driver", "vfs", "image", "rm", "shared"}, &stdout, &stderr)
 			if stdout.String() != "Untagged: localhost/shared:latest\n" {
 				t.Fatalf("untag claimed deletion: %s", &stdout)
 			}
@@ -835,19 +778,18 @@ func TestImageRemoveIndexPreservesInstances(t *testing.T) {
 			variants = append(variants, oci.ImageVariant{Layout: layout, Manifest: descriptor, Platform: platform})
 		}
 		layout := filepath.Join(t.TempDir(), "index")
-		index, _, err := oci.AssembleImageIndex(ctx, layout, variants, "oci")
+		index, indexFixtureData, err := oci.ImageIndexDescriptor(variants, "oci")
 		if err != nil {
 			return err
 		}
-		_, err = imagestore.FromStore(backend).WriteIndexLayout(ctx, layout, index, "multi")
+		writeImageIndexFixture(t, ctx, layout, index, indexFixtureData, variants)
+		_, err = nativeimage.BorrowStore(backend).SeedIndex(ctx, layout, index, "multi")
 		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	if status := run([]string{"--root", options.GraphRoot, "--runroot", options.RunRoot, "--storage-driver", "vfs", "image", "rm", "multi"}, &stdout, &stderr); status != 0 {
-		t.Fatalf("index rm status=%d stderr=%s", status, &stderr)
-	}
+	maintenanceRun(t, []string{"--root", options.GraphRoot, "--runroot", options.RunRoot, "--storage-driver", "vfs", "image", "rm", "multi"}, &stdout, &stderr)
 	if !strings.Contains(stdout.String(), "Untagged: localhost/multi:latest") || !strings.Contains(stdout.String(), "Deleted:") {
 		t.Fatalf("missing index reports: %s", &stdout)
 	}
@@ -875,7 +817,7 @@ func TestImageRemoveRefusesContainerUsedImage(t *testing.T) {
 	if err := buildah.WithStore(options, func(backend storage.Store) error {
 		layout, descriptor, id := maintenanceImageLayout(t, v1.Platform{OS: "linux", Architecture: "amd64"}, "in-use")
 		imageID = id.Encoded()
-		if _, err := imagestore.FromStore(backend).WriteLayout(context.Background(), layout, descriptor, "in-use"); err != nil {
+		if _, err := nativeimage.BorrowStore(backend).SeedLayout(context.Background(), layout, descriptor, "in-use"); err != nil {
 			return err
 		}
 		_, err := backend.CreateContainer("", nil, imageID, "", "", nil)
@@ -909,7 +851,7 @@ func TestImageRemovePulledInstanceWithIndexOrigin(t *testing.T) {
 		platform := v1.Platform{OS: "linux", Architecture: "amd64"}
 		layout, descriptor, id := maintenanceImageLayout(t, platform, "pulled-instance")
 		imageID = id.Encoded()
-		if _, err := imagestore.FromStore(backend).WriteLayout(ctx, layout, descriptor, "pulled-instance"); err != nil {
+		if _, err := nativeimage.BorrowStore(backend).SeedLayout(ctx, layout, descriptor, "pulled-instance"); err != nil {
 			return err
 		}
 		_, foreign, _ := maintenanceImageLayout(t, v1.Platform{OS: "linux", Architecture: "arm64"}, "absent-instance")
@@ -925,79 +867,9 @@ func TestImageRemovePulledInstanceWithIndexOrigin(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	if status := run([]string{"--root", options.GraphRoot, "--runroot", options.RunRoot, "--storage-driver", "vfs", "image", "rm", "pulled-instance"}, &stdout, &stderr); status != 0 {
-		t.Fatalf("pulled-instance rm status=%d stderr=%s", status, &stderr)
-	}
+	maintenanceRun(t, []string{"--root", options.GraphRoot, "--runroot", options.RunRoot, "--storage-driver", "vfs", "image", "rm", "pulled-instance"}, &stdout, &stderr)
 	if !strings.Contains(stdout.String(), "Deleted: "+imageID) {
 		t.Fatalf("instance not deleted: %s", &stdout)
-	}
-}
-
-func TestImageRemoveDoesNotRequireHealthyConfiguration(t *testing.T) {
-	options := maintenanceStoreOptions(t.TempDir())
-	ctx := context.Background()
-	var imageID string
-	if err := buildah.WithStore(options, func(backend storage.Store) error {
-		layout, descriptor, id := maintenanceImageLayout(t, v1.Platform{OS: "linux", Architecture: "amd64"}, "bad-config")
-		imageID = id.Encoded()
-		if _, err := imagestore.FromStore(backend).WriteLayout(ctx, layout, descriptor, "bad-config"); err != nil {
-			return err
-		}
-		return backend.SetImageBigData(imageID, id.String(), []byte("broken config"), nil)
-	}); err != nil {
-		t.Fatal(err)
-	}
-	var stdout, stderr bytes.Buffer
-	if status := run([]string{"--root", options.GraphRoot, "--runroot", options.RunRoot, "--storage-driver", "vfs", "image", "rm", "bad-config"}, &stdout, &stderr); status != 0 {
-		t.Fatalf("damaged config blocked rm: status=%d stderr=%s", status, &stderr)
-	}
-	if !strings.Contains(stdout.String(), "Deleted: "+imageID) {
-		t.Fatalf("missing native deletion: %s", &stdout)
-	}
-}
-
-func TestImageRemoveBatchesRepeatedNamesAndIDs(t *testing.T) {
-	for _, byID := range []bool{false, true} {
-		t.Run(map[bool]string{false: "repeated-name", true: "id-and-name"}[byID], func(t *testing.T) {
-			options := maintenanceStoreOptions(t.TempDir())
-			layout, descriptor, id := maintenanceImageLayout(t, v1.Platform{OS: "linux", Architecture: "amd64"}, "duplicate")
-			if err := buildah.WithStore(options, func(backend storage.Store) error {
-				_, err := imagestore.FromStore(backend).WriteLayout(context.Background(), layout, descriptor, "duplicate")
-				return err
-			}); err != nil {
-				t.Fatal(err)
-			}
-			names := []string{"duplicate", "duplicate"}
-			if byID {
-				names[0] = id.Encoded()
-			}
-			var stdout, stderr bytes.Buffer
-			args := append([]string{"--root", options.GraphRoot, "--runroot", options.RunRoot, "--storage-driver", "vfs", "image", "rm"}, names...)
-			if status := run(args, &stdout, &stderr); status != 0 {
-				t.Fatalf("duplicate removal status=%d stderr=%s", status, &stderr)
-			}
-			if strings.Count(stdout.String(), "Deleted: "+id.Encoded()) != 1 {
-				t.Fatalf("duplicate deletion reports: %s", &stdout)
-			}
-		})
-	}
-}
-
-func TestImageRemoveMissingManifestUsesNativeRecovery(t *testing.T) {
-	options := maintenanceStoreOptions(t.TempDir())
-	id := digest.FromString("missing-manifest-rm").Encoded()
-	if err := buildah.WithStore(options, func(backend storage.Store) error {
-		_, err := backend.CreateImage(id, []string{"localhost/broken:latest"}, "", "", nil)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	var stdout, stderr bytes.Buffer
-	if status := run([]string{"--root", options.GraphRoot, "--runroot", options.RunRoot, "--storage-driver", "vfs", "image", "rm", "broken"}, &stdout, &stderr); status != 0 {
-		t.Fatalf("missing manifest blocked native removal: status=%d stderr=%s", status, &stderr)
-	}
-	if !strings.Contains(stdout.String(), "Deleted: "+id) {
-		t.Fatalf("missing native deletion: %s", &stdout)
 	}
 }
 
@@ -1062,12 +934,14 @@ func TestImageInspectIndexUnavailableHost(t *testing.T) {
 			}
 			layout, descriptor, imageID := maintenanceImageLayout(t, platform, "unavailable")
 			indexLayout := filepath.Join(t.TempDir(), "index")
-			index, _, err := oci.AssembleImageIndex(context.Background(), indexLayout, []oci.ImageVariant{{Layout: layout, Manifest: descriptor, Platform: platform}}, "oci")
+			indexFixtureVariants := []oci.ImageVariant{{Layout: layout, Manifest: descriptor, Platform: platform}}
+			index, indexFixtureData, err := oci.ImageIndexDescriptor(indexFixtureVariants, "oci")
 			if err != nil {
 				t.Fatal(err)
 			}
+			writeImageIndexFixture(t, context.Background(), indexLayout, index, indexFixtureData, indexFixtureVariants)
 			if err := buildah.WithStore(options, func(backend storage.Store) error {
-				if _, err := imagestore.FromStore(backend).WriteIndexLayout(context.Background(), indexLayout, index, "unavailable"); err != nil {
+				if _, err := nativeimage.BorrowStore(backend).SeedIndex(context.Background(), indexLayout, index, "unavailable"); err != nil {
 					return err
 				}
 				if missingMember {
@@ -1112,7 +986,7 @@ func TestPruneConfirmationExecution(t *testing.T) {
 				options := maintenanceStoreOptions(t.TempDir())
 				layout, descriptor, imageID := maintenanceImageLayout(t, platforms.DefaultSpec(), "confirmed")
 				if err := buildah.WithStore(options, func(backend storage.Store) error {
-					_, err := imagestore.FromStore(backend).WriteLayout(context.Background(), layout, descriptor, "confirmed")
+					_, err := nativeimage.BorrowStore(backend).SeedLayout(context.Background(), layout, descriptor, "confirmed")
 					return err
 				}); err != nil {
 					t.Fatal(err)
@@ -1192,7 +1066,7 @@ func TestImageInspectIndexUsesNativeSelection(t *testing.T) {
 				var children []v1.Descriptor
 				for _, name := range []string{"first", "second"} {
 					layout, descriptor, _ := maintenanceImageLayout(t, platform, name)
-					if _, err := imagestore.FromStore(backend).WriteLayout(context.Background(), layout, descriptor, name); err != nil {
+					if _, err := nativeimage.BorrowStore(backend).SeedLayout(context.Background(), layout, descriptor, name); err != nil {
 						return err
 					}
 					descriptor.Platform = &platform
@@ -1254,7 +1128,7 @@ func TestImageInspectEncryptedIndexUsesPlaintextNativeImage(t *testing.T) {
 	platform := platforms.DefaultSpec()
 	layout, plaintext, imageID := maintenanceImageLayout(t, platform, "decrypted")
 	if err := buildah.WithStore(options, func(backend storage.Store) error {
-		if _, err := imagestore.FromStore(backend).WriteLayout(context.Background(), layout, plaintext, "plaintext"); err != nil {
+		if _, err := nativeimage.BorrowStore(backend).SeedLayout(context.Background(), layout, plaintext, "plaintext"); err != nil {
 			return err
 		}
 		raw, err := os.ReadFile(filepath.Join(layout, "blobs", "sha256", plaintext.Digest.Encoded()))
@@ -1371,9 +1245,7 @@ func TestImageInspectEncryptedIndexUsesPlaintextNativeImage(t *testing.T) {
 		archivePath := filepath.Join(t.TempDir(), "plaintext.tar")
 		stdout.Reset()
 		stderr.Reset()
-		if status := run(imageIOArgs(options, "save", "--format", "oci-archive", "--output", archivePath, "encrypted-list"), &stdout, &stderr); status != 0 {
-			t.Fatalf("decrypted-origin save status=%d: %s", status, &stderr)
-		}
+		maintenanceRun(t, imageIOArgs(options, "save", "--format", "oci-archive", "--output", archivePath, "encrypted-list"), &stdout, &stderr)
 		archive, err := orasoci.NewFromTar(ctx, archivePath)
 		if err != nil {
 			t.Fatal(err)
@@ -1400,9 +1272,7 @@ func TestImageInspectEncryptedIndexUsesPlaintextNativeImage(t *testing.T) {
 		}
 		stdout.Reset()
 		stderr.Reset()
-		if status := run(imageIOArgs(options, "push", "--tls-verify=false", "encrypted-list", remote), &stdout, &stderr); status != 0 {
-			t.Fatalf("decrypted-origin push status=%d: %s", status, &stderr)
-		}
+		maintenanceRun(t, imageIOArgs(options, "push", "--tls-verify=false", "encrypted-list", remote), &stdout, &stderr)
 		resolver, err := oci.NewResolver(oci.Options{TLSVerify: new(false)})
 		if err != nil {
 			t.Fatal(err)
@@ -1461,7 +1331,7 @@ func TestImageInspectForeignSingleWithIndexOrigin(t *testing.T) {
 	}
 	layout, child, imageID := maintenanceImageLayout(t, platform, "foreign-origin")
 	if err := buildah.WithStore(options, func(backend storage.Store) error {
-		if _, err := imagestore.FromStore(backend).WriteLayout(context.Background(), layout, child, "foreign-origin"); err != nil {
+		if _, err := nativeimage.BorrowStore(backend).SeedLayout(context.Background(), layout, child, "foreign-origin"); err != nil {
 			return err
 		}
 		indexedChild := child

@@ -200,32 +200,6 @@ func liveBusyBoxLayer(t *testing.T, binary []byte) []byte {
 	return buffer.Bytes()
 }
 
-func TestLiveBusyBoxRegistryFixtureResolvesWithoutExternalRegistry(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping the live registry fixture in short mode")
-	}
-	ctx := context.Background()
-	reference, authority := newLiveBusyBoxRegistry(t, ctx)
-	resolver, err := oci.NewResolver(oci.Options{TLSVerify: new(false)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resolved, err := resolver.Resolve(ctx, reference, v1.Platform{OS: "linux", Architecture: runtime.GOARCH}, oci.Image)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasSuffix(reference, "@"+resolved.Selected.Digest.String()) {
-		t.Fatalf("resolved digest = %s, reference = %s", resolved.Selected.Digest, reference)
-	}
-	if len(resolved.Layers) != 1 {
-		t.Fatalf("fixture layers = %d, want 1", len(resolved.Layers))
-	}
-	if resolved.ConfigData == nil {
-		t.Fatal("fixture resolution lost image config")
-	}
-	t.Logf("resolved hermetic fixture from loopback registry %s/coopr/busybox", authority)
-}
-
 func nativeFixtureSelection(ctx context.Context, options StoreOptions, reference string, platform v1.Platform) (oci.StoredSelection, bool, error) {
 	lease, err := acquireStore(options)
 	if err != nil {

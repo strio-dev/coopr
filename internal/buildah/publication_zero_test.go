@@ -2,8 +2,10 @@ package buildah
 
 import (
 	"context"
+	"github.com/strio-dev/coopr/internal/planner"
 	"io"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -29,7 +31,7 @@ func TestValidatePublicationGraphAcceptsConfigOnlyComponent(t *testing.T) {
 	}
 }
 
-func TestPublishPlanSupervisedWritesConfigOnlyComponentLayout(t *testing.T) {
+func TestPublishDefinitionSupervisedWritesConfigOnlyComponentLayout(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping a live config-only component publication in short mode")
 	}
@@ -37,11 +39,11 @@ func TestPublishPlanSupervisedWritesConfigOnlyComponentLayout(t *testing.T) {
 	defer cancel()
 	root := t.TempDir()
 	output := filepath.Join(root, "layout")
-	plan := testPublicationPlan(t, `extend {
+	def := parseWorkerDefinition(t, `extend {
     env CONFIG_ONLY="yes"
 }
 `)
-	result, err := PublishPlanSupervised(ctx, plan, SupervisedPlanOptions{
+	result, err := PublishDefinitionSupervised(ctx, def, planner.Options{Mode: planner.Publish, Platform: runtime.GOOS + "/" + runtime.GOARCH}, SupervisedPlanOptions{
 		Store: StoreOptions{
 			RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs",
 		},

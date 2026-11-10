@@ -123,12 +123,8 @@ extend {
  copy "/value" "/value" from="payload"
  env delivered="${fixed}"
 }`)
-	plan, err := planner.Create(def, planner.Options{Mode: planner.Publish, AwaitComponentReturns: true})
-	if err != nil {
-		t.Fatal(err)
-	}
 	layout := filepath.Join(f.root, "publication")
-	result, err := PublishPlanSupervised(f.ctx, plan, SupervisedPlanOptions{Store: f.options.Store, ContextDir: f.contextDir, Isolation: "rootless", Runtime: "crun", ComponentStoreDir: filepath.Join(f.root, "components"), Output: Output{Path: layout, DisableCompression: true}, SignaturePolicyPath: f.options.SystemContext.SignaturePolicyPath})
+	result, err := PublishDefinitionSupervised(f.ctx, def, planner.Options{Mode: planner.Publish, Platform: runtime.GOOS + "/" + runtime.GOARCH, AwaitComponentReturns: true}, SupervisedPlanOptions{Store: f.options.Store, ContextDir: f.contextDir, Isolation: "rootless", Runtime: "crun", ComponentStoreDir: filepath.Join(f.root, "components"), Output: Output{Path: layout, DisableCompression: true}, SignaturePolicyPath: f.options.SystemContext.SignaturePolicyPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +284,7 @@ extend { copy "/unused" "/unused" from="recursive"; copy "/unused" "/independent
 					if singleCaller {
 						source = strings.Replace(source, `component "cycle";`, `component "boundary"; component "cycle";`, 1)
 					}
-					f.options.Resolver = localConfigComponentResolverWithDefinitions(t, f.ctx, f.root, []componentDefinitionFixture{{name: "boundary", source: `extend { env boundary="returned"; }`}, {name: "cycle", source: source}}, false)
+					f.options.Resolver = localConfigComponentResolverWithDefinitions(t, f.ctx, f.root, []componentDefinitionFixture{{name: "boundary", source: `extend { env boundary="returned"; }`}, {name: "cycle", source: source}})
 				} else {
 					if singleCaller {
 						source = strings.Replace(source, ` component "./cycle.coopr"`, " component \"./boundary.coopr\"\n component \"./cycle.coopr\"", 1)

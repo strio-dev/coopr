@@ -265,6 +265,13 @@ func TestWorkdirAndExecVectors(t *testing.T) {
 }
 
 func TestPositionalEnvAndInvalidConfig(t *testing.T) {
+	for _, name := range []string{"env", "label"} {
+		for _, args := range [][]string{nil, {"PORT"}, {"PORT", "8080", "extra"}} {
+			if err := New().Apply(instruction(name, args, nil)); err == nil {
+				t.Errorf("accepted malformed positional %s: %q", name, args)
+			}
+		}
+	}
 	config := New()
 	if err := config.Apply(instruction("env", []string{"PORT", "8080"}, nil)); err != nil {
 		t.Fatal(err)

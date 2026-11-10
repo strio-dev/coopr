@@ -57,7 +57,7 @@ func CreateDemandDriven(def *definition.Definition, opts Options, resolve StageB
 	if opts.Mode == "" {
 		opts.Mode = Build
 	}
-	return create(def, opts, nil, resolve)
+	return create(def, opts, nil, resolve, nil)
 }
 
 // ResolveFromSources expands FROM heads without resolving stage bodies. It uses
@@ -76,9 +76,6 @@ func ResolveFromSources(def *definition.Definition, opts Options) ([]FromSource,
 	if _, err := NormalizeParameters(opts.PublishedArguments); err != nil {
 		return nil, err
 	}
-	if err := definition.Validate(def); err != nil {
-		return nil, err
-	}
 	if opts.Platform == "" {
 		opts.Platform = "linux/amd64"
 	}
@@ -95,7 +92,7 @@ func ResolveFromSources(def *definition.Definition, opts Options) ([]FromSource,
 		aliases: map[string]int{}, declared: map[string]bool{}, contexts: contexts,
 		contextOverrides: map[int]buildcontext.Spec{}, contextBindings: map[string][]ContextBinding{},
 	}
-	if err := g.split(def); err != nil {
+	if err := g.split(def, nil); err != nil {
 		return nil, err
 	}
 	sourceDateEpoch, err := g.normalizeSuppliedSourceDateEpoch(nil)

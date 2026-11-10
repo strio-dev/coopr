@@ -70,7 +70,7 @@ class InstallerTests(unittest.TestCase):
         }
         self.env.pop("COOPR_INSTALL_PREFIX", None)
 
-    def write_assets(self, *, helper=True):
+    def write_assets(self):
         checksums = []
         for arch in ("amd64", "arm64"):
             asset = self.root / "assets" / f"coopr-linux-{arch}.tar.gz"
@@ -78,13 +78,12 @@ class InstallerTests(unittest.TestCase):
                 ("coopr", b"#!/bin/sh\nprintf 'coopr fixture\\n'\n", 0o555),
                 ("LICENSE", b"MIT license fixture\n", 0o444),
                 ("third-party/NOTICE", b"Dependency notices fixture\n", 0o444),
-            ]
-            if helper:
-                entries.append((
+                (
                     "libexec/coopr/coopr-run-sequence",
                     b"#!/bin/sh\nprintf 'sequence fixture\\n'\n",
                     0o555,
-                ))
+                ),
+            ]
             with tarfile.open(asset, "w:gz") as archive:
                 for name, contents, mode in entries:
                     info = tarfile.TarInfo(name)
@@ -102,6 +101,8 @@ class InstallerTests(unittest.TestCase):
     def test_latest_install_and_repeat(self):
         self.run_installer()
         prefix = self.root / "system"
+        # write_assets() authors this fixed program in the private test installation.
+        # nosemgrep: cache.semgrep-rules.python.lang.security.audit.dangerous-subprocess-use-audit
         self.assertEqual(subprocess.check_output([prefix / "bin/coopr"], text=True), "coopr fixture\n")
         self.assertEqual((prefix / "share/licenses/coopr/LICENSE").read_text(), "MIT license fixture\n")
         helper = prefix / "libexec/coopr/coopr-run-sequence"
@@ -119,22 +120,6 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue(commands)
         self.assertTrue(all(command.startswith(("mkdir ", "cp ", "install ")) for command in commands), commands)
         self.assertTrue(all("/usr/local/" in command for command in commands), commands)
-
-    def test_legacy_release_then_upgrade(self):
-        self.write_assets(helper=False)
-        self.run_installer("1.2.3")
-        prefix = self.root / "system"
-        self.assertTrue((prefix / "bin/coopr").is_file())
-        helper = prefix / "libexec/coopr/coopr-run-sequence"
-        self.assertFalse(helper.exists())
-        self.write_assets()
-        self.run_installer()
-        # write_assets() authors this helper in our private temporary installation.
-        # nosemgrep: cache.semgrep-rules.python.lang.security.audit.dangerous-subprocess-use-audit
-        self.assertEqual(subprocess.check_output([helper], text=True), "sequence fixture\n")
-        self.assertEqual(helper.stat().st_mode & 0o777, 0o755)
-        self.run_installer()
-        self.assertEqual(helper.stat().st_mode & 0o777, 0o755)
 
     def test_help(self):
         result = self.run_installer("--help")

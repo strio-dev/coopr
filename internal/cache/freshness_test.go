@@ -10,14 +10,13 @@ import (
 
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
-	"github.com/strio-dev/coopr/internal/oci"
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
 
 func TestCacheTTLRejectsBeforeHydration(t *testing.T) {
 	hour := time.Hour
 	zero := time.Duration(0)
-	for _, kind := range []string{"instruction", "component", "package"} {
+	for _, kind := range []string{"image", "package"} {
 		t.Run(kind, func(t *testing.T) {
 			for _, test := range []struct {
 				name string
@@ -34,7 +33,7 @@ func TestCacheTTLRejectsBeforeHydration(t *testing.T) {
 					var counted *countedCacheTarget
 					var payload digest.Digest
 					var lookup func(context.Context) (string, error)
-					if kind == "instruction" {
+					if kind == "image" {
 						var key ImageKey
 						var descriptors []v1.Descriptor
 						store, key, descriptors, counted = imageLookupFixture(t, created)
@@ -55,33 +54,18 @@ func TestCacheTTLRejectsBeforeHydration(t *testing.T) {
 						if err := os.WriteFile(source, data, 0600); err != nil {
 							t.Fatal(err)
 						}
-						if kind == "package" {
-							key := testPackageKey()
-							record := testPackageRecord(key, data)
-							record.CreatedAt = created
-							payload = record.Descriptor.Digest
-							if _, err := store.PutPackage(ctx, key, record, source); err != nil {
-								t.Fatal(err)
-							}
-							lookup = func(ctx context.Context) (string, error) {
-								_, path, err := store.LookupPackage(ctx, key)
-								return path, err
-							}
-						} else {
-							key := testKey()
-							record := testRecord(key)
-							record.CreatedAt = created
-							record.ChangedFS = true
-							record.Output.Filesystem = digest.FromString("after")
-							record.Output.State = digest.FromString("after-state")
-							pkg := testPackageRecord(testPackageKey(), data)
-							payload = pkg.Descriptor.Digest
-							record.Snapshot = &oci.Package{Stage: "snapshot", Descriptor: pkg.Descriptor, Config: pkg.Config}
-							if _, err := store.Put(ctx, key, record, source); err != nil {
-								t.Fatal(err)
-							}
-							lookup = func(ctx context.Context) (string, error) { _, path, err := store.Lookup(ctx, key); return path, err }
+						key := testPackageKey()
+						record := testPackageRecord(key, data)
+						record.CreatedAt = created
+						payload = record.Descriptor.Digest
+						if _, err := store.PutPackage(ctx, key, record, source); err != nil {
+							t.Fatal(err)
 						}
+						lookup = func(ctx context.Context) (string, error) {
+							_, path, err := store.LookupPackage(ctx, key)
+							return path, err
+						}
+
 					}
 					store.ttl = test.ttl
 					path, err := lookup(ctx)
@@ -96,7 +80,7 @@ func TestCacheTTLRejectsBeforeHydration(t *testing.T) {
 						if !errors.Is(err, ErrMiss) || path != "" {
 							t.Fatalf("expired record hit: path=%s err=%v", path, err)
 						}
-						if kind == "instruction" {
+						if kind == "image" {
 							// Only cache artifact/config metadata may be fetched.
 							if len(counted.fetches) != 2 {
 								t.Fatalf("expired image graph fetched beyond cache metadata: %v", counted.fetches)

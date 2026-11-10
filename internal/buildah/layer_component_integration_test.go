@@ -16,48 +16,6 @@ import (
 	storagearchive "go.podman.io/storage/pkg/archive"
 )
 
-func TestComponentPreservesInstructionLayers(t *testing.T) {
-	f := newLocalComponentFixture(t)
-	f.write(t, "one", "one")
-	f.write(t, "two", "two")
-	f.write(t, "component.coopr", `package as="assets" {
-    copy "one" "/one"
-    copy "two" "/two"
-}
-extend {
-    copy "/one" "/one" from="assets"
-    copy "/two" "/two" from="assets"
-}
-`)
-	_, layout := f.build(t, "cold", `from "scratch" {
-    component "./component.coopr"
-}
-`)
-	cold, coldConfig := readPlanImage(t, layout)
-	if len(cold.Layers) != 2 {
-		t.Fatalf("component layers=%d, want each of 2 COPY layers preserved", len(cold.Layers))
-	}
-	if len(coldConfig.RootFS.DiffIDs) != 2 {
-		t.Fatalf("diffids=%v", coldConfig.RootFS.DiffIDs)
-	}
-	result, warmLayout := f.build(t, "warm", `from "scratch" {
-    component "./component.coopr"
-}
-`)
-	warm, _ := readPlanImage(t, warmLayout)
-	if result.CacheStats.Hits == 0 {
-		t.Fatal("expected warm component/image cache hit")
-	}
-	if len(warm.Layers) != len(cold.Layers) {
-		t.Fatalf("warm layers=%d cold=%d", len(warm.Layers), len(cold.Layers))
-	}
-	for i := range cold.Layers {
-		if warm.Layers[i].Digest != cold.Layers[i].Digest {
-			t.Fatalf("warm layer %d differs", i)
-		}
-	}
-}
-
 func TestLayerGroupNetChangeNestedAndConfigurationOnly(t *testing.T) {
 	f := newLocalComponentFixture(t)
 	base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
@@ -200,7 +158,7 @@ extend as="output" {
     env abandoned="yes"
     component "./replace.coopr#output"
     copy "after" "/after"
-    run "/bin/busybox test ! -e /caller-only; /bin/busybox test -e /one; /bin/busybox test -e /after; /bin/busybox echo checked >/proof" network="none"
+    run "set -e; /bin/busybox test ! -e /caller-only; /bin/busybox test -e /one; /bin/busybox test -e /after; /bin/busybox echo checked >/proof" network="none"
 }
 `, base.reference)
 			_, layout := f.build(t, "replacement", source)
@@ -300,10 +258,11 @@ extend {
 `)
 	var expectedManifest v1.Manifest
 	var expectedConfig v1.Image
+	// Cold/warm share native storage; the final attempt restores a fresh store.
 	for attempt := range 3 {
 		var progress strings.Builder
 
-		if attempt > 0 {
+		if attempt == 2 {
 			f.options.Store = cacheTestStore(filepath.Join(f.root, fmt.Sprintf("fresh-store-%d", attempt)))
 		}
 		layout := filepath.Join(f.root, fmt.Sprintf("cache-%d", attempt))
@@ -318,14 +277,17 @@ extend {
 		if len(manifest.Layers) != 2 {
 			t.Fatalf("attempt %d layers=%d", attempt, len(manifest.Layers))
 		}
+		if len(image.RootFS.DiffIDs) != 2 {
+			t.Fatalf("attempt %d diffids=%v, want each of 2 COPY layers preserved", attempt, image.RootFS.DiffIDs)
+		}
 		if attempt == 0 {
 			expectedManifest, expectedConfig = manifest, image
 		} else {
 			if !strings.Contains(progress.String(), "Using component cache") {
-				t.Fatalf("fresh store did not restore whole-component cache:\n%s", progress.String())
+				t.Fatalf("attempt %d did not restore whole-component cache:\n%s", attempt, progress.String())
 			}
 			if result.CacheStats.Hits == 0 {
-				t.Fatalf("fresh store missed cache: %+v", result.CacheStats)
+				t.Fatalf("attempt %d missed cache: %+v", attempt, result.CacheStats)
 			}
 			if !reflect.DeepEqual(manifest.Layers, expectedManifest.Layers) || !reflect.DeepEqual(image.RootFS, expectedConfig.RootFS) || !reflect.DeepEqual(image.History, expectedConfig.History) || !reflect.DeepEqual(image.Config, expectedConfig.Config) {
 				t.Fatalf("attempt %d image graph/config differs\nmanifest=%+v\nexpected=%+v\nconfig=%+v\nexpected=%+v", attempt, manifest, expectedManifest, image, expectedConfig)
@@ -346,16 +308,16 @@ func TestComponentCallerRootSurvivesStagesWorkersAndNextComponent(t *testing.T) 
 	f.options.Jobs = 2
 	base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
 	f.write(t, "root.coopr", `extend as="first" {
-    run "/bin/busybox test $(/bin/busybox stat -c %a /) = 711; /bin/busybox chmod 0701 /; /bin/busybox chown 3:4 /" network="none"
+    run "set -e; /bin/busybox test $(/bin/busybox stat -c %a /) = 711; /bin/busybox chmod 0701 /; /bin/busybox chown 3:4 /" network="none"
 }
 extend {
     from "first" as="out" {
-        run "/bin/busybox test $(/bin/busybox stat -c %a /) = 701; /bin/busybox test $(/bin/busybox stat -c %u /) = 3; /bin/busybox chmod 0710 /" network="none"
+        run "set -e; /bin/busybox test $(/bin/busybox stat -c %a /) = 701; /bin/busybox test $(/bin/busybox stat -c %u /) = 3; /bin/busybox chmod 0710 /" network="none"
     }
 }
 `)
 	f.write(t, "next.coopr", `extend {
-    run "/bin/busybox test $(/bin/busybox stat -c %a /) = 710; /bin/busybox test $(/bin/busybox stat -c %u /) = 3; /bin/busybox echo preserved >/proof" network="none"
+    run "set -e; /bin/busybox test $(/bin/busybox stat -c %a /) = 710; /bin/busybox test $(/bin/busybox stat -c %u /) = 3; /bin/busybox echo preserved >/proof" network="none"
 }
 `)
 	source := fmt.Sprintf(`from %q {
@@ -549,7 +511,7 @@ func TestLayerGroupPreservesDeletionTypesLinksAndMetadata(t *testing.T) {
     layer {
      run "/bin/busybox rm /doomed /node; /bin/busybox mkdir /node; echo kept >/node/value; /bin/busybox rm -r /type; echo regular >/type; /bin/busybox ln -s /node/value /link; /bin/busybox ln /node/value /hard; /bin/busybox chmod 0640 /node/value; /bin/busybox chown 3:4 /node/value; /bin/busybox chmod 0701 /; /bin/busybox chown 1:2 /" network="none"
     }
-    run "/bin/busybox test ! -e /doomed; /bin/busybox test -d /node; /bin/busybox test -f /type; /bin/busybox test $(/bin/busybox readlink /link) = /node/value; /bin/busybox test $(/bin/busybox stat -c %%u /node/value) = 3; /bin/busybox test $(/bin/busybox stat -c %%a /node/value) = 640; /bin/busybox test $(/bin/busybox stat -c %%a /) = 701; /bin/busybox test $(/bin/busybox stat -c %%u /) = 1; /bin/busybox test $(/bin/busybox stat -c %%i /hard) = $(/bin/busybox stat -c %%i /node/value)" network="none"
+    run "set -e; /bin/busybox test ! -e /doomed; /bin/busybox test -d /node; /bin/busybox test -f /type; /bin/busybox test $(/bin/busybox readlink /link) = /node/value; /bin/busybox test $(/bin/busybox stat -c %%u /node/value) = 3; /bin/busybox test $(/bin/busybox stat -c %%a /node/value) = 640; /bin/busybox test $(/bin/busybox stat -c %%a /) = 701; /bin/busybox test $(/bin/busybox stat -c %%u /) = 1; /bin/busybox test $(/bin/busybox stat -c %%i /hard) = $(/bin/busybox stat -c %%i /node/value)" network="none"
 }
 `, base.reference)
 	_, layout := f.build(t, "metadata-group", source)
@@ -581,7 +543,7 @@ func TestComponentReplacementDoesNotExecuteUnusedExtendBody(t *testing.T) {
 `
 			reference := "./restricted.coopr"
 			if published {
-				f.options.Resolver = localConfigComponentResolver(t, f.ctx, f.root, component, false)
+				f.options.Resolver = localConfigComponentResolver(t, f.ctx, f.root, component)
 				reference = "config"
 			} else {
 				f.write(t, "restricted.coopr", component)

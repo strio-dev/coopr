@@ -3,7 +3,7 @@
   rustPlatform,
   fetchFromGitHub,
   pkg-config,
-  openssl_3_6,
+  openssl_4_1,
   sqlite,
   stdenv,
   capnproto,
@@ -24,7 +24,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
     capnproto
   ];
   buildInputs = [
-    openssl_3_6
+    openssl_4_1
     sqlite
   ];
   env.OPENSSL_NO_VENDOR = "1";

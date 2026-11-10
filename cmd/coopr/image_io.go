@@ -43,7 +43,7 @@ func newImagePullCommand() *cobra.Command {
 		if err != nil {
 			return fmt.Errorf("invalid pull platform %q: %w", platformValue, err)
 		}
-		if _, err := oci.NormalizePullPolicy(policy, false); err != nil {
+		if _, err := commonconfig.ParsePullPolicy(policy); err != nil {
 			return err
 		}
 		store, err := commandStorage(cmd)

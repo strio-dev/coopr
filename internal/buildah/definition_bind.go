@@ -107,7 +107,7 @@ func planDefinitionWithSourceResolvers(ctx context.Context, def *definition.Defi
 					return planner.StageBind{}, fmt.Errorf("stage %s named context %q has no resolver", source.StageID, source.Source)
 				}
 				base, err = resolveContext[0](ctx, *source.Context, platform)
-			} else if source.Kind == planner.FromSourceCopyImage && source.Role == "copy" && resolveFiles != nil {
+			} else if source.Kind == planner.FromSourceCopyImage && (source.Role == "copy" || source.Role == "run-mount") && resolveFiles != nil {
 				base, err = resolveFiles(ctx, source.Source, platform)
 			} else {
 				base, err = resolve(ctx, source.Source, platform)
@@ -117,7 +117,7 @@ func planDefinitionWithSourceResolvers(ctx context.Context, def *definition.Defi
 			}
 			selected.record(key, base)
 		}
-		if err := validateSelectedInput(base, source.Kind == planner.FromSourceCopyImage && source.Role == "copy"); err != nil {
+		if err := validateSelectedInput(base, source.Kind == planner.FromSourceCopyImage && (source.Role == "copy" || source.Role == "run-mount")); err != nil {
 			return planner.StageBind{}, fmt.Errorf("stage %s source %q: %w", source.StageID, source.Source, err)
 		}
 		if source.Kind == planner.FromSourceCopyImage {

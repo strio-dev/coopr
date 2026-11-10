@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/opencontainers/go-digest"
+	"github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/strio-dev/coopr/internal/buildah"
 	"github.com/strio-dev/coopr/internal/imagestore"
@@ -193,20 +194,22 @@ func TestDuplicatePlatformIndexDiscoveryAndManifestAppend(t *testing.T) {
 	variants[1].Platform.OSVersion = "1"
 	variants[1].Platform.OSFeatures = []string{"feature"}
 
-	root, data, err := oci.RetainedImageIndexDescriptor(variants, "oci")
+	children := make([]v1.Descriptor, len(variants))
+	for i, variant := range variants {
+		children[i] = variant.Manifest
+		if children[i].Platform == nil {
+			platform := variant.Platform
+			children[i].Platform = &platform
+		}
+	}
+	data, err := json.Marshal(v1.Index{
+		Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: v1.MediaTypeImageIndex,
+		Manifests: children, Annotations: map[string]string{"example.com/retain": "yes"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var annotated v1.Index
-	if err := json.Unmarshal(data, &annotated); err != nil {
-		t.Fatal(err)
-	}
-	annotated.Annotations = map[string]string{"example.com/retain": "yes"}
-	data, err = json.Marshal(annotated)
-	if err != nil {
-		t.Fatal(err)
-	}
-	root = oci.Descriptor(v1.MediaTypeImageIndex, data)
+	root := oci.Descriptor(v1.MediaTypeImageIndex, data)
 	if err := buildah.WithStore(store, func(backend storage.Store) error {
 		_, err := imagestore.FromStore(backend).WriteStoredIndex(ctx, root, data, ids, "duplicate")
 		return err

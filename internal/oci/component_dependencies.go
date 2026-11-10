@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/strio-dev/coopr/internal/imageconfig"
@@ -29,29 +28,20 @@ func ComponentPackageBinds(metadata ComponentMetadata) (map[string]planner.Stage
 	}
 	binds := make(map[string]planner.StageBind)
 	for _, stage := range projection.Stages {
-		binding := projection.FromBindings[stage.ID]
-		if stage.Kind != "from" || binding.Kind != "stage" {
+		if stage.Kind != "package" || stage.Head.UnavailablePackage {
 			continue
 		}
-		index, err := strconv.Atoi(binding.Stage)
-		if err != nil || index < 0 || index >= len(projection.Stages) {
-			return nil, fmt.Errorf("invalid base stage %q", binding.Stage)
-		}
-		base := projection.Stages[index]
-		if base.Kind != "package" {
-			continue
-		}
-		pkg, ok := packages[strings.ToLower(base.Name)]
+		pkg, ok := packages[strings.ToLower(stage.Name)]
 		if !ok {
-			return nil, fmt.Errorf("no package for stage %q", base.Name)
+			return nil, fmt.Errorf("no package for stage %q", stage.Name)
 		}
 		config, err := imageconfig.Parse(pkg.Config)
 		if err != nil {
-			return nil, fmt.Errorf("package %q configuration: %w", base.Name, err)
+			return nil, fmt.Errorf("package %q configuration: %w", stage.Name, err)
 		}
 		bind, err := planner.StageBindFromImageConfig(config)
 		if err != nil {
-			return nil, fmt.Errorf("package %q inherited instructions: %w", base.Name, err)
+			return nil, fmt.Errorf("package %q inherited instructions: %w", stage.Name, err)
 		}
 		binds[stage.ID] = bind
 	}
@@ -61,7 +51,7 @@ func ComponentPackageBinds(metadata ComponentMetadata) (map[string]planner.Stage
 // prepareComponentDependencies reads only component metadata. Dependency
 // selectors remain mutable here; Bale resolves them when capturing a bundle.
 // Image roots and embedded package producers do not acquire declarations.
-func prepareComponentDependencies(ctx context.Context, source content.ReadOnlyStorage, root v1.Descriptor, repository string) (*bale.AttachRequest, bool, error) {
+func prepareComponentDependencies(ctx context.Context, source content.ReadOnlyStorage, root v1.Descriptor, repository string, policies map[string]bale.DependencyPolicy) (*bale.AttachRequest, bool, error) {
 	var dependencies []bale.DependencyReference
 	incomplete := false
 	inspected := make(map[digest.Digest]bool)
@@ -140,7 +130,8 @@ func prepareComponentDependencies(ctx context.Context, source content.ReadOnlySt
 				incomplete = true
 				continue
 			}
-			dependencies = append(dependencies, bale.DependencyReference{Ref: selector})
+			policy := policies[selector]
+			dependencies = append(dependencies, bale.DependencyReference{Ref: selector, Follow: policy.Follow, Select: policy.Select})
 		}
 		return true, nil
 	}

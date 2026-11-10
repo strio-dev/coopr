@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
@@ -28,6 +29,9 @@ func TestBuildPlanCopyFromLinkProducesIndependentLayer(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(contextDir, "local"), []byte("from-context\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(contextDir, "final"), []byte("from-final-context\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	plan := testPlan(t, `
 from "scratch" as="producer" {
@@ -36,6 +40,7 @@ from "scratch" as="producer" {
 from "scratch" {
     copy "local" "/local" link="false"
     copy "/producer" "/linked" from="producer" link="true"
+    copy "final" "/final" link="true"
 }
 `)
 	layout := filepath.Join(root, "layout")
@@ -49,15 +54,28 @@ from "scratch" {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifest, _ := readPlanImage(t, layout)
-	if len(manifest.Layers) != 2 {
-		t.Fatalf("linked COPY build layers = %d, want local layer plus independent linked layer", len(manifest.Layers))
+	manifest, image := readPlanImage(t, layout)
+	if len(manifest.Layers) != 3 {
+		t.Fatalf("linked COPY build layers = %d, want ordinary, linked producer and final linked context layers", len(manifest.Layers))
 	}
+	wantHistory := []string{"COPY --link=false local /local", "COPY --from=resolved:copy-input --link=true /producer /linked", "COPY --link=true final /final"}
+	if len(image.History) < len(wantHistory) {
+		t.Fatalf("linked COPY history entries = %d, want at least %d", len(image.History), len(wantHistory))
+	}
+	for index, history := range image.History[len(image.History)-len(wantHistory):] {
+		if history.CreatedBy != wantHistory[index] || history.EmptyLayer {
+			t.Fatalf("COPY layer %d history = %+v, want %q and physical layer", index, history, wantHistory[index])
+		}
+	}
+
 	if got := readLayerFile(t, filepath.Join(layout, "blobs", "sha256", manifest.Layers[0].Digest.Encoded()), "local"); got != "from-context\n" {
 		t.Fatalf("ordinary COPY contents = %q", got)
 	}
 	if got := readLayerFile(t, filepath.Join(layout, "blobs", "sha256", manifest.Layers[1].Digest.Encoded()), "linked"); got != "from-stage\n" {
 		t.Fatalf("linked COPY --from contents = %q", got)
+	}
+	if got := readLayerFile(t, filepath.Join(layout, "blobs", "sha256", manifest.Layers[2].Digest.Encoded()), "final"); got != "from-final-context\n" {
+		t.Fatalf("final linked COPY contents = %q", got)
 	}
 }
 
@@ -96,92 +114,9 @@ from "scratch" {
 	}
 }
 
-func TestDirectBuildLinkedCopyIsVisibleToFollowingRun(t *testing.T) {
+func TestBuildPlanConfigBeforeLinkedCopyDoesNotAddLayer(t *testing.T) {
 	if testing.Short() {
-		t.Skip("skipping a live direct Buildah linked COPY and RUN build in short mode")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	root := t.TempDir()
-	contextDir := filepath.Join(root, "context")
-	writeLinkedRunContext(t, contextDir)
-	request, err := RequestFromPlan(testPlan(t, `
-from "scratch" {
-    copy "busybox" "proof" "/input/" link="true"
-    run network="none" { exec "/input/busybox" "sh" "-c" "read value </input/proof; test \"$value\" = linked-run; echo \"$value\" >/observed" }
-}
-`), PlanOptions{
-		Store: StoreOptions{
-			RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs",
-		},
-		ContextDir: contextDir, Isolation: "rootless", Runtime: "crun",
-		Output: Output{Path: filepath.Join(root, "layout"), Reference: "coopr-direct-copy-link-run"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Build(ctx, request); err != nil {
-		t.Fatal(err)
-	}
-	manifest, _ := readPlanImage(t, request.Output.Path)
-	if len(manifest.Layers) != 2 {
-		t.Fatalf("direct linked COPY followed by RUN layers = %d, want linked layer plus RUN layer", len(manifest.Layers))
-	}
-	if got := readLayerFile(t, filepath.Join(request.Output.Path, "blobs", "sha256", manifest.Layers[1].Digest.Encoded()), "observed"); got != "linked-run\n" {
-		t.Fatalf("direct RUN read linked COPY contents = %q", got)
-	}
-}
-
-func TestDirectBuildFinalLinkedCopyPreservesEarlierCopyLayer(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping a live direct Buildah final linked COPY build in short mode")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	root := t.TempDir()
-	contextDir := filepath.Join(root, "context")
-	if err := os.Mkdir(contextDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(contextDir, "ordinary"), []byte("ordinary\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(contextDir, "linked"), []byte("linked\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	request, err := RequestFromPlan(testPlan(t, `
-from "scratch" {
-    copy "ordinary" "/ordinary"
-    copy "linked" "/linked" link="true"
-}
-`), PlanOptions{
-		Store: StoreOptions{
-			RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs",
-		},
-		ContextDir: contextDir, Isolation: "rootless",
-		Output: Output{Path: filepath.Join(root, "layout"), Reference: "coopr-direct-final-copy-link"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Build(ctx, request); err != nil {
-		t.Fatal(err)
-	}
-	manifest, _ := readPlanImage(t, request.Output.Path)
-	if len(manifest.Layers) != 2 {
-		t.Fatalf("ordinary COPY followed by final linked COPY layers = %d, want two", len(manifest.Layers))
-	}
-	if got := readLayerFile(t, filepath.Join(request.Output.Path, "blobs", "sha256", manifest.Layers[0].Digest.Encoded()), "ordinary"); got != "ordinary\n" {
-		t.Fatalf("ordinary COPY contents = %q", got)
-	}
-	if got := readLayerFile(t, filepath.Join(request.Output.Path, "blobs", "sha256", manifest.Layers[1].Digest.Encoded()), "linked"); got != "linked\n" {
-		t.Fatalf("final linked COPY contents = %q", got)
-	}
-}
-
-func TestDirectBuildConfigBeforeLinkedCopyDoesNotAddLayer(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping a live direct Buildah linked COPY build in short mode")
+		t.Skip("skipping a live Buildah linked COPY build in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -193,7 +128,8 @@ func TestDirectBuildConfigBeforeLinkedCopyDoesNotAddLayer(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(contextDir, "payload"), []byte("linked\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	request, err := RequestFromPlan(testPlan(t, `
+	layout := filepath.Join(root, "layout")
+	if _, err := BuildPlan(ctx, testPlan(t, `
 from "scratch" {
     env build_marker="preserved"
     copy "payload" "/payload" link="true"
@@ -203,22 +139,18 @@ from "scratch" {
 			RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph"), GraphDriverName: "vfs",
 		},
 		ContextDir: contextDir, Isolation: "rootless",
-		Output: Output{Path: filepath.Join(root, "layout"), Reference: "coopr-direct-config-copy-link"},
-	})
-	if err != nil {
+		Output: Output{Path: filepath.Join(root, "layout"), Reference: "coopr-plan-config-copy-link"},
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Build(ctx, request); err != nil {
-		t.Fatal(err)
-	}
-	manifest, image := readPlanImage(t, request.Output.Path)
+	manifest, image := readPlanImage(t, layout)
 	if len(manifest.Layers) != 1 {
 		t.Fatalf("configuration followed by linked COPY layers = %d, want one", len(manifest.Layers))
 	}
-	if got := image.Config.Env; len(got) != 1 || got[0] != "build_marker=preserved" {
+	if got := image.Config.Env; !slices.Contains(got, "build_marker=preserved") {
 		t.Fatalf("configuration before linked COPY was lost: %v", got)
 	}
-	if got := readLayerFile(t, filepath.Join(request.Output.Path, "blobs", "sha256", manifest.Layers[0].Digest.Encoded()), "payload"); got != "linked\n" {
+	if got := readLayerFile(t, filepath.Join(layout, "blobs", "sha256", manifest.Layers[0].Digest.Encoded()), "payload"); got != "linked\n" {
 		t.Fatalf("linked COPY contents = %q", got)
 	}
 }

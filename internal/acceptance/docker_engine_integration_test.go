@@ -60,16 +60,11 @@ func TestBuildAndCopyToDockerEngine(t *testing.T) {
 				t.Fatalf("copy build into Docker: result=%q error=%v", copied, err)
 			}
 			created = append(created, name)
-			localName := "coopr-docker-source-" + marker + "-" + format + ":latest"
-			options.Tag = localName
-			if _, err := build.Run(ctx, options); err != nil {
-				t.Fatalf("build local image for later Docker copy: %v", err)
-			}
 			destination, err := transfer.ParseDestination("docker-daemon:"+copiedName, oci.Image)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := transfer.Copy(ctx, oci.Image, localName, destination, transfer.Options{BuildStore: dockerTestStore(storeDir)}); err != nil {
+			if _, err := transfer.Copy(ctx, oci.Image, name, destination, transfer.Options{BuildStore: dockerTestStore(storeDir)}); err != nil {
 				t.Fatalf("copy stored image into Docker: %v", err)
 			}
 			created = append(created, copiedName)
@@ -181,10 +176,6 @@ func main() {
 				t.Fatalf("copy multi-platform build into Docker: %q, %v", copied, err)
 			}
 			created = append(created, name)
-			options.Tag = "coopr-docker-source-" + marker + "-" + format + ":latest"
-			if _, err := build.Run(ctx, options); err != nil {
-				t.Fatal(err)
-			}
 			root := exportDockerTestImage(t, ctx, dockerTestStore(storeDir), options.Tag)
 			if copiedDigest != root.Digest.String() {
 				t.Fatalf("copied index digest %s differs from exported index %s", copiedDigest, root.Digest)
