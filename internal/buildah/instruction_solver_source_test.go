@@ -62,7 +62,7 @@ func instructionSourceFixture(t *testing.T) (*cache.OCIStore, string, cache.Grap
 				t.Fatal(err)
 			}
 		}
-		value := instructionSolverResult{Entry: instructionCacheEntry{ManifestDigest: image.Digest}, CreatedAt: metadata.Nodes[1].Results[i].CreatedAt}
+		value := instructionSolverResult{Entry: instructionCacheEntry{ManifestDigest: image.Digest, RootMetadata: &PackageRootMetadata{Mode: 0o755}}, CreatedAt: metadata.Nodes[1].Results[i].CreatedAt}
 		raw, err := json.Marshal(value)
 		if err != nil {
 			t.Fatal(err)

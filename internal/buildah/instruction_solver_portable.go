@@ -462,10 +462,8 @@ func (p *instructionGraphPortable) restoreRecord(ctx context.Context, record *ca
 		if r.Boundary != "" && r.Boundary.Validate() != nil {
 			return errors.New("invalid portable graph result boundary")
 		}
-		if r.Entry.RootMetadata != nil {
-			if _, valid := cacheablePackageRootMetadata(r.Entry.RootMetadata); !valid {
-				return errors.New("nonportable graph root metadata")
-			}
+		if _, valid := cacheablePackageRootMetadata(r.Entry.RootMetadata); !valid {
+			return errors.New("missing or nonportable graph root metadata")
 		}
 		results[i] = &r
 	}

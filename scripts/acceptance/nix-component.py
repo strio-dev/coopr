@@ -135,12 +135,20 @@ in pkgs.coopr.buildImage {
                 elif document.get("artifactType") == "application/vnd.coopr.strio.dev.component.v1+json":
                     value = blob(document["config"])
                     assert value["packages"]
-                    instructions = list(value["component"]["definition"]["instructions"])
-                    while instructions:
-                        instruction = instructions.pop()
-                        assert instruction.get("properties", {}).get("from") != "coopr-nix"
-                        assert not (instruction["name"] == "from" and instruction.get("arguments", [])[:1] == ["coopr-nix"])
-                        instructions.extend(instruction.get("children", []))
+                    # Residual definitions preserve original FROM slots for
+                    # dynamic invocation choices. Qualify the captured PACKAGE
+                    # snapshots here and their independent replay in consume().
+                    assert len(value["packages"]) == len(document["layers"])
+                    for package, layer in zip(value["packages"], document["layers"]):
+                        descriptor = package["descriptor"]
+                        assert descriptor == layer
+                        assert descriptor["mediaType"] == "application/vnd.coopr.strio.dev.package.v1+tar"
+                        rootfs = package["config"]["rootfs"]
+                        assert rootfs["type"] == "layers" and rootfs["diff_ids"] == [descriptor["digest"]]
+                        member = members["blobs/" + descriptor["digest"].replace(":", "/")]
+                        assert member.size == descriptor["size"]
+                        with saved.extractfile(member) as snapshot:
+                            assert frontend.hashlib.file_digest(snapshot, "sha256").hexdigest() == descriptor["digest"].removeprefix("sha256:")
                     packages.append(value)
             assert len(packages) == 1
         frontend.json_write(self.evidence / (label + ".published-component.json"), packages[0])
@@ -188,6 +196,7 @@ in pkgs.coopr.buildImage {
                 arguments = [] if message is None else ["--build-arg", "message=" + invocation]
                 _, text = self.run(key, self.native(label) + ["build", "--file", definition]
                                    + self.build_options(key, label) + arguments + [caller], label)
+                assert "NIX_CUSTOM_PACKAGE_RAN\n" not in text
                 image_id = (self.evidence / (key + ".iid")).read_text().strip()
                 view = self.export(key, image_id, label)
                 config = view["config"]["config"]
