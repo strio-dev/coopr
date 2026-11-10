@@ -22,42 +22,71 @@ func TestArtifactRunViewVerifiesRawFilesAndCleansAfterFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, source := range []string{"", "/", "payload.tar"} {
-		t.Run(source, func(t *testing.T) {
-			var mounted string
-			builder := &inspectingRunBuilder{inspect: func(options upstream.RunOptions) error {
-				if len(options.RunMounts) != 0 || len(options.Mounts) != 1 {
-					t.Fatalf("artifact not lowered as private direct bind: %#v", options)
+	for _, test := range []struct {
+		name        string
+		properties  map[string]string
+		wantOptions []string
+	}{
+		{
+			name:        "defaults",
+			wantOptions: []string{"ro", "rbind", "Z", "rprivate"},
+		},
+		{
+			name:        "restrictions",
+			properties:  map[string]string{"noexec": "TRUE", "nosuid": "1", "nodev": "T"},
+			wantOptions: []string{"ro", "rbind", "Z", "nosuid", "nodev", "noexec", "rprivate"},
+		},
+		{
+			name:        "native shared relabel",
+			properties:  map[string]string{"relabel": "shared", "bind-nonrecursive": "True", "bind-propagation": "rslave", "U": "1", "no-dereference": "true"},
+			wantOptions: []string{"ro", "bind", "z", "no-dereference", "U", "rslave"},
+		},
+		{
+			name:        "explicit private immutable",
+			properties:  map[string]string{"Z": "true", "readonly": "false", "private": "TRUE", "bind-nonrecursive": "false", "noexec": "false"},
+			wantOptions: []string{"ro", "rbind", "Z", "private"},
+		},
+	} {
+		for _, source := range []string{"", "/", "payload.tar"} {
+			t.Run(test.name+"/"+source, func(t *testing.T) {
+				var mounted string
+				builder := &inspectingRunBuilder{inspect: func(options upstream.RunOptions) error {
+					if len(options.RunMounts) != 0 || len(options.Mounts) != 1 {
+						t.Fatalf("artifact not lowered as private direct bind: %#v", options)
+					}
+					mount := options.Mounts[0]
+					mounted = mount.Source
+					if !slices.Equal(mount.Options, test.wantOptions) {
+						t.Fatalf("artifact mount options = %v, want %v", mount.Options, test.wantOptions)
+					}
+					file := mounted
+					if source != "payload.tar" {
+						file = filepath.Join(file, "payload.tar")
+					}
+					data, err := os.ReadFile(file)
+					if err != nil || string(data) != "raw archive bytes" {
+						t.Fatalf("raw archive changed: %q %v", data, err)
+					}
+					return context.Canceled
+				}}
+				operation := Run{Command: []string{"true"}, sourceStore: store, Mounts: []RunMount{{Type: "bind", BoundFrom: true, Artifact: &selected, Properties: map[string]string{"from": selected.Selected.Digest.Encoded(), "source": source, "target": "/files"}}}}
+				for name, value := range test.properties {
+					operation.Mounts[0].Properties[name] = value
 				}
-				mount := options.Mounts[0]
-				mounted = mount.Source
-				if !slices.Contains(mount.Options, "ro") {
-					t.Fatal("artifact file view is writable")
+				if source == "" {
+					delete(operation.Mounts[0].Properties, "source")
 				}
-				file := mounted
-				if source != "payload.tar" {
-					file = filepath.Join(file, "payload.tar")
+				if err := operation.apply(builder, ""); !errors.Is(err, context.Canceled) {
+					t.Fatalf("builder outcome lost: %v", err)
 				}
-				data, err := os.ReadFile(file)
-				if err != nil || string(data) != "raw archive bytes" {
-					t.Fatalf("raw archive changed: %q %v", data, err)
+				if mounted == "" {
+					t.Fatal("RUN never observed artifact view")
 				}
-				return context.Canceled
-			}}
-			operation := Run{Command: []string{"true"}, sourceStore: store, Mounts: []RunMount{{Type: "bind", BoundFrom: true, Artifact: &selected, Properties: map[string]string{"from": selected.Selected.Digest.Encoded(), "source": source, "target": "/files"}}}}
-			if source == "" {
-				delete(operation.Mounts[0].Properties, "source")
-			}
-			if err := operation.apply(builder, ""); !errors.Is(err, context.Canceled) {
-				t.Fatalf("builder outcome lost: %v", err)
-			}
-			if mounted == "" {
-				t.Fatal("RUN never observed artifact view")
-			}
-			if _, err := os.Stat(mounted); !os.IsNotExist(err) {
-				t.Fatalf("artifact file view remains after failed RUN: %v", err)
-			}
-		})
+				if _, err := os.Stat(mounted); !os.IsNotExist(err) {
+					t.Fatalf("artifact file view remains after failed RUN: %v", err)
+				}
+			})
+		}
 	}
 }
 

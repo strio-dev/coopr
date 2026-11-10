@@ -186,6 +186,20 @@ func (operation Run) apply(builder operationBuilder, contextDir string) (retErr 
 		if mount.Artifact == nil {
 			continue
 		}
+		properties, err := normalizeRunMountProperties(mount.Type, mount.Properties)
+		if err != nil {
+			return err
+		}
+		if properties["relabel"] == "" {
+			properties["relabel"] = "private"
+		}
+		mountOptions := writableContextBindOptions(properties)
+		mountOptions[0] = "ro" // Artifact views are immutable even when readwrite is requested.
+		if !slices.ContainsFunc(mountOptions, func(option string) bool {
+			return slices.Contains([]string{"shared", "rshared", "private", "rprivate", "slave", "rslave"}, option)
+		}) {
+			mountOptions = append(mountOptions, "rprivate")
+		}
 		root := mount.artifactRoot
 		if root == "" {
 			ctx := operation.executionContext
@@ -200,25 +214,25 @@ func (operation Run) apply(builder operationBuilder, contextDir string) (retErr 
 			}
 			defer func() { retErr = errors.Join(retErr, cleanup()) }()
 		}
-		if err := validateStageMountSource(mount.Properties["source"]); err != nil {
+		if err := validateStageMountSource(properties["source"]); err != nil {
 			return err
 		}
-		source, err := copier.Eval(root, filepath.Join(root, strings.TrimLeft(mount.Properties["source"], "/")), copier.EvalOptions{})
+		source, err := copier.Eval(root, filepath.Join(root, strings.TrimLeft(properties["source"], "/")), copier.EvalOptions{})
 		if err != nil {
-			return fmt.Errorf("resolve RUN artifact path %q: %w", mount.Properties["source"], err)
+			return fmt.Errorf("resolve RUN artifact path %q: %w", properties["source"], err)
 		}
 		info, err := os.Stat(source)
 		if err != nil {
-			return fmt.Errorf("RUN artifact path %q is unavailable: %w", mount.Properties["source"], err)
+			return fmt.Errorf("RUN artifact path %q is unavailable: %w", properties["source"], err)
 		}
 		if !info.IsDir() && !info.Mode().IsRegular() {
 			return fmt.Errorf("RUN artifact path is not a directory or regular file")
 		}
-		target := mount.Properties["target"]
+		target := properties["target"]
 		if !path.IsAbs(target) {
 			target = path.Join("/", builder.WorkDir(), target)
 		}
-		directMounts = append(directMounts, specs.Mount{Source: source, Destination: target, Type: "bind", Options: []string{"bind", "ro", "rprivate", "Z"}})
+		directMounts = append(directMounts, specs.Mount{Source: source, Destination: target, Type: "bind", Options: mountOptions})
 		runMounts[index] = ""
 	}
 	// Builder.Run cannot mark a context as an already-disposable build overlay
