@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/go-containerregistry/pkg/registry"
 	"github.com/opencontainers/go-digest"
@@ -27,6 +29,96 @@ import (
 	orasoci "oras.land/oras-go/v2/content/oci"
 	"oras.land/oras-go/v2/errdef"
 )
+
+func TestCacheRegistryPublishesLargeLayersWithAuthenticatedRetry(t *testing.T) {
+	for _, kind := range []string{"graph", "image"} {
+		t.Run(kind, func(t *testing.T) {
+			record, layout := graphFixture(t)
+			source, err := orasoci.New(layout)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// A valid filesystem layer, larger than the metadata safety bound.
+			var payload bytes.Buffer
+			archive := tar.NewWriter(&payload)
+			data := bytes.Repeat([]byte("payload\n"), (12<<20)/8)
+			if err := archive.WriteHeader(&tar.Header{Name: "usr/local/bin/tool", Mode: 0755, Size: int64(len(data))}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := archive.Write(data); err != nil {
+				t.Fatal(err)
+			}
+			if err := archive.Close(); err != nil {
+				t.Fatal(err)
+			}
+			layer := oci.Descriptor(v1.MediaTypeImageLayer, payload.Bytes())
+			if err := source.Push(t.Context(), layer, bytes.NewReader(payload.Bytes())); err != nil {
+				t.Fatal(err)
+			}
+			config := pushGraphTestJSON(t, source, v1.MediaTypeImageConfig, v1.Image{
+				Platform: v1.Platform{OS: "linux", Architecture: "amd64"},
+				RootFS:   v1.RootFS{Type: "layers", DiffIDs: []digest.Digest{layer.Digest}},
+			})
+			record.Results[0].Image = pushGraphTestJSON(t, source, v1.MediaTypeImageManifest, oci.VersionedManifest(config, []v1.Descriptor{layer}, ""))
+			strict, _ := strictEnvelopeRegistry(t, "")
+			var challenges, uploads atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				user, password, ok := r.BasicAuth()
+				if !ok || user != "tester" || password != "fixture-password" {
+					challenges.Add(1)
+					w.Header().Set("WWW-Authenticate", `Basic realm="registry"`)
+					http.Error(w, "authentication required", http.StatusUnauthorized)
+					return
+				}
+				if r.Method == http.MethodPut && r.URL.Query().Get("digest") == layer.Digest.String() && uploads.Add(1) == 1 {
+					got, err := digest.FromReader(r.Body)
+					if err != nil || got != layer.Digest || r.ContentLength != layer.Size {
+						t.Errorf("first upload body: digest=%s size=%d err=%v", got, r.ContentLength, err)
+					}
+					http.Error(w, "retry after consuming the whole layer", http.StatusServiceUnavailable)
+					return
+				}
+				strict.Config.Handler.ServeHTTP(w, r)
+			}))
+			t.Cleanup(server.Close)
+			resolver, err := oci.NewResolver(oci.Options{TLSVerify: new(false), Credentials: "tester:fixture-password", RetrySet: true, Retry: 2, RetryDelay: time.Millisecond})
+			if err != nil {
+				t.Fatal(err)
+			}
+			repository := strings.TrimPrefix(server.URL, "http://") + "/coopr/envelopes"
+			store, err := NewRegistryStore(resolver, repository, t.TempDir(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			key := ImageKey{Instruction: digest.FromString("large instruction"), Parent: digest.FromString("parent"), Platform: v1.Platform{OS: "linux", Architecture: "amd64"}, Executor: "buildah-test", Format: "oci"}
+			if kind == "graph" {
+				_, err = store.PutGraph(t.Context(), record.Root, record, layout)
+			} else {
+				_, err = store.PutImage(t.Context(), key, ImageRecord{Version: ImageRecordVersion, Key: key, Image: record.Results[0].Image, BaseImage: &record.Results[1].Image, RootMetadata: json.RawMessage(`{"mode":493}`)}, layout)
+			}
+			if err != nil {
+				t.Fatal("large cache publication with authenticated retry:", err)
+			}
+			if challenges.Load() == 0 || uploads.Load() != 2 {
+				t.Fatalf("authentication challenges=%d large upload attempts=%d", challenges.Load(), uploads.Load())
+			}
+			reader, err := NewRegistryStore(resolver, repository, t.TempDir(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var restored string
+			if kind == "graph" {
+				_, restored, err = reader.LookupGraph(t.Context(), record.Root)
+			} else {
+				_, restored, err = reader.LookupImage(t.Context(), key)
+			}
+			if err != nil {
+				t.Fatal("independent large cache restoration:", err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(restored) })
+		})
+	}
+}
 
 type publicationReadCounter struct {
 	oras.ReadOnlyTarget

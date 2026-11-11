@@ -37,7 +37,7 @@ func (r *Resolver) PublishCacheGraph(ctx context.Context, name string, source co
 	if err != nil {
 		return err
 	}
-	client, err := r.baleClient(ctx, name+"@"+root.Digest.String())
+	client, err := r.baleCacheClient(ctx, name+"@"+root.Digest.String())
 	if err != nil {
 		return err
 	}

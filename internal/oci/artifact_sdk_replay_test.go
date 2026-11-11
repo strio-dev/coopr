@@ -6,11 +6,16 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	registryserver "github.com/google/go-containerregistry/pkg/registry"
+	digest "github.com/opencontainers/go-digest"
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 type artifactRequestBody struct {
@@ -177,6 +182,95 @@ func TestArtifactRegistrySDKRequestCaptureFailure(t *testing.T) {
 			}
 			if body.readBytes.Load() > maxMetadataBytes+1 {
 				t.Fatalf("unbounded capture read=%d", body.readBytes.Load())
+			}
+		})
+	}
+}
+
+func TestCacheRegistryBlobUploadFailureLifecycle(t *testing.T) {
+	const size = maxMetadataBytes + 1
+	digester := digest.Canonical.Digester()
+	if _, err := io.Copy(digester.Hash(), io.LimitReader(zeroReader{}, size)); err != nil {
+		t.Fatal(err)
+	}
+	descriptor := v1.Descriptor{MediaType: v1.MediaTypeImageLayer, Digest: digester.Digest(), Size: size}
+	for _, failure := range []string{"exhausted-retry", "cancel-upload"} {
+		t.Run(failure, func(t *testing.T) {
+			backend := registryserver.New()
+			var attempts, challenges atomic.Int64
+			entered, release := make(chan struct{}), make(chan struct{})
+			defer close(release)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				username, password, ok := request.BasicAuth()
+				if !ok || username != "tester" || password != "secret" {
+					challenges.Add(1)
+					w.Header().Set("WWW-Authenticate", `Basic realm="registry"`)
+					http.Error(w, "unauthorized", http.StatusUnauthorized)
+					return
+				}
+				if request.Method == http.MethodPut && strings.Contains(request.URL.Path, "/blobs/uploads/") {
+					read, err := io.Copy(io.Discard, request.Body)
+					if err != nil || read != size {
+						t.Errorf("streamed upload size=%d error=%v", read, err)
+						return
+					}
+					attempt := attempts.Add(1)
+					if failure == "cancel-upload" {
+						if attempt == 1 {
+							close(entered)
+						}
+						select {
+						case <-request.Context().Done():
+						case <-release:
+						}
+						return
+					}
+					http.Error(w, "temporary upload failure", http.StatusServiceUnavailable)
+					return
+				}
+				backend.ServeHTTP(w, request)
+			}))
+			t.Cleanup(server.Close)
+			resolver, err := testResolver(t, Options{TLSVerify: boolOption(false), Credentials: "tester:secret", RetrySet: true, Retry: 1, RetryDelay: time.Millisecond})
+			if err != nil {
+				t.Fatal(err)
+			}
+			repository, err := resolver.baleCacheRepository(t.Context(), strings.TrimPrefix(server.URL, "http://")+"/coopr/cache-replay")
+			if err != nil {
+				t.Fatal(err)
+			}
+			spoolDirectory := t.TempDir()
+			t.Setenv("TMPDIR", spoolDirectory)
+			body := &artifactRequestBody{reader: io.LimitReader(zeroReader{}, size), closed: make(chan struct{})}
+			defer func() { _ = body.Close() }()
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- repository.Blobs().Push(ctx, descriptor, body) }()
+			wantAttempts := int64(2)
+			if failure == "cancel-upload" {
+				select {
+				case <-entered:
+				case <-time.After(5 * time.Second):
+					t.Fatal("large authenticated upload did not reach the registry")
+				}
+				cancel()
+				wantAttempts = 1
+			}
+			select {
+			case err := <-done:
+				if err == nil || failure == "cancel-upload" && !errors.Is(err, context.Canceled) {
+					t.Fatalf("upload failure=%v", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("failed upload did not return")
+			}
+			if attempts.Load() != wantAttempts || challenges.Load() == 0 || body.readBytes.Load() != size {
+				t.Fatalf("upload attempts=%d want%d challenges=%d source bytes=%d want%d", attempts.Load(), wantAttempts, challenges.Load(), body.readBytes.Load(), size)
+			}
+			files, err := os.ReadDir(spoolDirectory)
+			if err != nil || len(files) != 0 {
+				t.Fatalf("upload spool cleanup: entries=%d error=%v", len(files), err)
 			}
 		})
 	}

@@ -32,6 +32,7 @@ import (
 	"go.podman.io/storage/pkg/unshare"
 	"oras.land/oras-go/v2"
 	"oras.land/oras-go/v2/content"
+	"oras.land/oras-go/v2/errdef"
 	"oras.land/oras-go/v2/registry"
 	"oras.land/oras-go/v2/registry/remote"
 	"oras.land/oras-go/v2/registry/remote/auth"
@@ -451,6 +452,62 @@ func (r *Resolver) baleClient(ctx context.Context, reference string) (*bale.Clie
 		options.PlainHTTPRegistries = []string{ref.Registry}
 	}
 	return bale.NewClient(options)
+}
+
+// Cache publication has no referrer discovery. Its blob backend reuses the
+// verified file-backed uploader so large image layers retain the native retry
+// budget without entering the SDK's bounded metadata replay capture.
+func (r *Resolver) baleCacheClient(ctx context.Context, reference string) (*bale.Client, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	ref, err := registry.ParseReference(reference)
+	if err != nil {
+		return nil, err
+	}
+	repository := ref.Registry + "/" + ref.Repository
+	return bale.NewClient(bale.ClientOptions{RepositoryFactory: func(ctx context.Context, name string) (bale.RegistryRepository, error) {
+		if name != repository {
+			return nil, fmt.Errorf("cache publication repository differs from its target")
+		}
+		return r.baleCacheRepository(ctx, name)
+	}})
+}
+
+func (r *Resolver) baleCacheRepository(ctx context.Context, name string) (bale.RegistryRepository, error) {
+	repo, err := r.orasRepository(ctx, name, nil, r.SystemContext(), r.retryOptions.MaxRetry)
+	if err != nil {
+		return nil, err
+	}
+	return baleCacheRepository{Repository: repo, resolver: r}, nil
+}
+
+type baleCacheRepository struct {
+	*remote.Repository
+	resolver *Resolver
+}
+
+func (r baleCacheRepository) Blobs() bale.RegistryBlobStore {
+	return baleCacheBlobs{BlobStore: r.Repository.Blobs(), uploader: orasArtifactBlobs{resolver: r.resolver, ref: r.Reference}}
+}
+
+func (baleCacheRepository) ReferrerPages(ctx context.Context, _ v1.Descriptor, _ func(bale.ReferrerPage) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return errdef.ErrUnsupported
+}
+
+type baleCacheBlobs struct {
+	registry.BlobStore
+	uploader orasArtifactBlobs
+}
+
+func (b baleCacheBlobs) Push(ctx context.Context, descriptor v1.Descriptor, reader io.Reader) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return b.uploader.Push(ctx, descriptor, reader)
 }
 
 func (r *Resolver) orasConnection(ctx context.Context, name string, endpointInsecure *bool, system *types.SystemContext, requestRetries int) (*http.Client, auth.CredentialFunc, bool, error) {
