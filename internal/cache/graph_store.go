@@ -58,6 +58,12 @@ func (s *OCIStore) PutGraph(ctx context.Context, root digest.Digest, record Grap
 		return v1.Descriptor{}, err
 	}
 	defer release()
+	var publication *cachePublicationSource
+	var metadataTarget content.Storage = target
+	if s.resolver != nil {
+		publication = newCachePublicationSource(source)
+		metadataTarget = publication.metadata
+	}
 	pushMetadata := func(descriptor v1.Descriptor, data []byte) error {
 		if s.localRoot != "" {
 			exists, err := target.Exists(ctx, descriptor)
@@ -68,13 +74,15 @@ func (s *OCIStore) PutGraph(ctx context.Context, root digest.Digest, record Grap
 				return verifyGraphBlob(ctx, target, descriptor)
 			}
 		}
-		return pushGraphBlob(ctx, target, descriptor, data)
+		return pushGraphBlob(ctx, metadataTarget, descriptor, data)
 	}
 	// Local writers hold the layout lock. Revalidate existing local payloads:
 	// filename existence alone cannot prove their bytes still match the digest.
 	// Fail before retagging rather than claiming a corrupt graph was stored.
-	if err := copyGraphImages(ctx, source, target, graphs, false, s.localRoot != ""); err != nil {
-		return v1.Descriptor{}, err
+	if publication == nil {
+		if err := copyGraphImages(ctx, source, target, graphs, false, s.localRoot != ""); err != nil {
+			return v1.Descriptor{}, err
+		}
 	}
 	layers := append([]v1.Descriptor{}, graphs...)
 	for _, result := range record.Results {
@@ -102,6 +110,12 @@ func (s *OCIStore) PutGraph(ctx context.Context, root digest.Digest, record Grap
 	}
 	if err := pushMetadata(artifact, manifestData); err != nil {
 		return v1.Descriptor{}, err
+	}
+	if publication != nil {
+		if err := s.resolver.PublishCacheGraph(ctx, s.repository, publication, artifact, graphTag(root)); err != nil {
+			return v1.Descriptor{}, err
+		}
+		return artifact, nil
 	}
 	if err := target.Tag(ctx, artifact, graphTag(root)); err != nil {
 		return v1.Descriptor{}, err
@@ -406,7 +420,7 @@ func graphImages(record GraphRecord) []v1.Descriptor {
 	return images
 }
 
-func pushGraphBlob(ctx context.Context, target oras.Target, desc v1.Descriptor, data []byte) error {
+func pushGraphBlob(ctx context.Context, target content.Storage, desc v1.Descriptor, data []byte) error {
 	if err := target.Push(ctx, desc, bytes.NewReader(data)); err != nil && !errors.Is(err, errdef.ErrAlreadyExists) {
 		return err
 	}

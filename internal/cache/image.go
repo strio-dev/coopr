@@ -147,12 +147,19 @@ func (s *OCIStore) PutImage(ctx context.Context, key ImageKey, record ImageRecor
 		return v1.Descriptor{}, err
 	}
 	defer release()
-	if err := oras.CopyGraph(ctx, source, target, record.Image, oras.DefaultCopyGraphOptions); err != nil {
-		return v1.Descriptor{}, fmt.Errorf("store instruction image graph: %w", err)
-	}
-	if record.BaseImage != nil {
-		if err := oras.CopyGraph(ctx, source, target, *record.BaseImage, oras.DefaultCopyGraphOptions); err != nil {
-			return v1.Descriptor{}, err
+	var publication *cachePublicationSource
+	var metadataTarget content.Storage = target
+	if s.resolver != nil {
+		publication = newCachePublicationSource(source)
+		metadataTarget = publication.metadata
+	} else {
+		if err := oras.CopyGraph(ctx, source, target, record.Image, oras.DefaultCopyGraphOptions); err != nil {
+			return v1.Descriptor{}, fmt.Errorf("store instruction image graph: %w", err)
+		}
+		if record.BaseImage != nil {
+			if err := oras.CopyGraph(ctx, source, target, *record.BaseImage, oras.DefaultCopyGraphOptions); err != nil {
+				return v1.Descriptor{}, err
+			}
 		}
 	}
 	graphs := []v1.Descriptor{record.Image}
@@ -169,13 +176,19 @@ func (s *OCIStore) PutImage(ctx context.Context, key ImageKey, record ImageRecor
 		return v1.Descriptor{}, err
 	}
 	root := oci.Descriptor(v1.MediaTypeImageManifest, manifestData)
-	if err := target.Push(ctx, config, bytes.NewReader(data)); err != nil && !errors.Is(err, errdef.ErrAlreadyExists) {
+	if err := metadataTarget.Push(ctx, config, bytes.NewReader(data)); err != nil && !errors.Is(err, errdef.ErrAlreadyExists) {
 		return v1.Descriptor{}, err
 	}
-	if err := target.Push(ctx, root, bytes.NewReader(manifestData)); err != nil && !errors.Is(err, errdef.ErrAlreadyExists) {
+	if err := metadataTarget.Push(ctx, root, bytes.NewReader(manifestData)); err != nil && !errors.Is(err, errdef.ErrAlreadyExists) {
 		return v1.Descriptor{}, err
 	}
 	keyDigest, _ := key.Digest()
+	if publication != nil {
+		if err := s.resolver.PublishCacheGraph(ctx, s.repository, publication, root, instructionImageTag(keyDigest)); err != nil {
+			return v1.Descriptor{}, err
+		}
+		return root, nil
+	}
 	if err := target.Tag(ctx, root, instructionImageTag(keyDigest)); err != nil {
 		return v1.Descriptor{}, err
 	}

@@ -12,10 +12,13 @@ import (
 
 	"github.com/gofrs/flock"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/bale"
 	"github.com/strio-dev/coopr/internal/oci"
 	"oras.land/oras-go/v2"
 	"oras.land/oras-go/v2/content"
+	"oras.land/oras-go/v2/content/memory"
 	orasoci "oras.land/oras-go/v2/content/oci"
+	"oras.land/oras-go/v2/errdef"
 )
 
 var ErrMiss = errors.New("portable cache miss")
@@ -25,6 +28,8 @@ type OCIStore struct {
 	stagingDir string
 	localRoot  string
 	ttl        *time.Duration
+	resolver   *oci.Resolver
+	repository string
 }
 
 // RecordFresh applies the optional portable-cache age limit to validated metadata.
@@ -89,7 +94,71 @@ func NewRegistryStore(resolver *oci.Resolver, repository, stagingDir string, ttl
 	if err != nil {
 		return nil, err
 	}
-	return &OCIStore{target: target, stagingDir: stagingDir, ttl: ttl}, nil
+	return &OCIStore{target: target, stagingDir: stagingDir, ttl: ttl, resolver: resolver, repository: repository}, nil
+}
+
+// cachePublicationSource adds only cache metadata to a caller-owned image
+// layout. Bale reads the complete graph without copying its payloads to staging
+// or modifying the source layout.
+type cachePublicationSource struct {
+	oras.ReadOnlyTarget
+	metadata *cachePublicationMetadata
+}
+
+func newCachePublicationSource(source oras.ReadOnlyTarget) *cachePublicationSource {
+	return &cachePublicationSource{ReadOnlyTarget: source, metadata: &cachePublicationMetadata{Store: memory.New()}}
+}
+
+func (s *cachePublicationSource) Fetch(ctx context.Context, descriptor v1.Descriptor) (io.ReadCloser, error) {
+	exists, err := s.metadata.Exists(ctx, descriptor)
+	if err != nil {
+		return nil, err
+	}
+	if exists {
+		return s.metadata.Fetch(ctx, descriptor)
+	}
+	return s.ReadOnlyTarget.Fetch(ctx, descriptor)
+}
+
+func (s *cachePublicationSource) Exists(ctx context.Context, descriptor v1.Descriptor) (bool, error) {
+	exists, err := s.metadata.Exists(ctx, descriptor)
+	if err != nil || exists {
+		return exists, err
+	}
+	return s.ReadOnlyTarget.Exists(ctx, descriptor)
+}
+
+func (s *cachePublicationSource) Resolve(ctx context.Context, reference string) (v1.Descriptor, error) {
+	if err := ctx.Err(); err != nil {
+		return v1.Descriptor{}, err
+	}
+	descriptor, err := s.metadata.Resolve(ctx, reference)
+	if !errors.Is(err, errdef.ErrNotFound) {
+		return descriptor, err
+	}
+	return s.ReadOnlyTarget.Resolve(ctx, reference)
+}
+
+// Expose the layout's real CAS descriptor lookup so Bale plans payloads without
+// buffering them. Source graphs were streamed and verified before this overlay
+// was created; Bale also verifies bytes transferred and the published closure.
+func (s *cachePublicationSource) Blobs() bale.RegistryBlobStore {
+	return cachePublicationBlobs{s}
+}
+
+type cachePublicationBlobs struct{ *cachePublicationSource }
+
+func (cachePublicationBlobs) Push(context.Context, v1.Descriptor, io.Reader) error {
+	return errdef.ErrUnsupported
+}
+
+type cachePublicationMetadata struct{ *memory.Store }
+
+func (s *cachePublicationMetadata) Push(ctx context.Context, descriptor v1.Descriptor, reader io.Reader) error {
+	if err := s.Store.Push(ctx, descriptor, reader); err != nil && !errors.Is(err, errdef.ErrAlreadyExists) {
+		return err
+	}
+	return s.Tag(ctx, descriptor, descriptor.Digest.String())
 }
 
 func checkStaging(dir string) error {
