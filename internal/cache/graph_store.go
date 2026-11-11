@@ -20,7 +20,7 @@ import (
 	"oras.land/oras-go/v2/errdef"
 )
 
-func graphTag(root digest.Digest) string { return "graph-" + root.Encoded() }
+func graphTag(root digest.Digest) string { return "graph-v2-" + root.Encoded() }
 
 // PutGraph publishes a verified graph artifact only after all result sidecars
 // and complete image graphs have been copied. The caller stages publication
@@ -58,12 +58,6 @@ func (s *OCIStore) PutGraph(ctx context.Context, root digest.Digest, record Grap
 		return v1.Descriptor{}, err
 	}
 	defer release()
-	var publication *cachePublicationSource
-	var metadataTarget content.Storage = target
-	if s.resolver != nil {
-		publication = newCachePublicationSource(source)
-		metadataTarget = publication.metadata
-	}
 	pushMetadata := func(descriptor v1.Descriptor, data []byte) error {
 		if s.localRoot != "" {
 			exists, err := target.Exists(ctx, descriptor)
@@ -74,17 +68,15 @@ func (s *OCIStore) PutGraph(ctx context.Context, root digest.Digest, record Grap
 				return verifyGraphBlob(ctx, target, descriptor)
 			}
 		}
-		return pushGraphBlob(ctx, metadataTarget, descriptor, data)
+		return pushGraphBlob(ctx, target, descriptor, data)
 	}
 	// Local writers hold the layout lock. Revalidate existing local payloads:
 	// filename existence alone cannot prove their bytes still match the digest.
 	// Fail before retagging rather than claiming a corrupt graph was stored.
-	if publication == nil {
-		if err := copyGraphImages(ctx, source, target, graphs, false, s.localRoot != ""); err != nil {
-			return v1.Descriptor{}, err
-		}
+	if err := copyGraphImages(ctx, source, target, graphs, false, s.localRoot != ""); err != nil {
+		return v1.Descriptor{}, err
 	}
-	layers := append([]v1.Descriptor{}, graphs...)
+	layers := make([]v1.Descriptor, 0, len(record.Results))
 	for _, result := range record.Results {
 		desc, _ := result.Descriptor()
 		value, err := json.Marshal(result)
@@ -104,18 +96,24 @@ func (s *OCIStore) PutGraph(ctx context.Context, root digest.Digest, record Grap
 	if len(manifestData) > maxGraphRecordBytes {
 		return v1.Descriptor{}, errors.New("graph artifact manifest too large")
 	}
-	artifact := oci.Descriptor(v1.MediaTypeImageManifest, manifestData)
+	metadata := oci.Descriptor(v1.MediaTypeImageManifest, manifestData)
 	if err := pushMetadata(config, data); err != nil {
 		return v1.Descriptor{}, err
 	}
-	if err := pushMetadata(artifact, manifestData); err != nil {
+	if err := pushMetadata(metadata, manifestData); err != nil {
 		return v1.Descriptor{}, err
 	}
-	if publication != nil {
-		if err := s.resolver.PublishCacheGraph(ctx, s.repository, publication, artifact, graphTag(root)); err != nil {
-			return v1.Descriptor{}, err
-		}
-		return artifact, nil
+	manifests := append([]v1.Descriptor{metadata}, graphs...)
+	indexData, err := json.Marshal(oci.VersionedIndex(manifests, GraphArtifactType))
+	if err != nil {
+		return v1.Descriptor{}, err
+	}
+	if len(indexData) > maxGraphRecordBytes {
+		return v1.Descriptor{}, errors.New("graph artifact index too large")
+	}
+	artifact := oci.Descriptor(v1.MediaTypeImageIndex, indexData)
+	if err := pushMetadata(artifact, indexData); err != nil {
+		return v1.Descriptor{}, err
 	}
 	if err := target.Tag(ctx, artifact, graphTag(root)); err != nil {
 		return v1.Descriptor{}, err
@@ -182,13 +180,31 @@ func (s *OCIStore) lookupGraphMetadata(ctx context.Context, target oras.ReadOnly
 	if len(artifact.Annotations) == 1 && artifact.Annotations[v1.AnnotationRefName] == graphTag(root) {
 		artifact.Annotations = nil
 	}
-	if artifact.MediaType != v1.MediaTypeImageManifest {
+	if artifact.MediaType != v1.MediaTypeImageIndex {
 		return nil, errors.New("invalid graph artifact media type")
 	}
 	if err := validDescriptor(artifact); err != nil {
 		return nil, err
 	}
-	manifestData, err := fetchVerified(ctx, target, artifact, maxGraphRecordBytes)
+	indexData, err := fetchVerified(ctx, target, artifact, maxGraphRecordBytes)
+	if err != nil {
+		return nil, err
+	}
+	var index v1.Index
+	if err := strictJSON(indexData, &index); err != nil {
+		return nil, err
+	}
+	if index.SchemaVersion != 2 || index.MediaType != "" && index.MediaType != v1.MediaTypeImageIndex || index.ArtifactType != GraphArtifactType || index.Subject != nil || len(index.Manifests) < 2 || len(index.Manifests) > 2*maxGraphEntries+1 {
+		return nil, errors.New("invalid graph cache index")
+	}
+	metadata := index.Manifests[0]
+	if metadata.MediaType != v1.MediaTypeImageManifest {
+		return nil, errors.New("invalid graph metadata manifest media type")
+	}
+	if err := validDescriptor(metadata); err != nil {
+		return nil, err
+	}
+	manifestData, err := fetchVerified(ctx, target, metadata, maxGraphRecordBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -196,7 +212,7 @@ func (s *OCIStore) lookupGraphMetadata(ctx context.Context, target oras.ReadOnly
 	if err := strictJSON(manifestData, &manifest); err != nil {
 		return nil, err
 	}
-	if manifest.SchemaVersion != 2 || manifest.MediaType != "" && manifest.MediaType != v1.MediaTypeImageManifest || manifest.ArtifactType != GraphArtifactType || manifest.Config.MediaType != GraphConfigMediaType || manifest.Subject != nil || len(manifest.Layers) > 3*maxGraphEntries {
+	if manifest.SchemaVersion != 2 || manifest.MediaType != "" && manifest.MediaType != v1.MediaTypeImageManifest || manifest.ArtifactType != GraphArtifactType || manifest.Config.MediaType != GraphConfigMediaType || manifest.Subject != nil || len(manifest.Layers) > maxGraphEntries {
 		return nil, errors.New("invalid graph cache artifact")
 	}
 	if err := validDescriptor(manifest.Config); err != nil {
@@ -214,7 +230,18 @@ func (s *OCIStore) lookupGraphMetadata(ctx context.Context, target oras.ReadOnly
 		return nil, err
 	}
 	graphs := graphImages(record)
-	expected := append([]v1.Descriptor{}, graphs...)
+	if len(index.Manifests) != len(graphs)+1 {
+		return nil, errors.New("graph index image count differs from record")
+	}
+	for i, image := range graphs {
+		if err := validDescriptor(index.Manifests[i+1]); err != nil {
+			return nil, err
+		}
+		if !content.Equal(image, index.Manifests[i+1]) {
+			return nil, errors.New("graph index image differs from record")
+		}
+	}
+	expected := make([]v1.Descriptor, 0, len(record.Results))
 	for _, result := range record.Results {
 		desc, _ := result.Descriptor()
 		expected = append(expected, desc)
@@ -230,7 +257,7 @@ func (s *OCIStore) lookupGraphMetadata(ctx context.Context, target oras.ReadOnly
 			return nil, errors.New("graph artifact result differs from record")
 		}
 	}
-	metadataBytes := len(manifestData) + len(data)
+	metadataBytes := len(indexData) + len(manifestData) + len(data)
 	for _, result := range record.Results {
 		desc, _ := result.Descriptor()
 		value, err := fetchVerified(ctx, target, desc, maxGraphRecordBytes)
@@ -249,7 +276,7 @@ func (s *OCIStore) lookupGraphMetadata(ctx context.Context, target oras.ReadOnly
 	if !RecordFresh(record.CreatedAt, s.ttl, time.Now()) {
 		return nil, ErrMiss
 	}
-	return &graphMetadata{record: record, artifact: artifact, manifestJSON: manifestData, recordJSON: data, bytes: metadataBytes}, nil
+	return &graphMetadata{record: record, artifact: artifact, indexJSON: indexData, manifestJSON: manifestData, recordJSON: data, bytes: metadataBytes}, nil
 }
 
 func materializeGraphImages(ctx context.Context, target oras.Target, graphs []v1.Descriptor, destination *orasoci.Store, reusable map[digest.Digest]v1.Descriptor) error {

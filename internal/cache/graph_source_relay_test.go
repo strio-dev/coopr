@@ -9,6 +9,7 @@ import (
 
 	digest "github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/oci"
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
 
@@ -17,6 +18,7 @@ func TestGraphSourceHandoffRetainsMetadataAfterOwnerAndSourceRemoval(t *testing.
 	snapshot := source.Metadata()
 	originalSnapshot := source.Metadata()
 	// Metadata exported to a caller cannot alter the admitted source.
+	snapshot.Index[0] = '['
 	snapshot.Manifest[0] = '['
 	snapshot.Record[0] = '['
 	if !reflect.DeepEqual(source.Metadata(), originalSnapshot) {
@@ -30,9 +32,13 @@ func TestGraphSourceHandoffRetainsMetadataAfterOwnerAndSourceRemoval(t *testing.
 	if err := json.Unmarshal(snapshot.Manifest, &manifest); err != nil {
 		t.Fatal(err)
 	}
+	var index v1.Index
+	if err := json.Unmarshal(snapshot.Index, &index); err != nil {
+		t.Fatal(err)
+	}
 	layout := target.Target.(*orasoci.Store)
 	layout.AutoGC = false // Remove metadata only; retain deferred image payloads.
-	for _, descriptor := range append([]v1.Descriptor{snapshot.Artifact, manifest.Config}, manifest.Layers[len(graphImages(record)):]...) {
+	for _, descriptor := range append([]v1.Descriptor{snapshot.Artifact, index.Manifests[0], manifest.Config}, manifest.Layers...) {
 		if err := layout.Delete(t.Context(), descriptor); err != nil {
 			t.Fatal(err)
 		}
@@ -62,6 +68,7 @@ func TestGraphSourceHandoffRetainsMetadataAfterOwnerAndSourceRemoval(t *testing.
 	}
 	target.mu.Unlock()
 	// Mutating a caller's snapshot after verification cannot mutate the handle.
+	snapshot.Index[0] = '['
 	snapshot.Manifest[0] = '['
 	snapshot.Record[0] = '['
 	got, err := next.Record()
@@ -95,10 +102,27 @@ func TestGraphSourceHandoffRejectsChangedBindings(t *testing.T) {
 	}{
 		{"artifact digest", func(s *GraphSourceMetadata, _ *digest.Digest) { s.Artifact.Digest = digest.FromString("different") }},
 		{"artifact size", func(s *GraphSourceMetadata, _ *digest.Digest) { s.Artifact.Size++ }},
+		{"legacy manifest root", func(s *GraphSourceMetadata, _ *digest.Digest) { s.Artifact.MediaType = v1.MediaTypeImageManifest }},
+		{"index", func(s *GraphSourceMetadata, _ *digest.Digest) { s.Index = append(s.Index, ' ') }},
+		{"index image binding", func(s *GraphSourceMetadata, _ *digest.Digest) {
+			var index v1.Index
+			if err := json.Unmarshal(s.Index, &index); err != nil {
+				t.Fatal(err)
+			}
+			index.Manifests[1].Digest = digest.FromString("different image")
+			var err error
+			s.Index, err = json.Marshal(index)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.Artifact = oci.Descriptor(v1.MediaTypeImageIndex, s.Index)
+		}},
 		{"manifest", func(s *GraphSourceMetadata, _ *digest.Digest) { s.Manifest = append(s.Manifest, ' ') }},
 		{"record", func(s *GraphSourceMetadata, _ *digest.Digest) { s.Record = append(s.Record, ' ') }},
 		{"root", func(_ *GraphSourceMetadata, r *digest.Digest) { *r = digest.FromString("different root") }},
 		{"empty manifest", func(s *GraphSourceMetadata, _ *digest.Digest) { s.Manifest = nil }},
+		{"empty index", func(s *GraphSourceMetadata, _ *digest.Digest) { s.Index = nil }},
+		{"oversized index", func(s *GraphSourceMetadata, _ *digest.Digest) { s.Index = make([]byte, maxGraphRecordBytes+1) }},
 		{"oversized record", func(s *GraphSourceMetadata, _ *digest.Digest) { s.Record = make([]byte, maxGraphRecordBytes+1) }},
 		{"unknown record field", func(s *GraphSourceMetadata, _ *digest.Digest) { s.Record = []byte(`{"unknown":true}`) }},
 	} {

@@ -22,10 +22,10 @@ import (
 )
 
 const (
-	ImageKeyVersion      = "coopr.strio.dev/instruction-image-cache-key/v1"
-	ImageRecordVersion   = "coopr.strio.dev/instruction-image-cache-record/v1"
-	ImageArtifactType    = "application/vnd.coopr.strio.dev.instruction-image-cache.v1+json"
-	ImageConfigMediaType = "application/vnd.coopr.strio.dev.instruction-image-cache.config.v1+json"
+	ImageKeyVersion      = "coopr.strio.dev/instruction-image-cache-key/v2"
+	ImageRecordVersion   = "coopr.strio.dev/instruction-image-cache-record/v2"
+	ImageArtifactType    = "application/vnd.coopr.strio.dev.instruction-image-cache.v2+json"
+	ImageConfigMediaType = "application/vnd.coopr.strio.dev.instruction-image-cache.config.v2+json"
 	maxImageRecordBytes  = 8 << 20
 	instructionTagPrefix = "instruction-"
 )
@@ -147,48 +147,48 @@ func (s *OCIStore) PutImage(ctx context.Context, key ImageKey, record ImageRecor
 		return v1.Descriptor{}, err
 	}
 	defer release()
-	var publication *cachePublicationSource
-	var metadataTarget content.Storage = target
-	if s.resolver != nil {
-		publication = newCachePublicationSource(source)
-		metadataTarget = publication.metadata
-	} else {
-		if err := oras.CopyGraph(ctx, source, target, record.Image, oras.DefaultCopyGraphOptions); err != nil {
-			return v1.Descriptor{}, fmt.Errorf("store instruction image graph: %w", err)
-		}
-		if record.BaseImage != nil {
-			if err := oras.CopyGraph(ctx, source, target, *record.BaseImage, oras.DefaultCopyGraphOptions); err != nil {
-				return v1.Descriptor{}, err
-			}
-		}
-	}
 	graphs := []v1.Descriptor{record.Image}
 	if record.BaseImage != nil {
 		graphs = append(graphs, *record.BaseImage)
+	}
+	if err := copyGraphImages(ctx, source, target, graphs, false, s.localRoot != ""); err != nil {
+		return v1.Descriptor{}, fmt.Errorf("store instruction image graph: %w", err)
 	}
 	data, err := json.Marshal(record)
 	if err != nil || len(data) > maxImageRecordBytes {
 		return v1.Descriptor{}, errors.Join(err, errors.New("instruction image cache record too large"))
 	}
 	config := oci.Descriptor(ImageConfigMediaType, data)
-	manifestData, err := json.Marshal(oci.VersionedManifest(config, graphs, ImageArtifactType))
+	manifestData, err := json.Marshal(oci.VersionedManifest(config, []v1.Descriptor{}, ImageArtifactType))
 	if err != nil {
 		return v1.Descriptor{}, err
 	}
-	root := oci.Descriptor(v1.MediaTypeImageManifest, manifestData)
-	if err := metadataTarget.Push(ctx, config, bytes.NewReader(data)); err != nil && !errors.Is(err, errdef.ErrAlreadyExists) {
+	if len(manifestData) > maxImageRecordBytes {
+		return v1.Descriptor{}, errors.New("instruction image cache metadata manifest too large")
+	}
+	metadata := oci.Descriptor(v1.MediaTypeImageManifest, manifestData)
+	manifests := []v1.Descriptor{metadata, record.Image}
+	if record.BaseImage != nil {
+		manifests = append(manifests, *record.BaseImage)
+	}
+	indexData, err := json.Marshal(oci.VersionedIndex(manifests, ImageArtifactType))
+	if err != nil {
 		return v1.Descriptor{}, err
 	}
-	if err := metadataTarget.Push(ctx, root, bytes.NewReader(manifestData)); err != nil && !errors.Is(err, errdef.ErrAlreadyExists) {
+	if len(indexData) > maxImageRecordBytes {
+		return v1.Descriptor{}, errors.New("instruction image cache index too large")
+	}
+	root := oci.Descriptor(v1.MediaTypeImageIndex, indexData)
+	if err := target.Push(ctx, config, bytes.NewReader(data)); err != nil && !errors.Is(err, errdef.ErrAlreadyExists) {
+		return v1.Descriptor{}, err
+	}
+	if err := target.Push(ctx, metadata, bytes.NewReader(manifestData)); err != nil && !errors.Is(err, errdef.ErrAlreadyExists) {
+		return v1.Descriptor{}, err
+	}
+	if err := target.Push(ctx, root, bytes.NewReader(indexData)); err != nil && !errors.Is(err, errdef.ErrAlreadyExists) {
 		return v1.Descriptor{}, err
 	}
 	keyDigest, _ := key.Digest()
-	if publication != nil {
-		if err := s.resolver.PublishCacheGraph(ctx, s.repository, publication, root, instructionImageTag(keyDigest)); err != nil {
-			return v1.Descriptor{}, err
-		}
-		return root, nil
-	}
 	if err := target.Tag(ctx, root, instructionImageTag(keyDigest)); err != nil {
 		return v1.Descriptor{}, err
 	}
@@ -220,13 +220,32 @@ func (s *OCIStore) LookupImage(ctx context.Context, key ImageKey) (*ImageRecord,
 	if len(root.Annotations) == 1 && root.Annotations[v1.AnnotationRefName] == instructionImageTag(keyDigest) {
 		root.Annotations = nil
 	}
-	if root.MediaType != v1.MediaTypeImageManifest {
-		return nil, "", errors.New("invalid instruction image cache manifest media type")
+	if root.MediaType != v1.MediaTypeImageIndex {
+		return nil, "", errors.New("invalid instruction image cache index media type")
 	}
 	if err := validDescriptor(root); err != nil {
 		return nil, "", err
 	}
-	manifestData, err := fetchVerified(ctx, target, root, maxImageRecordBytes)
+	indexData, err := fetchVerified(ctx, target, root, maxImageRecordBytes)
+	if err != nil {
+		return nil, "", err
+	}
+	var index v1.Index
+	if err := strictJSON(indexData, &index); err != nil {
+		return nil, "", err
+	}
+	if index.SchemaVersion != 2 || index.MediaType != "" && index.MediaType != v1.MediaTypeImageIndex || index.ArtifactType != ImageArtifactType || (len(index.Manifests) != 2 && len(index.Manifests) != 3) || index.Subject != nil {
+		return nil, "", errors.New("invalid instruction image cache index")
+	}
+	for _, descriptor := range index.Manifests {
+		if err := validDescriptor(descriptor); err != nil {
+			return nil, "", err
+		}
+	}
+	if index.Manifests[0].MediaType != v1.MediaTypeImageManifest {
+		return nil, "", errors.New("invalid instruction image cache metadata manifest type")
+	}
+	manifestData, err := fetchVerified(ctx, target, index.Manifests[0], maxImageRecordBytes)
 	if err != nil {
 		return nil, "", err
 	}
@@ -234,13 +253,10 @@ func (s *OCIStore) LookupImage(ctx context.Context, key ImageKey) (*ImageRecord,
 	if err := strictJSON(manifestData, &artifact); err != nil {
 		return nil, "", err
 	}
-	if artifact.SchemaVersion != 2 || artifact.MediaType != "" && artifact.MediaType != v1.MediaTypeImageManifest || artifact.ArtifactType != ImageArtifactType || artifact.Config.MediaType != ImageConfigMediaType || (len(artifact.Layers) != 1 && len(artifact.Layers) != 2) || artifact.Subject != nil {
+	if artifact.SchemaVersion != 2 || artifact.MediaType != "" && artifact.MediaType != v1.MediaTypeImageManifest || artifact.ArtifactType != ImageArtifactType || artifact.Config.MediaType != ImageConfigMediaType || artifact.Layers == nil || len(artifact.Layers) != 0 || artifact.Subject != nil {
 		return nil, "", errors.New("invalid instruction image cache artifact")
 	}
 	if err := validDescriptor(artifact.Config); err != nil {
-		return nil, "", err
-	}
-	if err := validDescriptor(artifact.Layers[0]); err != nil {
 		return nil, "", err
 	}
 	data, err := fetchVerified(ctx, target, artifact.Config, maxImageRecordBytes)
@@ -254,18 +270,15 @@ func (s *OCIStore) LookupImage(ctx context.Context, key ImageKey) (*ImageRecord,
 	if err := record.validate(key); err != nil {
 		return nil, "", err
 	}
-	if !content.Equal(artifact.Layers[0], record.Image) {
+	if !content.Equal(index.Manifests[1], record.Image) {
 		return nil, "", errors.New("instruction image differs from cache artifact")
 	}
-	if (record.BaseImage == nil) != (len(artifact.Layers) == 1) {
+	if (record.BaseImage == nil) != (len(index.Manifests) == 2) {
 		return nil, "", errors.New("cached base image differs from artifact")
 	}
 	if record.BaseImage != nil {
-		if !content.Equal(artifact.Layers[1], *record.BaseImage) {
+		if !content.Equal(index.Manifests[2], *record.BaseImage) {
 			return nil, "", errors.New("cached base image differs from artifact")
-		}
-		if err := verifyImageGraph(ctx, target, *record.BaseImage); err != nil {
-			return nil, "", fmt.Errorf("verify cached base image graph: %w", err)
 		}
 	}
 	if err := ctx.Err(); err != nil {
@@ -273,10 +286,6 @@ func (s *OCIStore) LookupImage(ctx context.Context, key ImageKey) (*ImageRecord,
 	}
 	if !RecordFresh(record.CreatedAt, s.ttl, time.Now()) {
 		return nil, "", ErrMiss
-	}
-	descriptors, err := imageGraphDescriptors(ctx, target, record.Image)
-	if err != nil {
-		return nil, "", fmt.Errorf("verify cached instruction image graph: %w", err)
 	}
 	dir, err := os.MkdirTemp(s.stagingDir, "coopr-instruction-image-*")
 	if err != nil {
@@ -292,24 +301,11 @@ func (s *OCIStore) LookupImage(ctx context.Context, key ImageKey) (*ImageRecord,
 	if err != nil {
 		return nil, "", err
 	}
-	options := oras.DefaultCopyGraphOptions
-	// The fresh destination verifies payload ingestion. Reuse the manifest
-	// already checked above instead of draining config/layers before copying.
-	options.FindSuccessors = func(ctx context.Context, fetcher content.Fetcher, desc v1.Descriptor) ([]v1.Descriptor, error) {
-		if desc.Digest == record.Image.Digest {
-			return descriptors, nil
-		}
-		return content.Successors(ctx, fetcher, desc)
-	}
-	if err := oras.CopyGraph(ctx, target, destination, record.Image, options); err != nil {
-		return nil, "", err
-	}
+	graphs := []v1.Descriptor{record.Image}
 	if record.BaseImage != nil {
-		if err := oras.CopyGraph(ctx, target, destination, *record.BaseImage, oras.DefaultCopyGraphOptions); err != nil {
-			return nil, "", err
-		}
+		graphs = append(graphs, *record.BaseImage)
 	}
-	if err := destination.Tag(ctx, record.Image, record.Image.Digest.String()); err != nil {
+	if err := materializeGraphImages(ctx, target, graphs, destination, nil); err != nil {
 		return nil, "", err
 	}
 	keep = true

@@ -112,6 +112,14 @@ func TestImageExpiryStillVerifiesCacheMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var index v1.Index
+	if err := json.Unmarshal(data, &index); err != nil {
+		t.Fatal(err)
+	}
+	data, err = fetchVerified(context.Background(), counted, index.Manifests[0], maxImageRecordBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var artifact v1.Manifest
 	if err := json.Unmarshal(data, &artifact); err != nil {
 		t.Fatal(err)
@@ -120,5 +128,64 @@ func TestImageExpiryStillVerifiesCacheMetadata(t *testing.T) {
 	_, path, err := store.LookupImage(context.Background(), key)
 	if err == nil || errors.Is(err, ErrMiss) || path != "" {
 		t.Fatalf("expired corrupt metadata became miss: path=%s err=%v", path, err)
+	}
+}
+
+func TestImageLookupRejectsInvalidEnvelopeEdges(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		change func(*v1.Index, *v1.Manifest)
+	}{
+		{"missing image", func(index *v1.Index, _ *v1.Manifest) { index.Manifests = index.Manifests[:1] }},
+		{"different image", func(index *v1.Index, artifact *v1.Manifest) { index.Manifests[1] = artifact.Config }},
+		{"unexpected base", func(index *v1.Index, _ *v1.Manifest) { index.Manifests = append(index.Manifests, index.Manifests[1]) }},
+		{"image in metadata layers", func(index *v1.Index, artifact *v1.Manifest) { artifact.Layers = []v1.Descriptor{index.Manifests[1]} }},
+		{"null metadata layers", func(_ *v1.Index, artifact *v1.Manifest) { artifact.Layers = nil }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			store, key, descriptors, counted := imageLookupFixture(t, time.Now())
+			keyDigest, _ := key.Digest()
+			root, err := counted.Resolve(ctx, instructionImageTag(keyDigest))
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := fetchVerified(ctx, counted, root, maxImageRecordBytes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var index v1.Index
+			if err := json.Unmarshal(data, &index); err != nil {
+				t.Fatal(err)
+			}
+			data, err = fetchVerified(ctx, counted, index.Manifests[0], maxImageRecordBytes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var artifact v1.Manifest
+			if err := json.Unmarshal(data, &artifact); err != nil {
+				t.Fatal(err)
+			}
+			test.change(&index, &artifact)
+			index.Manifests[0] = pushGraphTestJSON(t, counted, v1.MediaTypeImageManifest, artifact)
+			root = pushGraphTestJSON(t, counted, v1.MediaTypeImageIndex, index)
+			if err := counted.Tag(ctx, root, instructionImageTag(keyDigest)); err != nil {
+				t.Fatal(err)
+			}
+			counted.fetches = map[digest.Digest]int{}
+			_, path, err := store.LookupImage(ctx, key)
+			if err == nil || errors.Is(err, ErrMiss) || path != "" {
+				t.Fatalf("invalid cache edges accepted: path=%s err=%v", path, err)
+			}
+			for _, descriptor := range descriptors[1:] {
+				if counted.fetches[descriptor.Digest] != 0 {
+					t.Errorf("invalid envelope hydrated image payload %s", descriptor.Digest)
+				}
+			}
+			entries, err := os.ReadDir(store.stagingDir)
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("invalid envelope staged data: %v %v", entries, err)
+			}
+		})
 	}
 }

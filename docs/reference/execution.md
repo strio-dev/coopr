@@ -305,6 +305,8 @@ Stored package snapshots are artifact inputs, not cache hits. `--no-cache` does 
 
 Portable instruction graphs preserve dependency associations, execution identities and complete selected image results. The format is not interchangeable with BuildKit registry caches. Source boundaries can distinguish equal flattened filesystems with different layer chains. Intermediate generated parent layer timestamps do not replace logical dependency identity.
 
+Graph and instruction-image cache entries use an OCI index referencing the checkpoint images and a Coopr metadata artifact. They carry complete image filesystem layers, not only graph JSON. The 8 MiB bound applies to individual metadata records; bulk filesystem layers stream through the configured registry transport. These v2 cache formats are a clean break: older graph and instruction-image entries are not read, and misses rebuild the requested work. No migration or legacy reader is provided.
+
 Component-result cache identity also includes the input image chain. Restoration retains the selected output's image graph, configuration and root metadata; identity ignores the root directory's modification time. Metadata that the exporter cannot preserve can prevent portable reuse.
 
 The pinned Buildah backend can discard changes to root-directory mode, owner, or portable xattrs at layer commit. Coopr accepts such builds even when committed images cannot represent them. Package snapshots and cache checkpoints capture/restore these root attributes. Portable state snapshots cannot reuse outputs whose metadata the exporter cannot preserve, including subsecond file mtimes and nonportable xattrs.

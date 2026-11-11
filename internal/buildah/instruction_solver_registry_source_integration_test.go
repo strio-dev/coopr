@@ -314,14 +314,19 @@ func instructionRegistryCatalog(t *testing.T, path string) instructionRegistryGr
 	}
 	catalog := instructionRegistryGraphCatalog{roots: instructionGraphArtifactResults(t, path), results: map[string]cache.GraphResult{}, closures: map[string]map[digest.Digest]v1.Descriptor{}}
 	for _, descriptor := range index.Manifests {
-		var manifest v1.Manifest
-		read(descriptor, &manifest)
-		if manifest.ArtifactType != cache.GraphArtifactType {
+		if descriptor.MediaType != v1.MediaTypeImageIndex {
 			continue
 		}
+		var envelope v1.Index
+		read(descriptor, &envelope)
+		if envelope.ArtifactType != cache.GraphArtifactType || len(envelope.Manifests) == 0 {
+			continue
+		}
+		var manifest v1.Manifest
+		read(envelope.Manifests[0], &manifest)
 		var record cache.GraphRecord
 		read(manifest.Config, &record)
-		if descriptor.Annotations[v1.AnnotationRefName] != "graph-"+record.Root.Encoded() {
+		if descriptor.Annotations[v1.AnnotationRefName] != "graph-v2-"+record.Root.Encoded() {
 			continue
 		}
 		for _, result := range record.Results {

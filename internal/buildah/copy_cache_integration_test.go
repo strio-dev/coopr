@@ -231,7 +231,7 @@ func instructionCacheRecordCount(t *testing.T, options StoreOptions) int {
 	if len(containers) != 0 {
 		t.Fatalf("instruction cache builders leaked: %+v", containers)
 	}
-	dir := filepath.Join(lease.store.GraphRoot(), "coopr-graph-cache-v1")
+	dir := filepath.Join(lease.store.GraphRoot(), "coopr-graph-cache-v2")
 	keys, err := newGraphCacheKeyStorage(t.Context(), filepath.Join(dir, "keys.db"))
 	if err != nil {
 		t.Fatal(err)

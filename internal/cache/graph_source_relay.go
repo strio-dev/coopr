@@ -19,6 +19,7 @@ import (
 // It carries no repository, credentials, filesystem path or image payloads.
 type GraphSourceMetadata struct {
 	Artifact v1.Descriptor `json:"artifact"`
+	Index    []byte        `json:"index"`
 	Manifest []byte        `json:"manifest"`
 	Record   []byte        `json:"record"`
 }
@@ -27,7 +28,7 @@ func (source *GraphSource) Metadata() GraphSourceMetadata {
 	if source == nil {
 		return GraphSourceMetadata{}
 	}
-	return GraphSourceMetadata{Artifact: source.Artifact(), Manifest: slices.Clone(source.manifestJSON), Record: slices.Clone(source.recordJSON)}
+	return GraphSourceMetadata{Artifact: source.Artifact(), Index: slices.Clone(source.indexJSON), Manifest: slices.Clone(source.manifestJSON), Record: slices.Clone(source.recordJSON)}
 }
 
 // RestoreMetadata verifies an already admitted snapshot against its immutable
@@ -46,12 +47,20 @@ func (reader *GraphReader) RestoreMetadata(ctx context.Context, store *OCIStore,
 	if err := validDescriptor(snapshot.Artifact); err != nil {
 		return nil, err
 	}
-	if snapshot.Artifact.MediaType != v1.MediaTypeImageManifest || len(snapshot.Manifest) == 0 || len(snapshot.Manifest) > maxGraphRecordBytes || len(snapshot.Record) == 0 || len(snapshot.Record) > maxGraphRecordBytes {
+	if snapshot.Artifact.MediaType != v1.MediaTypeImageIndex || len(snapshot.Index) == 0 || len(snapshot.Index) > maxGraphRecordBytes || len(snapshot.Manifest) == 0 || len(snapshot.Manifest) > maxGraphRecordBytes || len(snapshot.Record) == 0 || len(snapshot.Record) > maxGraphRecordBytes {
 		return nil, errors.New("graph metadata handoff outside limits")
 	}
 	// Retained sources must not alias a caller-owned relay decoding buffer.
+	snapshot.Index = slices.Clone(snapshot.Index)
 	snapshot.Manifest = slices.Clone(snapshot.Manifest)
 	snapshot.Record = slices.Clone(snapshot.Record)
+	var index v1.Index
+	if err := strictJSON(snapshot.Index, &index); err != nil {
+		return nil, err
+	}
+	if len(index.Manifests) == 0 {
+		return nil, errors.New("graph metadata handoff lacks its metadata manifest")
+	}
 	var manifest v1.Manifest
 	if err := strictJSON(snapshot.Manifest, &manifest); err != nil {
 		return nil, err
@@ -64,8 +73,9 @@ func (reader *GraphReader) RestoreMetadata(ctx context.Context, store *OCIStore,
 		return nil, err
 	}
 	target := graphMetadataSnapshotTarget{root: root, artifact: snapshot.Artifact, blobs: map[digest.Digest][]byte{
-		snapshot.Artifact.Digest: snapshot.Manifest,
-		manifest.Config.Digest:   snapshot.Record,
+		snapshot.Artifact.Digest:  snapshot.Index,
+		index.Manifests[0].Digest: snapshot.Manifest,
+		manifest.Config.Digest:    snapshot.Record,
 	}}
 	for _, result := range record.Results {
 		descriptor, err := result.Descriptor()

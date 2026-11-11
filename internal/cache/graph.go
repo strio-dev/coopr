@@ -14,10 +14,10 @@ import (
 )
 
 const (
-	GraphRecordVersion   = "coopr.strio.dev/graph-cache-record"
-	GraphArtifactType    = "application/vnd.coopr.strio.dev.graph-cache.v1+json"
-	GraphConfigMediaType = "application/vnd.coopr.strio.dev.graph-cache.config.v1+json"
-	GraphResultMediaType = "application/vnd.coopr.strio.dev.graph-cache.result.v1+json"
+	GraphRecordVersion   = "coopr.strio.dev/graph-cache-record/v2"
+	GraphArtifactType    = "application/vnd.coopr.strio.dev.graph-cache.v2+json"
+	GraphConfigMediaType = "application/vnd.coopr.strio.dev.graph-cache.config.v2+json"
+	GraphResultMediaType = "application/vnd.coopr.strio.dev.graph-cache.result.v2+json"
 	maxGraphRecordBytes  = 8 << 20
 	maxGraphEntries      = 4096
 	maxGraphDepth        = 512

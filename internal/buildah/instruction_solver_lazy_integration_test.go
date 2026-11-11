@@ -290,12 +290,19 @@ func instructionGraphArtifactResults(t *testing.T, root string) map[digest.Diges
 	}
 	results := map[digest.Digest][]string{}
 	for _, descriptor := range index.Manifests {
-		var manifest v1.Manifest
-		if err := json.Unmarshal(read(descriptor.Digest), &manifest); err != nil {
+		if descriptor.MediaType != v1.MediaTypeImageIndex {
+			continue
+		}
+		var envelope v1.Index
+		if err := json.Unmarshal(read(descriptor.Digest), &envelope); err != nil {
 			t.Fatal(err)
 		}
-		if manifest.ArtifactType != cache.GraphArtifactType {
+		if envelope.ArtifactType != cache.GraphArtifactType || len(envelope.Manifests) == 0 {
 			continue
+		}
+		var manifest v1.Manifest
+		if err := json.Unmarshal(read(envelope.Manifests[0].Digest), &manifest); err != nil {
+			t.Fatal(err)
 		}
 		var record cache.GraphRecord
 		if err := json.Unmarshal(read(manifest.Config.Digest), &record); err != nil {
@@ -303,7 +310,7 @@ func instructionGraphArtifactResults(t *testing.T, root string) map[digest.Diges
 		}
 		// OCI layouts can retain untagged previous manifests. Only the active
 		// graph tag describes this cache key's current advertised snapshot.
-		if descriptor.Annotations[v1.AnnotationRefName] != "graph-"+record.Root.Encoded() {
+		if descriptor.Annotations[v1.AnnotationRefName] != "graph-v2-"+record.Root.Encoded() {
 			continue
 		}
 		var ids []string

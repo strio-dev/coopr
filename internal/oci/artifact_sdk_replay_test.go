@@ -235,7 +235,7 @@ func TestCacheRegistryBlobUploadFailureLifecycle(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			repository, err := resolver.baleCacheRepository(t.Context(), strings.TrimPrefix(server.URL, "http://")+"/coopr/cache-replay")
+			repository, err := resolver.CacheRepository(strings.TrimPrefix(server.URL, "http://") + "/coopr/cache-replay")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -246,7 +246,7 @@ func TestCacheRegistryBlobUploadFailureLifecycle(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			done := make(chan error, 1)
-			go func() { done <- repository.Blobs().Push(ctx, descriptor, body) }()
+			go func() { done <- repository.Push(ctx, descriptor, body) }()
 			wantAttempts := int64(2)
 			if failure == "cancel-upload" {
 				select {

@@ -176,17 +176,85 @@ func graphLookupCustomLayerFixture(t *testing.T, layerMediaType string, changeSe
 
 func publishGraphLookupRecord(t *testing.T, target oras.Target, record GraphRecord) GraphRecord {
 	t.Helper()
-	layers := graphImages(record)
+	layers := make([]v1.Descriptor, 0, len(record.Results))
 	for _, result := range record.Results {
 		desc := pushGraphTestJSON(t, target, GraphResultMediaType, result)
 		layers = append(layers, desc)
 	}
 	config := pushGraphTestJSON(t, target, GraphConfigMediaType, record)
-	artifact := pushGraphTestJSON(t, target, v1.MediaTypeImageManifest, oci.VersionedManifest(config, layers, GraphArtifactType))
+	metadata := pushGraphTestJSON(t, target, v1.MediaTypeImageManifest, oci.VersionedManifest(config, layers, GraphArtifactType))
+	artifact := pushGraphTestJSON(t, target, v1.MediaTypeImageIndex, oci.VersionedIndex(append([]v1.Descriptor{metadata}, graphImages(record)...), GraphArtifactType))
 	if err := target.Tag(t.Context(), artifact, graphTag(record.Root)); err != nil {
 		t.Fatal(err)
 	}
 	return record
+}
+
+func TestGraphMetadataAdmissionRejectsIndexAndArtifactBindingChanges(t *testing.T) {
+	for _, fault := range []string{
+		"legacy manifest root", "empty index", "missing image", "extra image", "reordered images", "image size",
+		"metadata descriptor hint", "metadata type", "metadata subject", "config type", "image as sidecar", "extra sidecar",
+	} {
+		t.Run(fault, func(t *testing.T) {
+			store, record, _, target := graphLookupFixture(t, v1.MediaTypeImageLayer, nil)
+			root, err := target.Resolve(t.Context(), graphTag(record.Root))
+			if err != nil {
+				t.Fatal(err)
+			}
+			index, manifest := graphTestMetadata(t, target, root)
+			switch fault {
+			case "metadata type":
+				manifest.ArtifactType = "application/vnd.coopr.strio.dev.graph-cache.v1+json"
+			case "metadata subject":
+				manifest.Subject = &record.Results[0].Image
+			case "config type":
+				manifest.Config.MediaType = v1.MediaTypeImageConfig
+			case "image as sidecar":
+				manifest.Layers[0] = record.Results[0].Image
+			case "extra sidecar":
+				manifest.Layers = append(manifest.Layers, manifest.Layers[0])
+			}
+			metadata := pushGraphTestJSON(t, target, v1.MediaTypeImageManifest, manifest)
+			index.Manifests[0] = metadata
+			switch fault {
+			case "empty index":
+				index.Manifests = nil
+			case "missing image":
+				index.Manifests = index.Manifests[:len(index.Manifests)-1]
+			case "extra image":
+				index.Manifests = append(index.Manifests, index.Manifests[1])
+			case "reordered images":
+				index.Manifests[1], index.Manifests[2] = index.Manifests[2], index.Manifests[1]
+			case "image size":
+				index.Manifests[1].Size++
+			case "metadata descriptor hint":
+				index.Manifests[0].ArtifactType = GraphArtifactType
+			}
+			root = pushGraphTestJSON(t, target, v1.MediaTypeImageIndex, index)
+			if fault == "legacy manifest root" {
+				root = metadata
+			}
+			if err := target.Tag(t.Context(), root, graphTag(record.Root)); err != nil {
+				t.Fatal(err)
+			}
+			reader, err := NewGraphReader(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = reader.Close() }()
+			if _, err := reader.LookupMetadata(t.Context(), store, record.Root); err == nil {
+				t.Fatal("changed index or metadata binding admitted")
+			}
+			if len(reader.sources) != 0 || reader.metadataBytes != 0 {
+				t.Fatal("rejected metadata retained a source or byte charge")
+			}
+			for _, image := range graphImages(record) {
+				if target.fetches[image.Digest] != 0 {
+					t.Fatal("invalid metadata fetched an image before rejecting its bindings")
+				}
+			}
+		})
+	}
 }
 
 func assertGraphLookupCleaned(t *testing.T, store *OCIStore, target *graphLookupTarget) {

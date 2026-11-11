@@ -3,7 +3,6 @@ package cache
 import (
 	"archive/tar"
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,7 +21,6 @@ import (
 	"github.com/google/go-containerregistry/pkg/registry"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
-	"github.com/strio-dev/bale"
 	"github.com/strio-dev/coopr/internal/oci"
 	"oras.land/oras-go/v2"
 	"oras.land/oras-go/v2/content"
@@ -91,11 +89,17 @@ func TestCacheRegistryPublishesLargeLayersWithAuthenticatedRetry(t *testing.T) {
 				t.Fatal(err)
 			}
 			key := ImageKey{Instruction: digest.FromString("large instruction"), Parent: digest.FromString("parent"), Platform: v1.Platform{OS: "linux", Architecture: "amd64"}, Executor: "buildah-test", Format: "oci"}
-			if kind == "graph" {
-				_, err = store.PutGraph(t.Context(), record.Root, record, layout)
-			} else {
-				_, err = store.PutImage(t.Context(), key, ImageRecord{Version: ImageRecordVersion, Key: key, Image: record.Results[0].Image, BaseImage: &record.Results[1].Image, RootMetadata: json.RawMessage(`{"mode":493}`)}, layout)
+			publish := func() error {
+				if kind == "graph" {
+					_, err := store.PutGraph(t.Context(), record.Root, record, layout)
+					return err
+				}
+				_, err := store.PutImage(t.Context(), key, ImageRecord{Version: ImageRecordVersion, Key: key, Image: record.Results[0].Image, BaseImage: &record.Results[1].Image, RootMetadata: json.RawMessage(`{"mode":493}`)}, layout)
+				return err
 			}
+			started := time.Now()
+			err = publish()
+			cold := time.Since(started)
 			if err != nil {
 				t.Fatal("large cache publication with authenticated retry:", err)
 			}
@@ -116,84 +120,16 @@ func TestCacheRegistryPublishesLargeLayersWithAuthenticatedRetry(t *testing.T) {
 				t.Fatal("independent large cache restoration:", err)
 			}
 			t.Cleanup(func() { _ = os.RemoveAll(restored) })
+			started = time.Now()
+			if err := publish(); err != nil {
+				t.Fatal("warm cache publication:", err)
+			}
+			warm := time.Since(started)
+			if uploads.Load() != 2 {
+				t.Fatalf("warm publication retransferred the large layer: uploads=%d", uploads.Load())
+			}
+			t.Logf("12 MiB layer: cold authenticated publication plus consumed-body retry=%s; warm publication=%s; warm payload uploads=0", cold, warm)
 		})
-	}
-}
-
-type publicationReadCounter struct {
-	oras.ReadOnlyTarget
-	payloads atomic.Int64
-}
-
-func (s *publicationReadCounter) Fetch(ctx context.Context, descriptor v1.Descriptor) (io.ReadCloser, error) {
-	if descriptor.MediaType == v1.MediaTypeImageLayer {
-		s.payloads.Add(1)
-	}
-	return s.ReadOnlyTarget.Fetch(ctx, descriptor)
-}
-
-func TestCachePublicationPlanningDefersPayloadReadsAndVerifiesTransfer(t *testing.T) {
-	record, sourceLayout := graphFixture(t)
-	cacheRoot := t.TempDir()
-	local, err := NewLocalStore(t.Context(), cacheRoot, t.TempDir(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	root, err := local.PutGraph(t.Context(), record.Root, record, sourceLayout)
-	if err != nil {
-		t.Fatal(err)
-	}
-	store, err := orasoci.New(cacheRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tracked := &publicationReadCounter{ReadOnlyTarget: store}
-	server, _ := strictEnvelopeRegistry(t, "")
-	host := strings.TrimPrefix(server.URL, "http://")
-	client, err := bale.NewClient(bale.ClientOptions{PlainHTTPRegistries: []string{host}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	plan, err := client.Plan(t.Context(), bale.TransferRequest{
-		Roots:       []bale.Root{{Repository: host + "/coopr/envelopes", Descriptor: root, Store: newCachePublicationSource(tracked), Referrers: bale.ReferrerPolicy{Include: "none"}}},
-		Destination: host,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if tracked.payloads.Load() != 0 {
-		t.Fatal("planning read image payloads instead of resolving their CAS descriptors")
-	}
-	// A fresh destination must still verify streamed bytes after planning.
-	data, err := fetchVerified(t.Context(), store, record.Results[0].Image, maxImageRecordBytes)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var image v1.Manifest
-	if err := json.Unmarshal(data, &image); err != nil {
-		t.Fatal(err)
-	}
-	layer := image.Layers[0]
-	path := filepath.Join(cacheRoot, "blobs", "sha256", layer.Digest.Encoded())
-	if err := os.Chmod(path, 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, bytes.Repeat([]byte("x"), int(layer.Size)), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := client.Execute(t.Context(), plan); err == nil {
-		t.Fatal("transfer accepted a same-size payload mutation after planning")
-	}
-	if tracked.payloads.Load() == 0 {
-		t.Fatal("failed transfer did not read the changed source payload")
-	}
-	response, err := http.Head(server.URL + "/v2/coopr/envelopes/manifests/" + root.Digest.String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = response.Body.Close()
-	if response.StatusCode != http.StatusNotFound {
-		t.Fatalf("failed transfer exposed the cache root: status=%d", response.StatusCode)
 	}
 }
 
@@ -270,15 +206,25 @@ func strictEnvelopeRegistry(t *testing.T, denied digest.Digest) (*httptest.Serve
 	return server, &rejected
 }
 
-func TestCacheRegistryPublishesEnvelopeLayerBlobs(t *testing.T) {
+func TestCacheRegistryPublishesIndexWithoutManifestBlobs(t *testing.T) {
 	for _, kind := range []string{"graph", "image"} {
 		for _, deny := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/deny=%t", kind, deny), func(t *testing.T) {
 				record, layout := graphFixture(t)
 				images := graphImages(record)
+				key := ImageKey{Instruction: digest.FromString("instruction"), Parent: digest.FromString("parent"), Platform: v1.Platform{OS: "linux", Architecture: "amd64"}, Executor: "buildah-test", Format: "oci"}
+				imageRecord := ImageRecord{Version: ImageRecordVersion, Key: key, Image: images[0], BaseImage: &images[1], RootMetadata: json.RawMessage(`{"mode":493}`)}
 				var denied digest.Digest
 				if deny {
-					denied = images[0].Digest
+					var value any = record
+					if kind == "image" {
+						value = imageRecord
+					}
+					data, err := json.Marshal(value)
+					if err != nil {
+						t.Fatal(err)
+					}
+					denied = digest.FromBytes(data)
 				}
 				server, rejected := strictEnvelopeRegistry(t, denied)
 				resolver, err := oci.NewResolver(oci.Options{TLSVerify: new(false), RetrySet: true})
@@ -294,14 +240,12 @@ func TestCacheRegistryPublishesEnvelopeLayerBlobs(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				// Existing child manifests must not suppress their incoming blob role.
+				// Existing image manifests need no second registration as blobs.
 				for _, image := range images {
 					if err := oras.CopyGraph(t.Context(), source, writer.target, image, oras.DefaultCopyGraphOptions); err != nil {
 						t.Fatal(err)
 					}
 				}
-				key := ImageKey{Instruction: digest.FromString("instruction"), Parent: digest.FromString("parent"), Platform: v1.Platform{OS: "linux", Architecture: "amd64"}, Executor: "buildah-test", Format: "oci"}
-				imageRecord := ImageRecord{Version: ImageRecordVersion, Key: key, Image: images[0], BaseImage: &images[1], RootMetadata: json.RawMessage(`{"mode":493}`)}
 				publish := func(store *OCIStore) (v1.Descriptor, error) {
 					if kind == "graph" {
 						return store.PutGraph(t.Context(), record.Root, record, layout)
@@ -323,7 +267,7 @@ func TestCacheRegistryPublishesEnvelopeLayerBlobs(t *testing.T) {
 				got, err := publish(writer)
 				if deny {
 					if err == nil || !rejected.Load() {
-						t.Fatalf("missing envelope-blob denial: %v", err)
+						t.Fatalf("missing metadata-blob denial: %v", err)
 					}
 					tag := graphTag(record.Root)
 					if kind == "image" {
@@ -336,20 +280,36 @@ func TestCacheRegistryPublishesEnvelopeLayerBlobs(t *testing.T) {
 					return
 				}
 				if err != nil {
-					t.Fatalf("cache publication rejected missing blob role: %v", err)
+					t.Fatalf("standard-index cache publication: %v", err)
 				}
 				if !content.Equal(got, want) {
 					t.Fatal("registry publication changed the local cache format or digest")
+				}
+				if got.MediaType != v1.MediaTypeImageIndex {
+					t.Fatal("cache root is not an OCI index")
+				}
+				// Existing ORAS traversal must copy the complete mixed index/artifact
+				// closure, without teaching the transport about Coopr records.
+				copied, err := orasoci.New(t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := oras.CopyGraph(t.Context(), writer.target, copied, got, oras.DefaultCopyGraphOptions); err != nil {
+					t.Fatal("standard index graph copy:", err)
+				}
+				for _, image := range images {
+					if err := verifyImageGraph(t.Context(), copied, image); err != nil {
+						t.Fatal("copied cache image:", err)
+					}
 				}
 				for _, image := range images {
 					response, err := http.Get(server.URL + "/v2/coopr/envelopes/blobs/" + image.Digest.String())
 					if err != nil {
 						t.Fatal(err)
 					}
-					data, err := io.ReadAll(response.Body)
 					_ = response.Body.Close()
-					if err != nil || response.StatusCode != http.StatusOK || digest.FromBytes(data) != image.Digest {
-						t.Fatalf("image envelope has no exact blob registration: status=%d err=%v", response.StatusCode, err)
+					if response.StatusCode != http.StatusNotFound {
+						t.Fatalf("image manifest was unnecessarily published as a blob: status=%d", response.StatusCode)
 					}
 				}
 				after, err := os.ReadDir(filepath.Join(layout, "blobs", "sha256"))

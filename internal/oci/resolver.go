@@ -650,3 +650,8 @@ func Descriptor(mediaType string, data []byte) v1.Descriptor {
 func VersionedManifest(config v1.Descriptor, layers []v1.Descriptor, artifactType string) v1.Manifest {
 	return v1.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: v1.MediaTypeImageManifest, ArtifactType: artifactType, Config: config, Layers: layers}
 }
+
+// VersionedIndex references manifests without treating their bytes as layers.
+func VersionedIndex(manifests []v1.Descriptor, artifactType string) v1.Index {
+	return v1.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: v1.MediaTypeImageIndex, ArtifactType: artifactType, Manifests: manifests}
+}

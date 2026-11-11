@@ -31,6 +31,7 @@ type GraphSource struct {
 	reader       *GraphReader
 	store        *OCIStore
 	artifact     v1.Descriptor
+	indexJSON    []byte
 	recordJSON   []byte
 	manifestJSON []byte
 	results      map[string]GraphResult
@@ -62,10 +63,10 @@ func (reader *GraphReader) LookupMetadata(ctx context.Context, store *OCIStore, 
 }
 
 type graphMetadata struct {
-	record                   GraphRecord
-	artifact                 v1.Descriptor
-	manifestJSON, recordJSON []byte
-	bytes                    int
+	record                              GraphRecord
+	artifact                            v1.Descriptor
+	indexJSON, manifestJSON, recordJSON []byte
+	bytes                               int
 }
 
 // admitMetadata requires the owning reader gate.
@@ -89,8 +90,8 @@ func (reader *GraphReader) admitMetadata(store *OCIStore, metadata *graphMetadat
 	source := &GraphSource{
 		reader: reader, store: store,
 		// Strict metadata descriptors contain no mutable selection fields.
-		artifact:   v1.Descriptor{MediaType: artifact.MediaType, Digest: artifact.Digest, Size: artifact.Size},
-		recordJSON: metadata.recordJSON, manifestJSON: metadata.manifestJSON, results: make(map[string]GraphResult, len(record.Results)), images: images,
+		artifact:  v1.Descriptor{MediaType: artifact.MediaType, Digest: artifact.Digest, Size: artifact.Size},
+		indexJSON: metadata.indexJSON, recordJSON: metadata.recordJSON, manifestJSON: metadata.manifestJSON, results: make(map[string]GraphResult, len(record.Results)), images: images,
 	}
 	for _, result := range record.Results {
 		source.results[result.ID] = result

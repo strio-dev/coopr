@@ -34,15 +34,11 @@ func TestGraphSourceRegistrySelectiveGETBytesAndCompleteExport(t *testing.T) {
 	var mu sync.Mutex
 	requests := map[digest.Digest]int{}
 	transferred := map[digest.Digest]int64{}
-	measureReads := false
 	handler := registry.New(registry.Logger(log.New(io.Discard, "", 0)))
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		measure := measureReads
-		mu.Unlock()
 		counted := &graphRegistryBytes{ResponseWriter: w}
 		handler.ServeHTTP(counted, r)
-		if measure && r.Method == http.MethodGet {
+		if r.Method == http.MethodGet {
 			_, name, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/v2/coopr/source/"), "/")
 			key := digest.Digest(name)
 			if key.Validate() == nil {
@@ -68,7 +64,6 @@ func TestGraphSourceRegistrySelectiveGETBytesAndCompleteExport(t *testing.T) {
 	mu.Lock()
 	clear(requests)
 	clear(transferred)
-	measureReads = true
 	mu.Unlock()
 	reader, err := NewGraphReader(t.TempDir())
 	if err != nil {
@@ -97,17 +92,9 @@ func TestGraphSourceRegistrySelectiveGETBytesAndCompleteExport(t *testing.T) {
 		t.Fatal(err)
 	}
 	changed.Root = record.Root
-	// Measure the deferred reader, excluding the publisher's own remote closure
-	// verification while it advances the tag. Keep the reader's earlier counts.
-	mu.Lock()
-	measureReads = false
-	mu.Unlock()
 	if _, err := remote.PutGraph(t.Context(), changed.Root, changed, changedLayout); err != nil {
 		t.Fatal(err)
 	}
-	mu.Lock()
-	measureReads = true
-	mu.Unlock()
 	if selected.Artifact().Digest != admitted.Digest {
 		t.Fatal("mutable tag changed admitted artifact")
 	}

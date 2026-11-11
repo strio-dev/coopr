@@ -36,6 +36,27 @@ func pushGraphTestJSON(t *testing.T, target oras.Target, mediaType string, value
 	return descriptor
 }
 
+func graphTestMetadata(t *testing.T, target oras.Target, artifact v1.Descriptor) (v1.Index, v1.Manifest) {
+	t.Helper()
+	data, err := fetchVerified(t.Context(), target, artifact, maxGraphRecordBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var index v1.Index
+	if err := json.Unmarshal(data, &index); err != nil || len(index.Manifests) == 0 {
+		t.Fatal("invalid graph test index", err)
+	}
+	data, err = fetchVerified(t.Context(), target, index.Manifests[0], maxGraphRecordBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest v1.Manifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	return index, manifest
+}
+
 func graphFixture(t *testing.T) (GraphRecord, string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -92,8 +113,19 @@ func TestGraphCacheRoundTripRetainsVariantsAndDependencies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.PutGraph(ctx, record.Root, record, source); err != nil {
+	artifact, err := store.PutGraph(ctx, record.Root, record, source)
+	if err != nil {
 		t.Fatal(err)
+	}
+	index, manifest := graphTestMetadata(t, store.target, artifact)
+	if artifact.MediaType != v1.MediaTypeImageIndex || len(index.Manifests) != len(graphImages(record))+1 || len(manifest.Layers) != len(record.Results) {
+		t.Fatal("cache root must index the metadata manifest and every image alternative")
+	}
+	for i, result := range record.Results {
+		descriptor, err := result.Descriptor()
+		if err != nil || !reflect.DeepEqual(manifest.Layers[i], descriptor) {
+			t.Fatal("metadata manifest layers must contain only result JSON", err)
+		}
 	}
 	// A new store object exercises on-disk graph recovery, not an in-memory cache.
 	store, err = NewLocalStore(ctx, cacheRoot, staging, nil)

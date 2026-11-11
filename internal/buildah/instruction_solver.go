@@ -191,7 +191,7 @@ type instructionSolver struct {
 }
 
 func newInstructionSolver(ctx context.Context, store storage.Store, ttl *time.Duration) (*instructionSolver, error) {
-	dir := filepath.Join(store.GraphRoot(), "coopr-graph-cache-v1")
+	dir := filepath.Join(store.GraphRoot(), "coopr-graph-cache-v2")
 	if err := os.MkdirAll(filepath.Join(dir, "results"), 0700); err != nil {
 		return nil, err
 	}

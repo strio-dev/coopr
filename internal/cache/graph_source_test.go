@@ -156,14 +156,7 @@ func TestGraphSourceRecordPreservesRawMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifestData, err := fetchVerified(t.Context(), target, artifact, maxGraphRecordBytes)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var manifest v1.Manifest
-	if err := json.Unmarshal(manifestData, &manifest); err != nil {
-		t.Fatal(err)
-	}
+	index, manifest := graphTestMetadata(t, target, artifact)
 	configData, err := json.Marshal(record)
 	if err != nil {
 		t.Fatal(err)
@@ -172,11 +165,12 @@ func TestGraphSourceRecordPreservesRawMetadata(t *testing.T) {
 	configData = []byte(strings.ReplaceAll(string(configData), `{"result":[3,4]}`, string(record.Results[0].Metadata)))
 	config := pushSourceTestJSON(t, target, GraphConfigMediaType, configData)
 	manifest.Config = config
-	manifestData, err = json.Marshal(manifest)
+	manifestData, err := json.Marshal(manifest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	artifact = pushSourceTestJSON(t, target, v1.MediaTypeImageManifest, manifestData)
+	index.Manifests[0] = pushSourceTestJSON(t, target, v1.MediaTypeImageManifest, manifestData)
+	artifact = pushGraphTestJSON(t, target, v1.MediaTypeImageIndex, index)
 	if err := target.Tag(t.Context(), artifact, graphTag(record.Root)); err != nil {
 		t.Fatal(err)
 	}
