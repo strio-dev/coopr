@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -103,6 +104,35 @@ func TestGraphSourceMetadataDoesNotFetchImagesAndSelectedRestoreIsComplete(t *te
 		if target.fetches[payload.Digest] != 1 || target.read[payload.Digest] != payload.Size {
 			t.Fatalf("selected plus complete retrieval duplicated payload %s: fetches=%d bytes=%d", payload.Digest, target.fetches[payload.Digest], target.read[payload.Digest])
 		}
+	}
+	// Ingestion must own separate bytes, not a link into mutable source storage.
+	stream, err := target.Target.Fetch(t.Context(), payloads[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := stream.(*os.File)
+	original, statErr := file.Stat()
+	if err := errors.Join(statErr, stream.Close()); err != nil {
+		t.Fatal(err)
+	}
+	owned, err := os.Stat(filepath.Join(layout, "blobs", payloads[0].Digest.Algorithm().String(), payloads[0].Digest.Encoded()))
+	if err != nil || os.SameFile(original, owned) || owned.Mode().Perm()&0o222 != 0 {
+		t.Fatal("private payload aliases source storage or remains writable", err)
+	}
+	if err := os.Chmod(file.Name(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file.Name(), bytes.Repeat([]byte("x"), int(payloads[0].Size)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assertGraphReaderImages(t, layout, record)
+	fresh, err := NewGraphReader(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = fresh.Close() }()
+	if _, _, err := fresh.Lookup(t.Context(), store, record.Root); err == nil {
+		t.Fatal("fresh reader accepted persistent source corruption")
 	}
 }
 

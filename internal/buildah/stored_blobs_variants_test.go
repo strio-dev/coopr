@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/opencontainers/go-digest"
@@ -14,8 +18,42 @@ import (
 	"github.com/strio-dev/coopr/internal/oci"
 	"go.podman.io/image/v5/pkg/compression"
 	"go.podman.io/image/v5/types"
+	"go.podman.io/storage"
+	"oras.land/oras-go/v2/content"
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
+
+type retainedBlobStore struct {
+	storage.Store
+	writes atomic.Int64
+	open   func(string, string) (io.ReadCloser, error)
+}
+
+func (store *retainedBlobStore) LayerBigData(id, key string) (io.ReadCloser, error) {
+	if store.open != nil {
+		return store.open(id, key)
+	}
+	return store.Store.LayerBigData(id, key)
+}
+
+func (store *retainedBlobStore) SetLayerBigData(id, key string, data io.Reader) error {
+	store.writes.Add(1)
+	return store.Store.SetLayerBigData(id, key, data)
+}
+
+type retainedBlobReader struct {
+	io.Reader
+	readErr, closeErr error
+}
+
+func (reader retainedBlobReader) Read(data []byte) (int, error) {
+	if reader.readErr != nil {
+		return 0, reader.readErr
+	}
+	return reader.Reader.Read(data)
+}
+
+func (reader retainedBlobReader) Close() error { return reader.closeErr }
 
 func TestRetainStoredLayoutLayersPreservesCompressionVariants(t *testing.T) {
 	if testing.Short() {
@@ -128,20 +166,82 @@ func TestRetainStoredLayoutLayersPreservesCompressionVariants(t *testing.T) {
 	if exported.ManifestDigest != firstManifest.String() {
 		t.Fatalf("earlier exact manifest changed after second retention: got=%s want=%s", exported.ManifestDigest, firstManifest)
 	}
+	t.Run("repair retained bytes", func(t *testing.T) {
+		payload, err := os.ReadFile(filepath.Join(variants[0].layout, "blobs", "sha256", firstLayer.Encoded()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		layerID := retained[firstLayer]
+		for _, fault := range []string{"missing", "corrupt", "truncated", "trailing"} {
+			t.Run(fault, func(t *testing.T) {
+				counted := &retainedBlobStore{Store: lease.store}
+				if fault == "missing" {
+					counted.open = func(string, string) (io.ReadCloser, error) { return nil, os.ErrNotExist }
+				} else {
+					bad := bytes.Repeat([]byte("x"), len(payload))
+					switch fault {
+					case "truncated":
+						bad = payload[:len(payload)-1]
+					case "trailing":
+						bad = append(append([]byte(nil), payload...), 'x')
+					}
+					if err := lease.store.SetLayerBigData(layerID, firstLayer.String(), bytes.NewReader(bad)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := retainStoredLayoutLayers(counted, firstID, variants[0].layout, variants[0].root); err != nil || counted.writes.Load() != 1 {
+					t.Fatal("retained bytes were not repaired exactly once", counted.writes.Load(), err)
+				}
+				stream, err := lease.store.LayerBigData(layerID, firstLayer.String())
+				if err != nil {
+					t.Fatal(err)
+				}
+				got, readErr := content.ReadAll(stream, oci.Descriptor(v1.MediaTypeImageLayerGzip, payload))
+				if err := errors.Join(readErr, stream.Close()); err != nil || !bytes.Equal(got, payload) {
+					t.Fatal("repair changed exact compressed bytes", err)
+				}
+			})
+		}
+		failure := errors.New("injected retained blob I/O failure")
+		for _, fault := range []string{"open", "read", "close", "corrupt and close"} {
+			t.Run(fault, func(t *testing.T) {
+				counted := &retainedBlobStore{Store: lease.store, open: func(string, string) (io.ReadCloser, error) {
+					if fault == "open" {
+						return nil, failure
+					}
+					reader := retainedBlobReader{Reader: bytes.NewReader(payload), closeErr: failure}
+					switch fault {
+					case "read":
+						reader.readErr, reader.closeErr = failure, nil
+					case "corrupt and close":
+						reader.Reader = bytes.NewReader(bytes.Repeat([]byte("x"), len(payload)))
+					}
+					return reader, nil
+				}}
+				if err := retainStoredLayoutLayers(counted, firstID, variants[0].layout, variants[0].root); !errors.Is(err, failure) || counted.writes.Load() != 0 {
+					t.Fatal("retained blob I/O failure was hidden or overwritten", counted.writes.Load(), err)
+				}
+			})
+		}
+	})
 	t.Run("concurrent merges", func(t *testing.T) {
 		if err := lease.store.SetImageBigData(firstID, retainedLayerMapBigData, []byte(`{}`), nil); err != nil {
 			t.Fatal(err)
 		}
 		ready := make(chan struct{})
 		results := make(chan error, len(variants))
+		counted := &retainedBlobStore{Store: lease.store}
 		for _, item := range variants {
-			go func() { <-ready; results <- retainStoredLayoutLayers(lease.store, firstID, item.layout, item.root) }()
+			go func() { <-ready; results <- retainStoredLayoutLayers(counted, firstID, item.layout, item.root) }()
 		}
 		close(ready)
 		for range variants {
 			if err := <-results; err != nil {
 				t.Fatal(err)
 			}
+		}
+		if writes := counted.writes.Load(); writes != 0 {
+			t.Fatalf("valid retained compression variants were rewritten %d times", writes)
 		}
 		retained, err := retainedLayerIDs(lease.store, firstID)
 		if err != nil {

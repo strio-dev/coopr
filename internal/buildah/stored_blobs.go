@@ -16,6 +16,7 @@ import (
 	"github.com/strio-dev/coopr/internal/oci"
 	"go.podman.io/common/libimage/manifests"
 	"go.podman.io/storage"
+	"oras.land/oras-go/v2/content"
 	orasoci "oras.land/oras-go/v2/content/oci"
 	"oras.land/oras-go/v2/errdef"
 )
@@ -41,6 +42,9 @@ func retainStoredLayoutLayers(store storage.Store, imageID, layout string, manif
 	for _, descriptor := range manifest.Layers {
 		if err := descriptor.Digest.Validate(); err != nil {
 			return fmt.Errorf("invalid committed layer digest %q: %w", descriptor.Digest, err)
+		}
+		if descriptor.Size < 0 {
+			return fmt.Errorf("invalid committed layer size %d", descriptor.Size)
 		}
 	}
 	image, err := store.Image(imageID)
@@ -84,6 +88,29 @@ func retainStoredLayoutLayers(store storage.Store, imageID, layout string, manif
 	for index, descriptor := range manifest.Layers {
 		if descriptor.Digest == layers[index].UncompressedDigest {
 			continue
+		}
+		// Shared native layers may already retain this exact compression
+		// variant, even when this image has not recorded its own map yet.
+		if stored, err := store.LayerBigData(layers[index].ID, descriptor.Digest.String()); err == nil {
+			verified := content.NewVerifyReader(stored, descriptor)
+			_, verifyErr := io.Copy(io.Discard, verified)
+			if verifyErr == nil {
+				verifyErr = verified.Verify()
+			}
+			if closeErr := stored.Close(); closeErr != nil {
+				return fmt.Errorf("close retained layer %s: %w", descriptor.Digest, errors.Join(verifyErr, closeErr))
+			}
+			switch verifyErr {
+			case nil:
+				retained[descriptor.Digest.String()] = layers[index].ID
+				continue
+			case content.ErrMismatchedDigest, content.ErrTrailingData, io.ErrUnexpectedEOF:
+				// Repair invalid retained bytes from the verified source below.
+			default:
+				return fmt.Errorf("verify retained layer %s: %w", descriptor.Digest, verifyErr)
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("read retained layer %s: %w", descriptor.Digest, err)
 		}
 		blobPath := filepath.Join(layout, "blobs", descriptor.Digest.Algorithm().String(), descriptor.Digest.Encoded())
 		blob, err := os.Open(blobPath)

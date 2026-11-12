@@ -47,6 +47,11 @@ exported back to that same repository, retaining their original record age.
 Other destinations still receive complete exports. Local hits, mirror reads
 and fresh execution use the normal publication path.
 
+Registry and persistent OCI cache content is digest-verified when read.
+Staging uses separate, read-only blob files. Retained staging data is checked
+again before reuse; the following copy traversal reuses that verification
+within the same gated operation. Complete export still verifies its inputs.
+
 ## Use a portable local cache
 
 Write an OCI cache directory that you can retain between CI jobs or move to another machine:

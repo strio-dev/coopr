@@ -283,12 +283,13 @@ func (s *OCIStore) lookupGraphMetadata(ctx context.Context, target oras.ReadOnly
 }
 
 func materializeGraphImages(ctx context.Context, target oras.Target, graphs []v1.Descriptor, destination *orasoci.Store, reusable map[digest.Digest]v1.Descriptor) error {
-	if err := verifyAndCopyGraphImagesReusable(ctx, target, graphs, destination, reusable); err != nil {
+	validated, err := verifyAndCopyGraphImagesReusable(ctx, target, graphs, destination, reusable)
+	if err != nil {
 		return fmt.Errorf("verify cached graph images: %w", err)
 	}
 	var copyTarget content.Storage = destination
 	if reusable != nil {
-		copyTarget = graphReaderDestination{Store: destination, verified: reusable}
+		copyTarget = graphReaderDestination{Store: destination, verified: reusable, validatedPass: validated}
 	}
 	if err := CopyVerifiedGraphImages(ctx, target, copyTarget, graphs); err != nil {
 		return err
@@ -317,20 +318,23 @@ func verifyGraphImages(ctx context.Context, target oras.Target, images []v1.Desc
 // restores image roots. This also retains foreign layers filtered by ORAS.
 // Artifacts with non-leaf or unknown media retain verification and normal graph copying.
 func verifyAndCopyGraphImages(ctx context.Context, target oras.Target, images []v1.Descriptor, destination *orasoci.Store) error {
-	return verifyAndCopyGraphImagesReusable(ctx, target, images, destination, nil)
+	_, err := verifyAndCopyGraphImagesReusable(ctx, target, images, destination, nil)
+	return err
 }
 
-func verifyAndCopyGraphImagesReusable(ctx context.Context, target oras.Target, images []v1.Descriptor, destination *orasoci.Store, reusable map[digest.Digest]v1.Descriptor) error {
+// The bool reports a complete leaf validation pass in the private destination.
+// Nested or unknown graphs retain the full verification path during traversal.
+func verifyAndCopyGraphImagesReusable(ctx context.Context, target oras.Target, images []v1.Descriptor, destination *orasoci.Store, reusable map[digest.Digest]v1.Descriptor) (bool, error) {
 	roots := map[digest.Digest]v1.Descriptor{}
 	for _, image := range images {
 		if err := validDescriptor(image); err != nil {
-			return err
+			return false, err
 		}
 		if previous, ok := roots[image.Digest]; ok && !content.Equal(previous, image) {
-			return errors.New("graph images have conflicting descriptors")
+			return false, errors.New("graph images have conflicting descriptors")
 		}
 		if previous, ok := reusable[image.Digest]; ok && !content.Equal(previous, image) {
-			return errors.New("graph image conflicts with a previously verified payload")
+			return false, errors.New("graph image conflicts with a previously verified payload")
 		}
 		roots[image.Digest] = image
 	}
@@ -338,12 +342,12 @@ func verifyAndCopyGraphImagesReusable(ctx context.Context, target oras.Target, i
 	for _, image := range images {
 		descriptors, err := imageGraphDescriptors(ctx, target, image)
 		if err != nil {
-			return err
+			return false, err
 		}
 		imageDescriptors = append(imageDescriptors, descriptors)
 		for _, descriptor := range descriptors {
 			if previous, ok := reusable[descriptor.Digest]; ok && !content.Equal(previous, descriptor) {
-				return errors.New("graph payload conflicts with a previously verified descriptor")
+				return false, errors.New("graph payload conflicts with a previously verified descriptor")
 			}
 			if !isImageGraphLeaf(descriptor.MediaType) {
 				// Prepopulating any leaf could hide a conflicting descendant in
@@ -356,24 +360,24 @@ func verifyAndCopyGraphImagesReusable(ctx context.Context, target oras.Target, i
 	for _, descriptors := range imageDescriptors {
 		for _, descriptor := range descriptors {
 			if image, ok := roots[descriptor.Digest]; ok && !content.Equal(image, descriptor) {
-				return errors.New("graph image and payload have conflicting descriptors")
+				return false, errors.New("graph image and payload have conflicting descriptors")
 			}
 			if previous, ok := seen[descriptor.Digest]; ok {
 				if !content.Equal(previous, descriptor) {
-					return errors.New("shared graph blob has conflicting descriptors")
+					return false, errors.New("shared graph blob has conflicting descriptors")
 				}
 				continue
 			}
 			if _, ok := reusable[descriptor.Digest]; ok && destination != nil {
 				if err := verifyGraphBlob(ctx, destination, descriptor); err != nil {
-					return fmt.Errorf("previously verified blob %s: %w", descriptor.Digest, err)
+					return false, fmt.Errorf("previously verified blob %s: %w", descriptor.Digest, err)
 				}
 				seen[descriptor.Digest] = descriptor
 				continue
 			}
 			stream, err := target.Fetch(ctx, descriptor)
 			if err != nil {
-				return err
+				return false, err
 			}
 			if destination != nil && isImageGraphLeaf(descriptor.MediaType) {
 				// A failed source Close can leave ingested bytes behind without
@@ -392,7 +396,7 @@ func verifyAndCopyGraphImagesReusable(ctx context.Context, target oras.Target, i
 				err = verifyGraphStream(stream, descriptor)
 			}
 			if err != nil {
-				return fmt.Errorf("blob %s: %w", descriptor.Digest, err)
+				return false, fmt.Errorf("blob %s: %w", descriptor.Digest, err)
 			}
 			seen[descriptor.Digest] = descriptor
 			if reusable != nil && destination != nil {
@@ -400,7 +404,7 @@ func verifyAndCopyGraphImagesReusable(ctx context.Context, target oras.Target, i
 			}
 		}
 	}
-	return nil
+	return destination != nil, nil
 }
 
 func verifyGraphBlob(ctx context.Context, target content.Fetcher, descriptor v1.Descriptor) error {
