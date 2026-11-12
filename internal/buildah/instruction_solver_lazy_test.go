@@ -448,8 +448,9 @@ func TestInstructionLazyUnselectedExportRetainsFreshMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	var imports atomic.Int32
-	addLazyInstructionFixture(t, engine, "node", "unselected", now, func(context.Context) (string, error) { imports.Add(1); return "unselected", nil })
+	pending := addLazyInstructionFixture(t, engine, "node", "unselected", now, func(context.Context) (string, error) { imports.Add(1); return "unselected", nil })
 	image := v1.Descriptor{MediaType: v1.MediaTypeImageManifest, Digest: value.Entry.ManifestDigest, Size: 1}
+	pending.record = cache.GraphResult{ID: value.ID(), Image: image}
 	exporter := &instructionGraphExport{images: map[digest.Digest]v1.Descriptor{image.Digest: image}, results: map[string]cache.GraphResult{}}
 	exported, err := exporter.result(ctx, &instructionGraphPortable{engine: engine}, value.ID())
 	if err != nil {

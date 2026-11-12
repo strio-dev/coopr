@@ -351,12 +351,12 @@ func (r *orasArtifactRepository) Exists(ctx context.Context, descriptor v1.Descr
 		// the manifest while a child blob needs to be republished.
 		return false, nil
 	}
-	return (orasArtifactBlobs{resolver: r.resolver, ref: r.ref}).Exists(ctx, descriptor)
+	return r.blobExists(ctx, descriptor)
 }
 
 func (r *orasArtifactRepository) Push(ctx context.Context, descriptor v1.Descriptor, reader io.Reader) error {
 	if !isArtifactManifest(descriptor) {
-		return (orasArtifactBlobs{resolver: r.resolver, ref: r.ref}).Push(ctx, descriptor, reader)
+		return r.pushBlob(ctx, descriptor, reader)
 	}
 	return r.pushManifest(ctx, descriptor, reader, descriptor.Digest.String())
 }
@@ -380,7 +380,7 @@ func (r *orasArtifactRepository) pushManifest(ctx context.Context, descriptor v1
 			return err
 		}
 		// Manifest publication owns one retry budget; request retries stay disabled.
-		repo, err := r.resolver.orasRepository(ctx, r.ref.Registry+"/"+r.ref.Repository, nil, r.resolver.SystemContext(), 0)
+		repo, err := r.primaryRepository(ctx)
 		if err != nil {
 			return err
 		}

@@ -18,7 +18,6 @@ import (
 	digest "github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/strio-dev/coopr/internal/cache"
-	orasoci "oras.land/oras-go/v2/content/oci"
 )
 
 // Keep the executor's native graph names at the existing local boundary.
@@ -259,7 +258,6 @@ func (s *instructionSolver) publishPortable(ctx context.Context) (err error) {
 				p.cache.stats.Stored++
 			}
 		}
-		writeErr = errors.Join(writeErr, os.RemoveAll(filepath.Dir(layout)))
 		if writeErr != nil {
 			return fmt.Errorf("write graph cache: %w", writeErr)
 		}
@@ -354,23 +352,7 @@ func (p *instructionGraphPortable) snapshot(ctx context.Context, root digest.Dig
 		metadata.Nodes = append(metadata.Nodes, *node)
 	}
 	slices.SortFunc(metadata.Nodes, func(a, b instructionGraphNode) int { return bytes.Compare([]byte(a.ID), []byte(b.ID)) })
-	dir, err := os.MkdirTemp(p.cache.stagingDir, "graph-*")
-	if err != nil {
-		return cache.GraphRecord{}, "", err
-	}
-	layout := filepath.Join(dir, "layout")
-	keep := false
-	defer func() {
-		if !keep {
-			_ = os.RemoveAll(dir)
-		}
-	}()
-	destination, err := orasoci.New(layout)
-	if err != nil {
-		return cache.GraphRecord{}, "", err
-	}
 	record := cache.GraphRecord{Version: cache.GraphRecordVersion, CreatedAt: time.Now().UTC(), Root: root}
-	var images []v1.Descriptor
 	seen := map[string]bool{}
 	for _, node := range metadata.Nodes {
 		for _, result := range node.Results {
@@ -383,22 +365,20 @@ func (p *instructionGraphPortable) snapshot(ctx context.Context, root digest.Dig
 				return cache.GraphRecord{}, "", err
 			}
 			record.Results = append(record.Results, portable)
-			images = append(images, portable.Image)
 		}
 	}
-	record.Metadata, err = json.Marshal(metadata)
-	if err != nil {
-		return cache.GraphRecord{}, "", err
+	record.Metadata, graphErr = json.Marshal(metadata)
+	if graphErr != nil {
+		return cache.GraphRecord{}, "", graphErr
 	}
 	if err := record.Validate(root); err != nil {
 		return cache.GraphRecord{}, "", err
 	}
-	// Verify shared payloads once across the selected complete image closures.
-	if err := cache.CopyGraphImages(ctx, exports.layout, destination, images); err != nil {
+	// PutGraph verifies the selected closure in the invocation-owned export layout.
+	if err := ctx.Err(); err != nil {
 		return cache.GraphRecord{}, "", err
 	}
-	keep = true
-	return record, layout, nil
+	return record, filepath.Join(exports.dir, "layout"), nil
 }
 
 // Export solved outputs rather than every result ever associated with a key.

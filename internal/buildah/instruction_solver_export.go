@@ -84,32 +84,41 @@ func (e *instructionGraphExport) result(ctx context.Context, portable *instructi
 	if result, ok := e.results[id]; ok {
 		return result, nil
 	}
-	r, err := portable.engine.results.read(id)
-	if err != nil {
-		pending := portable.engine.results.lazy.get(id)
-		if pending == nil || pending.failed.Load() {
-			return cache.GraphResult{}, err
-		}
-		layout, err := pending.ensureLayout(ctx)
-		if err != nil {
-			if ctx.Err() == nil && instructionGraphInputIntegrityOnly(err) {
-				return cache.GraphResult{}, &instructionGraphInputIntegrityError{id: id, err: err}
-			}
-			return cache.GraphResult{}, err
-		}
-		source, err := orasoci.New(layout)
-		if err != nil {
-			return cache.GraphResult{}, err
-		}
-		if err := cache.CopyGraphImages(ctx, source, e.layout, []v1.Descriptor{pending.record.Image}); err != nil {
-			return cache.GraphResult{}, err
-		}
-		e.results[id] = pending.record
-		e.images[pending.record.Image.Digest] = pending.record.Image
-		return pending.record, nil
+	r, readErr := portable.engine.results.read(id)
+	pending := portable.engine.results.lazy.get(id)
+	if pending != nil && (pending.failed.Load() || pending.record.ID != id || pending.value.ID() != id) {
+		pending = nil
 	}
-	if pending := portable.engine.results.lazy.get(id); pending != nil && !pending.failed.Load() && r.CreatedAt.Before(pending.value.CreatedAt) {
+	if readErr != nil && pending == nil {
+		return cache.GraphResult{}, readErr
+	}
+	if readErr == nil && pending != nil && r.CreatedAt.Before(pending.value.CreatedAt) {
 		r.CreatedAt = pending.value.CreatedAt
+	}
+	// Importing a portable hit keeps its verified OCI source alive. Reuse those
+	// exact image bytes while preserving the current native result metadata.
+	if pending != nil && (readErr != nil || pending.record.Image.Digest == r.Entry.ManifestDigest) {
+		if _, exists := e.images[pending.record.Image.Digest]; !exists {
+			layout, err := pending.ensureLayout(ctx)
+			if err != nil {
+				if ctx.Err() == nil && instructionGraphInputIntegrityOnly(err) {
+					return cache.GraphResult{}, &instructionGraphInputIntegrityError{id: id, err: err}
+				}
+				return cache.GraphResult{}, err
+			}
+			source, err := orasoci.New(layout)
+			if err != nil {
+				return cache.GraphResult{}, err
+			}
+			if err := cache.CopyGraphImages(ctx, source, e.layout, []v1.Descriptor{pending.record.Image}); err != nil {
+				return cache.GraphResult{}, err
+			}
+			e.images[pending.record.Image.Digest] = pending.record.Image
+		}
+		if readErr != nil {
+			e.results[id] = pending.record
+			return pending.record, nil
+		}
 	}
 	descriptor, ok := e.images[r.Entry.ManifestDigest]
 	if !ok {

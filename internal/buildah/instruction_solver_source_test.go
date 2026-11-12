@@ -139,25 +139,13 @@ func TestInstructionSelectedGraphSourceFetchAndCompleteExport(t *testing.T) {
 		t.Fatal("selection did not import exactly one native result")
 	}
 	// Export all retained alternatives directly from verified source layouts.
-	// The already imported selected image is seeded into this test exporter to
-	// avoid invoking real storage transport on the deliberately fake store.
+	// The selected result is already native, so falling back to its native
+	// transport instead of retaining its OCI bytes fails on this fake store.
 	export, err := newInstructionGraphExport(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = os.RemoveAll(export.dir) }()
-	export.images[selected.Image.Digest] = selected.Image
-	selectedLayout, err := engine.results.lazy.get(selected.ID).ensureLayout(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	source, err := orasoci.New(selectedLayout)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := cache.CopyGraphImages(t.Context(), source, export.layout, []v1.Descriptor{selected.Image}); err != nil {
-		t.Fatal(err)
-	}
 	for _, result := range record.Results {
 		got, err := export.result(t.Context(), engine.portable, result.ID)
 		if err != nil {
