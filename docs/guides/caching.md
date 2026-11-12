@@ -47,10 +47,6 @@ exported back to that same repository, retaining their original record age.
 Other destinations still receive complete exports. Local hits, mirror reads
 and fresh execution use the normal publication path.
 
-Instruction hits can reuse image metadata without creating a writable container.
-Coopr creates that working container when a later filesystem operation or commit
-needs it. Cached images remain available in the shared native store.
-
 Registry and persistent OCI cache content is digest-verified when read.
 Portable caches support OCI and Docker image manifests and can reuse their
 shared uncompressed layers without changing either manifest.
