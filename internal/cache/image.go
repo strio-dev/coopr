@@ -185,6 +185,10 @@ func (s *OCIStore) PutImage(ctx context.Context, key ImageKey, record ImageRecor
 	if err := target.Push(ctx, metadata, bytes.NewReader(manifestData)); err != nil && !errors.Is(err, errdef.ErrAlreadyExists) {
 		return v1.Descriptor{}, err
 	}
+	if s.localRoot == "" {
+		keyDigest, _ := key.Digest()
+		return oras.TagBytes(ctx, target, v1.MediaTypeImageIndex, indexData, instructionImageTag(keyDigest))
+	}
 	if err := target.Push(ctx, root, bytes.NewReader(indexData)); err != nil && !errors.Is(err, errdef.ErrAlreadyExists) {
 		return v1.Descriptor{}, err
 	}

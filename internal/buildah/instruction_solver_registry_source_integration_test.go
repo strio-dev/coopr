@@ -348,6 +348,13 @@ func TestInstructionGraphRegistryCacheSharedPrefixPublisher(t *testing.T) {
 	if got := localComponentLastFile(t, warmLayout, "proof"); warm.CacheStats.Hits != 4 || warm.CacheStats.Misses != 0 || got != proof || strings.Contains(warmOutput, "SHARED_PREFIX_RUN_EXECUTED\n") {
 		t.Fatalf("shared-prefix publication lost the app's cache: stats=%+v proof=%q want=%q stdout=%s", warm.CacheStats, got, proof, warmOutput)
 	}
+	// A fresh consumer may also publish the restored graph. Exercise that
+	// write path without rerunning the cached operation or changing its proof.
+	readOnly.Store(false)
+	republished, republishedLayout, republishedOutput := build("warm-republish-app", app, cacheSpec, cacheSpec)
+	if got := localComponentLastFile(t, republishedLayout, "proof"); republished.CacheStats.Hits != 4 || republished.CacheStats.Misses != 0 || got != proof || strings.Contains(republishedOutput, "SHARED_PREFIX_RUN_EXECUTED\n") {
+		t.Fatalf("fresh-store read/write cache restore changed the app: stats=%+v proof=%q want=%q stdout=%s", republished.CacheStats, got, proof, republishedOutput)
+	}
 }
 
 type instructionRegistryRead struct {

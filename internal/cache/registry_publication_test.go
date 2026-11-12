@@ -58,7 +58,7 @@ func TestCacheRegistryPublishesLargeLayersWithAuthenticatedRetry(t *testing.T) {
 				RootFS:   v1.RootFS{Type: "layers", DiffIDs: []digest.Digest{layer.Digest}},
 			})
 			record.Results[0].Image = pushGraphTestJSON(t, source, v1.MediaTypeImageManifest, oci.VersionedManifest(config, []v1.Descriptor{layer}, ""))
-			strict, _ := strictEnvelopeRegistry(t, "")
+			strict, rejected := strictEnvelopeRegistry(t, "")
 			var challenges, uploads atomic.Int64
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				user, password, ok := r.BasicAuth()
@@ -106,6 +106,9 @@ func TestCacheRegistryPublishesLargeLayersWithAuthenticatedRetry(t *testing.T) {
 			if challenges.Load() == 0 || uploads.Load() != 2 {
 				t.Fatalf("authentication challenges=%d large upload attempts=%d", challenges.Load(), uploads.Load())
 			}
+			if rejected.Load() {
+				t.Fatal("publication read its new root index before a tagged PUT")
+			}
 			reader, err := NewRegistryStore(resolver, repository, t.TempDir(), nil)
 			if err != nil {
 				t.Fatal(err)
@@ -120,6 +123,14 @@ func TestCacheRegistryPublishesLargeLayersWithAuthenticatedRetry(t *testing.T) {
 				t.Fatal("independent large cache restoration:", err)
 			}
 			t.Cleanup(func() { _ = os.RemoveAll(restored) })
+			restoredImages, err := orasoci.New(restored)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := fetchVerified(t.Context(), restoredImages, layer, layer.Size)
+			if err != nil || !bytes.Equal(got, payload.Bytes()) {
+				t.Fatal("consumed-body retry changed the restored layer bytes", err)
+			}
 			started = time.Now()
 			if err := publish(); err != nil {
 				t.Fatal("warm cache publication:", err)
@@ -136,14 +147,28 @@ func TestCacheRegistryPublishesLargeLayersWithAuthenticatedRetry(t *testing.T) {
 // A manifest registration does not make its bytes available through the blob
 // service. Enforce that distinction over the existing loopback registry, as
 // GHCR does when image envelopes occur in a cache artifact's layers.
+// New cache indexes also remain unavailable by digest until a tagged PUT.
+// This models a readback window without claiming GHCR consistency behavior.
 func strictEnvelopeRegistry(t *testing.T, denied digest.Digest) (*httptest.Server, *atomic.Bool) {
 	t.Helper()
 	backend := registry.New(registry.Logger(log.New(io.Discard, "", 0)))
 	var mu sync.Mutex
 	blobs := map[digest.Digest]bool{}
+	indexes, tagged := map[digest.Digest]bool{}, map[digest.Digest]bool{}
 	var rejected atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/v2/coopr/envelopes/")
+		if r.Method == http.MethodGet && strings.HasPrefix(path, "manifests/sha256:") {
+			identity := digest.Digest(strings.TrimPrefix(path, "manifests/"))
+			mu.Lock()
+			unavailable := indexes[identity] && !tagged[identity]
+			mu.Unlock()
+			if unavailable {
+				rejected.Store(true)
+				http.NotFound(w, r)
+				return
+			}
+		}
 		if strings.HasPrefix(path, "blobs/sha256:") {
 			mu.Lock()
 			present := blobs[digest.Digest(strings.TrimPrefix(path, "blobs/"))]
@@ -159,6 +184,7 @@ func strictEnvelopeRegistry(t *testing.T, denied digest.Digest) (*httptest.Serve
 			http.Error(w, "denied envelope blob", http.StatusForbidden)
 			return
 		}
+		var cacheIndex digest.Digest
 		if r.Method == http.MethodPut && strings.HasPrefix(path, "manifests/") {
 			data, err := io.ReadAll(r.Body)
 			_ = r.Body.Close()
@@ -167,6 +193,10 @@ func strictEnvelopeRegistry(t *testing.T, denied digest.Digest) (*httptest.Serve
 				return
 			}
 			r.Body = io.NopCloser(bytes.NewReader(data))
+			var index v1.Index
+			if json.Unmarshal(data, &index) == nil && index.MediaType == v1.MediaTypeImageIndex && (index.ArtifactType == GraphArtifactType || index.ArtifactType == ImageArtifactType) {
+				cacheIndex = digest.FromBytes(data)
+			}
 			var manifest v1.Manifest
 			if json.Unmarshal(data, &manifest) == nil && manifest.Config.Digest != "" {
 				for _, descriptor := range append([]v1.Descriptor{manifest.Config}, manifest.Layers...) {
@@ -195,6 +225,14 @@ func strictEnvelopeRegistry(t *testing.T, denied digest.Digest) (*httptest.Serve
 				blobs[upload] = true
 				mu.Unlock()
 			}
+		}
+		if response.Code == http.StatusCreated && cacheIndex != "" {
+			mu.Lock()
+			indexes[cacheIndex] = true
+			if strings.TrimPrefix(path, "manifests/") != cacheIndex.String() {
+				tagged[cacheIndex] = true
+			}
+			mu.Unlock()
 		}
 		for key, values := range response.Header() {
 			w.Header()[key] = values
@@ -282,6 +320,9 @@ func TestCacheRegistryPublishesIndexWithoutManifestBlobs(t *testing.T) {
 				if err != nil {
 					t.Fatalf("standard-index cache publication: %v", err)
 				}
+				if rejected.Load() {
+					t.Fatal("publication read its new root index before a tagged PUT")
+				}
 				if !content.Equal(got, want) {
 					t.Fatal("registry publication changed the local cache format or digest")
 				}
@@ -330,6 +371,27 @@ func TestCacheRegistryPublishesIndexWithoutManifestBlobs(t *testing.T) {
 					t.Fatal("independent reader could not restore published cache", err)
 				}
 				t.Cleanup(func() { _ = os.RemoveAll(restored) })
+				// The 12 MiB payload allowance must not relax the 8 MiB
+				// metadata limit or replace an existing valid root tag.
+				oversized, err := json.Marshal(map[string]string{"proof": strings.Repeat("x", 8<<20)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				tag := graphTag(record.Root)
+				if kind == "graph" {
+					record.Results[0].Metadata = oversized
+				} else {
+					imageRecord.RootMetadata = oversized
+					keyDigest, _ := key.Digest()
+					tag = instructionImageTag(keyDigest)
+				}
+				if _, err := publish(writer); err == nil || !strings.Contains(err.Error(), "large") {
+					t.Fatalf("oversized cache metadata was not rejected: %v", err)
+				}
+				retained, err := writer.target.Resolve(t.Context(), tag)
+				if err != nil || !content.Equal(retained, got) {
+					t.Fatal("oversized metadata replaced the valid cache root", err)
+				}
 			})
 		}
 	}

@@ -162,6 +162,7 @@ func isArtifactManifest(desc v1.Descriptor) bool {
 }
 
 var _ oras.Target = (*orasArtifactRepository)(nil)
+var _ registry.ReferencePusher = (*orasArtifactRepository)(nil)
 
 func (r *Resolver) repository(ref registry.Reference) (*orasArtifactRepository, error) {
 	return &orasArtifactRepository{resolver: r, ref: ref, sources: make(map[digest.Digest]orasReadSource)}, nil
@@ -357,6 +358,17 @@ func (r *orasArtifactRepository) Push(ctx context.Context, descriptor v1.Descrip
 	if !isArtifactManifest(descriptor) {
 		return (orasArtifactBlobs{resolver: r.resolver, ref: r.ref}).Push(ctx, descriptor, reader)
 	}
+	return r.pushManifest(ctx, descriptor, reader, descriptor.Digest.String())
+}
+
+func (r *orasArtifactRepository) PushReference(ctx context.Context, descriptor v1.Descriptor, reader io.Reader, reference string) error {
+	return r.pushManifest(ctx, descriptor, reader, reference)
+}
+
+func (r *orasArtifactRepository) pushManifest(ctx context.Context, descriptor v1.Descriptor, reader io.Reader, reference string) error {
+	if descriptor.Size > maxMetadataBytes {
+		return fmt.Errorf("metadata descriptor too large: %d bytes", descriptor.Size)
+	}
 	file, err := spoolArtifact(reader, descriptor)
 	if err != nil {
 		return err
@@ -372,7 +384,7 @@ func (r *orasArtifactRepository) Push(ctx context.Context, descriptor v1.Descrip
 		if err != nil {
 			return err
 		}
-		return repo.Push(ctx, descriptor, io.NopCloser(file))
+		return repo.PushReference(ctx, descriptor, io.NopCloser(file), reference)
 	}, r.resolver.artifactRetryOptions())
 }
 

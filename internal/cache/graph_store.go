@@ -111,6 +111,9 @@ func (s *OCIStore) PutGraph(ctx context.Context, root digest.Digest, record Grap
 	if len(indexData) > maxGraphRecordBytes {
 		return v1.Descriptor{}, errors.New("graph artifact index too large")
 	}
+	if s.localRoot == "" {
+		return oras.TagBytes(ctx, target, v1.MediaTypeImageIndex, indexData, graphTag(root))
+	}
 	artifact := oci.Descriptor(v1.MediaTypeImageIndex, indexData)
 	if err := pushMetadata(artifact, indexData); err != nil {
 		return v1.Descriptor{}, err
