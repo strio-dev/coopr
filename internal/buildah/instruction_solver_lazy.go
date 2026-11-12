@@ -112,7 +112,7 @@ type instructionPortableLocation struct {
 	layout string
 }
 
-func (pending *instructionPortableResult) ensureLayout(ctx context.Context) (string, error) {
+func (pending *instructionPortableResult) ensureLayout(ctx context.Context) (string, *cache.GraphSource, error) {
 	if pending.locations != nil {
 		pending.locations.mu.RLock()
 		locations := slices.Clone(pending.locations.locations)
@@ -120,22 +120,23 @@ func (pending *instructionPortableResult) ensureLayout(ctx context.Context) (str
 		var failures error
 		for index, location := range locations {
 			if err := ctx.Err(); err != nil {
-				return "", err
+				return "", nil, err
 			}
 			path, err := location.ensureLayout(ctx, pending.record.ID)
 			if err == nil {
-				return path, nil
+				return path, location.source, nil
 			}
 			if ctx.Err() != nil {
-				return "", ctx.Err()
+				return "", nil, ctx.Err()
 			}
 			failure := fmt.Errorf("approved graph source %d for result %s: %w", index+1, pending.record.ID, err)
 			failures = errors.Join(failures, failure)
 			packageCacheWarning("restore equivalent graph source", failure)
 		}
-		return "", fmt.Errorf("no available approved source for graph result %s: %w", pending.record.ID, failures)
+		return "", nil, fmt.Errorf("no available approved source for graph result %s: %w", pending.record.ID, failures)
 	}
-	return (instructionPortableLocation{source: pending.source, layout: pending.layout}).ensureLayout(ctx, pending.record.ID)
+	path, err := (instructionPortableLocation{source: pending.source, layout: pending.layout}).ensureLayout(ctx, pending.record.ID)
+	return path, pending.source, err
 }
 
 func (location instructionPortableLocation) ensureLayout(ctx context.Context, result string) (string, error) {

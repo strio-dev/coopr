@@ -224,11 +224,19 @@ func (s *instructionSolver) publishPortable(ctx context.Context) (err error) {
 		roots = append(roots, root)
 		selected[root] = p.roots[root]
 	}
+	sources := slices.Clone(p.sources)
 	p.mu.Unlock()
 	slices.Sort(roots)
 	for _, root := range roots {
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		writers, err := p.graphPublicationWriters(ctx, root, selected[root], sources)
+		if err != nil {
+			return err
+		}
+		if len(writers) == 0 {
+			continue
 		}
 		record, layout, err := p.snapshot(ctx, root, selected[root], exports)
 		if err != nil {
@@ -246,7 +254,7 @@ func (s *instructionSolver) publishPortable(ctx context.Context) (err error) {
 			return fmt.Errorf("stage graph cache: %w", err)
 		}
 		var writeErr error
-		for _, candidate := range p.cache.writeStores {
+		for _, candidate := range writers {
 			store, ok := candidate.(instructionGraphStore)
 			if !ok {
 				continue
@@ -263,6 +271,53 @@ func (s *instructionSolver) publishPortable(ctx context.Context) (err error) {
 		}
 	}
 	return nil
+}
+
+func (p *instructionGraphPortable) graphPublicationWriters(ctx context.Context, root digest.Digest, selected instructionGraphRoot, sources []instructionGraphSource) ([]instructionCacheStore, error) {
+	if len(sources) == 0 || selected.vertex == nil {
+		return p.cache.writeStores, nil
+	}
+	for vertex := selected.vertex; vertex != nil; vertex = vertex.parent {
+		if vertex.ignore || vertex.executed.Load() {
+			return p.cache.writeStores, nil
+		}
+	}
+	pending := p.engine.results.lazy.get(selected.result)
+	if pending == nil || pending.failed.Load() {
+		return p.cache.writeStores, nil
+	}
+	value, err := p.engine.results.read(selected.result)
+	if err != nil || value.Boundary != "" {
+		return p.cache.writeStores, nil
+	}
+	if value.CreatedAt.Before(pending.value.CreatedAt) {
+		value.CreatedAt = pending.value.CreatedAt
+	}
+	value.Entry.ImageID = ""
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	current := cache.GraphResult{ID: selected.result, Image: pending.record.Image, Metadata: raw}
+	writers := make([]instructionCacheStore, 0, len(p.cache.writeStores))
+	for _, writer := range p.cache.writeStores {
+		reuse := false
+		if destination, ok := writer.(*cache.OCIStore); ok {
+			for _, admitted := range sources {
+				reuse, err = admitted.source.CanReuseAt(ctx, destination, root, current)
+				if err != nil {
+					return nil, err
+				}
+				if reuse {
+					break
+				}
+			}
+		}
+		if !reuse {
+			writers = append(writers, writer)
+		}
+	}
+	return writers, nil
 }
 
 func (p *instructionGraphPortable) snapshot(ctx context.Context, root digest.Digest, selected instructionGraphRoot, exports *instructionGraphExport) (cache.GraphRecord, string, error) {
@@ -503,11 +558,15 @@ func (p *instructionGraphPortable) restoreRecord(ctx context.Context, record *ca
 		item := &instructionPortableResult{value: *results[i], record: result, layout: layout, source: source, owner: p, gate: make(chan struct{}, 1)}
 		item.gate <- struct{}{}
 		item.importImage = func(ctx context.Context) (string, error) {
-			selected, err := item.ensureLayout(ctx)
+			selected, chosen, err := item.ensureLayout(ctx)
 			if err != nil {
 				return "", err
 			}
-			return importInstructionCacheImage(ctx, p.executor.store, p.executor.system, selected, result.Image)
+			image, err := importInstructionCacheImage(ctx, p.executor.store, p.executor.system, selected, result.Image)
+			if err == nil {
+				chosen.MarkUsed(result.ID)
+			}
+			return image, err
 		}
 		pending[i] = item
 	}

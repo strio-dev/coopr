@@ -128,13 +128,21 @@ func TestInstructionGraphEquivalentMirrorsSelectedAndExport(t *testing.T) {
 				for _, reversed := range []bool{false, true} {
 					name := map[bool]string{false: "bad-older", true: "bad-newer"}[badNewer] + "/" + damage + "/" + action + "/" + map[bool]string{false: "bad-first", true: "good-first"}[reversed]
 					t.Run(name, func(t *testing.T) {
-						engine, record, _ := instructionMirrorFixture(t, badNewer, damage, reversed)
+						engine, record, goodPath := instructionMirrorFixture(t, badNewer, damage, reversed)
+						var goodSource *cache.GraphSource
+						for _, source := range engine.portable.sources {
+							if source.binding == instructionReadBindingID(CacheSpec{Transport: "oci-layout", Reference: goodPath}) {
+								goodSource = source.source
+							}
+						}
 						selected := record.Results[1]
 						pending := engine.results.lazy.get(selected.ID)
 						var imports atomic.Int32
 						pending.importImage = func(ctx context.Context) (string, error) {
-							if _, err := pending.ensureLayout(ctx); err != nil {
+							if _, chosen, err := pending.ensureLayout(ctx); err != nil {
 								return "", err
+							} else if chosen == nil || chosen != goodSource {
+								t.Fatal("import selected source differs from successful fallback")
 							}
 							imports.Add(1)
 							return selected.Image.Digest.String(), nil
@@ -236,12 +244,12 @@ func TestInstructionGraphEquivalentMirrorsAllUnavailableAndCanceled(t *testing.T
 			candidate := engine.results.lazy.get(record.Results[1].ID)
 			canceled, cancel := context.WithCancel(t.Context())
 			cancel()
-			if _, err := candidate.ensureLayout(canceled); err != context.Canceled {
+			if _, _, err := candidate.ensureLayout(canceled); err != context.Canceled {
 				t.Fatal("mirror selection lost cancellation", err)
 			}
 			var err error
 			if action == "selected" {
-				candidate.importImage = func(ctx context.Context) (string, error) { _, err := candidate.ensureLayout(ctx); return "", err }
+				candidate.importImage = func(ctx context.Context) (string, error) { _, _, err := candidate.ensureLayout(ctx); return "", err }
 				_, err = engine.results.Load(t.Context(), solver.CacheResult{ID: candidate.value.ID()})
 			} else {
 				export, e := newInstructionGraphExport(t.TempDir())
@@ -332,7 +340,7 @@ func TestInstructionGraphEquivalentMirrorsNewLocationRevivesFailedResult(t *test
 		t.Fatal("new exact source failed to revive result while retaining timestamp")
 	}
 	pending.importImage = func(ctx context.Context) (string, error) {
-		if _, err := pending.ensureLayout(ctx); err != nil {
+		if _, _, err := pending.ensureLayout(ctx); err != nil {
 			return "", err
 		}
 		return pending.record.Image.Digest.String(), nil

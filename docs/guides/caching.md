@@ -42,6 +42,11 @@ prefixes. Publishing a shorter prefix preserves otherwise matching cached
 continuations from other builds. Reuse still requires matching inputs and
 execution settings; identical output bytes alone do not prove a cache hit.
 
+Fully cached instruction chains imported from a primary registry are not
+exported back to that same repository, retaining their original record age.
+Other destinations still receive complete exports. Local hits, mirror reads
+and fresh execution use the normal publication path.
+
 ## Use a portable local cache
 
 Write an OCI cache directory that you can retain between CI jobs or move to another machine:

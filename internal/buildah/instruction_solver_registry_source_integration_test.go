@@ -186,8 +186,8 @@ func TestInstructionGraphRegistryCacheSelectiveRestoreAndOfflineExport(t *testin
 
 	traffic.reset()
 	mirror := filepath.Join(root, "selected")
-	complete, proof, output := build("complete-consumer", false, "", from, []CacheSpec{{Transport: "oci-layout", Reference: mirror}})
-	if complete.CacheStats.Hits != 2 || complete.CacheStats.Misses != 0 || proof != latest || strings.Contains(output, "REGISTRY_FRESH_RUN\n") {
+	complete, proof, output := build("complete-consumer", false, "", from, []CacheSpec{from[len(from)-1], {Transport: "oci-layout", Reference: mirror}})
+	if complete.CacheStats.Hits != 2 || complete.CacheStats.Misses != 0 || complete.CacheStats.Stored != 2 || proof != latest || strings.Contains(output, "REGISTRY_FRESH_RUN\n") {
 		t.Fatalf("complete export replayed or changed the selected result: proof=%q want=%q stats=%+v stdout=%s", proof, latest, complete.CacheStats, output)
 	}
 	if got := instructionRegistrySelectedResults(t, cacheTestStore(filepath.Join(root, "complete-consumer")), catalog); len(got) != 2 {
@@ -219,6 +219,13 @@ func TestInstructionGraphRegistryCacheSelectiveRestoreAndOfflineExport(t *testin
 	}
 	if len(retained) != len(selected) {
 		t.Fatalf("selected export lost required results: got %v, want %v", retained, selected)
+	}
+	readOnly.Store(false)
+	traffic.reset()
+	fresh, freshProof, freshOutput := build("fresh-writer", true, "", from, []CacheSpec{from[len(from)-1]})
+	_, freshMethods, _, _ := traffic.snapshot()
+	if fresh.CacheStats.Stored == 0 || freshProof == latest || !strings.Contains(freshOutput, "REGISTRY_FRESH_RUN\n") || freshMethods[http.MethodPut] == 0 {
+		t.Fatalf("fresh execution did not publish its new result: stats=%+v methods=%v stdout=%s", fresh.CacheStats, freshMethods, freshOutput)
 	}
 	// All origins are now unavailable. Complete local lookup verifies every
 	// advertised payload, then a fresh store recovers the exact tested result.

@@ -15,12 +15,16 @@ import (
 
 func TestGraphSourceHandoffRetainsMetadataAfterOwnerAndSourceRemoval(t *testing.T) {
 	original, source, store, record, _, target := graphSourceFixture(t)
+	// Model the native caller's primary-admitted successful selected import.
+	source.primary = true
+	source.MarkUsed(record.Results[0].ID)
 	snapshot := source.Metadata()
 	originalSnapshot := source.Metadata()
 	// Metadata exported to a caller cannot alter the admitted source.
 	snapshot.Index[0] = '['
 	snapshot.Manifest[0] = '['
 	snapshot.Record[0] = '['
+	snapshot.UsedResults[0] = "not-bound"
 	if !reflect.DeepEqual(source.Metadata(), originalSnapshot) {
 		t.Fatal("metadata export aliases admitted bytes")
 	}
@@ -58,9 +62,22 @@ func TestGraphSourceHandoffRetainsMetadataAfterOwnerAndSourceRemoval(t *testing.
 		t.Fatal(err)
 	}
 	defer func() { _ = restored.Close() }()
-	next, err := restored.RestoreMetadata(t.Context(), store, record.Root, snapshot)
+	metadataOnly := snapshot
+	metadataOnly.UsedResults = nil
+	next, err := restored.RestoreMetadata(t.Context(), store, record.Root, metadataOnly)
 	if err != nil {
 		t.Fatal(err)
+	}
+	next.MarkUsed(record.Results[0].ID)
+	if reuse, err := next.CanReuseAt(t.Context(), store, record.Root, record.Results[0]); err != nil || reuse {
+		t.Fatal("generic metadata restore manufactured primary use", reuse, err)
+	}
+	next, err = restored.RestoreMetadata(t.Context(), store, record.Root, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reuse, err := next.CanReuseAt(t.Context(), store, record.Root, record.Results[0]); err != nil || !reuse {
+		t.Fatal("trusted source-bound selected-use receipt was lost", reuse, err)
 	}
 	target.mu.Lock()
 	if !reflect.DeepEqual(before, target.fetches) {
@@ -119,6 +136,13 @@ func TestGraphSourceHandoffRejectsChangedBindings(t *testing.T) {
 		}},
 		{"manifest", func(s *GraphSourceMetadata, _ *digest.Digest) { s.Manifest = append(s.Manifest, ' ') }},
 		{"record", func(s *GraphSourceMetadata, _ *digest.Digest) { s.Record = append(s.Record, ' ') }},
+		{"unknown used result", func(s *GraphSourceMetadata, _ *digest.Digest) { s.UsedResults = []string{"not-bound"} }},
+		{"duplicate used result", func(s *GraphSourceMetadata, _ *digest.Digest) {
+			s.UsedResults = []string{record.Results[0].ID, record.Results[0].ID}
+		}},
+		{"too many used results", func(s *GraphSourceMetadata, _ *digest.Digest) {
+			s.UsedResults = make([]string, len(record.Results)+1)
+		}},
 		{"root", func(_ *GraphSourceMetadata, r *digest.Digest) { *r = digest.FromString("different root") }},
 		{"empty manifest", func(s *GraphSourceMetadata, _ *digest.Digest) { s.Manifest = nil }},
 		{"empty index", func(s *GraphSourceMetadata, _ *digest.Digest) { s.Index = nil }},

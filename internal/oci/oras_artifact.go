@@ -182,6 +182,15 @@ func (r *orasArtifactRepository) primaryRepository(ctx context.Context) (*remote
 	return repo, nil
 }
 
+// ResolvedFromPrimary recognizes an admitted artifact read directly from the
+// write destination, without a mirror, remap or remaining fallback source.
+func (r *orasArtifactRepository) ResolvedFromPrimary(artifact v1.Descriptor) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	selected := r.sources[artifact.Digest]
+	return r.primary != nil && selected.repository == r.primary && len(selected.remaining) == 0
+}
+
 func (r *orasArtifactRepository) readRepositories(selector string) ([]orasEndpoint, error) {
 	separator := ":"
 	if digest.Digest(selector).Validate() == nil {

@@ -70,6 +70,9 @@ func TestInstructionGraphRelayRoundTripAndCompletedParent(t *testing.T) {
 	if parent.request != nil || parent.source == nil || parent.source.Entry.ImageID != "parent" || parent.portableDigest() != relay.Root {
 		t.Fatal("relay did not restore an immutable completed parent")
 	}
+	if !parent.executed.Load() || parent.parent.executed.Load() {
+		t.Fatal("relay changed the executed parent or untouched source status")
+	}
 	result, err := child.job.Build(t.Context(), parent.Inputs()[0])
 	if err != nil {
 		t.Fatal(err)

@@ -99,7 +99,7 @@ func (e *instructionGraphExport) result(ctx context.Context, portable *instructi
 	// exact image bytes while preserving the current native result metadata.
 	if pending != nil && (readErr != nil || pending.record.Image.Digest == r.Entry.ManifestDigest) {
 		if _, exists := e.images[pending.record.Image.Digest]; !exists {
-			layout, err := pending.ensureLayout(ctx)
+			layout, _, err := pending.ensureLayout(ctx)
 			if err != nil {
 				if ctx.Err() == nil && instructionGraphInputIntegrityOnly(err) {
 					return cache.GraphResult{}, &instructionGraphInputIntegrityError{id: id, err: err}

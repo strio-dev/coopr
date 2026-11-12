@@ -122,7 +122,7 @@ func TestInstructionSelectedGraphSourceFetchAndCompleteExport(t *testing.T) {
 		}
 		pending.importImage = func(ctx context.Context) (string, error) {
 			imports.Add(1)
-			if _, err := pending.ensureLayout(ctx); err != nil {
+			if _, _, err := pending.ensureLayout(ctx); err != nil {
 				return "", err
 			}
 			return result.Image.Digest.String(), nil

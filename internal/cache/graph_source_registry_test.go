@@ -3,6 +3,7 @@ package cache
 import (
 	"io"
 	"log"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -74,6 +75,10 @@ func TestGraphSourceRegistrySelectiveGETBytesAndCompleteExport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	selected.MarkUsed("not-bound")
+	if reuse, err := selected.CanReuseAt(t.Context(), remote, record.Root, record.Results[0]); err != nil || reuse || len(selected.Metadata().UsedResults) != 0 {
+		t.Fatal("metadata admission or an unknown result manufactured use", reuse, err)
+	}
 	mu.Lock()
 	for _, descriptor := range append(graphImages(record), payloads...) {
 		if requests[descriptor.Digest] != 0 || transferred[descriptor.Digest] != 0 {
@@ -105,7 +110,22 @@ func TestGraphSourceRegistrySelectiveGETBytesAndCompleteExport(t *testing.T) {
 	first := record
 	first.Results = record.Results[:1]
 	assertGraphReaderImages(t, path, first)
+	if reuse, err := selected.CanReuseAt(t.Context(), remote, record.Root, record.Results[0]); err != nil || reuse {
+		t.Fatal("layout materialization alone manufactured native use", reuse, err)
+	}
+	// The native caller reports successful selected import. Reuse performs no
+	// network work and does not require the admitted source tag to stay current.
+	selected.MarkUsed(record.Results[0].ID)
 	mu.Lock()
+	beforeReuse := maps.Clone(requests)
+	mu.Unlock()
+	if reuse, err := selected.CanReuseAt(t.Context(), remote, record.Root, record.Results[0]); err != nil || !reuse {
+		t.Fatal("successfully used unchanged primary result was not reused", reuse, err)
+	}
+	mu.Lock()
+	if !maps.Equal(requests, beforeReuse) {
+		t.Error("use receipt triggered remote validation")
+	}
 	if requests[record.Results[1].Image.Digest] != 0 || requests[payloads[2].Digest] != 0 {
 		t.Error("selection downloaded unused alternative")
 	}

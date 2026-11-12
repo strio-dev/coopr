@@ -193,6 +193,7 @@ type instructionVertexRelayNode struct {
 	Digest   digest.Digest `json:"digest"`
 	Name     string        `json:"name"`
 	Ignore   bool          `json:"ignore,omitempty"`
+	Executed bool          `json:"executed,omitempty"`
 	ResultID string        `json:"result_id"`
 }
 
@@ -247,7 +248,7 @@ func encodeInstructionVertexRelay(vertex *instructionVertex) (*instructionVertex
 		}
 		relay.Nodes = append(relay.Nodes, instructionVertexRelayNode{
 			Key: current.key, Digest: current.dgst, Name: current.name,
-			Ignore: current.ignore, ResultID: result.ID(),
+			Ignore: current.ignore, Executed: current.executed.Load(), ResultID: result.ID(),
 		})
 	}
 	slices.Reverse(relay.Nodes)
@@ -298,6 +299,7 @@ func (s *instructionSolver) restoreInstructionVertexRelay(relay *instructionVert
 		// the new solver needs to materialize them. Their original IgnoreCache
 		// flags still force newly admitted consumers to execute.
 		parent = &instructionVertex{owner: s, key: node.Key, dgst: node.Digest, name: node.Name, ignore: node.Ignore, parent: parent, source: result, completed: result}
+		parent.executed.Store(node.Executed)
 	}
 	if forced && relay.Serial == 0 {
 		return nil, errors.New("forced instruction graph relay lacks execution serial")
