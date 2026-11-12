@@ -1720,7 +1720,7 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 		defer func() { retErr = errors.Join(retErr, rusageLogger.log(), rusageLogger.close()) }()
 	}
 	defer func() {
-		if current != nil && options.Lifecycle.removeBuilder(retErr != nil, ctx.Err() != nil) {
+		if current != nil && current.ContainerID != "" && options.Lifecycle.removeBuilder(retErr != nil, ctx.Err() != nil) {
 			retErr = errors.Join(retErr, current.Delete())
 		}
 	}()
@@ -1746,6 +1746,19 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 		return "", Result{}, nil, fmt.Errorf("synchronize base image configuration: %w", err)
 	}
 	currentRoot := rootBaseline
+	ensureWorking := func() error {
+		if current.ContainerID != "" {
+			return nil
+		}
+		workingOptions := builderOptions
+		workingOptions.Container = executor.builderContainerName("cache")
+		working, err := realizeInstructionBuilder(ctx, store, current, workingOptions, currentRoot)
+		if err != nil {
+			return fmt.Errorf("materialize cached instruction filesystem: %w", err)
+		}
+		current = working
+		return nil
+	}
 	_, rootPortable := cacheablePackageRootMetadata(currentRoot)
 	graphDisabled := !rootPortable
 	if graphDisabled {
@@ -1780,6 +1793,9 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 		plannedOperation := planned[index]
 		historyOperation := plannedOperation
 		if plannedOperation.Name == "layer" {
+			if err := ensureWorking(); err != nil {
+				return "", Result{}, nil, err
+			}
 			switch plannedOperation.LayerBoundary {
 			case "begin":
 				if groupDepth == 0 && !options.Lifecycle.NoLayers {
@@ -1880,6 +1896,17 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 		inputApplied := false
 		var preparedRun *preparedRunInput
 		finalFilesystemOperation := remainingFilesystem == 1
+		needsFilesystem := graphBarrier || plannedOperation.Name != "run" && isPlannedFilesystemOperation(plannedOperation)
+		for _, operation := range operations {
+			if _, component := operation.(componentGraphOperation); component {
+				needsFilesystem = true
+			}
+		}
+		if needsFilesystem {
+			if err := ensureWorking(); err != nil {
+				return "", Result{}, nil, err
+			}
+		}
 		if graphBarrier && !graphDisabled {
 			currentRoot, err = capturePackageRootMetadata(store, current)
 			if err != nil {
@@ -1904,6 +1931,13 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 					})
 					cacheable = false
 					break
+				}
+				if len(operation.Mounts) != 0 {
+					// Context snapshots use the working container's effective ID
+					// maps, which may differ from the cached image's mappings.
+					if err := ensureWorking(); err != nil {
+						return "", Result{}, nil, err
+					}
 				}
 				adapter := executor.nativeBuilder(current, builderOptions)
 				prepared, prepareErr := prepareRunInput(ctx, adapter, options.ContextDir, artifacts, operation)
@@ -2061,21 +2095,12 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 					// Docker schema 2 cannot retain manifest annotations.
 					uncachedMetadata.Annotations = nil
 				}
-				if err := current.Delete(); err != nil {
-					return "", Result{}, nil, fmt.Errorf("operation %d delete cache-replaced builder: %w", index+1, err)
+				if current.ContainerID != "" {
+					if err := current.Delete(); err != nil {
+						return "", Result{}, nil, fmt.Errorf("operation %d delete cache-replaced builder: %w", index+1, err)
+					}
 				}
-				selectedCacheBase, selectErr := oci.SelectedStoredImage(ctx, store, cachedImageID, cacheEntry.ManifestDigest)
-				if selectErr != nil {
-					return "", Result{}, nil, fmt.Errorf("operation %d select instruction cache manifest %s: %w", index+1, cacheEntry.ManifestDigest, selectErr)
-				}
-				builderOptions.FromImage = selectedCacheBase
-				builderOptions.PullPolicy = define.PullNever
-				builderOptions.Container = executor.builderContainerName("cache")
-				cacheBuilderOptions := builderOptions
-				// Opening a checkpoint must not replace its base provenance with
-				// the internal cache image's name and digest.
-				cacheBuilderOptions.PreserveBaseImageAnns = true
-				current, err = upstream.NewBuilder(ctx, store, cacheBuilderOptions)
+				current, err = importInstructionBuilder(ctx, store, builderOptions, cachedImageID, cacheEntry.ManifestDigest)
 				if err != nil {
 					return "", Result{}, nil, fmt.Errorf("operation %d restore instruction cache %s: %w", index+1, cachedImageID, err)
 				}
@@ -2105,10 +2130,12 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 					finalCachedManifest = ""
 					historyOnlyTail = true
 				}
-				if err := restorePackageRootMetadata(store, current, cacheEntry.RootMetadata); err != nil {
-					return "", Result{}, nil, fmt.Errorf("operation %d cached root metadata: %w", index+1, err)
-				}
 				currentRoot = cacheEntry.RootMetadata
+				if options.Lifecycle.KeepIntermediate {
+					if err := ensureWorking(); err != nil {
+						return "", Result{}, nil, err
+					}
+				}
 				cacheHit = true
 				progress.cache(cachedImageID)
 				if index < len(planned)-1 {
@@ -2137,6 +2164,11 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 				return "", Result{}, nil, fmt.Errorf("operation %d is nil", index+1)
 			}
 			if !cacheHit && !inputApplied {
+				if isPlannedFilesystemOperation(plannedOperation) || plannedOperation.Name == "component" {
+					if err := ensureWorking(); err != nil {
+						return "", Result{}, nil, err
+					}
+				}
 				if component, ok := operation.(componentGraphOperation); ok {
 					var componentEndpoint *instructionVertex
 					replacement, err := executor.applyComponentOperation(ctx, current, &builderOptions, logical, platform, component.planned, progress, componentAdoptionContext{delivery: delivery, grouped: groupDepth > 0, manifest: &currentManifest, effectiveBase: &originalBaseID, lineage: retainsCaller, graphParent: graphEndpoint, graphOutput: &componentEndpoint})
@@ -2255,9 +2287,13 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 		}
 		if isPlannedFilesystemOperation(plannedOperation) {
 			remainingFilesystem--
-			actualRoot, captureErr := capturePackageRootMetadata(store, current)
-			if captureErr != nil {
-				return "", Result{}, nil, captureErr
+			actualRoot := currentRoot
+			if current.ContainerID != "" {
+				var captureErr error
+				actualRoot, captureErr = capturePackageRootMetadata(store, current)
+				if captureErr != nil {
+					return "", Result{}, nil, captureErr
+				}
 			}
 			currentRoot = actualRoot
 			_, rootPortable := cacheablePackageRootMetadata(actualRoot)
@@ -2357,9 +2393,12 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 		return "", Result{}, nil, errors.New("unclosed layer group")
 	}
 	var err error
-	root, retErr = capturePackageRootMetadata(store, current)
-	if retErr != nil {
-		return "", Result{}, nil, retErr
+	root = currentRoot
+	if current.ContainerID != "" {
+		root, retErr = capturePackageRootMetadata(store, current)
+		if retErr != nil {
+			return "", Result{}, nil, retErr
+		}
 	}
 	if !captureRoot {
 		if _, portable := cacheablePackageRootMetadata(root); !portable {
@@ -2408,7 +2447,7 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 			current.FromImage = current.FromImageID
 		}
 		preserveMetadataBase := historyOnlyTail && !cachedAnnotationsChanged && current.FromImageID != "" && currentManifest != "" && options.Timestamp == nil && options.SourceDateEpoch == nil && !options.RewriteTimestamp && !options.ImageControls.HasChanges()
-		if preserveMetadataBase {
+		if preserveMetadataBase && current.ContainerID != "" {
 			filesystemChanged, changeErr := componentBuilderHasFilesystemChanges(store, current)
 			if changeErr != nil {
 				return "", Result{}, nil, fmt.Errorf("inspect metadata-only filesystem changes: %w", changeErr)
@@ -2443,6 +2482,11 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 				}
 			}
 		}
+		if committed.Layout == "" && finalCachedImageID == "" {
+			if err := ensureWorking(); err != nil {
+				return "", Result{}, nil, err
+			}
+		}
 		if committed.Layout != "" {
 			// The logical configuration is reconciled below while the exact
 			// filesystem descriptors from the selected base remain untouched.
@@ -2475,6 +2519,9 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 	// Metadata operations may reorder Buildah's incremental ENV updates. Replay
 	// the complete logical configuration before committing a changed stage.
 	if finalCachedImageID == "" || !finalCacheDirect {
+		if err := ensureWorking(); err != nil {
+			return "", Result{}, nil, err
+		}
 		if err := syncBuilderConfig(current, logical); err != nil {
 			return "", Result{}, nil, fmt.Errorf("synchronize intermediate image configuration: %w", err)
 		}
@@ -2809,8 +2856,10 @@ func replaceCachedMetadata(builder *upstream.Builder, replacement cachedMetadata
 	for key, value := range replacement.Annotations {
 		builder.SetAnnotation(key, value)
 	}
-	if err := builder.Save(); err != nil {
-		return false, fmt.Errorf("save restored cached metadata: %w", err)
+	if builder.ContainerID != "" {
+		if err := builder.Save(); err != nil {
+			return false, fmt.Errorf("save restored cached metadata: %w", err)
+		}
 	}
 	return true, nil
 }
