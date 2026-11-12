@@ -183,6 +183,7 @@ type instructionSolver struct {
 	ctx      context.Context
 	keys     *instructionGraphKeyOverlay
 	results  *instructionResultStorage
+	manager  solver.CacheManager
 	solver   *solver.Solver
 	job      *solver.Job
 	serial   atomic.Uint64
@@ -209,6 +210,7 @@ func newInstructionSolver(ctx context.Context, store storage.Store, ttl *time.Du
 		return err == nil
 	}
 	manager := solver.NewCacheManager(ctx, instructionSolverVersion, s.keys, s.results)
+	s.manager = manager
 	if err := keys.Err(); err != nil {
 		return nil, err
 	}

@@ -34,7 +34,7 @@ type instructionGraphPortable struct {
 	engine           *instructionSolver
 	cache            *portableInstructionCache
 	roots            map[digest.Digest]instructionGraphRoot
-	read             map[digest.Digest]bool
+	read             map[digest.Digest]bool // attempted roots; true means metadata was admitted
 	reader           *cache.GraphReader
 	sources          []instructionGraphSource
 	relayBindings    []digest.Digest
@@ -80,12 +80,16 @@ func (s *instructionSolver) preparePortable(ctx context.Context, vertex *instruc
 	}
 	root := vertex.portableDigest()
 	p.mu.Lock()
-	if p.read[root] {
+	if admitted, read := p.read[root]; read {
 		p.mu.Unlock()
-		return nil
+		if admitted {
+			return s.linkPortableKeys(vertex)
+		}
+		return s.keys.Err()
 	}
-	p.read[root] = true
+	p.read[root] = false
 	p.mu.Unlock()
+	admitted := false
 	for index, candidate := range p.cache.readStores {
 		store, ok := candidate.(*cache.OCIStore)
 		if !ok {
@@ -143,8 +147,45 @@ func (s *instructionSolver) preparePortable(ctx context.Context, vertex *instruc
 		}
 		// Only metadata is admitted before matching. BuildKit loads the selected
 		// result on demand; IgnoreCache still controls execution.
+		admitted = true
 	}
-	return nil
+	p.mu.Lock()
+	p.read[root] = admitted
+	p.mu.Unlock()
+	if !admitted {
+		return s.keys.Err()
+	}
+	return s.linkPortableKeys(vertex)
+}
+
+// Independently published prefixes can use different native key IDs for the
+// same authored graph. A completed solver edge retains its earlier IDs when a
+// later graph is admitted. Requery the exact authored chain so BuildKit's Query
+// associates every matching parent key with its matching children before that
+// completed edge is reused. This reads key metadata, never result payloads.
+func (s *instructionSolver) linkPortableKeys(vertex *instructionVertex) error {
+	var chain []*instructionVertex
+	for current := vertex; current != nil; current = current.parent {
+		if current.ignore {
+			return s.keys.Err()
+		}
+		chain = append(chain, current)
+	}
+	var inputs []solver.CacheKeyWithSelector
+	for index := len(chain) - 1; index >= 0; index-- {
+		keys, err := s.manager.Query(inputs, 0, chain[index].key, 0)
+		if err != nil {
+			return err
+		}
+		if len(keys) == 0 {
+			break
+		}
+		inputs = make([]solver.CacheKeyWithSelector, len(keys))
+		for i, key := range keys {
+			inputs[i].CacheKey = solver.ExportableCacheKey{CacheKey: key}
+		}
+	}
+	return s.keys.Err()
 }
 
 func (s *instructionSolver) stagePortable(vertex *instructionVertex, result *instructionSolverResult) {

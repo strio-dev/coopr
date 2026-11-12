@@ -12,13 +12,15 @@
   src = coopr.testSource;
   modRoot = "examples/library";
   # The local Coopr replacement is vendored, so source edits also change this hash.
-  vendorHash = "sha256-Qa85bBZ+8c3Z0TyYGxhyPSfaPeaEbRJ8Y4XkxUG2Gok=";
+  vendorHash = "sha256-I+ad3/4Ess/947hlLJeIskOEJ19sdH4rWpT9c71Jiww=";
   subPackages = [ "." ];
   inherit (coopr) tags nativeBuildInputs buildInputs;
   env.CGO_ENABLED = "1";
   doCheck = true;
   nativeCheckInputs = lib.optionals stdenv.hostPlatform.isx86_64 [ golangci-lint ];
   postCheck = lib.optionalString stdenv.hostPlatform.isx86_64 ''
+    export GOMAXPROCS="$NIX_BUILD_CORES" GOMEMLIMIT=2GiB
+    export GOFLAGS="$GOFLAGS -p=$NIX_BUILD_CORES"
     go vet -tags=${lib.concatStringsSep "," coopr.tags} ./...
     GOLANGCI_LINT_CACHE="$TMPDIR/golangci-lint" golangci-lint run --build-tags=${lib.concatStringsSep "," coopr.tags}
   '';

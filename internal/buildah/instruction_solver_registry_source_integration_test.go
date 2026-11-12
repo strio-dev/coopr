@@ -243,6 +243,113 @@ func TestInstructionGraphRegistryCacheSelectiveRestoreAndOfflineExport(t *testin
 	t.Logf("native registry restore: selected2snapshots, %d total GET-body bytes, %d unique unused payload bytes omitted; cache-to %d GET-body bytes without unused alternatives; exact offline result retained", selectedBytes, unusedPayloadBytes, completeBytes)
 }
 
+func TestInstructionGraphRegistryCacheSharedPrefixPublisher(t *testing.T) {
+	requireLiveInstructionCache(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
+	defer cancel()
+	root := t.TempDir()
+	input := filepath.Join(root, "context")
+	if err := os.MkdirAll(filepath.Join(input, "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{"first": "first\n", "second": "second\n", "dir/payload": "directory\n"} {
+		if err := os.WriteFile(filepath.Join(input, name), []byte(value), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base, _ := newLiveBusyBoxRegistry(t, ctx)
+	policy := writeComponentTestPolicy(t, root)
+	var readOnly, attemptedWrite atomic.Bool
+	var mu sync.Mutex
+	graphWrites := map[string]int{}
+	handler := registry.New(registry.Logger(log.New(io.Discard, "", 0)))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if readOnly.Load() && r.Method != http.MethodGet && r.Method != http.MethodHead {
+			attemptedWrite.Store(true)
+			http.Error(w, "read-only test cache", http.StatusMethodNotAllowed)
+			return
+		}
+		if r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/manifests/graph-v2-") {
+			mu.Lock()
+			graphWrites[filepath.Base(r.URL.Path)]++
+			mu.Unlock()
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(server.Close)
+	cacheSpec := []CacheSpec{{Transport: "registry", Reference: strings.TrimPrefix(server.URL, "http://") + "/coopr/shared-prefix"}}
+	app := fmt.Sprintf(`from %q {
+ workdir "/workspace"
+ env ROLE="app"
+ copy "first" "second" "/workspace/"
+ copy "dir" "/workspace/dir"
+ run network="none" {
+  exec "/bin/busybox" "sh" "-eu" "-c" "/bin/busybox cat /workspace/first /workspace/second /workspace/dir/payload > /proof; /bin/busybox od -An -N16 -tx1 /dev/urandom >> /proof; echo SHARED_PREFIX_RUN_EXECUTED";
+ }
+}`, base)
+	environment := fmt.Sprintf(`from %q {
+ workdir "/workspace"
+ env ROLE="checks"
+}`, base)
+	build := func(lane, source string, from, to []CacheSpec) (Result, string, string) {
+		t.Helper()
+		layout := filepath.Join(root, lane, "layout")
+		var stdout, stderr bytes.Buffer
+		result, err := BuildPlanSupervised(ctx, testPlan(t, source), SupervisedPlanOptions{
+			Store: cacheTestStore(filepath.Join(root, lane)), ContextDir: input,
+			Isolation: "rootless", Runtime: "crun", CacheFrom: from, CacheTo: to,
+			TLSVerify: new(false), SignaturePolicyPath: policy,
+			Output: Output{Path: layout}, Stdout: &stdout, Stderr: &stderr,
+		})
+		if err != nil || result.CacheStats.Errors != 0 {
+			t.Fatalf("%s: %v stats=%+v\n%s\n%s", lane, err, result.CacheStats, stdout.String(), stderr.String())
+		}
+		return result, layout, stdout.String()
+	}
+	cold, coldLayout, coldOutput := build("cold-app", app, nil, cacheSpec)
+	proof := localComponentLastFile(t, coldLayout, "proof")
+	if cold.CacheStats.Hits != 0 || cold.CacheStats.Misses != 4 || !strings.HasPrefix(proof, "first\nsecond\ndirectory\n") || !strings.Contains(coldOutput, "SHARED_PREFIX_RUN_EXECUTED\n") {
+		t.Fatalf("cold app did not execute its selected inputs and RUN: stats=%+v proof=%q stdout=%s", cold.CacheStats, proof, coldOutput)
+	}
+	readOnly.Store(true)
+	control, controlLayout, controlOutput := build("control-app", app, cacheSpec, nil)
+	if attemptedWrite.Load() {
+		t.Fatal("control app attempted a registry write")
+	}
+	if got := localComponentLastFile(t, controlLayout, "proof"); control.CacheStats.Hits != 4 || control.CacheStats.Misses != 0 || got != proof || strings.Contains(controlOutput, "SHARED_PREFIX_RUN_EXECUTED\n") {
+		t.Fatalf("unmodified app failed its control cache restore: stats=%+v proof=%q want=%q stdout=%s", control.CacheStats, got, proof, controlOutput)
+	}
+	readOnly.Store(false)
+	mu.Lock()
+	before := maps.Clone(graphWrites)
+	mu.Unlock()
+	// This independent write-only producer replaces the shared WORKDIR root
+	// with its own native key IDs before the app's longer graph is restored.
+	checks, _, _ := build("environment", environment, nil, cacheSpec)
+	if checks.CacheStats.Hits != 0 || checks.CacheStats.Misses != 1 {
+		t.Fatalf("environment producer did not independently execute WORKDIR: %+v", checks.CacheStats)
+	}
+	mu.Lock()
+	sharedWrites := 0
+	for tag, count := range graphWrites {
+		if before[tag] != 0 {
+			sharedWrites += count - before[tag]
+		}
+	}
+	mu.Unlock()
+	if sharedWrites != 1 {
+		t.Fatalf("environment overwrote %d app graph tags, want the one shared WORKDIR root", sharedWrites)
+	}
+	readOnly.Store(true)
+	warm, warmLayout, warmOutput := build("warm-app", app, cacheSpec, nil)
+	if attemptedWrite.Load() {
+		t.Fatal("warm app attempted a registry write")
+	}
+	if got := localComponentLastFile(t, warmLayout, "proof"); warm.CacheStats.Hits != 4 || warm.CacheStats.Misses != 0 || got != proof || strings.Contains(warmOutput, "SHARED_PREFIX_RUN_EXECUTED\n") {
+		t.Fatalf("shared-prefix publication lost the app's cache: stats=%+v proof=%q want=%q stdout=%s", warm.CacheStats, got, proof, warmOutput)
+	}
+}
+
 type instructionRegistryRead struct {
 	gets  int
 	bytes int64
