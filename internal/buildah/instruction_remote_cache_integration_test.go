@@ -78,9 +78,9 @@ func testExactInstructionImageFromRegistryAcrossStores(t *testing.T, format stri
 	if cold.CacheStats.Misses != stages || cold.CacheStats.Stored != stages || cold.CacheStats.Hits != 0 {
 		t.Fatalf("cold instruction cache stats = %+v", cold.CacheStats)
 	}
-	// Each recovered graph is written to both explicitly writable destinations:
-	// the local cache and the registry. Execution reuse is counted separately.
-	if warm.CacheStats.Hits != stages || warm.CacheStats.Misses != 0 || warm.CacheStats.Stored != 2*stages || warm.CacheStats.Errors != 0 {
+	// Each recovered graph seeds the local cache; its unchanged source registry
+	// is reused without publication. Execution reuse is counted separately.
+	if warm.CacheStats.Hits != stages || warm.CacheStats.Misses != 0 || warm.CacheStats.Stored != stages || warm.CacheStats.Errors != 0 {
 		t.Fatalf("warm instruction cache stats = %+v", warm.CacheStats)
 	}
 	if warm.ManifestDigest != cold.ManifestDigest {

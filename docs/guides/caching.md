@@ -48,6 +48,8 @@ Other destinations still receive complete exports. Local hits, mirror reads
 and fresh execution use the normal publication path.
 
 Registry and persistent OCI cache content is digest-verified when read.
+Portable caches support OCI and Docker image manifests and can reuse their
+shared uncompressed layers without changing either manifest.
 Staging uses separate, read-only blob files. Retained staging data is checked
 again before reuse; the following copy traversal reuses that verification
 within the same gated operation. Complete export still verifies its inputs.

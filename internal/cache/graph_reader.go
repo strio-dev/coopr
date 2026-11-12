@@ -8,7 +8,6 @@ import (
 
 	digest "github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
-	"oras.land/oras-go/v2/content"
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
 
@@ -115,7 +114,7 @@ func (destination graphReaderDestination) Exists(ctx context.Context, descriptor
 	// Always let upstream traverse non-leaf nodes, retaining nested graph and
 	// unknown-media behavior instead of treating raw blob existence as closure.
 	previous, known := destination.verified[descriptor.Digest]
-	if known && !content.Equal(previous, descriptor) {
+	if known && !sameGraphPayload(previous, descriptor) {
 		return false, errors.New("graph copy conflicts with a previously verified descriptor")
 	}
 	exists, err := destination.Store.Exists(ctx, descriptor)

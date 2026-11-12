@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/moby/buildkit/util/compression"
 	digest "github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/strio-dev/coopr/internal/oci"
@@ -346,7 +347,7 @@ func verifyAndCopyGraphImagesReusable(ctx context.Context, target oras.Target, i
 		}
 		imageDescriptors = append(imageDescriptors, descriptors)
 		for _, descriptor := range descriptors {
-			if previous, ok := reusable[descriptor.Digest]; ok && !content.Equal(previous, descriptor) {
+			if previous, ok := reusable[descriptor.Digest]; ok && !sameGraphPayload(previous, descriptor) {
 				return false, errors.New("graph payload conflicts with a previously verified descriptor")
 			}
 			if !isImageGraphLeaf(descriptor.MediaType) {
@@ -363,7 +364,7 @@ func verifyAndCopyGraphImagesReusable(ctx context.Context, target oras.Target, i
 				return false, errors.New("graph image and payload have conflicting descriptors")
 			}
 			if previous, ok := seen[descriptor.Digest]; ok {
-				if !content.Equal(previous, descriptor) {
+				if !sameGraphPayload(previous, descriptor) {
 					return false, errors.New("shared graph blob has conflicting descriptors")
 				}
 				continue
@@ -405,6 +406,18 @@ func verifyAndCopyGraphImagesReusable(ctx context.Context, target oras.Target, i
 		}
 	}
 	return destination != nil, nil
+}
+
+// OCI and Docker name the same uncompressed tar format differently. Normalize
+// that payload alias only; graph roles, compression and byte identity stay strict.
+func sameGraphPayload(left, right v1.Descriptor) bool {
+	if compression.IsMediaType(compression.Uncompressed, left.MediaType) {
+		left.MediaType = v1.MediaTypeImageLayer
+	}
+	if compression.IsMediaType(compression.Uncompressed, right.MediaType) {
+		right.MediaType = v1.MediaTypeImageLayer
+	}
+	return content.Equal(left, right)
 }
 
 func verifyGraphBlob(ctx context.Context, target content.Fetcher, descriptor v1.Descriptor) error {

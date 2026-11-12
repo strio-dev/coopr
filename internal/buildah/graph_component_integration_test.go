@@ -29,6 +29,7 @@ import (
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/image/v5/types"
+	"oras.land/oras-go/v2/content"
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
 
@@ -672,17 +673,45 @@ func TestBuildPlanReusesPortableConfigOnlyComponentCache(t *testing.T) {
 	if artifact.Digest == "" {
 		t.Fatal("missing tagged component image cache record")
 	}
+	if artifact.MediaType != v1.MediaTypeImageIndex {
+		t.Fatalf("component record media type = %q, want OCI index", artifact.MediaType)
+	}
 	manifestPath := filepath.Join(cacheDir, "blobs", "sha256", artifact.Digest.Encoded())
-	artifactData, err := os.ReadFile(manifestPath)
+	layout, err := orasoci.New(cacheDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var cacheManifest v1.Manifest
-	if err := json.Unmarshal(artifactData, &cacheManifest); err != nil {
+	members, err := content.Successors(ctx, layout, artifact)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if cacheManifest.ArtifactType != cache.ImageArtifactType || len(cacheManifest.Layers) != 2 {
-		t.Fatalf("component record graphs=%+v", cacheManifest)
+	if len(members) != 3 {
+		t.Fatalf("component record members=%+v, want metadata, image and base", members)
+	}
+	metadata, err := content.Successors(ctx, layout, members[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metadata) != 1 || metadata[0].MediaType != cache.ImageConfigMediaType {
+		t.Fatalf("component metadata successors=%+v, want only the cache record config", metadata)
+	}
+	data, err := content.FetchAll(ctx, layout, metadata[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record cache.ImageRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		t.Fatal(err)
+	}
+	imageCache, err := cache.NewLocalStore(ctx, cacheDir, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := imageCache.LookupImage(ctx, record.Key); err != nil {
+		t.Fatalf("invalid component image cache: %v", err)
+	}
+	if roots := instructionGraphArtifactResults(t, cacheDir); len(roots) != 0 {
+		t.Fatalf("config-only component stored %d filesystem graphs", len(roots))
 	}
 
 	if err := os.WriteFile(manifestPath, []byte("corrupt"), 0o600); err != nil {
