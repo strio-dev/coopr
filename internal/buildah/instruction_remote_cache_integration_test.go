@@ -75,12 +75,12 @@ func testExactInstructionImageFromRegistryAcrossStores(t *testing.T, format stri
 	}
 	cold := build("cold", "", host+"/coopr/cache")
 	warm := build("warm", localCache, host+"/coopr/cache")
-	if cold.CacheStats.Misses != stages || cold.CacheStats.Stored != stages || cold.CacheStats.Hits != 0 {
+	if cold.CacheStats.Misses != stages || cold.CacheStats.Stored != stages+1 || cold.CacheStats.Hits != 0 {
 		t.Fatalf("cold instruction cache stats = %+v", cold.CacheStats)
 	}
-	// Each recovered graph seeds the local cache; its unchanged source registry
-	// is reused without publication. Execution reuse is counted separately.
-	if warm.CacheStats.Hits != stages || warm.CacheStats.Misses != 0 || warm.CacheStats.Stored != stages || warm.CacheStats.Errors != 0 {
+	// Only the terminal aggregate is loaded and seeds one complete local graph;
+	// its unchanged source registry is reused without publication.
+	if warm.CacheStats.Hits != 1 || warm.CacheStats.Misses != 0 || warm.CacheStats.Stored != 1 || warm.CacheStats.Errors != 0 {
 		t.Fatalf("warm instruction cache stats = %+v", warm.CacheStats)
 	}
 	if warm.ManifestDigest != cold.ManifestDigest {
@@ -89,11 +89,11 @@ func testExactInstructionImageFromRegistryAcrossStores(t *testing.T, format stri
 		t.Fatalf("restored manifest = %s, want exact %s; cold config (%v)=%s; warm config (%v)=%s", warm.ManifestDigest, cold.ManifestDigest, coldErr, coldConfig, warmErr, warmConfig)
 	}
 	warmStore := StoreOptions{RunRoot: filepath.Join(root, "warm", "run"), GraphRoot: filepath.Join(root, "warm", "graph"), GraphDriverName: "vfs"}
-	if count := instructionCacheRecordCount(t, warmStore); count != stages {
-		t.Fatalf("remote hit seeded %d local instruction records, want %d", count, stages)
+	if count := instructionCacheRecordCount(t, warmStore); count != 0 {
+		t.Fatalf("terminal remote hit seeded %d unnecessary instruction records", count)
 	}
 	offline := build("offline", localCache, "")
-	if offline.CacheStats.Hits != stages || offline.CacheStats.Misses != 0 {
+	if offline.CacheStats.Hits != 1 || offline.CacheStats.Misses != 0 {
 		t.Fatalf("local seeded instruction cache stats = %+v", offline.CacheStats)
 	}
 	if offline.ManifestDigest != cold.ManifestDigest {
@@ -354,7 +354,7 @@ func TestBuildPlanNoCacheReplacesPortableInstructionImage(t *testing.T) {
 	if refreshed.ManifestDigest == cold.ManifestDigest {
 		t.Fatalf("NoCache build reused portable manifest %s", cold.ManifestDigest)
 	}
-	if refreshed.CacheStats.Hits != 0 || refreshed.CacheStats.Misses != 0 || refreshed.CacheStats.Stored != 1 {
+	if refreshed.CacheStats.Hits != 0 || refreshed.CacheStats.Misses != 0 || refreshed.CacheStats.Stored != 2 {
 		t.Fatalf("NoCache portable instruction stats = %+v", refreshed.CacheStats)
 	}
 	warm := build("warm", false)

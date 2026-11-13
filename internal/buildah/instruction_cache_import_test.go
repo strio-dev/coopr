@@ -165,7 +165,7 @@ func TestInstructionGraphCachesFromNativeCompressedSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.CacheStats.Stored != 1 || result.CacheStats.Errors != 0 {
+	if result.CacheStats.Stored != 2 || result.CacheStats.Errors != 0 {
 		t.Fatalf("native base cache export: %+v", result.CacheStats)
 	}
 	if got := localComponentLastFile(t, result.Layout, "tail"); got != "new instruction\n" {

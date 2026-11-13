@@ -21,6 +21,7 @@ import (
 	"github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/strio-dev/coopr/internal/oci"
+	"github.com/strio-dev/coopr/internal/planner"
 	"go.podman.io/common/libimage"
 	libconfig "go.podman.io/common/pkg/config"
 	nativemanifest "go.podman.io/image/v5/manifest"
@@ -303,9 +304,107 @@ func TestResolveImageSourceEnforcesRegistryScopedPolicy(t *testing.T) {
 		SignaturePolicyPath:  policy,
 		BigFilesTemporaryDir: root,
 	})
-	if err == nil || !strings.Contains(err.Error(), "Source image rejected") {
+	if err == nil || !strings.Contains(err.Error(), "rejected by policy") {
 		t.Fatalf("registry-scoped reject policy error = %v", err)
 	}
+	t.Run("terminal graph cache", func(t *testing.T) {
+		definition := parseWorkerDefinition(t, fmt.Sprintf(`from %q as="builder" {
+    run network="none" { exec "/bin/busybox" "sh" "-ec" "echo policy-proof > /proof"; }
+}
+from "scratch" { copy "/proof" "/proof" from="builder" }
+`, reference))
+		cache := CacheSpec{Transport: "oci-layout", Reference: filepath.Join(root, "cache")}
+		options := SupervisedPlanOptions{
+			Store: cacheTestStore(filepath.Join(root, "cold")), ContextDir: root, Isolation: "rootless", Runtime: "crun",
+			SignaturePolicyPath: policy, PullPolicy: string(oci.PullAlways), TLSVerify: new(false), RetrySet: true,
+			Output:  Output{Path: filepath.Join(root, "cold-layout"), Format: "oci", CompressionFormat: "gzip"},
+			CacheTo: []CacheSpec{cache},
+		}
+		// Keep the path and all build inputs fixed; only the policy contents
+		// change after a positive terminal-hit control in a fresh native store.
+		if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+		cold, err := BuildDefinitionSupervised(t.Context(), definition, planner.Options{Mode: planner.Build}, options)
+		if err != nil || cold.CacheStats.Stored == 0 {
+			t.Fatalf("seed terminal cache: %+v, %v", cold, err)
+		}
+		options.CacheTo, options.CacheFrom = nil, []CacheSpec{cache}
+		options.Store = cacheTestStore(filepath.Join(root, "approved-warm"))
+		options.Output.Path = filepath.Join(root, "approved-layout")
+		warm, err := BuildDefinitionSupervised(t.Context(), definition, planner.Options{Mode: planner.Build}, options)
+		if err != nil || warm.CacheStats.Hits == 0 || warm.CacheStats.Misses != 0 || warm.ManifestDigest != cold.ManifestDigest {
+			t.Fatalf("positive terminal-hit control: cold=%+v warm=%+v error=%v", cold, warm, err)
+		}
+		if err := os.WriteFile(policy, []byte(policyData), 0600); err != nil {
+			t.Fatal(err)
+		}
+		options.Store = cacheTestStore(filepath.Join(root, "rejected-warm"))
+		options.Output.Path = filepath.Join(root, "rejected-layout")
+		if _, err := BuildDefinitionSupervised(t.Context(), definition, planner.Options{Mode: planner.Build}, options); err == nil || !strings.Contains(err.Error(), "rejected by policy") {
+			t.Fatalf("terminal cache bypassed newly rejecting source policy: %v", err)
+		}
+		if _, err := os.Stat(options.Output.Path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("rejected policy exposed output: %v", err)
+		}
+		lease, err := acquireStore(options.Store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		images, imageErr := lease.store.Images()
+		containers, containerErr := lease.store.Containers()
+		if err := errors.Join(imageErr, containerErr, lease.Close()); err != nil {
+			t.Fatal(err)
+		}
+		if len(images) != 0 || len(containers) != 0 {
+			t.Fatalf("rejected policy materialized native images=%d containers=%d", len(images), len(containers))
+		}
+	})
+	t.Run("caller policy override", func(t *testing.T) {
+		for _, test := range []struct{ name, source string }{
+			{"base", fmt.Sprintf(`from %q as="source" {}
+from "scratch" { copy "/bin/busybox" "/busybox" from="source"; }`, reference)},
+			{"copy", fmt.Sprintf(`from "scratch" { copy "/bin/busybox" "/busybox" from=%q; }`, reference)},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				root := t.TempDir()
+				allowed := writeComponentTestPolicy(t, root)
+				resolver, err := oci.NewResolver(oci.Options{SignaturePolicyPath: allowed, TLSVerify: new(false), PullPolicy: string(oci.PullAlways), RetrySet: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				cache := CacheSpec{Transport: "oci-layout", Reference: filepath.Join(root, "cache")}
+				epoch := int64(0)
+				options := PlanOptions{
+					Resolver: resolver, SystemContext: &types.SystemContext{SignaturePolicyPath: allowed},
+					Store: cacheTestStore(filepath.Join(root, "cold")), ContextDir: root, Isolation: "rootless", Runtime: "crun",
+					Output:  Output{Path: filepath.Join(root, "cold-layout"), Format: "oci", CompressionFormat: "gzip"},
+					CacheTo: []CacheSpec{cache}, Timestamp: &epoch, RewriteTimestamp: true,
+				}
+				plan := testPlan(t, test.source)
+				cold, err := BuildPlan(t.Context(), plan, options)
+				if err != nil || cold.CacheStats.Stored == 0 {
+					t.Fatalf("seed direct terminal cache: %+v, %v", cold, err)
+				}
+				options.CacheTo, options.CacheFrom = nil, []CacheSpec{cache}
+				options.Store, options.Output.Path = cacheTestStore(filepath.Join(root, "warm")), filepath.Join(root, "warm-layout")
+				warm, err := BuildPlan(t.Context(), plan, options)
+				if err != nil || warm.CacheStats.Hits != 1 || warm.CacheStats.Misses != 0 || warm.ManifestDigest != cold.ManifestDigest {
+					t.Fatalf("direct terminal-hit control: cold=%+v warm=%+v error=%v", cold, warm, err)
+				}
+				// The resolver stays permissive; the caller's native override must
+				// reject the same input before the admitted terminal result is used.
+				options.SystemContext = &types.SystemContext{SignaturePolicyPath: policy}
+				options.Store, options.Output.Path = cacheTestStore(filepath.Join(root, "rejected")), filepath.Join(root, "rejected-layout")
+				if _, err := BuildPlan(t.Context(), plan, options); err == nil || !strings.Contains(err.Error(), "rejected by policy") {
+					t.Fatalf("caller policy override bypassed by %s terminal hit: %v", test.name, err)
+				}
+				if _, err := os.Stat(options.Output.Path); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("rejected caller policy exposed output: %v", err)
+				}
+			})
+		}
+	})
 }
 
 func TestResolveImageSourcePullsRegistryDirectlyIntoBuildahStore(t *testing.T) {

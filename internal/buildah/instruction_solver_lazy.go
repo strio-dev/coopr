@@ -25,6 +25,13 @@ type instructionGraphKeyOverlay struct {
 	lazy *instructionLazyResults
 }
 
+// A zero-input operation has no links to establish its native key. Its admitted
+// associations still make it queryable before any image is materialized.
+func (s *instructionGraphKeyOverlay) Exists(id string) bool {
+	native := s.graphCacheKeyStorage.Exists(id)
+	return s.Err() == nil && (native || len(s.lazy.records(id)) != 0)
+}
+
 func (s *instructionGraphKeyOverlay) WalkResults(id string, fn func(solver.CacheResult) error) error {
 	records := map[string]solver.CacheResult{}
 	if err := s.graphCacheKeyStorage.WalkResults(id, func(r solver.CacheResult) error {

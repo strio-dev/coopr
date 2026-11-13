@@ -33,14 +33,19 @@ func TestInstructionCacheKeepsCopyParentAfterUncachedExport(t *testing.T) {
 				t.Cleanup(server.Close)
 				repository = strings.TrimPrefix(server.URL, "http://") + "/coopr/copy-parent"
 			}
-			build := func(name, command string, noCache bool) (Result, string) {
+			build := func(name, command string, noCache, metadataProbe bool) (Result, string) {
 				t.Helper()
 				base := filepath.Join(root, name)
 				layout := filepath.Join(base, "layout")
+				metadata := ""
+				if metadataProbe {
+					metadata = `label cache_probe="copy-parent"`
+				}
 				plan := testPlan(t, fmt.Sprintf(`from "scratch" {
     copy "busybox" "/bin/busybox"
     run network="none" { exec "/bin/busybox" "sh" "-eu" "-c" %q; }
-}`, command))
+    %s
+}`, command, metadata))
 				var diagnostics bytes.Buffer
 				result, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 					Store: cacheTestStore(base), ContextDir: contextDir, Isolation: "rootless", Runtime: "crun",
@@ -57,8 +62,8 @@ func TestInstructionCacheKeepsCopyParentAfterUncachedExport(t *testing.T) {
 				return result, layout
 			}
 			const command = "/bin/busybox stat -c %Y /bin > /parent-time; /bin/busybox od -An -N16 -tx1 /dev/urandom > /proof"
-			cold, coldLayout := build("cold", command, false)
-			if cold.CacheStats.Hits != 0 || cold.CacheStats.Misses != 2 || cold.CacheStats.Stored != 2 {
+			cold, coldLayout := build("cold", command, false, false)
+			if cold.CacheStats.Hits != 0 || cold.CacheStats.Misses != 2 || cold.CacheStats.Stored != 3 {
 				t.Fatalf("cold cache: %+v", cold.CacheStats)
 			}
 			proof := localComponentLastFile(t, coldLayout, "proof")
@@ -72,16 +77,22 @@ func TestInstructionCacheKeepsCopyParentAfterUncachedExport(t *testing.T) {
 				case <-time.After(10 * time.Millisecond):
 				}
 			}
-			uncached, uncachedLayout := build("other-branch", "/bin/busybox stat -c %Y /bin > /parent-time; printf 'other branch\\n' > /proof", true)
-			if uncached.CacheStats.Hits != 0 || uncached.CacheStats.Misses != 0 || uncached.CacheStats.Stored != 2 {
+			uncached, uncachedLayout := build("other-branch", "/bin/busybox stat -c %Y /bin > /parent-time; printf 'other branch\\n' > /proof", true, false)
+			if uncached.CacheStats.Hits != 0 || uncached.CacheStats.Misses != 0 || uncached.CacheStats.Stored != 3 {
 				t.Fatalf("uncached export: %+v", uncached.CacheStats)
 			}
 			if got, original := localComponentLastFile(t, uncachedLayout, "parent-time"), localComponentLastFile(t, coldLayout, "parent-time"); got == original {
 				t.Fatalf("forced native COPY did not produce a distinct parent timestamp: %q", got)
 			}
-			warm, warmLayout := build("warm", command, false)
+			// Change only final metadata so the aggregate misses and both native
+			// instruction hits still exercise the shared COPY parent.
+			warm, warmLayout := build("warm", command, false, true)
 			if warm.CacheStats.Hits != 2 || warm.CacheStats.Misses != 0 {
 				t.Fatalf("uncached shared COPY replaced the warm RUN parent: %+v", warm.CacheStats)
+			}
+			_, warmImage := readPlanImage(t, warmLayout)
+			if warmImage.Config.Labels["cache_probe"] != "copy-parent" {
+				t.Fatal("warm instruction hits lost the final metadata probe")
 			}
 			if got := localComponentLastFile(t, warmLayout, "proof"); got != proof {
 				t.Fatalf("warm RUN executed again: %q != %q", got, proof)
@@ -91,13 +102,13 @@ func TestInstructionCacheKeepsCopyParentAfterUncachedExport(t *testing.T) {
 			}
 			// Refresh must still execute nondeterministic work and replace its
 			// result. Keeping the first published result is not a repair.
-			refreshed, refreshedLayout := build("refreshed", command, true)
+			refreshed, refreshedLayout := build("refreshed", command, true, false)
 			freshProof := localComponentLastFile(t, refreshedLayout, "proof")
-			if freshProof == proof || refreshed.CacheStats.Hits != 0 || refreshed.CacheStats.Misses != 0 || refreshed.CacheStats.Stored != 2 {
+			if freshProof == proof || refreshed.CacheStats.Hits != 0 || refreshed.CacheStats.Misses != 0 || refreshed.CacheStats.Stored != 3 {
 				t.Fatalf("no-cache failed to refresh RUN: proof=%q stats=%+v", freshProof, refreshed.CacheStats)
 			}
-			after, afterLayout := build("after-refresh", command, false)
-			if after.CacheStats.Hits != 2 || after.CacheStats.Misses != 0 || localComponentLastFile(t, afterLayout, "proof") != freshProof {
+			after, afterLayout := build("after-refresh", command, false, false)
+			if after.CacheStats.Hits != 1 || after.CacheStats.Misses != 0 || localComponentLastFile(t, afterLayout, "proof") != freshProof {
 				t.Fatalf("warm cache did not retain refreshed result: %+v", after.CacheStats)
 			}
 		})
@@ -116,12 +127,17 @@ func TestInstructionCacheTracksAuthoredFilesystemMetadata(t *testing.T) {
 	for index, stamp := range []int64{100, 200, 200} {
 		base := filepath.Join(root, fmt.Sprint(index))
 		layout := filepath.Join(base, "layout")
+		metadata := ""
+		if index == 2 {
+			metadata = `label cache_probe="authored-metadata"`
+		}
 		plan := testPlan(t, fmt.Sprintf(`from "scratch" {
     copy "busybox" "/bin/busybox"
     run network="none" { exec "/bin/busybox" "touch" "-m" "-d" "@%d" "/bin" "/authored"; }
     copy "payload" "/bin/payload"
     run network="none" { exec "/bin/busybox" "sh" "-eu" "-c" "/bin/busybox stat -c %%Y /authored > /parent-time"; }
-}`, stamp))
+    %s
+}`, stamp, metadata))
 		result, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: cacheTestStore(base), ContextDir: contextDir, Isolation: "rootless", Runtime: "crun",
 			CacheLocalDir: filepath.Join(root, "cache"), Output: Output{Path: layout},
@@ -138,6 +154,12 @@ func TestInstructionCacheTracksAuthoredFilesystemMetadata(t *testing.T) {
 		}
 		if index == 2 && (result.CacheStats.Hits != 4 || result.CacheStats.Misses != 0) {
 			t.Fatalf("identical authored metadata did not retain warm hits: %+v", result.CacheStats)
+		}
+		if index == 2 {
+			_, image := readPlanImage(t, layout)
+			if image.Config.Labels["cache_probe"] != "authored-metadata" {
+				t.Fatal("warm instruction hits lost the final metadata probe")
+			}
 		}
 	}
 }

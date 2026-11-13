@@ -15,7 +15,7 @@ The second build reports `Using cache` for reused checkpoints. Coopr matches ope
 
 Local instruction snapshots live in the [native image store](storage.md). They work with the default `--layers=true`; `--layers=false` reruns filesystem instructions instead of reading those snapshots. See [layer and cache behavior](../reference/execution.md#layers-storage-and-copying).
 
-Local COPY/ADD can still read and extract files on a cache hit. Keep source files stable while building. Live host-directory binds, including native `--volume` settings, force their RUNs to execute even when read-only. Use contexts, images or artifacts for reusable inputs.
+An eligible terminal graph hit restores the final native image without importing its ancestors. Coopr still resolves image metadata, checks trust and authorization, and captures immutable local inputs. When a stage needs execution, individual COPY/ADD hits can still read and extract files. Live host-directory binds, including native `--volume` settings, force their RUNs to execute even when read-only. Use contexts, images or artifacts for reusable inputs.
 
 ## Share results through a registry
 

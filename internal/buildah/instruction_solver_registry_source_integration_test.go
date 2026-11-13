@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -140,12 +141,29 @@ func TestInstructionGraphRegistryCacheSelectiveRestoreAndOfflineExport(t *testin
 	readOnly.Store(true)
 	traffic.reset()
 	warm, proof, output := build("read-only", false, "", from, nil)
-	if warm.CacheStats.Hits != 2 || warm.CacheStats.Misses != 0 || proof != latest || strings.Contains(output, "REGISTRY_FRESH_RUN\n") {
+	if warm.CacheStats.Hits != 1 || warm.CacheStats.Misses != 0 || proof != latest || strings.Contains(output, "REGISTRY_FRESH_RUN\n") {
 		t.Fatalf("read-only registry restore replayed or changed the selected result: proof=%q want=%q stats=%+v stdout=%s", proof, latest, warm.CacheStats, output)
 	}
 	selected := instructionRegistrySelectedResults(t, cacheTestStore(filepath.Join(root, "read-only")), catalog)
-	if len(selected) != 2 {
-		t.Fatalf("read-only registry restore imported %d native graph snapshots, want2", len(selected))
+	if len(selected) != 1 {
+		t.Fatalf("read-only registry restore selected %d graph results, want one terminal stage", len(selected))
+	}
+	for id := range selected {
+		var value instructionSolverResult
+		if err := json.Unmarshal(catalog.results[id].Metadata, &value); err != nil || len(value.Entry.LogicalConfig) == 0 {
+			t.Fatalf("selected result is not the complete stage state: %s, %v", id, err)
+		}
+	}
+	lease, err := acquireStore(cacheTestStore(filepath.Join(root, "read-only")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	images, imageErr := lease.store.Images()
+	if err := errors.Join(imageErr, lease.Close()); err != nil {
+		t.Fatal(err)
+	}
+	if len(images) != 1 || images[0].ID != warm.ImageID {
+		t.Fatalf("terminal restore imported base/ancestor images: images=%d final=%s", len(images), warm.ImageID)
 	}
 	reads, methods, selectedBytes, graphTags := traffic.snapshot()
 	if graphTags == 0 {
@@ -187,11 +205,13 @@ func TestInstructionGraphRegistryCacheSelectiveRestoreAndOfflineExport(t *testin
 	traffic.reset()
 	mirror := filepath.Join(root, "selected")
 	complete, proof, output := build("complete-consumer", false, "", from, []CacheSpec{from[len(from)-1], {Transport: "oci-layout", Reference: mirror}})
-	if complete.CacheStats.Hits != 2 || complete.CacheStats.Misses != 0 || complete.CacheStats.Stored != 2 || proof != latest || strings.Contains(output, "REGISTRY_FRESH_RUN\n") {
+	// The unchanged source root is reused; only the local destination needs the
+	// selected complete stage result, without importing instruction ancestors.
+	if complete.CacheStats.Hits != 1 || complete.CacheStats.Misses != 0 || complete.CacheStats.Stored != 1 || proof != latest || strings.Contains(output, "REGISTRY_FRESH_RUN\n") {
 		t.Fatalf("complete export replayed or changed the selected result: proof=%q want=%q stats=%+v stdout=%s", proof, latest, complete.CacheStats, output)
 	}
-	if got := instructionRegistrySelectedResults(t, cacheTestStore(filepath.Join(root, "complete-consumer")), catalog); len(got) != 2 {
-		t.Fatalf("complete export imported %d native graph snapshots, want2", len(got))
+	if got := instructionRegistrySelectedResults(t, cacheTestStore(filepath.Join(root, "complete-consumer")), catalog); len(got) != 1 {
+		t.Fatalf("complete export selected %d graph results, want one terminal stage", len(got))
 	}
 	completeReads, completeMethods, completeBytes, _ := traffic.snapshot()
 	for key := range unused {
@@ -244,10 +264,10 @@ func TestInstructionGraphRegistryCacheSelectiveRestoreAndOfflineExport(t *testin
 		}
 	}
 	offline, proof, output := build("offline-consumer", false, "", []CacheSpec{{Transport: "oci-layout", Reference: mirror}}, nil)
-	if offline.CacheStats.Hits != 2 || offline.CacheStats.Misses != 0 || proof != latest || strings.Contains(output, "REGISTRY_FRESH_RUN\n") {
+	if offline.CacheStats.Hits != 1 || offline.CacheStats.Misses != 0 || proof != latest || strings.Contains(output, "REGISTRY_FRESH_RUN\n") {
 		t.Fatalf("offline mirror replayed or changed the selected result: proof=%q want=%q stats=%+v stdout=%s", proof, latest, offline.CacheStats, output)
 	}
-	t.Logf("native registry restore: selected2snapshots, %d total GET-body bytes, %d unique unused payload bytes omitted; cache-to %d GET-body bytes without unused alternatives; exact offline result retained", selectedBytes, unusedPayloadBytes, completeBytes)
+	t.Logf("native registry restore: one terminal image, %d total GET-body bytes, %d unique unused payload bytes omitted; cache-to %d GET-body bytes without unused alternatives; exact offline result retained", selectedBytes, unusedPayloadBytes, completeBytes)
 }
 
 func TestInstructionGraphRegistryCacheSharedPrefixPublisher(t *testing.T) {
@@ -323,7 +343,7 @@ func TestInstructionGraphRegistryCacheSharedPrefixPublisher(t *testing.T) {
 	if attemptedWrite.Load() {
 		t.Fatal("control app attempted a registry write")
 	}
-	if got := localComponentLastFile(t, controlLayout, "proof"); control.CacheStats.Hits != 4 || control.CacheStats.Misses != 0 || got != proof || strings.Contains(controlOutput, "SHARED_PREFIX_RUN_EXECUTED\n") {
+	if got := localComponentLastFile(t, controlLayout, "proof"); control.CacheStats.Hits != 1 || control.CacheStats.Misses != 0 || got != proof || strings.Contains(controlOutput, "SHARED_PREFIX_RUN_EXECUTED\n") {
 		t.Fatalf("unmodified app failed its control cache restore: stats=%+v proof=%q want=%q stdout=%s", control.CacheStats, got, proof, controlOutput)
 	}
 	readOnly.Store(false)
@@ -347,20 +367,34 @@ func TestInstructionGraphRegistryCacheSharedPrefixPublisher(t *testing.T) {
 	if sharedWrites != 1 {
 		t.Fatalf("environment overwrote %d app graph tags, want the one shared WORKDIR root", sharedWrites)
 	}
+	// Change only final image metadata so the aggregate must miss and the four
+	// instruction keys must reconcile the independently published WORKDIR alias.
+	labeledApp := strings.TrimSuffix(app, "}") + " label cache_variant=\"continuation\"\n}"
+	labeledCache := []CacheSpec{{Transport: "oci-layout", Reference: filepath.Join(root, "labeled-cache")}}
 	readOnly.Store(true)
-	warm, warmLayout, warmOutput := build("warm-app", app, cacheSpec, nil)
+	warm, warmLayout, warmOutput := build("warm-app", labeledApp, cacheSpec, labeledCache)
 	if attemptedWrite.Load() {
 		t.Fatal("warm app attempted a registry write")
 	}
-	if got := localComponentLastFile(t, warmLayout, "proof"); warm.CacheStats.Hits != 4 || warm.CacheStats.Misses != 0 || got != proof || strings.Contains(warmOutput, "SHARED_PREFIX_RUN_EXECUTED\n") {
+	// Four selected instruction roots and the new labeled aggregate seed the
+	// local cache without changing the read-only registry's method gate.
+	if got := localComponentLastFile(t, warmLayout, "proof"); warm.CacheStats.Hits != 4 || warm.CacheStats.Misses != 0 || warm.CacheStats.Stored != 5 || got != proof || strings.Contains(warmOutput, "SHARED_PREFIX_RUN_EXECUTED\n") {
 		t.Fatalf("shared-prefix publication lost the app's cache: stats=%+v proof=%q want=%q stdout=%s", warm.CacheStats, got, proof, warmOutput)
 	}
-	// A fresh consumer may also publish the restored graph. Exercise that
-	// write path without rerunning the cached operation or changing its proof.
+	_, warmImage := readPlanImage(t, warmLayout)
+	if warmImage.Config.Labels["cache_variant"] != "continuation" {
+		t.Fatalf("warm instruction reuse lost the authored label: %+v", warmImage.Config.Labels)
+	}
+	// A fresh consumer can use the complete labeled stage and republish it to
+	// the registry without loading or executing its instruction ancestors.
 	readOnly.Store(false)
-	republished, republishedLayout, republishedOutput := build("warm-republish-app", app, cacheSpec, cacheSpec)
-	if got := localComponentLastFile(t, republishedLayout, "proof"); republished.CacheStats.Hits != 4 || republished.CacheStats.Misses != 0 || got != proof || strings.Contains(republishedOutput, "SHARED_PREFIX_RUN_EXECUTED\n") {
+	republished, republishedLayout, republishedOutput := build("warm-republish-app", labeledApp, labeledCache, cacheSpec)
+	if got := localComponentLastFile(t, republishedLayout, "proof"); republished.CacheStats.Hits != 1 || republished.CacheStats.Misses != 0 || republished.CacheStats.Stored != 1 || republished.ManifestDigest != warm.ManifestDigest || got != proof || strings.Contains(republishedOutput, "SHARED_PREFIX_RUN_EXECUTED\n") {
 		t.Fatalf("fresh-store read/write cache restore changed the app: stats=%+v proof=%q want=%q stdout=%s", republished.CacheStats, got, proof, republishedOutput)
+	}
+	_, republishedImage := readPlanImage(t, republishedLayout)
+	if republishedImage.Config.Labels["cache_variant"] != "continuation" {
+		t.Fatalf("terminal reuse lost the authored label: %+v", republishedImage.Config.Labels)
 	}
 }
 

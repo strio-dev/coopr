@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -159,6 +160,70 @@ func TestInstructionGraphSnapshotDoesNotAttachResultToOtherMatchingKeys(t *testi
 	}
 }
 
+func TestInstructionGraphSnapshotPreservesSharedDAGInputSlots(t *testing.T) {
+	engine, _, record, _, _ := instructionGraphPublicationFixture(t)
+	root := addInstructionGraphSnapshotChain(t, engine, record.Results)
+	selected := engine.portable.roots[root]
+	parent := selected.vertex.parent
+	var value instructionSolverResult
+	if err := json.Unmarshal(record.Results[0].Metadata, &value); err != nil {
+		t.Fatal(err)
+	}
+	branch := &instructionVertex{parent: parent.parent, key: digest.FromString("snapshot branch"), completed: &value}
+	sourceID := solver.NewCacheKey(parent.parent.key, "", 0).ID
+	if err := engine.keys.AddLink(sourceID, solver.CacheInfoLink{Digest: branch.key}, "snapshot-branch"); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.results.lazy.add(nil, []instructionGraphNode{{ID: "snapshot-branch", Results: []solver.CacheResult{{ID: value.ID(), CreatedAt: value.CreatedAt}}}}); err != nil {
+		t.Fatal(err)
+	}
+	selected.vertex.dependencies = []*instructionVertex{branch, parent}
+	for slot, input := range []string{"snapshot-node-0", "snapshot-branch", "snapshot-node-0"} {
+		if err := engine.keys.AddLink(input, solver.CacheInfoLink{Input: solver.Index(slot), Digest: selected.vertex.key}, "snapshot-node-1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := engine.keys.AddLink("snapshot-node-0", solver.CacheInfoLink{Digest: selected.vertex.key}, "primary-only"); err != nil {
+		t.Fatal(err)
+	}
+	root = mustInstructionPortableDigest(t, selected.vertex)
+	export, err := newInstructionGraphExport(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(export.dir) }()
+	got, layout, err := engine.portable.snapshot(t.Context(), root, selected, export)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := got.NativeMetadata(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metadata.Nodes) != 4 || len(metadata.Roots) != 1 || metadata.Roots[0] != "snapshot-node-1" || len(got.Results) != 2 {
+		t.Fatalf("shared DAG duplicated nodes/results or admitted a partial match: %+v, %d results", metadata, len(got.Results))
+	}
+	for _, node := range metadata.Nodes {
+		if node.ID == "snapshot-node-1" {
+			if len(node.Inputs) != 3 {
+				t.Fatalf("lost ordered input links: %+v", node.Inputs)
+			}
+			for slot, source := range []string{"snapshot-node-0", "snapshot-branch", "snapshot-node-0"} {
+				if !slices.Contains(node.Inputs, instructionGraphInput{Source: source, Link: solver.CacheInfoLink{Input: solver.Index(slot), Digest: selected.vertex.key}}) {
+					t.Fatalf("input slot %d lost source %s: %+v", slot, source, node.Inputs)
+				}
+			}
+		}
+	}
+	target, err := cache.NewLocalStore(t.Context(), t.TempDir(), t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := target.PutGraph(t.Context(), root, got, layout); err != nil {
+		t.Fatal("DAG export lost its complete selected closure", err)
+	}
+}
+
 func TestInstructionGraphSelectedPublicationConcurrentReplacement(t *testing.T) {
 	first, target, record, _, _ := instructionGraphPublicationFixture(t)
 	second, _, _, _, _ := instructionGraphPublicationFixture(t)
@@ -202,7 +267,7 @@ func TestInstructionGraphPublicationReusesInvocationLayout(t *testing.T) {
 	engine, target, record, _, _ := instructionGraphPublicationFixture(t)
 	root := addInstructionGraphSnapshotChain(t, engine, record.Results)
 	ancestor := engine.portable.roots[root].vertex.parent
-	prefix := ancestor.portableDigest()
+	prefix := mustInstructionPortableDigest(t, ancestor)
 	engine.portable.roots[prefix] = instructionGraphRoot{vertex: ancestor, result: record.Results[0].ID}
 	if err := engine.publishPortable(t.Context()); err != nil {
 		t.Fatal(err)
@@ -377,7 +442,7 @@ func addInstructionGraphSnapshotChain(t *testing.T, engine *instructionSolver, r
 		}
 		parent, parentID = vertex, id
 	}
-	root := parent.portableDigest()
+	root := mustInstructionPortableDigest(t, parent)
 	engine.portable.roots[root] = instructionGraphRoot{vertex: parent, result: results[len(results)-1].ID}
 	return root
 }

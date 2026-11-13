@@ -99,35 +99,6 @@ func TestGraphDrainPreservesCoordinatorStatusAfterCancelledCompletion(t *testing
 	}
 }
 
-func TestReadyGraphStagesLaunchDownstreamAsSoonAsDependencyCompletes(t *testing.T) {
-	stages := []planner.Stage{
-		{ID: "a0"},
-		{ID: "a1", Dependencies: []string{"a0"}},
-		{ID: "b0"},
-		{ID: "b1", Dependencies: []string{"b0"}},
-		{ID: "final", Dependencies: []string{"a1", "b1"}},
-	}
-	running := map[string]bool{}
-	completed := map[string]bool{}
-	ready, err := readyGraphStages(stages, completed, running, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := []int{0, 2}; !reflect.DeepEqual(ready, want) {
-		t.Fatalf("initial ready = %v, want %v", ready, want)
-	}
-	running["a0"], running["b0"] = true, true
-	delete(running, "a0")
-	completed["a0"] = true
-	ready, err = readyGraphStages(stages, completed, running, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := []int{1}; !reflect.DeepEqual(ready, want) {
-		t.Fatalf("ready after a0 = %v, want a1 while b0 is still running", ready)
-	}
-}
-
 func TestGraphStageLabelIncludesStableIdentityAndPlatform(t *testing.T) {
 	if got, want := graphStageLabel(planner.Stage{ID: "stage-0", Name: "build", Platform: "linux/amd64"}), "build (stage-0) [linux/amd64]"; got != want {
 		t.Fatalf("stage label = %q, want %q", got, want)
@@ -218,18 +189,6 @@ func TestRunCacheLockDoesNotAcquireAfterCancellation(t *testing.T) {
 	}})
 	if locks != nil || !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled free cache lock = %v, %v; want nil, context.Canceled", locks, err)
-	}
-}
-
-func TestReadyGraphStagesValidatesGraphAndJobLimit(t *testing.T) {
-	if ready, err := readyGraphStages([]planner.Stage{{ID: "a"}}, nil, nil, 0); err != nil || ready != nil {
-		t.Fatalf("zero capacity ready=%v err=%v", ready, err)
-	}
-	if _, err := readyGraphStages([]planner.Stage{{ID: "a"}, {ID: "a"}}, nil, nil, 1); err == nil {
-		t.Fatal("duplicate stage ID was accepted")
-	}
-	if _, err := readyGraphStages([]planner.Stage{{ID: "a", Dependencies: []string{"missing"}}}, nil, nil, 1); err == nil {
-		t.Fatal("missing dependency was accepted")
 	}
 }
 

@@ -190,7 +190,7 @@ func TestPublicClientNativeConcurrentCacheInvalidationAndIntegrity(t *testing.T)
 	c, _ = publicNativeClient(t)
 	for _, lane := range []string{"a", "b"} {
 		result := awaitPublicNative(t, ctx, startPublicNative(ctx, c, request("client-warm-"+lane, lane, "fresh")))
-		if result.Cache == nil || result.Cache.Hits != 3 || result.Cache.Misses != 0 || result.Cache.Errors != 0 {
+		if result.Cache == nil || result.Cache.Hits != 1 || result.Cache.Misses != 0 || result.Cache.Errors != 0 {
 			t.Fatalf("fresh-store warm cache: %+v", result.Cache)
 		}
 		if publicNativeRead(t, filepath.Join(result.Filesystem, "proof")) != proofs[lane] {
@@ -215,8 +215,8 @@ func TestPublicClientNativeConcurrentCacheInvalidationAndIntegrity(t *testing.T)
 		t.Fatal("changed content reused the earlier RUN")
 	}
 	clearPublicNativeFreshStore(t, f)
-	// Corrupt this result's final RUN layer, not the largest blob: the shared
-	// cache also retains other lanes and superseded input snapshots.
+	// Corrupt both representations of this result's final RUN layer: the
+	// selected terminal image and the underlying instruction cache entry.
 	selected, err := ggcrv1.NewHash(changed.ManifestDigest)
 	if err != nil {
 		t.Fatal(err)
@@ -225,41 +225,47 @@ func TestPublicClientNativeConcurrentCacheInvalidationAndIntegrity(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	manifest, err := image.Manifest()
+	if err != nil {
+		t.Fatal(err)
+	}
 	config, err := image.ConfigFile()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(config.RootFS.DiffIDs) == 0 {
-		t.Fatal("changed result has no filesystem layers")
+	if len(manifest.Layers) == 0 || len(manifest.Layers) != len(config.RootFS.DiffIDs) {
+		t.Fatal("changed result has no matching image layers and filesystem DiffIDs")
 	}
-	// Graph cache exports uncompressed layers, so its payload digest is the
-	// DiffID even when the public OCI output uses gzip.
-	layer := config.RootFS.DiffIDs[len(config.RootFS.DiffIDs)-1]
-	payload := filepath.Join(f.cache, "blobs", layer.Algorithm, layer.Hex)
-	info, err := os.Stat(payload)
-	if err != nil {
-		t.Fatal(err)
-	}
-	size := info.Size()
-	data, err := os.ReadFile(payload)
-	if err != nil || size <= 0 || digest.FromBytes(data).String() != layer.String() {
-		t.Fatalf("selected RUN cache layer %s is not intact: %v", layer, err)
-	}
-	// CAS payloads are intentionally read-only. This test owns the private
-	// cache and restores its original mode after deliberate corruption.
-	if err := os.Chmod(payload, 0600); err != nil {
-		t.Fatal(err)
-	}
-	blob, err := os.OpenFile(payload, os.O_RDWR, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	one := []byte{0}
-	_, readErr := blob.ReadAt(one, size-1)
-	one[0] ^= 0xff
-	_, writeErr := blob.WriteAt(one, size-1)
-	if err := errors.Join(readErr, writeErr, blob.Close(), os.Chmod(payload, info.Mode().Perm())); err != nil {
-		t.Fatal(err)
+	terminal := manifest.Layers[len(manifest.Layers)-1]
+	diffID := config.RootFS.DiffIDs[len(config.RootFS.DiffIDs)-1]
+	t.Logf("corrupt final RUN layer: media=%s selected=%s diffID=%s", terminal.MediaType, terminal.Digest, diffID)
+	for _, layer := range slices.Compact([]ggcrv1.Hash{terminal.Digest, diffID}) {
+		payload := filepath.Join(f.cache, "blobs", layer.Algorithm, layer.Hex)
+		info, err := os.Stat(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		size := info.Size()
+		data, err := os.ReadFile(payload)
+		if err != nil || size <= 0 || digest.FromBytes(data).String() != layer.String() {
+			t.Fatalf("selected RUN cache layer %s is not intact: %v", layer, err)
+		}
+		// CAS payloads are intentionally read-only. This test owns the private
+		// cache and restores its original mode after deliberate corruption.
+		if err := os.Chmod(payload, 0600); err != nil {
+			t.Fatal(err)
+		}
+		blob, err := os.OpenFile(payload, os.O_RDWR, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		one := []byte{0}
+		_, readErr := blob.ReadAt(one, size-1)
+		one[0] ^= 0xff
+		_, writeErr := blob.WriteAt(one, size-1)
+		if err := errors.Join(readErr, writeErr, blob.Close(), os.Chmod(payload, info.Mode().Perm())); err != nil {
+			t.Fatal(err)
+		}
 	}
 	rebuilt := awaitPublicNative(t, ctx, startPublicNative(ctx, c, request("client-corrupt", "a", "fresh")))
 	if rebuilt.Cache == nil || rebuilt.Cache.Errors == 0 || rebuilt.Cache.Misses == 0 {

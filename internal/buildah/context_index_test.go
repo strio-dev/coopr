@@ -13,9 +13,94 @@ import (
 	"time"
 
 	"github.com/opencontainers/go-digest"
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/planner"
 	"go.podman.io/storage/pkg/idtools"
 	"golang.org/x/sys/unix"
 )
+
+func TestCapturedCopyInputResolvesNativeNamesAndSymlinks(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "dir"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string]string{"a.txt": "before", "dir/value": "target"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(data), 0640); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink("dir", filepath.Join(root, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	identity := func(source string) digest.Digest {
+		t.Helper()
+		capture, err := captureContext(t.Context(), root, nil, nil, nil, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = capture.cleanup() }()
+		operation := planner.Operation{Instruction: definition.Instruction{Name: "copy", Arguments: []string{source, "/output/"}}}
+		got, err := capturedCopyInput(t.Context(), capture, contextPolicy{directory: capture.directory}, operation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	before := identity("*.txt")
+	if err := os.Rename(filepath.Join(root, "a.txt"), filepath.Join(root, "b.txt")); err != nil {
+		t.Fatal(err)
+	}
+	renamed := identity("*.txt")
+	if renamed == before {
+		t.Fatal("glob-matched rename with identical payload reused COPY input")
+	}
+	stamp := time.Unix(1900000000, 0)
+	if err := os.Chtimes(filepath.Join(root, "b.txt"), stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	if got := identity("*.txt"); got != renamed {
+		t.Fatal("COPY timestamp-only change invalidated input")
+	}
+	if err := os.WriteFile(filepath.Join(root, "a\xff.txt"), []byte("binary"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	binaryBefore := identity("*.txt")
+	if err := os.Rename(filepath.Join(root, "a\xff.txt"), filepath.Join(root, "a\xfe.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if got := identity("*.txt"); got == binaryBefore {
+		t.Fatal("glob-matched binary filename rename reused COPY input")
+	}
+	linked := identity("alias/value")
+	if err := os.WriteFile(filepath.Join(root, "dir", "value"), []byte("change"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if got := identity("alias/value"); got == linked {
+		t.Fatal("intermediate symlink hid a same-size target payload change")
+	}
+	linked = identity("alias/value")
+	if err := os.Mkdir(filepath.Join(root, "other"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "other", "value"), []byte("change"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(root, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("other", filepath.Join(root, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	if got := identity("alias/value"); got == linked {
+		t.Fatal("symlink retarget lost the native exclusion coordinate")
+	}
+	if err := os.Symlink("dir/value", filepath.Join(root, "file-link")); err != nil {
+		t.Fatal(err)
+	}
+	if got := identity("file-link"); got == "" {
+		t.Fatal("top-level source symlink has no COPY identity")
+	}
+}
 
 func TestPreparedRunContextSelectionIgnoresUnboundPayload(t *testing.T) {
 	root := t.TempDir()
@@ -232,6 +317,11 @@ func TestCapturedContextMetadataDoesNotRereadPayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	copyOperation := planner.Operation{Instruction: definition.Instruction{Name: "copy", Arguments: []string{"input", "/input"}}}
+	copySelected, err := capturedCopyInput(t.Context(), capture, contextPolicy{directory: capture.directory}, copyOperation)
+	if err != nil {
+		t.Fatal(err)
+	}
 	// Caller mutation must not change the execution-owned version. A new
 	// capture must still observe same-size, restored-mtime content changes.
 	if err := os.WriteFile(path, []byte("caller"), 0600); err != nil {
@@ -266,6 +356,9 @@ func TestCapturedContextMetadataDoesNotRereadPayload(t *testing.T) {
 	}
 	if got, err := capture.index.Select(t.Context(), []string{"input"}); err != nil || got != selected {
 		t.Fatalf("frozen selection reread bytes: %s %v", got, err)
+	}
+	if got, err := capturedCopyInput(t.Context(), capture, contextPolicy{directory: capture.directory}, copyOperation); err != nil || got != copySelected {
+		t.Fatalf("COPY selection reread payload: %s %v", got, err)
 	}
 	payloads := map[string]contextPayload{"input": {digest: digest.FromString("before"), size: 6}}
 	index, err := indexCapturedContext(t.Context(), capture.directory, payloads)

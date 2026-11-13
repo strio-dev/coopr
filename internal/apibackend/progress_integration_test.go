@@ -53,7 +53,7 @@ func TestNativeOperationProgressColdWarmAndFailure(t *testing.T) {
 			t.Fatal("warm progress instrumentation changed the random output proof")
 		}
 		completed := checkProgressPairs(t, events)
-		lookups, executions, restores, exports := 0, 0, 0, 0
+		lookups, executions, restores, exports, stageHits := 0, 0, 0, 0, 0
 		for _, event := range completed {
 			if event.Phase == "lookup" && (event.Instruction == "copy" || event.Instruction == "run") {
 				lookups++
@@ -74,15 +74,18 @@ func TestNativeOperationProgressColdWarmAndFailure(t *testing.T) {
 			if event.Phase == "export" {
 				exports++
 			}
-		}
-		wantExecutions := 2
-		if i == 1 {
-			wantExecutions = 0
-			if restores != 2 || result.Cache == nil || result.Cache.Hits != 2 || result.Cache.Misses != 0 {
-				t.Fatalf("fresh warm restore: restores=%d cache=%+v", restores, result.Cache)
+			if event.State == "completed" && event.Instruction == "stage" && event.Phase == "solve" && event.Cache == "hit" {
+				stageHits++
 			}
 		}
-		if lookups != 2 || executions != wantExecutions || exports == 0 {
+		wantLookups, wantExecutions := 2, 2
+		if i == 1 {
+			wantLookups, wantExecutions = 0, 0
+			if restores != 1 || stageHits != 1 || result.Cache == nil || result.Cache.Hits != 1 || result.Cache.Misses != 0 {
+				t.Fatalf("fresh warm restore: restores=%d stageHits=%d cache=%+v", restores, stageHits, result.Cache)
+			}
+		}
+		if lookups != wantLookups || executions != wantExecutions || exports == 0 {
 			t.Fatalf("phase counts lookup=%d execute=%d restore=%d export=%d", lookups, executions, restores, exports)
 		}
 		t.Logf("%s: %d paired phases; lookup=%d execute=%d restore=%d export=%d", store, len(completed), lookups, executions, restores, exports)
@@ -251,14 +254,14 @@ func TestPublicClientDefinitionProgressColdWarm(t *testing.T) {
 		if executed != (i == 0) {
 			t.Fatalf("native RUN marker: cold=%t logs=%q", i == 0, logs.String())
 		}
-		observed := false
+		observed := 0
 		for _, event := range checkProgressPairs(t, events) {
-			if event.State == "completed" && event.Instruction == "run" && ((i == 0 && event.Phase == "execute") || (i == 1 && event.Phase == "lookup" && event.Cache == "hit")) {
-				observed = true
+			if event.State == "completed" && ((i == 0 && event.Instruction == "run" && event.Phase == "execute") || (i == 1 && event.Instruction == "stage" && event.Phase == "solve" && event.Cache == "hit")) {
+				observed++
 			}
 		}
-		if !observed {
-			t.Fatalf("missing native RUN execution/cache-hit progress: %+v", events)
+		if observed != 1 {
+			t.Fatalf("missing native RUN execution/stage cache-hit progress: %+v", events)
 		}
 		if i == 0 {
 			first = result.ManifestDigest

@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/opencontainers/go-digest"
 )
@@ -28,6 +30,7 @@ type CapturedIndex struct {
 	entries  map[string]*entry
 	names    []string
 	identity digest.Digest
+	nonUTF8  bool
 }
 
 // NewCapturedIndex binds complete materialized records, including root mtime.
@@ -41,6 +44,7 @@ func NewCapturedIndex(ctx context.Context, records []CapturedEntry) (*CapturedIn
 		return nil, err
 	}
 	entries := make(map[string]*entry, len(records))
+	nonUTF8 := false
 	for _, record := range records {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -56,6 +60,7 @@ func NewCapturedIndex(ctx context.Context, records []CapturedEntry) (*CapturedIn
 		if err != nil {
 			return nil, fmt.Errorf("captured filesystem path %q: %w", header.Name, err)
 		}
+		nonUTF8 = nonUTF8 || !utf8.ValidString(name)
 		item, err := makeEntry(&header, name, nil)
 		if err != nil {
 			return nil, fmt.Errorf("captured filesystem entry %q: %w", name, err)
@@ -80,16 +85,30 @@ func NewCapturedIndex(ctx context.Context, records []CapturedEntry) (*CapturedIn
 	if err != nil {
 		return nil, err
 	}
-	return &CapturedIndex{entries: entries, names: slices.Sorted(maps.Keys(entries)), identity: identity}, nil
+	return &CapturedIndex{entries: entries, names: slices.Sorted(maps.Keys(entries)), identity: identity, nonUTF8: nonUTF8}, nil
 }
 
 // Digest identifies the complete capture, retaining the original context domain.
 func (index *CapturedIndex) Digest() digest.Digest { return index.identity }
 
+// HasNonUTF8Paths identifies names that cannot round-trip through native copier
+// JSON metadata. Their complete indexed view still preserves the original bytes.
+func (index *CapturedIndex) HasNonUTF8Paths() bool { return index.nonUTF8 }
+
 // Select jointly identifies native-resolved bind sources without reading the
 // filesystem. Cross-mount aliases and regular-file link counts remain observable
 // even when some aliases are outside the selected subtrees.
 func (index *CapturedIndex) Select(ctx context.Context, sources []string) (digest.Digest, error) {
+	return index.selectSources(ctx, sources, false)
+}
+
+// SelectCopy identifies native-resolved COPY/ADD sources, excluding timestamps
+// as Buildah's content digester does. Bind selections retain their timestamps.
+func (index *CapturedIndex) SelectCopy(ctx context.Context, sources []string) (digest.Digest, error) {
+	return index.selectSources(ctx, sources, true)
+}
+
+func (index *CapturedIndex) selectSources(ctx context.Context, sources []string, copied bool) (digest.Digest, error) {
 	if ctx == nil || index == nil || len(sources) == 0 {
 		return "", errors.New("context selection requires an owned index and sources")
 	}
@@ -146,6 +165,9 @@ func (index *CapturedIndex) Select(ctx context.Context, sources []string) (diges
 				key, links = "r:"+leader, counts[leader]
 			}
 			copy.header.Name = copy.name
+			if copied {
+				copy.header.ModTime = time.Time{}
+			}
 			projected[copy.name] = &copy
 			g := groups[key]
 			if g == nil {
@@ -177,7 +199,11 @@ func (index *CapturedIndex) Select(ctx context.Context, sources []string) (diges
 			}
 		}
 	}
-	filesystem, err := hashFilesystem(ctx, projected, "coopr.captured-context.selection.fs.v1")
+	domain := "coopr.captured-context.selection"
+	if copied {
+		domain = "coopr.captured-context.copy-selection"
+	}
+	filesystem, err := hashFilesystem(ctx, projected, domain+".fs.v1")
 	if err != nil {
 		return "", err
 	}
@@ -187,7 +213,7 @@ func (index *CapturedIndex) Select(ctx context.Context, sources []string) (diges
 		ordered = append(ordered, g)
 	}
 	slices.SortFunc(ordered, func(a, b *group) int { return strings.Compare(a.paths[0], b.paths[0]) })
-	hash := domainHash("coopr.captured-context.selection.v1")
+	hash := domainHash(domain + ".v1")
 	field(hash, []byte(filesystem))
 	integer(hash, int64(len(ordered)))
 	for _, g := range ordered {

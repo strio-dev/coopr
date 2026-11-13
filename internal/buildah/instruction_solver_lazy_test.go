@@ -48,6 +48,45 @@ func addLazyInstructionFixture(t *testing.T, engine *instructionSolver, node, ph
 	return pending
 }
 
+func TestInstructionLazyRootQueryUsesAdmittedMetadata(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	engine, err := newInstructionSolver(ctx, solverTestStore{root: t.TempDir()}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := engine.close(); err != nil && !errors.Is(err, context.Canceled) {
+			t.Error(err)
+		}
+	})
+	key := digest.FromString("zero-input portable operation")
+	node := solver.NewCacheKey(key, "", 0).ID
+	var imports atomic.Int32
+	addLazyInstructionFixture(t, engine, node, "selected root", time.Now().UTC(), func(context.Context) (string, error) {
+		imports.Add(1)
+		return "", errors.New("root query must not load an image")
+	})
+	if engine.keys.graphCacheKeyStorage.Exists(node) {
+		t.Fatal("unmaterialized root leaked into persistent native key storage")
+	}
+	keys, err := engine.manager.Query(nil, 0, key, 0)
+	if err != nil || len(keys) != 1 || keys[0].ID != node {
+		t.Fatalf("admitted zero-input root was not queryable: %v, %v", keys, err)
+	}
+	records, err := engine.manager.Records(ctx, keys[0])
+	if err != nil || len(records) != 1 || imports.Load() != 0 {
+		t.Fatalf("query/record discovery loaded payload or lost binding: records=%d imports=%d err=%v", len(records), imports.Load(), err)
+	}
+	if engine.keys.Exists("unknown-root") {
+		t.Fatal("unknown root exists without native or admitted metadata")
+	}
+	cancel()
+	if engine.keys.Exists(node) || !errors.Is(engine.keys.Err(), context.Canceled) || imports.Load() != 0 {
+		t.Fatal("admitted binding bypassed native key-storage failure", engine.keys.Err())
+	}
+}
+
 func TestInstructionLazyResultsStayLocalUntilMaterialized(t *testing.T) {
 	ctx := t.Context()
 	root := t.TempDir()

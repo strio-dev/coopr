@@ -189,12 +189,14 @@ type instructionVertexRelay struct {
 }
 
 type instructionVertexRelayNode struct {
-	Key      digest.Digest `json:"key"`
-	Digest   digest.Digest `json:"digest"`
-	Name     string        `json:"name"`
-	Ignore   bool          `json:"ignore,omitempty"`
-	Executed bool          `json:"executed,omitempty"`
-	ResultID string        `json:"result_id"`
+	Key          digest.Digest `json:"key"`
+	Digest       digest.Digest `json:"digest"`
+	Name         string        `json:"name"`
+	Parent       int           `json:"parent"`
+	Dependencies []int         `json:"dependencies,omitempty"`
+	Ignore       bool          `json:"ignore,omitempty"`
+	Executed     bool          `json:"executed,omitempty"`
+	ResultID     string        `json:"result_id,omitempty"`
 }
 
 type instructionGraphRootRelay struct {
@@ -211,48 +213,92 @@ func encodeInstructionVertexRelay(vertex *instructionVertex) (*instructionVertex
 	if vertex.owner != nil {
 		relay.Serial = vertex.owner.serial.Load()
 	}
-	seen := map[*instructionVertex]bool{}
-	for current := vertex; current != nil; current = current.parent {
-		if seen[current] || len(relay.Nodes) >= maxInstructionRelayDepth {
-			return nil, errors.New("instruction graph relay is cyclic or too deep")
+	indices := map[*instructionVertex]int{}
+	var roots []digest.Digest
+	var visit func(*instructionVertex) (int, error)
+	visit = func(current *instructionVertex) (int, error) {
+		if current == nil {
+			return 0, errors.New("instruction graph relay has a nil input")
 		}
-		seen[current] = true
+		if index, seen := indices[current]; seen {
+			if index < 0 {
+				return 0, errors.New("instruction graph relay is cyclic")
+			}
+			return index, nil
+		}
+		if len(indices) >= maxInstructionRelayDepth {
+			return 0, errors.New("instruction graph relay exceeds node limit")
+		}
+		indices[current] = -1
+		node := instructionVertexRelayNode{Key: current.key, Digest: current.dgst, Name: current.name, Parent: -1, Ignore: current.ignore, Executed: current.executed.Load()}
+		var inputs []int
+		if current.parent != nil {
+			index, err := visit(current.parent)
+			if err != nil {
+				return 0, err
+			}
+			node.Parent = index
+			inputs = append(inputs, index)
+		}
+		for _, dependency := range current.dependencies {
+			index, err := visit(dependency)
+			if err != nil {
+				return 0, err
+			}
+			node.Dependencies = append(node.Dependencies, index)
+			inputs = append(inputs, index)
+		}
 		result := current.completed
 		if result == nil {
 			result = current.source
 		}
-		if result == nil {
-			return nil, errors.New("instruction graph relay contains an incomplete vertex")
+		if result == nil && (current == vertex || node.Executed) {
+			return 0, errors.New("instruction graph relay contains an incomplete executed vertex or endpoint")
 		}
 		if current.completed == nil && current.source != nil {
 			// A downstream cache hit can match source keys without executing
 			// that source. Scratch has no portable image sidecar, so ensure its
 			// cheap immutable metadata exists before relaying the result ID.
 			if current.owner == nil || current.owner.results == nil {
-				return nil, errors.New("instruction graph relay source has no result storage")
+				return 0, errors.New("instruction graph relay source has no result storage")
 			}
 			results := *current.owner.results
 			results.ttl = nil
 			if _, err := results.read(result.ID()); err != nil {
 				if !errors.Is(err, os.ErrNotExist) {
-					return nil, fmt.Errorf("validate instruction graph relay source: %w", err)
+					return 0, fmt.Errorf("validate instruction graph relay source: %w", err)
 				}
 				created := result.CreatedAt
 				if created.IsZero() {
 					created = time.Now()
 				}
 				if _, err := results.Save(result, created); err != nil {
-					return nil, fmt.Errorf("persist instruction graph relay source: %w", err)
+					return 0, fmt.Errorf("persist instruction graph relay source: %w", err)
 				}
 			}
 		}
-		relay.Nodes = append(relay.Nodes, instructionVertexRelayNode{
-			Key: current.key, Digest: current.dgst, Name: current.name,
-			Ignore: current.ignore, Executed: current.executed.Load(), ResultID: result.ID(),
-		})
+		if result != nil {
+			node.ResultID = result.ID()
+		}
+		parts := []string{instructionSolverVersion, current.key.String()}
+		for _, input := range inputs {
+			parts = append(parts, roots[input].String())
+		}
+		root := current.key
+		if len(inputs) != 0 {
+			root = digest.FromString(strings.Join(parts, "\n"))
+		}
+		index := len(relay.Nodes)
+		indices[current] = index
+		relay.Nodes = append(relay.Nodes, node)
+		roots = append(roots, root)
+		return index, nil
 	}
-	slices.Reverse(relay.Nodes)
-	relay.Root = vertex.portableDigest()
+	index, err := visit(vertex)
+	if err != nil {
+		return nil, err
+	}
+	relay.Root = roots[index]
 	return relay, nil
 }
 
@@ -274,37 +320,73 @@ func (s *instructionSolver) restoreInstructionVertexRelay(relay *instructionVert
 	// output of a stage that just completed in this same invocation.
 	results := *s.results
 	results.ttl = nil
-	var parent *instructionVertex
+	vertices := make([]*instructionVertex, len(relay.Nodes))
+	roots := make([]digest.Digest, len(relay.Nodes))
+	referenced := make([]bool, len(relay.Nodes))
 	forced := false
 	for index, node := range relay.Nodes {
-		if !validInstructionRelayDigest(node.Key) || !validInstructionRelayDigest(node.Digest) || !validInstructionRelayDigest(digest.Digest(node.ResultID)) || len(node.Name) > 4096 || strings.ContainsRune(node.Name, '\x00') {
+		if !validInstructionRelayDigest(node.Key) || !validInstructionRelayDigest(node.Digest) || (node.ResultID != "" && !validInstructionRelayDigest(digest.Digest(node.ResultID))) || len(node.Name) > 4096 || strings.ContainsRune(node.Name, '\x00') || node.Parent < -1 || node.Parent >= index {
 			return nil, errors.New("invalid instruction graph relay vertex")
 		}
+		vertex := &instructionVertex{owner: s, key: node.Key, dgst: node.Digest, name: node.Name, ignore: node.Ignore}
+		var inputs []int
+		if node.Parent >= 0 {
+			vertex.parent = vertices[node.Parent]
+			inputs = append(inputs, node.Parent)
+		}
+		for _, dependency := range node.Dependencies {
+			if dependency < 0 || dependency >= index {
+				return nil, errors.New("instruction graph relay input is not a preceding vertex")
+			}
+			vertex.dependencies = append(vertex.dependencies, vertices[dependency])
+			inputs = append(inputs, dependency)
+		}
 		normal := node.Key
-		if parent != nil {
-			normal = digest.FromString(instructionSolverVersion + "\n" + node.Key.String() + "\n" + parent.Digest().String())
+		parts := []string{instructionSolverVersion, node.Key.String()}
+		portable := slices.Clone(parts)
+		for _, input := range inputs {
+			parts = append(parts, vertices[input].Digest().String())
+			portable = append(portable, roots[input].String())
+			referenced[input] = true
+		}
+		roots[index] = node.Key
+		if len(inputs) != 0 {
+			normal = digest.FromString(strings.Join(parts, "\n"))
+			roots[index] = digest.FromString(strings.Join(portable, "\n"))
 		}
 		if (!node.Ignore && node.Digest != normal) || (node.Ignore && node.Digest == normal) {
 			return nil, errors.New("instruction graph relay force status differs from vertex identity")
 		}
 		forced = forced || node.Ignore
-		result, err := results.read(node.ResultID)
-		if err != nil {
-			return nil, fmt.Errorf("load completed instruction graph relay result: %w", err)
-		}
-		if index == 0 && result.Boundary != node.Key {
-			return nil, errors.New("instruction graph relay source differs from its result")
+		if node.ResultID == "" {
+			if node.Executed || index == len(relay.Nodes)-1 {
+				return nil, errors.New("instruction graph relay executed vertex or endpoint has no result")
+			}
+		} else {
+			result, err := results.read(node.ResultID)
+			if err != nil {
+				return nil, fmt.Errorf("load completed instruction graph relay result: %w", err)
+			}
+			if len(inputs) == 0 && result.Boundary != "" && result.Boundary != node.Key {
+				return nil, errors.New("instruction graph relay source differs from its result")
+			}
+			vertex.source, vertex.completed = result, result
 		}
 		// Completed upstream operations return their selected whole image if
 		// the new solver needs to materialize them. Their original IgnoreCache
 		// flags still force newly admitted consumers to execute.
-		parent = &instructionVertex{owner: s, key: node.Key, dgst: node.Digest, name: node.Name, ignore: node.Ignore, parent: parent, source: result, completed: result}
-		parent.executed.Store(node.Executed)
+		vertex.executed.Store(node.Executed)
+		vertices[index] = vertex
 	}
 	if forced && relay.Serial == 0 {
 		return nil, errors.New("forced instruction graph relay lacks execution serial")
 	}
-	if parent.portableDigest() != relay.Root {
+	for index := range len(relay.Nodes) - 1 {
+		if !referenced[index] {
+			return nil, errors.New("instruction graph relay contains an unreachable vertex")
+		}
+	}
+	if roots[len(roots)-1] != relay.Root {
 		return nil, errors.New("instruction graph relay root differs from its vertices")
 	}
 	for previous := s.serial.Load(); previous < relay.Serial; previous = s.serial.Load() {
@@ -312,7 +394,7 @@ func (s *instructionSolver) restoreInstructionVertexRelay(relay *instructionVert
 			break
 		}
 	}
-	return parent, nil
+	return vertices[len(vertices)-1], nil
 }
 
 func (s *instructionSolver) relayInstructionGraphs() ([]instructionGraphRootRelay, error) {
