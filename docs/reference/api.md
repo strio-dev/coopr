@@ -35,6 +35,12 @@ RUN contexts, image or artifact inputs for RUN mounts, live `hostPath` binds,
 optional host `relabel`, and the persistent `options.cache.mountDir` directory.
 `selected-file-exports` enables `options.output.exports` for image builds and
 typed programs. The Go client requires this capability when exports are supplied.
+`optional-oci-output` permits an `execute` request to omit `options.output.oci`.
+The native image remains in the caller-owned store; `result.imageID` identifies it,
+while `result.oci` and `result.manifestDigest` are omitted. Filesystem and selected
+file exports remain independent. Native `build` and `component` requests still
+require OCI output. The Go client negotiates this capability before submitting
+an execution without OCI output; it does not fall back to exporting an image.
 
 Clients may validate and discard v1 progress events. New event kinds require
 capability negotiation or a new API major version. Clients must reject

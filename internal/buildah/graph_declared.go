@@ -204,7 +204,7 @@ func (graph *declaredStageGraph) declare(ctx context.Context, plan *planner.Plan
 			AddHosts                   []string
 			Timestamp, SourceDateEpoch *int64
 			RewriteTimestamp           bool
-		}{graph.namespace, stage, content, sources[stage.ID], stage.ID == graph.outputID, keyOutput, options.ImageControls, options.RunControls, options.Lifecycle, options.AddHosts, options.Timestamp, options.SourceDateEpoch, options.RewriteTimestamp})
+		}{graph.namespace, stage, content, sources[stage.ID], stage.ID == graph.outputID && options.Output.Path != "", keyOutput, options.ImageControls, options.RunControls, options.Lifecycle, options.AddHosts, options.Timestamp, options.SourceDateEpoch, options.RewriteTimestamp})
 		if err != nil {
 			return err
 		}

@@ -82,6 +82,7 @@ or `Negotiate(ctx, caps...)` to require features in advance.
 | Named contexts | `named-contexts` |
 | Image/context/host RUN mounts or persistent cache mount directory | `run-mounts` |
 | Selected file or directory exports | `selected-file-exports` |
+| Typed execution without OCI serialization | `optional-oci-output` |
 
 Compatibility depends on the API version and capabilities, not identical client
 and executable version strings. A client caches the service version and

@@ -17,4 +17,5 @@ const (
 	CapabilityNamedContexts       = "named-contexts"
 	CapabilityRunMounts           = "run-mounts"
 	CapabilitySelectedFileExports = "selected-file-exports"
+	CapabilityOptionalOCIOutput   = "optional-oci-output"
 )

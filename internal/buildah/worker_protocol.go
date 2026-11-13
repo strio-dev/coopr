@@ -332,7 +332,7 @@ func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition
 		return planWorkerResponse{}, err
 	}
 	jobParent := os.TempDir()
-	if mode != "verify" {
+	if mode != "verify" && options.Output.Path != "" {
 		if _, err := os.Lstat(options.Output.Path); err == nil {
 			return planWorkerResponse{}, fmt.Errorf("OCI output already exists: %s", options.Output.Path)
 		} else if !errors.Is(err, os.ErrNotExist) {
@@ -385,7 +385,9 @@ func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition
 		}
 	}
 	workerOutput := options.Output
-	workerOutput.Path = filepath.Join(jobDir, "layout")
+	if options.Output.Path != "" {
+		workerOutput.Path = filepath.Join(jobDir, "layout")
+	}
 	stagedExports, exportDirectories, err := stageFileExports(options.Output.Exports)
 	defer func() {
 		if removeJobDir {
@@ -508,7 +510,7 @@ func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition
 	if len(options.Output.Exports) != 0 && len(response.Result.Exports) == 0 {
 		return response, errors.New("successful selected output omitted file export receipts")
 	}
-	if mode != "verify" {
+	if mode != "verify" && options.Output.Path != "" {
 		if err := promoteCompleteOutput(request.Output.Path, options.Output.Path, response.CleanupComplete); err != nil {
 			return response, fmt.Errorf("promote complete OCI output: %w", err)
 		}

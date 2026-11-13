@@ -629,3 +629,30 @@ func TestPublicationRetainsCleanupUnconfirmedStaging(t *testing.T) {
 		t.Fatalf("uncertain output promoted: %v", err)
 	}
 }
+
+func TestOptionalOCIOutputIsLimitedToTypedExecution(t *testing.T) {
+	for _, kind := range []string{"execute", "build", "component"} {
+		t.Run(kind, func(t *testing.T) {
+			r := request(t)
+			r.Kind, r.Options.Output.OCI = kind, ""
+			if kind != "execute" {
+				r.Program = nil
+				file := filepath.Join(r.Options.ContextDir, "image.coopr")
+				if err := os.WriteFile(file, []byte(`from "scratch" {}`), 0600); err != nil {
+					t.Fatal(err)
+				}
+				r.Build = &api.Build{Files: []string{file}}
+			}
+			err := validate(r)
+			if kind == "execute" && err != nil || kind != "execute" && (err == nil || !strings.Contains(err.Error(), "OCI output is required")) {
+				t.Fatalf("%s optional output validation: %v", kind, err)
+			}
+		})
+	}
+	r := request(t)
+	r.Options.Output.OCI = ""
+	r.Options.Output.Exports = []api.FileExport{{Source: "/report", Destination: r.Options.Store.GraphRoot}}
+	if err := validate(r); err == nil || !strings.Contains(err.Error(), "overlap") {
+		t.Fatalf("native-only export overwrites store: %v", err)
+	}
+}

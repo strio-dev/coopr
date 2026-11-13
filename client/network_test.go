@@ -32,7 +32,7 @@ func TestRunNetworkCapabilityAndWire(t *testing.T) {
 						}
 						encode(t, w, api.Event{Type: "result", Result: &api.Result{ImageID: "result"}})
 					}))
-					req := api.Request{Kind: kind, Options: api.Options{Network: network}}
+					req := api.Request{Kind: kind, Options: api.Options{Network: network, Output: api.Output{OCI: "/output"}}}
 					_, err := c.Execute(t.Context(), req, StreamOptions{})
 					if network != "" && !supported {
 						if err == nil || !strings.Contains(err.Error(), api.CapabilityRunNetwork) || posts != 0 {

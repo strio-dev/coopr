@@ -646,11 +646,15 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 			progress.cache(finished.state.storageImageID)
 			outputStage, _ := componentContinuationStage(stages, imageOutputID)
 			exportCtx, finish := startOperationProgress(graphCtx, executor.options.Progress, OperationProgress{Stage: executor.stageProgressPrefix(outputStage, bindings), Operation: 1, Instruction: "stage", Phase: "export"})
-			finished.result, err = exportStoredImageVariantRaw(exportCtx, executor.store, finished.state.storageImageID, executor.options.Output, executor.system, optionalDigest(finished.state.manifestDigest))
-			if err == nil {
-				policy := timestampPolicyFromOptions(executor.options)
-				controls := effectiveOutputControls(executor.options.ImageControls, policy)
-				err = oci.ConfigureLayoutCreatedAnnotation(exportCtx, finished.result.Layout, policy.createdEpoch(), controls.CreatedAnnotation)
+			if executor.options.Output.Path == "" {
+				finished.result = Result{ImageID: finished.state.storageImageID, ManifestDigest: finished.state.manifestDigest.String()}
+			} else {
+				finished.result, err = exportStoredImageVariantRaw(exportCtx, executor.store, finished.state.storageImageID, executor.options.Output, executor.system, optionalDigest(finished.state.manifestDigest))
+				if err == nil {
+					policy := timestampPolicyFromOptions(executor.options)
+					controls := effectiveOutputControls(executor.options.ImageControls, policy)
+					err = oci.ConfigureLayoutCreatedAnnotation(exportCtx, finished.result.Layout, policy.createdEpoch(), controls.CreatedAnnotation)
+				}
 			}
 			if err == nil {
 				builderOptions, optionsErr := newBuilderOptionsWithHosts(finished.state.storageImageID, executor.isolation, executor.capabilities, executor.network, os.TempDir(), executor.options.Output.Format, executor.options.AddHosts, executor.options.RunControls)
@@ -2680,7 +2684,7 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 	// whose only instruction is FROM. SOURCE_DATE_EPOCH still rewrites the
 	// output image's creation metadata.
 	unchangedBase := len(planned) == 0 && current.FromImageID != "" && options.SourceDateEpoch == nil && !options.RewriteTimestamp && !options.ImageControls.HasChanges()
-	if output {
+	if output && options.Output.Path != "" {
 		_, finishExport := startOperationProgress(ctx, options.Progress, OperationProgress{Stage: progress.prefix, Instruction: "image", Phase: "export"})
 		defer func() { finishExport("", retErr) }()
 		var committed Result

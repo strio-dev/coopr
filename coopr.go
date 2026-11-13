@@ -119,7 +119,8 @@ type StoreOptions struct {
 }
 
 // Output selects fresh absolute destinations whose parent directories exist.
-// OCI is required. Filesystem optionally exports the flattened root filesystem.
+// OCI optionally exports an image layout. With OCI empty, the native image is
+// retained without image serialization. Filesystem exports the flattened root filesystem.
 // Exports selects files or directories, including diagnostics after an ordinary
 // failed RUN in the selected state. Outputs require confirmed cleanup and are
 // promoted separately; existing paths are never overwritten.
@@ -315,9 +316,8 @@ func Execute(ctx context.Context, program Program, options Options) (result Resu
 	}
 	for _, item := range []struct {
 		name, path string
-		required   bool
-	}{{"OCI output", options.Output.OCI, true}, {"filesystem output", options.Output.Filesystem, false}} {
-		if item.path == "" && !item.required {
+	}{{"OCI output", options.Output.OCI}, {"filesystem output", options.Output.Filesystem}} {
+		if item.path == "" {
 			continue
 		}
 		if err := freshOutput(item.path); err != nil {
@@ -327,7 +327,7 @@ func Execute(ctx context.Context, program Program, options Options) (result Resu
 	if options.Cache.LocalDir != "" && !filepath.IsAbs(options.Cache.LocalDir) {
 		return Result{}, errors.New("cache directory must be absolute")
 	}
-	if options.Output.Filesystem != "" && pathsOverlap(options.Output.OCI, options.Output.Filesystem) {
+	if options.Output.OCI != "" && options.Output.Filesystem != "" && pathsOverlap(options.Output.OCI, options.Output.Filesystem) {
 		return Result{}, errors.New("output destinations must not overlap")
 	}
 	for _, export := range options.Output.Exports {
@@ -390,6 +390,9 @@ func Execute(ctx context.Context, program Program, options Options) (result Resu
 		if err := promoteFilesystem(out.Filesystem.Path, options.Output.Filesystem); err != nil {
 			return Result{ProgressDropped: native.ProgressDropped, Exports: native.Exports}, fmt.Errorf("promote filesystem output: %w", err)
 		}
+	}
+	if options.Output.OCI == "" {
+		native.ManifestDigest = ""
 	}
 	return Result{ImageID: native.ImageID, ManifestDigest: native.ManifestDigest, Platform: native.Platform, OCI: native.Layout, Filesystem: options.Output.Filesystem, ProgressDropped: native.ProgressDropped, Exports: native.Exports, Cache: CacheStats{Hits: native.CacheStats.Hits, Misses: native.CacheStats.Misses, Stored: native.CacheStats.Stored, Skipped: native.CacheStats.Skipped, Errors: native.CacheStats.Errors}}, nil
 }

@@ -385,10 +385,7 @@ func validateBuildInputs(store StoreOptions, contextDir string, output Output) e
 	if err := ValidateFileExportResources(output.Exports, resources...); err != nil {
 		return err
 	}
-	if output.Path == "" {
-		return errors.New("OCI layout output is required")
-	}
-	if !filepath.IsAbs(output.Path) {
+	if output.Path != "" && !filepath.IsAbs(output.Path) {
 		return fmt.Errorf("OCI layout output must be absolute: %q", output.Path)
 	}
 	if contextDir != "" {

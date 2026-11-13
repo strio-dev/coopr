@@ -54,7 +54,7 @@ func testClient(t *testing.T, info string, handler http.Handler) *Client {
 const allInfo = `{"apiVersion":1,"version":"development-server","capabilities":["execute","build","component","publish","registry-cache","named-contexts","operation-progress"]}`
 
 func execution() api.Request {
-	return api.Request{Kind: "execute", Program: &api.Program{Output: "out", States: []api.State{{ID: "out", From: api.Source{Image: "scratch"}}}}}
+	return api.Request{Kind: "execute", Program: &api.Program{Output: "out", States: []api.State{{ID: "out", From: api.Source{Image: "scratch"}}}}, Options: api.Options{Output: api.Output{OCI: "/output"}}}
 }
 
 func encode(t *testing.T, w io.Writer, value any) {
@@ -503,5 +503,35 @@ func TestLocalValidationAndRequestBound(t *testing.T) {
 	}
 	if _, err := c.Execute(t.Context(), api.Request{Kind: "unknown"}, StreamOptions{}); err == nil || posts.Load() != 0 {
 		t.Fatalf("unsupported kind sent: %v", err)
+	}
+}
+
+func TestOptionalOCIOutputRequiresCapabilityBeforePOST(t *testing.T) {
+	for _, supported := range []bool{false, true} {
+		t.Run(fmt.Sprint(supported), func(t *testing.T) {
+			info := allInfo
+			if supported {
+				info = strings.Replace(info, `"execute"`, `"execute","optional-oci-output"`, 1)
+			}
+			var posts atomic.Int32
+			c := testClient(t, info, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				posts.Add(1)
+				var received api.Request
+				if err := json.NewDecoder(r.Body).Decode(&received); err != nil || received.Options.Output.OCI != "" {
+					t.Errorf("native-only wire request: %+v %v", received, err)
+				}
+				encode(t, w, api.Event{Type: "result", Result: &api.Result{ImageID: "native"}})
+			}))
+			request := execution()
+			request.Options.Output.OCI = ""
+			result, err := c.Execute(t.Context(), request, StreamOptions{})
+			if supported {
+				if err != nil || posts.Load() != 1 || result.ImageID != "native" || result.OCI != "" || result.ManifestDigest != "" {
+					t.Fatalf("native-only result: %+v posts=%d err=%v", result, posts.Load(), err)
+				}
+			} else if !errors.Is(err, ErrMissingCapability) || !strings.Contains(err.Error(), api.CapabilityOptionalOCIOutput) || posts.Load() != 0 {
+				t.Fatalf("unsupported omission reached POST: posts=%d err=%v", posts.Load(), err)
+			}
+		})
 	}
 }

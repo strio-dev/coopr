@@ -67,6 +67,10 @@ type Store struct {
 	Driver        string   `json:"driver,omitempty"`
 	DriverOptions []string `json:"driverOptions,omitempty"`
 }
+
+// Output selects optional image and filesystem exports. With OCI empty, image
+// execute requests retain their native image without serializing an OCI layout.
+// Native definition builds and components still require OCI output.
 type Output struct {
 	OCI        string       `json:"oci,omitempty"`
 	Filesystem string       `json:"filesystem,omitempty"`

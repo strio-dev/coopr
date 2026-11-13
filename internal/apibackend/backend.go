@@ -163,7 +163,7 @@ func Execute(ctx context.Context, request api.Request, stdout, stderr io.Writer)
 		err = readErr
 	}
 
-	if err == nil {
+	if err == nil && opts.Output.OCI != "" {
 		_, finishExport := buildah.ObserveOperationPhase(ctx, buildah.OperationProgress{Instruction: request.Kind, Phase: "export"})
 		kind := oci.Image
 		source := result.ImageID
@@ -187,6 +187,9 @@ func Execute(ctx context.Context, request api.Request, stdout, stderr io.Writer)
 			result.ManifestDigest, err = exportedDigest(opts.Output.OCI, request.Kind == "component")
 		}
 		finishExport("", err)
+	}
+	if opts.Output.OCI == "" {
+		result.ManifestDigest = ""
 	}
 	return result, executionError(platformExecutionError(err, requestedPlatform))
 }
@@ -708,8 +711,8 @@ func validate(r api.Request) error {
 	default:
 		return fmt.Errorf("unknown request kind %q", r.Kind)
 	}
-	if o.Output.OCI == "" {
-		return errors.New("OCI output is required")
+	if o.Output.OCI == "" && r.Kind != "execute" {
+		return errors.New("OCI output is required for native builds and components")
 	}
 	for _, p := range []string{o.Output.OCI, o.Output.Filesystem} {
 		if p != "" {
@@ -723,7 +726,7 @@ func validate(r api.Request) error {
 			}
 		}
 	}
-	if o.Output.Filesystem != "" && overlap(o.Output.OCI, o.Output.Filesystem) {
+	if o.Output.OCI != "" && o.Output.Filesystem != "" && overlap(o.Output.OCI, o.Output.Filesystem) {
 		return errors.New("output paths overlap")
 	}
 	if len(o.Output.Exports) != 0 && r.Kind != "execute" && r.Kind != "build" {

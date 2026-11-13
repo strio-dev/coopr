@@ -287,6 +287,7 @@ func TestPublicClientNativeCancellationWaitsForWorkerDrain(t *testing.T) {
 	c, _ := publicNativeClient(t)
 	run, cancelRun := context.WithCancel(ctx)
 	request := f.request("client-cancel", "canceled", "shared")
+	request.Options.Output.OCI = ""
 	state := request.Program.States[0]
 	request.Program.States = []api.State{
 		{ID: "prefix", From: state.From, Operations: append(slices.Clone(state.Operations[:len(state.Operations)-1]), api.Operation{Kind: "run", Args: []string{"/bin/busybox", "sh", "-c", "printf diagnostic > /report"}})},

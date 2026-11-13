@@ -22,7 +22,7 @@ func TestPublicClientNativeSelectedStateExports(t *testing.T) {
 	c, _ := publicNativeClient(t)
 	request := func(label, store string) api.Request {
 		r := f.request(label, "", store)
-		r.Options.Output.Filesystem = ""
+		r.Options.Output.OCI, r.Options.Output.Filesystem = "", ""
 		r.Options.Network, r.Options.Isolation = "none", "rootless"
 		r.Program = &api.Program{Output: "final", States: []api.State{
 			{ID: "prefix", From: api.Source{Image: "scratch"}, Operations: []api.Operation{
@@ -42,7 +42,7 @@ func TestPublicClientNativeSelectedStateExports(t *testing.T) {
 		t.Fatalf("cold state exports: %v\n%s", err, coldLog.String())
 	}
 	warm, err := c.Execute(t.Context(), warmRequest, client.StreamOptions{Stdout: &warmLog, Stderr: &warmLog})
-	if err != nil || warm.ManifestDigest != cold.ManifestDigest || warm.Cache == nil || warm.Cache.Hits != 2 || warm.Cache.Misses != 0 {
+	if err != nil || cold.OCI != "" || warm.OCI != "" || cold.ManifestDigest != "" || warm.ManifestDigest != "" || cold.ImageID == "" || warm.ImageID != cold.ImageID || warm.Cache == nil || warm.Cache.Hits != 2 || warm.Cache.Misses != 0 {
 		t.Fatalf("warm state exports: cold=%+v warm=%+v err=%v\n%s", cold, warm, err, warmLog.String())
 	}
 	for _, marker := range []string{"STOKE_EXPORT_PREFIX_EXECUTED", "STOKE_EXPORT_LATER_EXECUTED", "STOKE_EXPORT_FINAL_EXECUTED"} {
@@ -149,12 +149,35 @@ func TestPublicClientNativeSelectedFileExports(t *testing.T) {
 		t.Fatalf("cached directory executable mode: %v %v", info, err)
 	}
 
+	gate := request("native-only-gate", command+"; echo NATIVE_ONLY_GATE_RAN")
+	unrequestedOCI := gate.Options.Output.OCI
+	gate.Options.Output.OCI = ""
+	gate.Options.Cache = api.Cache{NoCache: true, MountDir: filepath.Join(f.root, "native-only-mounts")}
+	var gateLog bytes.Buffer
+	imageExports := 0
+	gateResult, err := c.Execute(ctx, gate, client.StreamOptions{Stdout: &gateLog, Progress: func(event api.OperationProgress) {
+		if event.Phase == "export" && event.Instruction == "image" {
+			imageExports++
+		}
+	}})
+	if err != nil || gateResult.ImageID == "" || gateResult.OCI != "" || gateResult.ManifestDigest != "" || !slices.Contains(strings.Split(gateLog.String(), "\n"), "NATIVE_ONLY_GATE_RAN") || imageExports != 0 {
+		t.Fatalf("native-only gate serialized an image or did not execute: %+v exports=%d err=%v\n%s", gateResult, imageExports, err, gateLog.String())
+	}
+	if gateResult.Cache == nil || gateResult.Cache.Stored != 0 {
+		t.Fatalf("native-only gate created an undeclared cache writer: %+v", gateResult.Cache)
+	}
+	if _, err := os.Lstat(unrequestedOCI); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("native-only gate created an OCI output: %v", err)
+	}
+
 	for _, prerequisite := range []bool{false, true} {
 		label := "selected-run-failed"
 		if prerequisite {
 			label = "selected-prerequisite-failed"
 		}
 		r := request(label, "printf 'failed diagnostic\\n' > /report; exit 23")
+		unrequestedOCI := r.Options.Output.OCI
+		r.Options.Output.OCI = ""
 		r.Options.Output.Exports = []api.FileExport{{Source: "/report", Destination: filepath.Join(f.root, label+".txt")}}
 		if prerequisite {
 			r.Program.States = append(r.Program.States, api.State{ID: "dependent", From: api.Source{State: "result"}})
@@ -175,7 +198,7 @@ func TestPublicClientNativeSelectedFileExports(t *testing.T) {
 		} else if result.Exports[0].Status != "passed" || publicNativeRead(t, result.Exports[0].Destination) != "failed diagnostic\n" {
 			t.Fatalf("ordinary selected RUN failure lost report: %+v", result.Exports)
 		}
-		if _, err := os.Lstat(r.Options.Output.OCI); !errors.Is(err, os.ErrNotExist) {
+		if _, err := os.Lstat(unrequestedOCI); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("failed execution published an image: %v", err)
 		}
 	}
