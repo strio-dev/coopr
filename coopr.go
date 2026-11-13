@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -118,10 +119,15 @@ type StoreOptions struct {
 }
 
 // Output selects fresh absolute destinations whose parent directories exist.
-// OCI is required. Filesystem optionally exports the flattened root filesystem.
-// Each output is promoted after successful execution; promotion of two outputs
-// is not a single filesystem transaction. Existing paths are never overwritten.
-type Output struct{ OCI, Filesystem string }
+// OCI optionally exports an image layout. With OCI empty, the native image is
+// retained without image serialization. Filesystem exports the flattened root filesystem.
+// Exports selects files or directories, including diagnostics after an ordinary
+// failed RUN in the selected state. Outputs require confirmed cleanup and are
+// promoted separately; existing paths are never overwritten.
+type Output struct {
+	OCI, Filesystem string
+	Exports         []api.FileExport
+}
 
 // CacheOptions controls the optional portable instruction cache. LocalDir is a
 // caller-owned absolute OCI cache directory. RegistryFrom and RegistryTo select
@@ -173,6 +179,7 @@ type Result struct {
 	ImageID, ManifestDigest, Platform, OCI, Filesystem string
 	Cache                                              CacheStats
 	ProgressDropped                                    uint64
+	Exports                                            []api.ExportResult
 }
 
 // OperationProgress is a backend-independent observation of execution work.
@@ -257,6 +264,10 @@ func Execute(ctx context.Context, program Program, options Options) (result Resu
 	if err := validateContextResources(contexts, options); err != nil {
 		return Result{}, err
 	}
+	exportResources := []string{options.ContextDir, options.Store.RunRoot, options.Store.GraphRoot, options.Cache.LocalDir, options.Cache.MountDir, options.Output.OCI, options.Output.Filesystem, options.Registry.AuthFile, options.Registry.CertDir}
+	for _, input := range contexts {
+		exportResources = append(exportResources, input.Path)
+	}
 	for _, state := range program.States {
 		for _, operation := range state.Operations {
 			if run, ok := operation.(Run); ok {
@@ -270,6 +281,7 @@ func Execute(ctx context.Context, program Program, options Options) (result Resu
 					if err != nil {
 						return Result{}, fmt.Errorf("live host bind: %w", err)
 					}
+					exportResources = append(exportResources, host)
 					for _, resource := range []string{options.Store.RunRoot, options.Store.GraphRoot, options.Cache.LocalDir, options.Cache.MountDir, options.Output.OCI, options.Output.Filesystem} {
 						if resource == "" {
 							continue
@@ -286,7 +298,16 @@ func Execute(ctx context.Context, program Program, options Options) (result Resu
 			}
 		}
 	}
-	plan, err := compile(program, contexts...)
+	if err := buildah.ValidateFileExportResources(options.Output.Exports, exportResources...); err != nil {
+		return Result{}, err
+	}
+	var exportStates []StateID
+	for _, export := range options.Output.Exports {
+		if export.State != "" {
+			exportStates = append(exportStates, StateID(export.State))
+		}
+	}
+	plan, err := compileSelected(program, exportStates, contexts...)
 	if err != nil {
 		return Result{}, err
 	}
@@ -295,9 +316,8 @@ func Execute(ctx context.Context, program Program, options Options) (result Resu
 	}
 	for _, item := range []struct {
 		name, path string
-		required   bool
-	}{{"OCI output", options.Output.OCI, true}, {"filesystem output", options.Output.Filesystem, false}} {
-		if item.path == "" && !item.required {
+	}{{"OCI output", options.Output.OCI}, {"filesystem output", options.Output.Filesystem}} {
+		if item.path == "" {
 			continue
 		}
 		if err := freshOutput(item.path); err != nil {
@@ -307,8 +327,13 @@ func Execute(ctx context.Context, program Program, options Options) (result Resu
 	if options.Cache.LocalDir != "" && !filepath.IsAbs(options.Cache.LocalDir) {
 		return Result{}, errors.New("cache directory must be absolute")
 	}
-	if options.Output.Filesystem != "" && pathsOverlap(options.Output.OCI, options.Output.Filesystem) {
+	if options.Output.OCI != "" && options.Output.Filesystem != "" && pathsOverlap(options.Output.OCI, options.Output.Filesystem) {
 		return Result{}, errors.New("output destinations must not overlap")
+	}
+	for _, export := range options.Output.Exports {
+		if err := freshOutput(export.Destination); err != nil {
+			return Result{}, fmt.Errorf("selected export: %w", err)
+		}
 	}
 	controls, err := buildah.ParseRunControls(buildah.RunControlInput{
 		HTTPProxy: true, Runtime: options.Runtime, Isolation: options.Isolation,
@@ -316,7 +341,19 @@ func Execute(ctx context.Context, program Program, options Options) (result Resu
 	if err != nil {
 		return Result{}, fmt.Errorf("native execution defaults: %w", err)
 	}
-	out := buildah.Output{Path: options.Output.OCI}
+	exports := slices.Clone(options.Output.Exports)
+	if len(exportStates) != 0 {
+		stageIDs := make(map[string]string, len(program.States))
+		for index, state := range program.States {
+			stageIDs[string(state.ID)] = strconv.Itoa(index)
+		}
+		for i := range exports {
+			if exports[i].State != "" {
+				exports[i].State = stageIDs[exports[i].State]
+			}
+		}
+	}
+	out := buildah.Output{Path: options.Output.OCI, Exports: exports}
 	var contextArtifacts []string
 	if options.Output.Filesystem != "" {
 		staging, err := os.MkdirTemp(filepath.Dir(options.Output.Filesystem), ".coopr-export-*")
@@ -338,18 +375,26 @@ func Execute(ctx context.Context, program Program, options Options) (result Resu
 		AuthFile: options.Registry.AuthFile, CertDir: options.Registry.CertDir, Credentials: options.Registry.Credentials, TLSVerify: options.Registry.TLSVerify, PullPolicy: options.Registry.PullPolicy, SignaturePolicyPath: options.Registry.SignaturePolicyPath,
 		Stdout: options.Stdout, Stderr: options.Stderr, Progress: options.Progress,
 	})
+	for i := range native.Exports {
+		if i < len(options.Output.Exports) {
+			native.Exports[i].State = options.Output.Exports[i].State
+		}
+	}
 	if err != nil {
-		return Result{ProgressDropped: native.ProgressDropped}, err
+		return Result{ProgressDropped: native.ProgressDropped, Exports: native.Exports}, err
 	}
 	if err := ctx.Err(); err != nil {
-		return Result{}, err
+		return Result{ProgressDropped: native.ProgressDropped, Exports: native.Exports}, err
 	}
 	if options.Output.Filesystem != "" {
 		if err := promoteFilesystem(out.Filesystem.Path, options.Output.Filesystem); err != nil {
-			return Result{}, fmt.Errorf("promote filesystem output: %w", err)
+			return Result{ProgressDropped: native.ProgressDropped, Exports: native.Exports}, fmt.Errorf("promote filesystem output: %w", err)
 		}
 	}
-	return Result{ImageID: native.ImageID, ManifestDigest: native.ManifestDigest, Platform: native.Platform, OCI: native.Layout, Filesystem: options.Output.Filesystem, ProgressDropped: native.ProgressDropped, Cache: CacheStats{Hits: native.CacheStats.Hits, Misses: native.CacheStats.Misses, Stored: native.CacheStats.Stored, Skipped: native.CacheStats.Skipped, Errors: native.CacheStats.Errors}}, nil
+	if options.Output.OCI == "" {
+		native.ManifestDigest = ""
+	}
+	return Result{ImageID: native.ImageID, ManifestDigest: native.ManifestDigest, Platform: native.Platform, OCI: native.Layout, Filesystem: options.Output.Filesystem, ProgressDropped: native.ProgressDropped, Exports: native.Exports, Cache: CacheStats{Hits: native.CacheStats.Hits, Misses: native.CacheStats.Misses, Stored: native.CacheStats.Stored, Skipped: native.CacheStats.Skipped, Errors: native.CacheStats.Errors}}, nil
 }
 func freshOutput(path string) error {
 	if !filepath.IsAbs(path) {

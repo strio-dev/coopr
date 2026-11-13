@@ -286,7 +286,15 @@ func TestPublicClientNativeCancellationWaitsForWorkerDrain(t *testing.T) {
 	defer cancel()
 	c, _ := publicNativeClient(t)
 	run, cancelRun := context.WithCancel(ctx)
-	done := startPublicNative(run, c, f.request("client-cancel", "canceled", "shared"))
+	request := f.request("client-cancel", "canceled", "shared")
+	request.Options.Output.OCI = ""
+	state := request.Program.States[0]
+	request.Program.States = []api.State{
+		{ID: "prefix", From: state.From, Operations: append(slices.Clone(state.Operations[:len(state.Operations)-1]), api.Operation{Kind: "run", Args: []string{"/bin/busybox", "sh", "-c", "printf diagnostic > /report"}})},
+		{ID: "result", From: api.Source{State: "prefix"}, Operations: slices.Clone(state.Operations[len(state.Operations)-1:])},
+	}
+	request.Options.Output.Exports = []api.FileExport{{State: "prefix", Source: "/report", Destination: filepath.Join(f.root, "canceled-proof")}}
+	done := startPublicNative(run, c, request)
 	awaitNativeAPIArrivals(t, ctx, f, "canceled")
 	if workers := directNativeAPIWorkers(t); len(workers) != 1 {
 		t.Fatalf("missing worker before cancellation: %v", workers)
@@ -314,11 +322,19 @@ func TestPublicClientNativeCancellationWaitsForWorkerDrain(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(f.root, "client-cancel.oci")); !os.IsNotExist(err) {
 		t.Fatalf("canceled client invocation published output: %v", err)
 	}
+	if _, err := os.Lstat(request.Options.Output.Exports[0].Destination); !os.IsNotExist(err) {
+		t.Fatalf("canceled client invocation published a selected file: %v", err)
+	}
 	f.once.Do(func() { close(f.release) })
-	retry := awaitPublicNative(t, ctx, startPublicNative(ctx, c, f.request("client-cancel-retry", "canceled", "shared")))
+	retryRequest := request
+	retryRequest.Options.Output = api.Output{OCI: filepath.Join(f.root, "client-cancel-retry.oci"), Filesystem: filepath.Join(f.root, "client-cancel-retry.rootfs"), Exports: []api.FileExport{{State: "prefix", Source: "/report", Destination: filepath.Join(f.root, "retry-report")}}}
+	retry := awaitPublicNative(t, ctx, startPublicNative(ctx, c, retryRequest))
 	awaitNativeAPIArrivals(t, ctx, f, "canceled")
 	if retry.Cache == nil || retry.Cache.Misses == 0 {
 		t.Fatalf("canceled RUN populated reusable cache: %+v", retry.Cache)
+	}
+	if len(retry.Exports) != 1 || retry.Exports[0].State != "prefix" || retry.Exports[0].Status != "passed" || publicNativeRead(t, retry.Exports[0].Destination) != "diagnostic" {
+		t.Fatalf("retry lost completed prefix export: %+v", retry.Exports)
 	}
 }
 

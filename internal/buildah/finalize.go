@@ -262,6 +262,9 @@ func (executor *graphExecutor) finalizeOutput(ctx context.Context, result Result
 }
 
 func (executor *graphExecutor) retainResultLayers(result Result) error {
+	if result.Layout == "" {
+		return nil
+	}
 	manifestDigest, err := digest.Parse(result.ManifestDigest)
 	if err != nil {
 		return fmt.Errorf("parse final manifest digest: %w", err)
@@ -291,6 +294,9 @@ func preserveSquashedHistory(builder *upstream.Builder, logical *imageconfig.Con
 }
 
 func validateFinalizationOutput(output Output) error {
+	if output.Path == "" && (output.Squash || output.SquashAll || len(output.SBOM) != 0 || output.ConfidentialWorkload.Convert) {
+		return errors.New("image finalization requires an OCI output")
+	}
 	if output.Squash && output.SquashAll {
 		return errors.New("--squash and --squash-all are mutually exclusive")
 	}

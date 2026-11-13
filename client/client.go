@@ -217,6 +217,12 @@ func requestCapabilities(request api.Request) ([]string, error) {
 		return nil, fmt.Errorf("unsupported Coopr request kind %q", request.Kind)
 	}
 	required := []string{operation}
+	if request.Kind == "execute" && request.Options.Output.OCI == "" {
+		required = append(required, api.CapabilityOptionalOCIOutput)
+	}
+	if len(request.Options.Output.Exports) != 0 {
+		required = append(required, api.CapabilitySelectedFileExports)
+	}
 	if request.Options.Network != "" && (request.Kind == "execute" || request.Kind == "build" || request.Kind == "component") {
 		required = append(required, api.CapabilityRunNetwork)
 	}

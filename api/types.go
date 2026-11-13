@@ -67,9 +67,31 @@ type Store struct {
 	Driver        string   `json:"driver,omitempty"`
 	DriverOptions []string `json:"driverOptions,omitempty"`
 }
+
+// Output selects optional image and filesystem exports. With OCI empty, image
+// execute requests retain their native image without serializing an OCI layout.
+// Native definition builds and components still require OCI output.
 type Output struct {
-	OCI        string `json:"oci,omitempty"`
-	Filesystem string `json:"filesystem,omitempty"`
+	OCI        string       `json:"oci,omitempty"`
+	Filesystem string       `json:"filesystem,omitempty"`
+	Exports    []FileExport `json:"exports,omitempty"`
+}
+
+// FileExport selects a literal path from a typed program state, or the final
+// output when State is empty. It also captures an ordinary failed RUN there.
+// Destinations are fresh, caller-owned paths, separate from image identity.
+type FileExport struct {
+	State       string `json:"state,omitempty"`
+	Source      string `json:"source"`
+	Destination string `json:"destination"`
+}
+
+type ExportResult struct {
+	State       string `json:"state,omitempty"`
+	Source      string `json:"source"`
+	Destination string `json:"destination"`
+	Status      string `json:"status"` // passed, failed or skipped
+	Error       string `json:"error,omitempty"`
 }
 type Cache struct {
 	MountDir     string   `json:"mountDir,omitempty"`
@@ -137,6 +159,7 @@ type Result struct {
 	Cache           *CacheStats                `json:"cache,omitempty"`
 	Metadata        map[string]json.RawMessage `json:"metadata,omitempty"`
 	Destinations    []Destination              `json:"destinations,omitempty"`
+	Exports         []ExportResult             `json:"exports,omitempty"`
 }
 type Error struct {
 	Code    string `json:"code"`

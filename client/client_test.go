@@ -54,7 +54,7 @@ func testClient(t *testing.T, info string, handler http.Handler) *Client {
 const allInfo = `{"apiVersion":1,"version":"development-server","capabilities":["execute","build","component","publish","registry-cache","named-contexts","operation-progress"]}`
 
 func execution() api.Request {
-	return api.Request{Kind: "execute", Program: &api.Program{Output: "out", States: []api.State{{ID: "out", From: api.Source{Image: "scratch"}}}}}
+	return api.Request{Kind: "execute", Program: &api.Program{Output: "out", States: []api.State{{ID: "out", From: api.Source{Image: "scratch"}}}}, Options: api.Options{Output: api.Output{OCI: "/output"}}}
 }
 
 func encode(t *testing.T, w io.Writer, value any) {
@@ -106,6 +106,7 @@ func TestCompatibilityMatrixAndCapabilityPreflight(t *testing.T) {
 		"registry write": execution(),
 		"contexts":       execution(),
 		"copy context":   execution(),
+		"file exports":   execution(),
 	}
 	read := tests["registry read"]
 	read.Options.Cache.RegistryFrom = []string{"registry.example/cache"}
@@ -119,6 +120,9 @@ func TestCompatibilityMatrixAndCapabilityPreflight(t *testing.T) {
 	copyContext := tests["copy context"]
 	copyContext.Program.States[0].Operations = []api.Operation{{Kind: "copy", From: api.Source{Context: "assets"}}}
 	tests["copy context"] = copyContext
+	fileExports := tests["file exports"]
+	fileExports.Options.Output.Exports = []api.FileExport{{Source: "/report", Destination: "/owned/report"}}
+	tests["file exports"] = fileExports
 	for name, request := range tests {
 		t.Run(name, func(t *testing.T) {
 			var posts atomic.Int32
@@ -127,6 +131,27 @@ func TestCompatibilityMatrixAndCapabilityPreflight(t *testing.T) {
 				t.Fatalf("missing required capability reached POST: posts=%d err=%v", posts.Load(), err)
 			}
 		})
+	}
+}
+
+func TestSelectedFileExportsSurviveExecutionFailure(t *testing.T) {
+	want := api.FileExport{State: "checkpoint", Source: "/report.json", Destination: "/owned/report.json"}
+	c := testClient(t, `{"apiVersion":1,"capabilities":["execute","selected-file-exports"]}`, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request api.Request
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+		}
+		if len(request.Options.Output.Exports) != 1 || request.Options.Output.Exports[0] != want {
+			t.Errorf("export request changed: %+v", request.Options.Output)
+		}
+		encode(t, w, api.Event{Type: "result", Result: &api.Result{Exports: []api.ExportResult{{State: want.State, Source: want.Source, Destination: want.Destination, Status: "passed"}}}, Error: &api.Error{Code: "execution_failed", Message: "RUN exited 23"}})
+	}))
+	request := execution()
+	request.Options.Output.Exports = []api.FileExport{want}
+	result, err := c.Execute(t.Context(), request, StreamOptions{})
+	var remote *api.Error
+	if !errors.As(err, &remote) || remote.Code != "execution_failed" || len(result.Exports) != 1 || result.Exports[0].State != want.State || result.Exports[0].Status != "passed" || result.Exports[0].Destination != want.Destination {
+		t.Fatalf("failed RUN lost diagnostic receipt or failure: %+v %v", result, err)
 	}
 }
 
@@ -478,5 +503,35 @@ func TestLocalValidationAndRequestBound(t *testing.T) {
 	}
 	if _, err := c.Execute(t.Context(), api.Request{Kind: "unknown"}, StreamOptions{}); err == nil || posts.Load() != 0 {
 		t.Fatalf("unsupported kind sent: %v", err)
+	}
+}
+
+func TestOptionalOCIOutputRequiresCapabilityBeforePOST(t *testing.T) {
+	for _, supported := range []bool{false, true} {
+		t.Run(fmt.Sprint(supported), func(t *testing.T) {
+			info := allInfo
+			if supported {
+				info = strings.Replace(info, `"execute"`, `"execute","optional-oci-output"`, 1)
+			}
+			var posts atomic.Int32
+			c := testClient(t, info, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				posts.Add(1)
+				var received api.Request
+				if err := json.NewDecoder(r.Body).Decode(&received); err != nil || received.Options.Output.OCI != "" {
+					t.Errorf("native-only wire request: %+v %v", received, err)
+				}
+				encode(t, w, api.Event{Type: "result", Result: &api.Result{ImageID: "native"}})
+			}))
+			request := execution()
+			request.Options.Output.OCI = ""
+			result, err := c.Execute(t.Context(), request, StreamOptions{})
+			if supported {
+				if err != nil || posts.Load() != 1 || result.ImageID != "native" || result.OCI != "" || result.ManifestDigest != "" {
+					t.Fatalf("native-only result: %+v posts=%d err=%v", result, posts.Load(), err)
+				}
+			} else if !errors.Is(err, ErrMissingCapability) || !strings.Contains(err.Error(), api.CapabilityOptionalOCIOutput) || posts.Load() != 0 {
+				t.Fatalf("unsupported omission reached POST: posts=%d err=%v", posts.Load(), err)
+			}
+		})
 	}
 }

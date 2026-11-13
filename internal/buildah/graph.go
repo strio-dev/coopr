@@ -23,6 +23,7 @@ import (
 	"github.com/moby/buildkit/util/entitlements"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/api"
 	"github.com/strio-dev/coopr/internal/buildcontext"
 	"github.com/strio-dev/coopr/internal/definition"
 	"github.com/strio-dev/coopr/internal/imageconfig"
@@ -353,6 +354,7 @@ type graphBindings struct {
 }
 
 type preparedGraphStage struct {
+	exports                      []api.FileExport
 	graphEndpoint                *instructionVertex
 	componentReturnHandler       componentReturnHandler
 	componentSelectionHandler    componentSelectionHandler
@@ -388,6 +390,40 @@ type executedGraphStage struct {
 // executePlanGraph executes one graph while retaining executor-wide resources
 // and resolved external bases for recursive component invocation.
 func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *planner.Plan, stages []planner.Stage, imageOutputID string, observed map[string]bool, observe stageObserver, bindings *graphBindings) (result Result, retErr error) {
+	fileExports := executor.options.Output.Exports
+	if imageOutputID == "" {
+		fileExports = nil // Component graphs do not own the caller's state selectors.
+	}
+	exportResults := skippedFileExports(fileExports, "requested state did not produce a filesystem")
+	defer func() {
+		if len(fileExports) != 0 {
+			result.Exports = exportResults
+		}
+	}()
+	mergeExports := func(stage string, captured []api.ExportResult) error {
+		selected, indices := fileExportsForStage(fileExports, stage, imageOutputID)
+		if len(captured) == 0 {
+			return nil
+		}
+		if len(captured) != len(selected) {
+			return errors.New("stage file export receipt count differs from request")
+		}
+		for i, receipt := range captured {
+			if receipt.State != selected[i].State || receipt.Source != selected[i].Source || receipt.Destination != selected[i].Destination {
+				return errors.New("stage file export receipt differs from request")
+			}
+			exportResults[indices[i]] = receipt
+		}
+		return nil
+	}
+	captureExports := func(stage, imageID string) error {
+		if len(fileExports) == 0 {
+			return nil
+		}
+		selected, _ := fileExportsForStage(fileExports, stage, imageOutputID)
+		captured, err := exportImageFiles(ctx, executor.store, imageID, selected, timestampPolicyFromOptions(executor.options))
+		return errors.Join(err, mergeExports(stage, captured))
+	}
 	stages, err := resolveAndValidateBuildNetwork(stages, executor.options.Network, executor.options.RunControls, executor.options.Isolation)
 	if err != nil {
 		return Result{}, err
@@ -487,6 +523,14 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 			requested[stage.ID] = true
 		}
 	}
+	for _, export := range fileExports {
+		if export.State != "" {
+			if declared.vertices[export.State] == nil {
+				return Result{}, fmt.Errorf("file export selects unknown stage %q", export.State)
+			}
+			requested[export.State] = true
+		}
+	}
 	if len(requested) == 0 {
 		return Result{}, errors.New("build graph has no requested output")
 	}
@@ -580,6 +624,11 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 					return Result{}, false, fmt.Errorf("stage %s output: %w", stage.ID, err)
 				}
 			}
+			if len(fileExports) != 0 && stage.ID != imageOutputID {
+				if err := captureExports(stage.ID, finished.state.storageImageID); err != nil {
+					return Result{}, false, err
+				}
+			}
 			reported[stage.ID] = true
 		}
 		if rootCount != 0 || runningCount != 0 {
@@ -597,11 +646,15 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 			progress.cache(finished.state.storageImageID)
 			outputStage, _ := componentContinuationStage(stages, imageOutputID)
 			exportCtx, finish := startOperationProgress(graphCtx, executor.options.Progress, OperationProgress{Stage: executor.stageProgressPrefix(outputStage, bindings), Operation: 1, Instruction: "stage", Phase: "export"})
-			finished.result, err = exportStoredImageVariantRaw(exportCtx, executor.store, finished.state.storageImageID, executor.options.Output, executor.system, optionalDigest(finished.state.manifestDigest))
-			if err == nil {
-				policy := timestampPolicyFromOptions(executor.options)
-				controls := effectiveOutputControls(executor.options.ImageControls, policy)
-				err = oci.ConfigureLayoutCreatedAnnotation(exportCtx, finished.result.Layout, policy.createdEpoch(), controls.CreatedAnnotation)
+			if executor.options.Output.Path == "" {
+				finished.result = Result{ImageID: finished.state.storageImageID, ManifestDigest: finished.state.manifestDigest.String()}
+			} else {
+				finished.result, err = exportStoredImageVariantRaw(exportCtx, executor.store, finished.state.storageImageID, executor.options.Output, executor.system, optionalDigest(finished.state.manifestDigest))
+				if err == nil {
+					policy := timestampPolicyFromOptions(executor.options)
+					controls := effectiveOutputControls(executor.options.ImageControls, policy)
+					err = oci.ConfigureLayoutCreatedAnnotation(exportCtx, finished.result.Layout, policy.createdEpoch(), controls.CreatedAnnotation)
+				}
 			}
 			if err == nil {
 				builderOptions, optionsErr := newBuilderOptionsWithHosts(finished.state.storageImageID, executor.isolation, executor.capabilities, executor.network, os.TempDir(), executor.options.Output.Format, executor.options.AddHosts, executor.options.RunControls)
@@ -617,7 +670,8 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 				return Result{}, false, err
 			}
 		}
-		return finished.result, true, nil
+		err = captureExports(imageOutputID, finished.result.ImageID)
+		return finished.result, true, err
 	}
 
 	for {
@@ -770,6 +824,7 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 			if err != nil {
 				return Result{}, drain(stage.ID, err)
 			}
+			prepared.exports, _ = fileExportsForStage(fileExports, stage.ID, imageOutputID)
 			if prepared.bound != nil {
 				finished, err := executor.executeGraphStage(graphCtx, plan, prepared, aliases, images, imageOutputID, observed, true)
 				if err != nil {
@@ -829,7 +884,7 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 		if progressed {
 			result, done, err := reportCompleted()
 			if err != nil {
-				return Result{}, drain("", err)
+				return result, drain("", err)
 			}
 			if done {
 				return result, nil
@@ -857,6 +912,13 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 				}
 			}
 			pending[request.stageID] = request
+			if len(fileExports) != 0 {
+				if result, done, err := reportCompleted(); err != nil {
+					return result, drain(request.stageID, err)
+				} else if done {
+					return result, nil
+				}
+			}
 			continue
 		case solved := <-graphResults:
 			rootCount--
@@ -879,7 +941,7 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 			finishedStages[solved.stageID] = finished
 			result, done, err := reportCompleted()
 			if err != nil {
-				return Result{}, drain(solved.stageID, err)
+				return result, drain(solved.stageID, err)
 			}
 			if done {
 				return result, nil
@@ -995,7 +1057,8 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 			images[completion.stageID] = completion.result.state
 		}
 		if completion.err != nil {
-			return Result{}, drain(completion.stageID, completion.err)
+			mergeErr := mergeExports(completion.stageID, completion.result.result.Exports)
+			return completion.result.result, drain(completion.stageID, errors.Join(completion.err, mergeErr))
 		}
 		completed[completion.stageID] = true
 		finishedStages[completion.stageID] = completion.result
@@ -1017,7 +1080,7 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 		}
 		result, done, err := reportCompleted()
 		if err != nil {
-			return Result{}, drain(completion.stageID, err)
+			return result, drain(completion.stageID, err)
 		}
 		if done {
 			return result, nil
@@ -1485,9 +1548,9 @@ func (executor *graphExecutor) executeGraphStage(ctx context.Context, plan *plan
 	var effectiveBase string
 	retainsCaller := prepared.retainsCaller
 	var graphEndpoint *instructionVertex
-	imageID, stageResult, rootMetadata, err := executor.executePlanStage(ctx, builder, builderOptions, prepared.operations, aliases, images, stagePlatform, prepared.cacheMountID, prepared.logical, prepared.baseLogical, prepared.baseManifest, rootBaseline, stage.ID == imageOutputID, graphStageNeedsRootMetadata(plan, stage.ID, observed), allowInstructionCache, progress, &effectiveBase, &retainsCaller, prepared.componentReturnHandler, prepared.graphEndpoint, &graphEndpoint, prepared.delivery)
+	imageID, stageResult, rootMetadata, err := executor.executePlanStage(ctx, builder, builderOptions, prepared.operations, aliases, images, stagePlatform, prepared.cacheMountID, prepared.logical, prepared.baseLogical, prepared.baseManifest, rootBaseline, stage.ID == imageOutputID, graphStageNeedsRootMetadata(plan, stage.ID, observed), allowInstructionCache, progress, &effectiveBase, &retainsCaller, prepared.componentReturnHandler, prepared.graphEndpoint, &graphEndpoint, prepared.exports, prepared.delivery)
 	if err != nil {
-		return executedGraphStage{}, fmt.Errorf("stage %s: %w", stage.ID, err)
+		return executedGraphStage{result: stageResult}, fmt.Errorf("stage %s: %w", stage.ID, err)
 	}
 	if stage.ID == imageOutputID {
 		progress.commit(executor.options.ProgressReference)
@@ -1934,7 +1997,7 @@ func linkedCopyOrAdd(operation Operation) bool {
 	}
 }
 
-func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *upstream.Builder, builderOptions upstream.BuilderOptions, planned []planner.Operation, aliases map[string]string, images map[string]stageState, platform v1.Platform, cacheMountID CacheMountIDResolver, logical, baseLogical *imageconfig.Config, baseManifest digest.Digest, rootBaseline *PackageRootMetadata, output, captureRoot, allowInstructionCache bool, progress stageProgress, effectiveBase *string, retainsCaller *bool, returnEnvironment componentReturnHandler, graphParent *instructionVertex, graphOutput **instructionVertex, deliveries ...*oci.ComponentDelivery) (imageID string, result Result, root *PackageRootMetadata, retErr error) {
+func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *upstream.Builder, builderOptions upstream.BuilderOptions, planned []planner.Operation, aliases map[string]string, images map[string]stageState, platform v1.Platform, cacheMountID CacheMountIDResolver, logical, baseLogical *imageconfig.Config, baseManifest digest.Digest, rootBaseline *PackageRootMetadata, output, captureRoot, allowInstructionCache bool, progress stageProgress, effectiveBase *string, retainsCaller *bool, returnEnvironment componentReturnHandler, graphParent *instructionVertex, graphOutput **instructionVertex, fileExports []api.FileExport, deliveries ...*oci.ComponentDelivery) (imageID string, result Result, root *PackageRootMetadata, retErr error) {
 	var delivery *oci.ComponentDelivery
 	if len(deliveries) != 0 {
 		delivery = deliveries[0]
@@ -2411,7 +2474,13 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 						err = applyOperationWithContextContext(ctx, adapter, options.ContextDir, artifacts, operation)
 					}
 					if err != nil {
-						return "", Result{}, nil, fmt.Errorf("operation %d: %w", index+1, err)
+						operationErr := fmt.Errorf("operation %d: %w", index+1, err)
+						var status interface{ ExitCode() int }
+						if len(fileExports) != 0 && plannedOperation.Name == "run" && ctx.Err() == nil && !errors.Is(err, ErrWorkerWaitIncomplete) && errors.As(err, &status) && status.ExitCode() > 0 {
+							receipts, exportErr := exportBuilderFiles(ctx, store, current, fileExports, timestampPolicyFromOptions(options))
+							return "", Result{Exports: receipts}, nil, errors.Join(operationErr, exportErr)
+						}
+						return "", Result{}, nil, operationErr
 					}
 				}
 			}
@@ -2615,7 +2684,7 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 	// whose only instruction is FROM. SOURCE_DATE_EPOCH still rewrites the
 	// output image's creation metadata.
 	unchangedBase := len(planned) == 0 && current.FromImageID != "" && options.SourceDateEpoch == nil && !options.RewriteTimestamp && !options.ImageControls.HasChanges()
-	if output {
+	if output && options.Output.Path != "" {
 		_, finishExport := startOperationProgress(ctx, options.Progress, OperationProgress{Stage: progress.prefix, Instruction: "image", Phase: "export"})
 		defer func() { finishExport("", retErr) }()
 		var committed Result

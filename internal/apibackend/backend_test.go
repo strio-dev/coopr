@@ -23,6 +23,43 @@ func request(t *testing.T) api.Request {
 	}
 	return api.Request{Kind: "execute", Program: &api.Program{States: []api.State{{ID: "result", From: api.Source{Image: "scratch"}}}, Output: "result"}, Options: api.Options{ContextDir: contextDir, Store: api.Store{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph")}, Output: api.Output{OCI: filepath.Join(root, "output")}}}
 }
+
+func TestSelectedFileExportsValidateBeforeNativeMutation(t *testing.T) {
+	for _, scenario := range []string{"valid", "relative-source", "traversal", "context", "store", "output", "overlapping", "symlink"} {
+		t.Run(scenario, func(t *testing.T) {
+			r := request(t)
+			root := filepath.Dir(r.Options.ContextDir)
+			r.Options.Output.Exports = []api.FileExport{{Source: "/report", Destination: filepath.Join(root, "report")}}
+			switch scenario {
+			case "relative-source":
+				r.Options.Output.Exports[0].Source = "report"
+			case "traversal":
+				r.Options.Output.Exports[0].Source = "/a/../report"
+			case "context":
+				r.Options.Output.Exports[0].Destination = filepath.Join(r.Options.ContextDir, "report")
+			case "store":
+				r.Options.Output.Exports[0].Destination = filepath.Join(r.Options.Store.GraphRoot, "report")
+			case "output":
+				r.Options.Output.Exports[0].Destination = filepath.Join(r.Options.Output.OCI, "report")
+			case "overlapping":
+				r.Options.Output.Exports = append(r.Options.Output.Exports, api.FileExport{Source: "/second", Destination: filepath.Join(root, "report", "second")})
+			case "symlink":
+				alias := filepath.Join(root, "alias")
+				if err := os.Symlink(r.Options.ContextDir, alias); err != nil {
+					t.Fatal(err)
+				}
+				r.Options.Output.Exports[0].Destination = filepath.Join(alias, "report")
+			}
+			err := validate(r)
+			if (err == nil) != (scenario == "valid") {
+				t.Fatalf("selected export admission %s: %v", scenario, err)
+			}
+			if _, err := os.Lstat(r.Options.Store.GraphRoot); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("validation created native storage: %v", err)
+			}
+		})
+	}
+}
 func TestLiteralProgram(t *testing.T) {
 	args := []string{"sh", "-c", `${literal} 'quotes' spaces\n`}
 	input := api.Program{Output: "out", States: []api.State{{ID: "out", From: api.Source{Image: "scratch"}, Operations: []api.Operation{{Kind: "env", Name: "VALUE", Value: "${literal}"}, {Kind: "run", Args: args}, {Kind: "copy", Sources: []string{"a b"}, Destination: "/a b"}}}}}
@@ -160,6 +197,11 @@ func TestFrontendValidationAndNoFabricatedCache(t *testing.T) {
 	if err := validate(r); err != nil {
 		t.Fatal(err)
 	}
+	r.Options.Output.Exports = []api.FileExport{{State: "named", Source: "/report", Destination: filepath.Join(filepath.Dir(r.Options.ContextDir), "report")}}
+	if err := validate(r); err == nil {
+		t.Fatal("native definition accepted typed-program state selector")
+	}
+	r.Options.Output.Exports = nil
 	r.Kind = "component"
 	r.Options.Output.Filesystem = filepath.Join(filepath.Dir(r.Options.ContextDir), "rootfs")
 	if err := validate(r); err == nil {
@@ -585,5 +627,32 @@ func TestPublicationRetainsCleanupUnconfirmedStaging(t *testing.T) {
 	}
 	if _, err := os.Lstat(final); !os.IsNotExist(err) {
 		t.Fatalf("uncertain output promoted: %v", err)
+	}
+}
+
+func TestOptionalOCIOutputIsLimitedToTypedExecution(t *testing.T) {
+	for _, kind := range []string{"execute", "build", "component"} {
+		t.Run(kind, func(t *testing.T) {
+			r := request(t)
+			r.Kind, r.Options.Output.OCI = kind, ""
+			if kind != "execute" {
+				r.Program = nil
+				file := filepath.Join(r.Options.ContextDir, "image.coopr")
+				if err := os.WriteFile(file, []byte(`from "scratch" {}`), 0600); err != nil {
+					t.Fatal(err)
+				}
+				r.Build = &api.Build{Files: []string{file}}
+			}
+			err := validate(r)
+			if kind == "execute" && err != nil || kind != "execute" && (err == nil || !strings.Contains(err.Error(), "OCI output is required")) {
+				t.Fatalf("%s optional output validation: %v", kind, err)
+			}
+		})
+	}
+	r := request(t)
+	r.Options.Output.OCI = ""
+	r.Options.Output.Exports = []api.FileExport{{Source: "/report", Destination: r.Options.Store.GraphRoot}}
+	if err := validate(r); err == nil || !strings.Contains(err.Error(), "overlap") {
+		t.Fatalf("native-only export overwrites store: %v", err)
 	}
 }

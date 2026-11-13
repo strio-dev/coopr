@@ -33,6 +33,14 @@ nonempty native `build.platform`. `named-contexts`
 enables `options.contexts` and named COPY sources. `run-mounts` adds named
 RUN contexts, image or artifact inputs for RUN mounts, live `hostPath` binds,
 optional host `relabel`, and the persistent `options.cache.mountDir` directory.
+`selected-file-exports` enables `options.output.exports` for image builds and
+typed programs. The Go client requires this capability when exports are supplied.
+`optional-oci-output` permits an `execute` request to omit `options.output.oci`.
+The native image remains in the caller-owned store; `result.imageID` identifies it,
+while `result.oci` and `result.manifestDigest` are omitted. Filesystem and selected
+file exports remain independent. Native `build` and `component` requests still
+require OCI output. The Go client negotiates this capability before submitting
+an execution without OCI output; it does not fall back to exporting an image.
 
 Clients may validate and discard v1 progress events. New event kinds require
 capability negotiation or a new API major version. Clients must reject
@@ -109,6 +117,52 @@ mounts require `readOnly: true`. Cache sharing supports `shared` and `locked`;
 the current Buildah backend does not implement `private`. See the [Go execution library](../guides/library.md) for mount behavior. Unsupported fields and incompatible combinations are rejected.
 
 States that do not contribute to the selected output may be skipped. Run required tests separately if their states are not dependencies of that output.
+
+### Selected file exports
+
+Image builds and typed programs can export literal files or directories from the
+selected output state without exporting its complete root filesystem:
+
+```json
+"output": {
+  "oci": "/absolute/exports/image",
+  "exports": [
+    {"source": "/out/tool", "destination": "/absolute/exports/tool"},
+    {"source": "/reports", "destination": "/absolute/exports/reports"}
+  ]
+}
+```
+
+Sources are absolute container paths, without globs or `..` components. The
+source's type determines whether a file or directory is copied. Destinations
+are fresh absolute paths on the service host, separate from inputs, stores,
+caches and other outputs. Directory exports reject special files and symlinks
+that do not resolve within the selected directory, including dangling links.
+Rootless exports strip setuid/setgid bits
+and xattrs, as full filesystem exports do. RUN-only secret, cache and live
+mount views are absent when files are captured.
+
+Typed programs may add `state` to select a declared program state; an empty or
+absent value selects `program.output`. The engine requests those states through
+its existing graph, capturing each requested prefix before dependent native
+work proceeds. A cached prefix restores only its selected image. Native
+definition builds accept only an empty `state`, selecting their final target.
+
+Exports run after success, including a terminal cache hit, or after an ordinary
+failed RUN in the selected output state before its builder is removed. The
+execution remains failed. A failed prerequisite has no selected output
+filesystem and yields skipped receipts. Cancellation or unconfirmed worker
+cleanup prevents publication. Each result entry in `exports` reports `source`,
+`destination`, `status` (`passed`, `failed` or `skipped`), optional `state` and
+optional `error`, in the original request order. Completed prefix exports remain
+available after a later ordinary RUN failure; later unexecuted states are skipped.
+Inspect the receipts even when execution returns an error. Each path is promoted after
+confirmed cleanup without replacing an existing destination. Several exports
+are not a single filesystem transaction.
+
+Export paths do not change image/cache identity. A successful cached export
+reads the selected terminal image; it does not restore ancestor filesystems.
+The existing `output.filesystem` remains a separate, opt-in full-root export.
 
 ### Native definitions
 
