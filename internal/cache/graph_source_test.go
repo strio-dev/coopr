@@ -225,7 +225,7 @@ func TestGraphSourceRecordPreservesRawMetadata(t *testing.T) {
 	}
 	record.Results[0].Metadata = json.RawMessage(`{ "result": [ 3, 4 ] }`)
 	// Artifact encoders may preserve whitespace in embedded raw metadata.
-	// Keep sidecars canonical, but publish a valid noncanonical config value.
+	// Publish a valid noncanonical config value without normalizing raw metadata.
 	record = publishGraphLookupRecord(t, target.Target, record)
 	artifact, err := target.Resolve(t.Context(), graphTag(record.Root))
 	if err != nil {
@@ -449,21 +449,22 @@ func TestGraphSourceCloseDrainsActiveFetchAndRejectsNewWork(t *testing.T) {
 }
 
 func TestGraphSourceAdmissionChecksMetadataAndBounds(t *testing.T) {
-	for _, fault := range []string{"corrupt", "truncated", "trailing", "close"} {
+	for _, fault := range []string{"missing", "corrupt", "truncated", "trailing", "close"} {
 		t.Run(fault, func(t *testing.T) {
 			store, record, _, target := graphLookupFixture(t, v1.MediaTypeImageLayer, nil)
-			desc, err := record.Results[0].Descriptor()
+			artifact, err := target.Resolve(t.Context(), graphTag(record.Root))
 			if err != nil {
 				t.Fatal(err)
 			}
-			target.alter, target.failure = desc.Digest, fault
+			_, manifest := graphTestMetadata(t, target, artifact)
+			target.alter, target.failure = manifest.Config.Digest, fault
 			reader, err := NewGraphReader(t.TempDir())
 			if err != nil {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = reader.Close() })
 			if _, err := reader.LookupMetadata(t.Context(), store, record.Root); err == nil {
-				t.Fatal("invalid sidecar admitted")
+				t.Fatal("invalid record config admitted")
 			}
 			if len(reader.sources) != 0 || len(reader.declared) != 0 || reader.metadataBytes != 0 {
 				t.Fatal("failed metadata admission retained state")

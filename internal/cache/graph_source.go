@@ -43,7 +43,7 @@ type GraphSource struct {
 	used         sync.Map // Known result IDs successfully imported from this source.
 }
 
-// LookupMetadata verifies the artifact, record and every sidecar without
+// LookupMetadata verifies the artifact and complete graph record without
 // fetching image manifests or payloads. TTL applies to admission, not later
 // materialization of an already admitted source. Repeated immutable sources
 // share a handle; retained metadata is bounded for the reader's lifetime.

@@ -311,7 +311,7 @@ func instructionGraphArtifactResults(t *testing.T, root string) map[digest.Diges
 		}
 		// OCI layouts can retain untagged previous manifests. Only the active
 		// graph tag describes this cache key's current advertised snapshot.
-		if descriptor.Annotations[v1.AnnotationRefName] != "graph-v2-"+record.Root.Encoded() {
+		if descriptor.Annotations[v1.AnnotationRefName] != "graph-v3-"+record.Root.Encoded() {
 			continue
 		}
 		var ids []string

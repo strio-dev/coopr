@@ -346,7 +346,7 @@ func TestInstructionGraphRegistryCacheSharedPrefixPublisher(t *testing.T) {
 			http.Error(w, "read-only test cache", http.StatusMethodNotAllowed)
 			return
 		}
-		if r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/manifests/graph-v2-") {
+		if r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/manifests/graph-v3-") {
 			mu.Lock()
 			graphWrites[filepath.Base(r.URL.Path)]++
 			mu.Unlock()
@@ -531,7 +531,7 @@ func instructionRegistryCatalog(t *testing.T, path string) instructionRegistryGr
 		read(envelope.Manifests[0], &manifest)
 		var record cache.GraphRecord
 		read(manifest.Config, &record)
-		if descriptor.Annotations[v1.AnnotationRefName] != "graph-v2-"+record.Root.Encoded() {
+		if descriptor.Annotations[v1.AnnotationRefName] != "graph-v3-"+record.Root.Encoded() {
 			continue
 		}
 		for _, result := range record.Results {

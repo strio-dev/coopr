@@ -25,7 +25,7 @@ import (
 	"oras.land/oras-go/v2/registry/remote/errcode"
 )
 
-func graphTag(root digest.Digest) string { return "graph-v2-" + root.Encoded() }
+func graphTag(root digest.Digest) string { return "graph-v3-" + root.Encoded() }
 
 // CanReuseGraph checks an unchanged native result only for publication. It does
 // not admit execution inputs, refresh age, or trust mutable local layout files.
@@ -121,7 +121,7 @@ func (s *OCIStore) CanReuseGraph(ctx context.Context, root digest.Digest, curren
 	return true, ctx.Err()
 }
 
-// PutGraph publishes a verified graph artifact only after all result sidecars
+// PutGraph publishes a verified graph artifact only after its record metadata
 // and complete image graphs have been copied. The caller stages publication
 // until its whole build succeeds, as for the other portable cache formats.
 func (s *OCIStore) PutGraph(ctx context.Context, root digest.Digest, record GraphRecord, layoutPath string) (v1.Descriptor, error) {
@@ -175,20 +175,8 @@ func (s *OCIStore) PutGraph(ctx context.Context, root digest.Digest, record Grap
 	if err := copyGraphImages(ctx, source, target, graphs, false, s.localRoot != ""); err != nil {
 		return v1.Descriptor{}, err
 	}
-	layers := make([]v1.Descriptor, 0, len(record.Results))
-	for _, result := range record.Results {
-		desc, _ := result.Descriptor()
-		value, err := json.Marshal(result)
-		if err != nil {
-			return v1.Descriptor{}, err
-		}
-		if err := pushMetadata(desc, value); err != nil {
-			return v1.Descriptor{}, err
-		}
-		layers = append(layers, desc)
-	}
 	config := oci.Descriptor(GraphConfigMediaType, data)
-	manifestData, err := json.Marshal(oci.VersionedManifest(config, layers, GraphArtifactType))
+	manifestData, err := json.Marshal(oci.VersionedManifest(config, []v1.Descriptor{}, GraphArtifactType))
 	if err != nil {
 		return v1.Descriptor{}, err
 	}
@@ -223,7 +211,7 @@ func (s *OCIStore) PutGraph(ctx context.Context, root digest.Digest, record Grap
 	return artifact, nil
 }
 
-// LookupGraph verifies graph metadata, sidecar bindings and each complete image
+// LookupGraph verifies graph metadata bindings and each complete image
 // graph, then returns a caller-owned OCI layout containing all results.
 func (s *OCIStore) LookupGraph(ctx context.Context, root digest.Digest) (*GraphRecord, string, error) {
 	if err := validateGraphLookup(ctx, s, root); err != nil {
@@ -332,7 +320,7 @@ func (s *OCIStore) lookupGraphMetadata(ctx context.Context, target oras.ReadOnly
 	if err := strictJSON(manifestData, &manifest); err != nil {
 		return nil, err
 	}
-	if manifest.SchemaVersion != 2 || manifest.MediaType != "" && manifest.MediaType != v1.MediaTypeImageManifest || manifest.ArtifactType != GraphArtifactType || manifest.Config.MediaType != GraphConfigMediaType || manifest.Subject != nil || len(manifest.Layers) > maxGraphEntries {
+	if manifest.SchemaVersion != 2 || manifest.MediaType != "" && manifest.MediaType != v1.MediaTypeImageManifest || manifest.ArtifactType != GraphArtifactType || manifest.Config.MediaType != GraphConfigMediaType || manifest.Subject != nil || manifest.Layers == nil || len(manifest.Layers) != 0 {
 		return nil, errors.New("invalid graph cache artifact")
 	}
 	if err := validDescriptor(manifest.Config); err != nil {
@@ -361,37 +349,7 @@ func (s *OCIStore) lookupGraphMetadata(ctx context.Context, target oras.ReadOnly
 			return nil, errors.New("graph index image differs from record")
 		}
 	}
-	expected := make([]v1.Descriptor, 0, len(record.Results))
-	for _, result := range record.Results {
-		desc, _ := result.Descriptor()
-		expected = append(expected, desc)
-	}
-	if len(expected) != len(manifest.Layers) {
-		return nil, errors.New("graph artifact result count differs from record")
-	}
-	for i, desc := range expected {
-		if err := validDescriptor(manifest.Layers[i]); err != nil {
-			return nil, err
-		}
-		if !content.Equal(desc, manifest.Layers[i]) {
-			return nil, errors.New("graph artifact result differs from record")
-		}
-	}
 	metadataBytes := len(indexData) + len(manifestData) + len(data)
-	sidecars, fetchCtx := errgroup.WithContext(ctx)
-	sidecars.SetLimit(3)
-	for _, desc := range expected {
-		metadataBytes += int(desc.Size)
-		// The expected digest is computed from this record's serialized result.
-		// The upstream read verifies those exact bytes, including size and EOF.
-		sidecars.Go(func() error {
-			_, err := fetchVerified(fetchCtx, target, desc, maxGraphRecordBytes)
-			return err
-		})
-	}
-	if err := sidecars.Wait(); err != nil {
-		return nil, err
-	}
 	if !RecordFresh(record.CreatedAt, s.ttl, time.Now()) {
 		return nil, ErrMiss
 	}

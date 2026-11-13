@@ -42,7 +42,7 @@ func TestGraphSourceHandoffRetainsMetadataAfterOwnerAndSourceRemoval(t *testing.
 	}
 	layout := target.Target.(*orasoci.Store)
 	layout.AutoGC = false // Remove metadata only; retain deferred image payloads.
-	for _, descriptor := range append([]v1.Descriptor{snapshot.Artifact, index.Manifests[0], manifest.Config}, manifest.Layers...) {
+	for _, descriptor := range []v1.Descriptor{snapshot.Artifact, index.Manifests[0], manifest.Config} {
 		if err := layout.Delete(t.Context(), descriptor); err != nil {
 			t.Fatal(err)
 		}

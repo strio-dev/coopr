@@ -118,14 +118,16 @@ func TestGraphCacheRoundTripRetainsVariantsAndDependencies(t *testing.T) {
 		t.Fatal(err)
 	}
 	index, manifest := graphTestMetadata(t, store.target, artifact)
-	if artifact.MediaType != v1.MediaTypeImageIndex || len(index.Manifests) != len(graphImages(record))+1 || len(manifest.Layers) != len(record.Results) {
+	if artifact.MediaType != v1.MediaTypeImageIndex || len(index.Manifests) != len(graphImages(record))+1 || manifest.Layers == nil || len(manifest.Layers) != 0 {
 		t.Fatal("cache root must index the metadata manifest and every image alternative")
 	}
-	for i, result := range record.Results {
-		descriptor, err := result.Descriptor()
-		if err != nil || !reflect.DeepEqual(manifest.Layers[i], descriptor) {
-			t.Fatal("metadata manifest layers must contain only result JSON", err)
-		}
+	config, err := fetchVerified(ctx, store.target, manifest.Config, maxGraphRecordBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var retained GraphRecord
+	if err := json.Unmarshal(config, &retained); err != nil || !reflect.DeepEqual(retained, record) {
+		t.Fatal("record config did not retain all result metadata", err)
 	}
 	// A new store object exercises on-disk graph recovery, not an in-memory cache.
 	store, err = NewLocalStore(ctx, cacheRoot, staging, nil)
@@ -189,7 +191,7 @@ func TestGraphCacheRejectsMalformedGraphs(t *testing.T) {
 				m.Nodes = append(m.Nodes, node)
 			}
 		}},
-		{"missing sidecar", func(m *GraphMetadata, _ *GraphRecord) { m.Nodes[1].Results[0].ID = "absent" }},
+		{"missing result", func(m *GraphMetadata, _ *GraphRecord) { m.Nodes[1].Results[0].ID = "absent" }},
 		{"record cycle", func(m *GraphMetadata, _ *GraphRecord) {
 			m.Nodes[0].Inputs = []GraphInput{{Source: m.Nodes[1].ID, Link: solver.CacheInfoLink{Digest: digest.FromString("cycle")}}}
 		}},
@@ -343,23 +345,22 @@ func TestGraphCacheRegistryRestoresIndependentLayout(t *testing.T) {
 }
 
 func TestGraphCacheCorruptStoredResultIsRejected(t *testing.T) {
-	for _, sidecar := range []bool{false, true} {
-		t.Run(map[bool]string{false: "image", true: "sidecar"}[sidecar], func(t *testing.T) {
+	for _, metadata := range []bool{false, true} {
+		t.Run(map[bool]string{false: "image", true: "record config"}[metadata], func(t *testing.T) {
 			r, source := graphFixture(t)
 			cacheRoot := t.TempDir()
 			store, err := NewLocalStore(context.Background(), cacheRoot, t.TempDir(), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := store.PutGraph(context.Background(), r.Root, r, source); err != nil {
+			artifact, err := store.PutGraph(context.Background(), r.Root, r, source)
+			if err != nil {
 				t.Fatal(err)
 			}
 			desc := r.Results[1].Image
-			if sidecar {
-				desc, err = r.Results[1].Descriptor()
-				if err != nil {
-					t.Fatal(err)
-				}
+			if metadata {
+				_, manifest := graphTestMetadata(t, store.target, artifact)
+				desc = manifest.Config
 			}
 			path := filepath.Join(cacheRoot, "blobs", "sha256", desc.Digest.Encoded())
 			if err := os.Chmod(path, 0600); err != nil {
@@ -379,24 +380,23 @@ func TestGraphResultIdentityIncludesRestorationMetadata(t *testing.T) {
 	r, source := graphFixture(t)
 	r.Results[1].Image = r.Results[0].Image
 	r.Results[1].BaseImage = nil
-	first, err := r.Results[1].Descriptor()
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.Results[1].Metadata = json.RawMessage(`{"root_mode":448}`)
-	desc, err := r.Results[1].Descriptor()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if desc.Digest == first.Digest {
-		t.Fatal("restoration metadata not part of result identity")
-	}
 	store, err := NewLocalStore(context.Background(), t.TempDir(), t.TempDir(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.PutGraph(context.Background(), r.Root, r, source); err != nil {
+	first, err := store.PutGraph(context.Background(), r.Root, r, source)
+	if err != nil {
 		t.Fatal(err)
+	}
+	_, before := graphTestMetadata(t, store.target, first)
+	r.Results[1].Metadata = json.RawMessage(`{"root_mode":448}`)
+	after, err := store.PutGraph(context.Background(), r.Root, r, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, manifest := graphTestMetadata(t, store.target, after)
+	if manifest.Config.Digest == before.Config.Digest || after.Digest == first.Digest {
+		t.Fatal("restoration metadata not bound by the record config and artifact")
 	}
 	got, layout, err := store.LookupGraph(context.Background(), r.Root)
 	if err != nil {
