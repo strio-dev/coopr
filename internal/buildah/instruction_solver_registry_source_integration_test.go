@@ -44,12 +44,16 @@ func TestInstructionGraphRegistryCacheSelectiveRestoreAndOfflineExport(t *testin
   exec "/bin/busybox" "sh" "-eu" "-c" "/bin/busybox od -An -N16 -tx1 /dev/urandom > /proof; /bin/busybox head -c 131072 /dev/urandom > /payload; echo REGISTRY_FRESH_RUN";
  }
 }`)
-	build := func(lane string, force bool, local string, from, to []CacheSpec) (Result, string, string) {
+	build := func(lane string, force bool, local string, from, to []CacheSpec, nativeStore ...StoreOptions) (Result, string, string) {
 		t.Helper()
 		layout := filepath.Join(root, lane, "layout")
+		store := cacheTestStore(filepath.Join(root, lane))
+		if len(nativeStore) != 0 {
+			store = nativeStore[0]
+		}
 		var stdout, stderr bytes.Buffer
 		result, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
-			Store: cacheTestStore(filepath.Join(root, lane)), ContextDir: input,
+			Store: store, ContextDir: input,
 			Isolation: "rootless", Runtime: "crun", NoCache: force,
 			CacheLocalDir: local, CacheFrom: from, CacheTo: to, TLSVerify: new(false),
 			SignaturePolicyPath: policy, Output: Output{Path: layout}, Stdout: &stdout, Stderr: &stderr,
@@ -63,11 +67,16 @@ func TestInstructionGraphRegistryCacheSelectiveRestoreAndOfflineExport(t *testin
 		return result, localComponentLastFile(t, layout, "proof"), stdout.String()
 	}
 	var latest string
+	var first Result
+	var firstProof string
 	var sources []string
 	catalog := instructionRegistryGraphCatalog{roots: map[digest.Digest][]string{}, results: map[string]cache.GraphResult{}, closures: map[string]map[digest.Digest]v1.Descriptor{}}
 	for i := range 3 {
 		source := filepath.Join(root, fmt.Sprintf("source-%d", i))
-		_, proof, output := build(fmt.Sprintf("producer-%d", i), i != 0, source, nil, nil)
+		produced, proof, output := build(fmt.Sprintf("producer-%d", i), i != 0, source, nil, nil)
+		if i == 0 {
+			first, firstProof = produced, proof
+		}
 		if proof == latest || !strings.Contains(output, "REGISTRY_FRESH_RUN\n") {
 			t.Fatal("producer failed to execute its fresh nondeterministic RUN", proof, output)
 		}
@@ -139,6 +148,21 @@ func TestInstructionGraphRegistryCacheSelectiveRestoreAndOfflineExport(t *testin
 		from = append(from, CacheSpec{Transport: "registry", Reference: repository})
 	}
 	readOnly.Store(true)
+	// A native-only hit must not republish or consume a registry cache source.
+	nativeStore := cacheTestStore(filepath.Join(root, "producer-0"))
+
+	traffic.reset()
+	nativeWarm, nativeProof, nativeOutput := build("native-warm", false, "", nil, []CacheSpec{from[0]}, nativeStore)
+	_, nativeMethods, _, _ := traffic.snapshot()
+	if nativeWarm.CacheStats.Hits != 1 || nativeWarm.CacheStats.Misses != 0 || nativeWarm.CacheStats.Stored != 0 || nativeWarm.ManifestDigest != first.ManifestDigest || nativeProof != firstProof || strings.Contains(nativeOutput, "REGISTRY_FRESH_RUN\n") {
+		t.Fatalf("native cache hit republished or changed its result: stats=%+v proof=%q stdout=%s", nativeWarm.CacheStats, nativeProof, nativeOutput)
+	}
+	for method, count := range nativeMethods {
+		if count != 0 && method != http.MethodGet && method != http.MethodHead {
+			t.Fatalf("native cache hit attempted registry %s", method)
+		}
+	}
+
 	traffic.reset()
 	warm, proof, output := build("read-only", false, "", from, nil)
 	if warm.CacheStats.Hits != 1 || warm.CacheStats.Misses != 0 || proof != latest || strings.Contains(output, "REGISTRY_FRESH_RUN\n") {

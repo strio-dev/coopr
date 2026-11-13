@@ -35,8 +35,16 @@ func TestGraphSourceRegistrySelectiveGETBytesAndCompleteExport(t *testing.T) {
 	var mu sync.Mutex
 	requests := map[digest.Digest]int{}
 	transferred := map[digest.Digest]int64{}
+	var missing digest.Digest
 	handler := registry.New(registry.Logger(log.New(io.Discard, "", 0)))
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		absent := r.Method == http.MethodHead && missing != "" && strings.HasSuffix(r.URL.Path, "/"+missing.String())
+		mu.Unlock()
+		if absent {
+			http.NotFound(w, r)
+			return
+		}
 		counted := &graphRegistryBytes{ResponseWriter: w}
 		handler.ServeHTTP(counted, r)
 		if r.Method == http.MethodGet {
@@ -62,7 +70,34 @@ func TestGraphSourceRegistrySelectiveGETBytesAndCompleteExport(t *testing.T) {
 	if _, err := remote.PutGraph(t.Context(), record.Root, record, sourceLayout); err != nil {
 		t.Fatal(err)
 	}
+	if reuse, err := remote.CanReuseGraph(t.Context(), record.Root, record.Results[0]); err != nil || !reuse {
+		t.Fatal("unchanged published native result was not reusable", reuse, err)
+	}
+	changedResult := record.Results[0]
+	changedResult.Metadata = []byte(`{"changed":true}`)
+	if reuse, err := remote.CanReuseGraph(t.Context(), record.Root, changedResult); err != nil || reuse {
+		t.Fatal("changed native metadata reused publication", reuse, err)
+	}
+	other, err := NewRegistryStore(resolver, strings.TrimPrefix(server.URL, "http://")+"/coopr/missing", t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reuse, err := other.CanReuseGraph(t.Context(), record.Root, record.Results[0]); err != nil || reuse {
+		t.Fatal("missing destination reused publication", reuse, err)
+	}
+	for _, payload := range payloads {
+		mu.Lock()
+		missing = payload.Digest
+		mu.Unlock()
+		if reuse, err := remote.CanReuseGraph(t.Context(), record.Root, record.Results[0]); err != nil || reuse {
+			t.Fatalf("missing primary config/layer %s reused publication: %v %v", payload.Digest, reuse, err)
+		}
+	}
 	mu.Lock()
+	missing = ""
+	if requests[payloads[0].Digest] != 0 || transferred[payloads[0].Digest] != 0 {
+		t.Error("publication reuse downloaded a bulk layer")
+	}
 	clear(requests)
 	clear(transferred)
 	mu.Unlock()

@@ -18,6 +18,8 @@ import (
 	digest "github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/strio-dev/coopr/internal/cache"
+	"go.podman.io/image/v5/manifest"
+	"go.podman.io/storage"
 )
 
 // Keep the executor's native graph names at the existing local boundary.
@@ -339,7 +341,7 @@ func (s *instructionSolver) publishPortable(ctx context.Context) (err error) {
 }
 
 func (p *instructionGraphPortable) graphPublicationWriters(ctx context.Context, root digest.Digest, selected instructionGraphRoot, sources []instructionGraphSource) ([]instructionCacheStore, error) {
-	if len(sources) == 0 || selected.vertex == nil {
+	if selected.vertex == nil {
 		return p.cache.writeStores, nil
 	}
 	vertices, err := instructionGraphOrder(selected.vertex)
@@ -352,22 +354,35 @@ func (p *instructionGraphPortable) graphPublicationWriters(ctx context.Context, 
 		}
 	}
 	pending := p.engine.results.lazy.get(selected.result)
-	if pending == nil || pending.failed.Load() {
+	if pending != nil && pending.failed.Load() {
 		return p.cache.writeStores, nil
 	}
 	value, err := p.engine.results.read(selected.result)
 	if err != nil || value.Boundary != "" {
 		return p.cache.writeStores, nil
 	}
-	if value.CreatedAt.Before(pending.value.CreatedAt) {
+	if pending != nil && value.CreatedAt.Before(pending.value.CreatedAt) {
 		value.CreatedAt = pending.value.CreatedAt
+	}
+	var image v1.Descriptor
+	if pending != nil {
+		image = pending.record.Image
+	} else {
+		data, err := p.executor.store.ImageBigData(value.Entry.ImageID, storage.ImageDigestManifestBigDataNamePrefix+"-"+value.Entry.ManifestDigest.String())
+		if err != nil {
+			return nil, err
+		}
+		image = v1.Descriptor{MediaType: manifest.GuessMIMEType(data), Digest: digest.FromBytes(data), Size: int64(len(data))}
+		if image.Digest != value.Entry.ManifestDigest {
+			return nil, errors.New("native graph publication manifest changed")
+		}
 	}
 	value.Entry.ImageID = ""
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return nil, err
 	}
-	current := cache.GraphResult{ID: selected.result, Image: pending.record.Image, Metadata: raw}
+	current := cache.GraphResult{ID: selected.result, Image: image, Metadata: raw}
 	writers := make([]instructionCacheStore, 0, len(p.cache.writeStores))
 	for _, writer := range p.cache.writeStores {
 		reuse := false
@@ -379,6 +394,12 @@ func (p *instructionGraphPortable) graphPublicationWriters(ctx context.Context, 
 				}
 				if reuse {
 					break
+				}
+			}
+			if !reuse && pending == nil {
+				reuse, err = destination.CanReuseGraph(ctx, root, current)
+				if err != nil {
+					return nil, err
 				}
 			}
 		}

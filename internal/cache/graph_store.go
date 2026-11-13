@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"time"
@@ -19,9 +20,83 @@ import (
 	"oras.land/oras-go/v2/content"
 	orasoci "oras.land/oras-go/v2/content/oci"
 	"oras.land/oras-go/v2/errdef"
+	"oras.land/oras-go/v2/registry/remote/errcode"
 )
 
 func graphTag(root digest.Digest) string { return "graph-v2-" + root.Encoded() }
+
+// CanReuseGraph checks an unchanged native result only for publication. It does
+// not admit execution inputs, refresh age, or trust mutable local layout files.
+func (s *OCIStore) CanReuseGraph(ctx context.Context, root digest.Digest, current GraphResult) (bool, error) {
+	if s == nil || s.localRoot != "" {
+		return false, nil
+	}
+	if err := validateGraphLookup(ctx, s, root); err != nil {
+		return false, err
+	}
+	target, release, err := s.operationTarget(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer release()
+	primary, ok := target.(interface{ ResolvedFromPrimary(v1.Descriptor) bool })
+	if !ok {
+		return false, nil
+	}
+	miss := func(err error) (bool, error) {
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+		var response *errcode.ErrorResponse
+		if errors.Is(err, ErrMiss) || errors.Is(err, errdef.ErrNotFound) || errors.As(err, &response) && (response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden) {
+			return false, nil // A write target need not permit this optional read.
+		}
+		return false, err
+	}
+	metadata, err := s.lookupGraphMetadata(ctx, target, root)
+	if err != nil {
+		return miss(err)
+	}
+	if !primary.ResolvedFromPrimary(metadata.artifact) {
+		return false, nil
+	}
+	matched, err := graphRootMatchesResult(metadata.record, root, current)
+	if err != nil || !matched {
+		return matched, err
+	}
+	remaining := maxGraphReaderMetadataBytes - metadata.bytes
+	for _, image := range graphImages(metadata.record) {
+		if image.Size > int64(remaining) {
+			return false, nil
+		}
+		remaining -= int(image.Size)
+		descriptors, err := imageGraphDescriptors(ctx, target, image)
+		if err != nil {
+			return miss(err)
+		}
+		if !primary.ResolvedFromPrimary(image) {
+			return false, nil
+		}
+		for _, descriptor := range descriptors {
+			if !isImageGraphLeaf(descriptor.MediaType) {
+				return false, nil // Unknown/nested content retains normal publication.
+			}
+			if descriptor.MediaType == v1.MediaTypeImageConfig || descriptor.MediaType == "application/vnd.docker.container.image.v1+json" {
+				if descriptor.Size > int64(remaining) {
+					return false, nil
+				}
+				remaining -= int(descriptor.Size)
+				if _, err := fetchVerified(ctx, target, descriptor, maxImageRecordBytes); err != nil {
+					return miss(err)
+				}
+			}
+			if exists, err := target.Exists(ctx, descriptor); err != nil || !exists {
+				return miss(err)
+			}
+		}
+	}
+	return true, ctx.Err()
+}
 
 // PutGraph publishes a verified graph artifact only after all result sidecars
 // and complete image graphs have been copied. The caller stages publication

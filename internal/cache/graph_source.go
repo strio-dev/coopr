@@ -163,16 +163,30 @@ func (source *GraphSource) CanReuseAt(ctx context.Context, destination *OCIStore
 	if destination == nil || source.store != destination || destination.localRoot != "" {
 		return false, nil
 	}
-	if _, used := source.used.Load(current.ID); !used || !reflect.DeepEqual(source.results[current.ID], current) {
+	if _, used := source.used.Load(current.ID); !used {
 		return false, nil
 	}
 	record, err := source.Record()
-	if err != nil || record.Root != root {
+	if err != nil {
 		return false, err
+	}
+	return graphRootMatchesResult(record, root, current)
+}
+
+func graphRootMatchesResult(record GraphRecord, root digest.Digest, current GraphResult) (bool, error) {
+	if record.Root != root {
+		return false, nil
 	}
 	metadata, err := record.NativeMetadata(root)
 	if err != nil {
 		return false, err
+	}
+	matched := false
+	for _, result := range record.Results {
+		matched = matched || reflect.DeepEqual(result, current)
+	}
+	if !matched {
+		return false, nil
 	}
 	for _, node := range metadata.Nodes {
 		if slices.Contains(metadata.Roots, node.ID) {
