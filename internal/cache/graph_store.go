@@ -16,10 +16,12 @@ import (
 	digest "github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/strio-dev/coopr/internal/oci"
+	"golang.org/x/sync/errgroup"
 	"oras.land/oras-go/v2"
 	"oras.land/oras-go/v2/content"
 	orasoci "oras.land/oras-go/v2/content/oci"
 	"oras.land/oras-go/v2/errdef"
+	"oras.land/oras-go/v2/registry"
 	"oras.land/oras-go/v2/registry/remote/errcode"
 )
 
@@ -65,6 +67,7 @@ func (s *OCIStore) CanReuseGraph(ctx context.Context, root digest.Digest, curren
 		return matched, err
 	}
 	remaining := maxGraphReaderMetadataBytes - metadata.bytes
+	leaves := make(map[digest.Digest]v1.Descriptor)
 	for _, image := range graphImages(metadata.record) {
 		if image.Size > int64(remaining) {
 			return false, nil
@@ -81,19 +84,39 @@ func (s *OCIStore) CanReuseGraph(ctx context.Context, root digest.Digest, curren
 			if !isImageGraphLeaf(descriptor.MediaType) {
 				return false, nil // Unknown/nested content retains normal publication.
 			}
+			if previous, ok := leaves[descriptor.Digest]; ok {
+				if !sameGraphPayload(previous, descriptor) {
+					return false, nil // Conflicting roles retain full publication validation.
+				}
+				continue
+			}
 			if descriptor.MediaType == v1.MediaTypeImageConfig || descriptor.MediaType == "application/vnd.docker.container.image.v1+json" {
 				if descriptor.Size > int64(remaining) {
 					return false, nil
 				}
 				remaining -= int(descriptor.Size)
-				if _, err := fetchVerified(ctx, target, descriptor, maxImageRecordBytes); err != nil {
-					return miss(err)
+			}
+			leaves[descriptor.Digest] = descriptor
+		}
+	}
+	checks, checkCtx := errgroup.WithContext(ctx)
+	checks.SetLimit(3) // Match ORAS's default graph-transfer concurrency.
+	for _, descriptor := range leaves {
+		checks.Go(func() error {
+			if descriptor.MediaType == v1.MediaTypeImageConfig || descriptor.MediaType == "application/vnd.docker.container.image.v1+json" {
+				if _, err := fetchVerified(checkCtx, target, descriptor, maxImageRecordBytes); err != nil {
+					return err
 				}
 			}
-			if exists, err := target.Exists(ctx, descriptor); err != nil || !exists {
-				return miss(err)
+			exists, err := target.Exists(checkCtx, descriptor)
+			if err == nil && !exists {
+				return ErrMiss
 			}
-		}
+			return err
+		})
+	}
+	if err := checks.Wait(); err != nil {
+		return miss(err)
 	}
 	return true, ctx.Err()
 }
@@ -248,8 +271,18 @@ func validateGraphLookup(ctx context.Context, store *OCIStore, root digest.Diges
 
 // lookupGraphMetadata admits only graph metadata. Image closure integrity and
 // availability are checked when the selected images are materialized.
-func (s *OCIStore) lookupGraphMetadata(ctx context.Context, target oras.ReadOnlyTarget, root digest.Digest) (*graphMetadata, error) {
-	artifact, err := target.Resolve(ctx, graphTag(root))
+func (s *OCIStore) lookupGraphMetadata(ctx context.Context, target oras.ReadOnlyTarget, root digest.Digest) (_ *graphMetadata, retErr error) {
+	var artifact v1.Descriptor
+	var reader io.ReadCloser
+	var err error
+	if _, ok := target.(registry.ReferenceFetcher); ok {
+		artifact, reader, err = oras.Fetch(ctx, target, graphTag(root), oras.FetchOptions{})
+	} else {
+		artifact, err = target.Resolve(ctx, graphTag(root))
+	}
+	if reader != nil {
+		defer func() { retErr = errors.Join(retErr, reader.Close()) }()
+	}
 	if errors.Is(err, errdef.ErrNotFound) {
 		return nil, ErrMiss
 	}
@@ -265,7 +298,15 @@ func (s *OCIStore) lookupGraphMetadata(ctx context.Context, target oras.ReadOnly
 	if err := validDescriptor(artifact); err != nil {
 		return nil, err
 	}
-	indexData, err := fetchVerified(ctx, target, artifact, maxGraphRecordBytes)
+	if artifact.Size > maxGraphRecordBytes {
+		return nil, errors.New("cache metadata exceeds size limit")
+	}
+	var indexData []byte
+	if reader != nil {
+		indexData, err = content.ReadAll(&contextReader{ctx: ctx, reader: reader}, artifact)
+	} else {
+		indexData, err = fetchVerified(ctx, target, artifact, maxGraphRecordBytes)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -337,20 +378,19 @@ func (s *OCIStore) lookupGraphMetadata(ctx context.Context, target oras.ReadOnly
 		}
 	}
 	metadataBytes := len(indexData) + len(manifestData) + len(data)
-	for _, result := range record.Results {
-		desc, _ := result.Descriptor()
-		value, err := fetchVerified(ctx, target, desc, maxGraphRecordBytes)
-		if err != nil {
-			return nil, err
-		}
-		metadataBytes += len(value)
-		want, err := json.Marshal(result)
-		if err != nil {
-			return nil, err
-		}
-		if !bytes.Equal(value, want) {
-			return nil, errors.New("graph result sidecar differs from record")
-		}
+	sidecars, fetchCtx := errgroup.WithContext(ctx)
+	sidecars.SetLimit(3)
+	for _, desc := range expected {
+		metadataBytes += int(desc.Size)
+		// The expected digest is computed from this record's serialized result.
+		// The upstream read verifies those exact bytes, including size and EOF.
+		sidecars.Go(func() error {
+			_, err := fetchVerified(fetchCtx, target, desc, maxGraphRecordBytes)
+			return err
+		})
+	}
+	if err := sidecars.Wait(); err != nil {
+		return nil, err
 	}
 	if !RecordFresh(record.CreatedAt, s.ttl, time.Now()) {
 		return nil, ErrMiss
