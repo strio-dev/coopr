@@ -237,12 +237,15 @@ func instructionCacheRecordCount(t *testing.T, options StoreOptions) int {
 		t.Fatal(err)
 	}
 	results := &instructionResultStorage{ctx: t.Context(), store: lease.store, dir: filepath.Join(dir, "results")}
-	// Count logical instruction keys, not physical alternatives or source
+	// Count available logical instruction keys, not physical alternatives or source
 	// vertices. A forced refresh can add another result to the same key.
 	count := 0
 	if err := keys.Walk(func(id string) error {
 		instruction := false
 		if err := keys.WalkResults(id, func(result solver.CacheResult) error {
+			if !results.Exists(t.Context(), result.ID) {
+				return t.Context().Err()
+			}
 			r, err := results.read(result.ID)
 			if err != nil {
 				return err

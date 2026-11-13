@@ -809,25 +809,16 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 			currentPlan := plan
 			currentImages := maps.Clone(images)
 			currentResolvedBases := maps.Clone(executor.resolvedBases)
+			currentObserved := maps.Clone(observed)
 			stageID := stage.ID
 			go func() {
 				executionCtx := withInstructionBuilder(graphCtx, request.builder)
 				var finished executedGraphStage
 				var err error
 				if inProcess {
-					captureObserved := maps.Clone(observed)
-					if captureObserved == nil {
-						captureObserved = map[string]bool{}
-					}
-					captureObserved[stageID] = true
-					finished, err = executor.executeGraphStage(executionCtx, currentPlan, prepared, aliases, currentImages, imageOutputID, captureObserved, true)
+					finished, err = executor.executeGraphStage(executionCtx, currentPlan, prepared, aliases, currentImages, imageOutputID, currentObserved, true)
 				} else {
-					captureObserved := maps.Clone(observed)
-					if captureObserved == nil {
-						captureObserved = map[string]bool{}
-					}
-					captureObserved[stageID] = true
-					finished, err = executor.executeGraphStageIsolated(executionCtx, currentPlan, prepared, aliases, currentImages, currentResolvedBases, imageOutputID, captureObserved)
+					finished, err = executor.executeGraphStageIsolated(executionCtx, currentPlan, prepared, aliases, currentImages, currentResolvedBases, imageOutputID, currentObserved)
 				}
 				results <- stageCompletion{stageID: stageID, result: finished, err: err}
 			}()
@@ -1011,7 +1002,12 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 		if request, ok := dispatched[completion.stageID]; ok {
 			value, err := instructionStageResult(completion.result)
 			if value != nil {
-				value.transient = executor.options.Lifecycle.NoLayers
+				stage, _ := componentContinuationStage(stages, completion.stageID)
+				_, rootPortable := cacheablePackageRootMetadata(completion.result.root)
+				// A later checkpoint can normalize an unsupported root without
+				// removing the native instruction graph's cache barrier.
+				value.transient = value.transient || executor.options.Lifecycle.NoLayers || !rootPortable ||
+					completion.result.state.graphEndpoint == nil && plannedFilesystemOperationCount(stage.Operations) != 0
 			}
 			request.reply <- instructionExecReply{result: value, err: err}
 			delete(dispatched, completion.stageID)

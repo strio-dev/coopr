@@ -402,6 +402,9 @@ func (operation *instructionOperation) Exec(ctx context.Context, _ solver.JobCon
 		if err != nil {
 			return nil, err
 		}
+		for _, input := range inputs {
+			result.transient = result.transient || input.transient
+		}
 		v.completed = result
 		return []solver.Result{result}, nil
 	}

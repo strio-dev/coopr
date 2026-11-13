@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -423,27 +424,55 @@ func TestInstructionSolverZeroTTLStillWritesFreshResults(t *testing.T) {
 }
 
 func TestInstructionGraphUnportableRootFallsBackToNativeExecution(t *testing.T) {
-	f := newLocalComponentFixture(t)
-	f.write(t, "payload", "native execution remains available\n")
-	base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
 	// user.overlay.* is writable in an unprivileged fixture but deliberately
 	// excluded from Coopr's portable metadata contract. Ordinary Buildah RUN
 	// still accepts it; cache eligibility must not reject the build.
-	for _, name := range []string{"cold", "again"} {
-		result, layout := f.build(t, name, fmt.Sprintf(`from %q {
+	for _, test := range []struct {
+		name, source string
+		instructions int
+	}{
+		{"within-stage", `from %q {
     run "/bin/busybox setfattr -n user.overlay.coopr-test -v native-only /" network="none"
     copy "payload" "/proof"
 }
-`, base.reference))
-		if got := localComponentLastFile(t, layout, "proof"); got != "native execution remains available\n" {
-			t.Fatalf("native continuation output = %q", got)
-		}
-		if result.CacheStats.Errors != 0 || result.CacheStats.Stored != 0 {
-			t.Fatalf("nonportable root advertised reusable graph results: %+v", result.CacheStats)
-		}
-		if count := instructionCacheRecordCount(t, f.options.Store); count != 0 {
-			t.Fatalf("nonportable root retained %d instruction keys", count)
-		}
+`, 0},
+		{"next-stage", `from %q as="producer" {
+    run "/bin/busybox setfattr -n user.overlay.coopr-test -v native-only /" network="none"
+}
+from "producer" { copy "payload" "/proof"; }
+`, 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newLocalComponentFixture(t)
+			f.write(t, "payload", "native execution remains available\n")
+			base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
+			var runs atomic.Int64
+			f.options.Progress = func(event OperationProgress) {
+				if event.Instruction == "run" && event.Phase == "execute" && event.State == "started" {
+					runs.Add(1)
+				}
+			}
+			for _, name := range []string{"cold", "again"} {
+				before := runs.Load()
+				result, layout := f.build(t, name, fmt.Sprintf(test.source, base.reference))
+				if runs.Load() != before+1 {
+					t.Fatal("unportable producer did not execute again")
+				}
+				if got := localComponentLastFile(t, layout, "proof"); got != "native execution remains available\n" {
+					t.Fatalf("native continuation output = %q", got)
+				}
+				// A new native stage may cache its valid COPY, but neither
+				// aggregate may advertise the unportable producer ancestry.
+				if result.CacheStats.Errors != 0 || result.CacheStats.Stored != test.instructions {
+					t.Fatalf("nonportable root advertised reusable graph results: %+v", result.CacheStats)
+				}
+				if test.instructions == 0 {
+					if count := instructionCacheRecordCount(t, f.options.Store); count != 0 {
+						t.Fatalf("nonportable root retained %d instruction keys", count)
+					}
+				}
+			}
+		})
 	}
 }
 

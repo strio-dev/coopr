@@ -143,7 +143,7 @@ func TestBuildPlanReusesDeclaredInputInstructionsFromRegistryAcrossStores(t *tes
 `
 		cold := build("network-cold", "network", planText)
 		warm := build("network-warm", "network", planText)
-		if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 1 || warm.CacheStats.Hits != 1 {
+		if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 2 || warm.CacheStats.Hits != 1 {
 			t.Fatalf("default-network portable cache stats: cold=%+v warm=%+v", cold.CacheStats, warm.CacheStats)
 		}
 		if warm.ManifestDigest != cold.ManifestDigest {
@@ -160,7 +160,7 @@ func TestBuildPlanReusesDeclaredInputInstructionsFromRegistryAcrossStores(t *tes
 `
 		cold := build("cache-mount-cold", "cache-mount", planText)
 		warm := build("cache-mount-warm", "cache-mount", planText)
-		if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 1 || warm.CacheStats.Hits != 1 || warm.ManifestDigest != cold.ManifestDigest {
+		if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 2 || warm.CacheStats.Hits != 1 || warm.ManifestDigest != cold.ManifestDigest {
 			t.Fatalf("cache-mount portable result: cold=%s %+v warm=%s %+v", cold.ManifestDigest, cold.CacheStats, warm.ManifestDigest, warm.CacheStats)
 		}
 	})
@@ -179,7 +179,7 @@ func TestBuildPlanReusesDeclaredInputInstructionsFromRegistryAcrossStores(t *tes
 		}
 		cold := build("secret-cold", "secret", planText, secret("cold", "first\n"))
 		warm := build("secret-warm", "secret", planText, secret("warm", "second\n"))
-		if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 1 || warm.CacheStats.Hits != 1 || warm.ManifestDigest != cold.ManifestDigest {
+		if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 2 || warm.CacheStats.Hits != 1 || warm.ManifestDigest != cold.ManifestDigest {
 			t.Fatalf("secret portable result: cold=%s %+v warm=%s %+v", cold.ManifestDigest, cold.CacheStats, warm.ManifestDigest, warm.CacheStats)
 		}
 	})
@@ -203,7 +203,7 @@ func TestBuildPlanReusesDeclaredInputInstructionsFromRegistryAcrossStores(t *tes
 		}
 		cold := build("ssh-cold", "ssh", planText, withAgent("cold-agent"))
 		warm := build("ssh-warm", "ssh", planText, withAgent("warm-agent"))
-		if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 1 || warm.CacheStats.Hits != 1 || warm.ManifestDigest != cold.ManifestDigest {
+		if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 2 || warm.CacheStats.Hits != 1 || warm.ManifestDigest != cold.ManifestDigest {
 			t.Fatalf("SSH portable result: cold=%s %+v warm=%s %+v", cold.ManifestDigest, cold.CacheStats, warm.ManifestDigest, warm.CacheStats)
 		}
 	})
@@ -229,7 +229,7 @@ func TestBuildPlanReusesDeclaredInputInstructionsFromRegistryAcrossStores(t *tes
 		write("one\n")
 		cold := build("bind-cold", "bind", planText)
 		warm := build("bind-warm", "bind", planText)
-		if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 1 || warm.CacheStats.Hits != 1 {
+		if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 2 || warm.CacheStats.Hits != 1 {
 			t.Fatalf("bind portable cache stats: cold=%+v warm=%+v", cold.CacheStats, warm.CacheStats)
 		}
 		if warm.ManifestDigest != cold.ManifestDigest {
@@ -255,7 +255,7 @@ from "` + base + `" {
 `
 		cold := build("stage-cold", "stage", planText)
 		warm := build("stage-warm", "stage", planText)
-		if cold.CacheStats.Misses != 2 || cold.CacheStats.Stored != 2 || warm.CacheStats.Hits != 2 {
+		if cold.CacheStats.Misses != 2 || cold.CacheStats.Stored != 3 || warm.CacheStats.Hits != 1 {
 			t.Fatalf("stage-COPY portable cache stats: cold=%+v warm=%+v", cold.CacheStats, warm.CacheStats)
 		}
 		if warm.ManifestDigest != cold.ManifestDigest {
@@ -278,7 +278,7 @@ from "` + base + `" {
 `
 		cold := build("remote-add-cold", "remote-add", planText)
 		warm := build("remote-add-warm", "remote-add", planText)
-		if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 1 || warm.CacheStats.Hits != 1 || warm.ManifestDigest != cold.ManifestDigest {
+		if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 2 || warm.CacheStats.Hits != 1 || warm.ManifestDigest != cold.ManifestDigest {
 			t.Fatalf("pinned remote ADD portable result: cold=%s %+v warm=%s %+v", cold.ManifestDigest, cold.CacheStats, warm.ManifestDigest, warm.CacheStats)
 		}
 		if got := requests.Load(); got != 1 {
@@ -302,7 +302,7 @@ from "` + base + `" {
 `
 				cold := build(name+"-cold", name, planText)
 				warm := build(name+"-warm", name, planText)
-				if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 1 || warm.CacheStats.Hits != 1 || warm.ManifestDigest != cold.ManifestDigest {
+				if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 2 || warm.CacheStats.Hits != 1 || warm.ManifestDigest != cold.ManifestDigest {
 					t.Fatalf("pinned Git ADD portable result: cold=%s %+v warm=%s %+v", cold.ManifestDigest, cold.CacheStats, warm.ManifestDigest, warm.CacheStats)
 				}
 				manifest, _ := readPlanImage(t, filepath.Join(root, name+"-warm", "layout"))

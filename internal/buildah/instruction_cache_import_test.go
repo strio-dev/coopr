@@ -15,12 +15,12 @@ func TestInstructionGraphMissingRootMetadataRebuilds(t *testing.T) {
 	f.write(t, "payload", "cache recovery\n")
 	const source = `from "scratch" { copy "payload" "/payload"; }`
 	cold, _ := f.build(t, "cold", source)
-	if cold.CacheStats.Stored != 1 || cold.CacheStats.Errors != 0 {
+	if cold.CacheStats.Stored != 2 || cold.CacheStats.Errors != 0 {
 		t.Fatalf("cold cache export: %+v", cold.CacheStats)
 	}
 	roots := instructionGraphArtifactResults(t, f.options.CacheLocalDir)
-	if len(roots) != 1 {
-		t.Fatalf("expected one cached operation, got %d", len(roots))
+	if len(roots) != 2 {
+		t.Fatalf("expected instruction and aggregate cache roots, got %d", len(roots))
 	}
 	store, err := cache.NewLocalStore(f.ctx, f.options.CacheLocalDir, t.TempDir(), nil)
 	if err != nil {
@@ -72,7 +72,7 @@ func TestInstructionGraphMissingRootMetadataRebuilds(t *testing.T) {
 	}
 	f.options.Store = cacheTestStore(filepath.Join(f.root, "rebuild-store"))
 	rebuilt, layout := f.build(t, "rebuilt", source)
-	if rebuilt.CacheStats.Errors == 0 || rebuilt.CacheStats.Misses != 1 || rebuilt.CacheStats.Hits != 0 || rebuilt.CacheStats.Stored != 1 {
+	if rebuilt.CacheStats.Errors == 0 || rebuilt.CacheStats.Misses != 1 || rebuilt.CacheStats.Hits != 0 || rebuilt.CacheStats.Stored != 2 {
 		t.Fatalf("incomplete cache entry did not rebuild: %+v", rebuilt.CacheStats)
 	}
 	if got := localComponentLastFile(t, layout, "payload"); got != "cache recovery\n" {
@@ -80,7 +80,7 @@ func TestInstructionGraphMissingRootMetadataRebuilds(t *testing.T) {
 	}
 	f.options.Store = cacheTestStore(filepath.Join(f.root, "warm-store"))
 	warm, layout := f.build(t, "warm", source)
-	if warm.CacheStats.Hits != 1 || warm.CacheStats.Misses != 0 || warm.CacheStats.Errors != 0 {
+	if warm.CacheStats.Hits != 1 || warm.CacheStats.Misses != 0 || warm.CacheStats.Errors != 0 || warm.ManifestDigest != rebuilt.ManifestDigest {
 		t.Fatalf("rebuilt cache entry did not restore cleanly: %+v", warm.CacheStats)
 	}
 	if got := localComponentLastFile(t, layout, "payload"); got != "cache recovery\n" {

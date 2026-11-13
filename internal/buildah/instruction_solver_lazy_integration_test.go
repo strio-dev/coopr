@@ -18,7 +18,7 @@ import (
 )
 
 // The forced lanes retain several physical RUN results under one logical graph.
-// A fresh consumer needs only the selected COPY and RUN snapshots, not every
+// A fresh consumer needs only the terminal image, not its ancestors or every
 // historical result exported by the producer.
 func TestInstructionGraphRestoreImportsOnlySelectedSnapshots(t *testing.T) {
 	requireLiveInstructionCache(t)
@@ -58,7 +58,7 @@ func TestInstructionGraphRestoreImportsOnlySelectedSnapshots(t *testing.T) {
 		latest = proof
 	}
 	warm, proof := build("consumer", false)
-	if warm.CacheStats.Hits != 2 || warm.CacheStats.Misses != 0 || proof != latest {
+	if warm.CacheStats.Hits != 1 || warm.CacheStats.Misses != 0 || proof != latest {
 		t.Fatalf("warm result lost selected graph: proof=%q want=%q stats=%+v", proof, latest, warm.CacheStats)
 	}
 	lease, err := acquireStore(cacheTestStore(filepath.Join(root, "consumer")))
@@ -84,8 +84,8 @@ func TestInstructionGraphRestoreImportsOnlySelectedSnapshots(t *testing.T) {
 		}
 	}
 	t.Logf("fresh consumer retained %d native graph snapshots after three producer variants", retained)
-	if retained != 2 {
-		t.Fatalf("fresh consumer imported %d native graph snapshots, want only its selected COPY and RUN", retained)
+	if retained != 1 || len(images) != 1 {
+		t.Fatalf("fresh consumer retained %d graph snapshots in %d images, want only its terminal image", retained, len(images))
 	}
 }
 
@@ -151,6 +151,7 @@ from "scratch" {
 	}
 	after := instructionGraphArtifactResults(t, mirror)
 	selected := instructionGraphStoredResultIDs(t, cacheTestStore(filepath.Join(root, "mirror-consumer")))
+	latestResults := instructionGraphArtifactResults(t, from[len(from)-1].Reference)
 	omitted := false
 	rebound := 0
 	for root, ids := range after {
@@ -159,8 +160,8 @@ from "scratch" {
 			t.Fatalf("mirror published unknown graph root %s", root)
 		}
 		for _, id := range ids {
-			if !selected[id] {
-				t.Fatalf("parallel export included an unmaterialized source alternative %s for %s", id, root)
+			if !selected[id] && !slices.Contains(latestResults[root], id) {
+				t.Fatalf("parallel export included an unused source alternative %s for %s", id, root)
 			}
 			if !slices.Contains(want, id) {
 				// Cached filesystems can be recommitted when current authored
@@ -265,7 +266,7 @@ func TestInstructionGraphSelectedExportPreservesOlderBranches(t *testing.T) {
 		t.Fatalf("forced sibling qualification failed: older branch preserved=%t, shared physical prefix replaced=%t; before=%v after=%v", preserved, replacedPrefix, before, after)
 	}
 	warm, restored := build("fresh-store-A", "A", false)
-	if restored != first || warm.CacheStats.Hits != 2 || warm.CacheStats.Misses != 0 {
+	if restored != first || warm.CacheStats.Hits != 1 || warm.CacheStats.Misses != 0 {
 		t.Fatalf("older branch lost exact cached output: %q != %q stats=%+v", restored, first, warm.CacheStats)
 	}
 }
