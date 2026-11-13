@@ -131,10 +131,22 @@ func TestPublicClientNativeSelectedFileExports(t *testing.T) {
 		t.Fatalf("exported executable mode: %v %v", info, err)
 	}
 	warmRequest := request("selected-warm", command)
-	warmRequest.Options.Output.Exports = []api.FileExport{{Source: "/reports/proof", Destination: filepath.Join(f.root, "warm-proof")}}
+	warmRequest.Options.Output.Exports = []api.FileExport{{Source: "/reports/proof", Destination: filepath.Join(f.root, "warm-proof")}, {Source: "/reports", Destination: filepath.Join(f.root, "warm-reports")}}
 	warm, err := c.Execute(ctx, warmRequest, client.StreamOptions{})
-	if err != nil || len(warm.Exports) != 1 || warm.Exports[0].Status != "passed" || warm.Cache == nil || warm.Cache.Hits != 1 || warm.ImageID != cold.ImageID || warm.ManifestDigest != cold.ManifestDigest || publicNativeRead(t, warm.Exports[0].Destination) != proof {
+	if err != nil || len(warm.Exports) != 2 || warm.Exports[0].Status != "passed" || warm.Exports[1].Status != "passed" || warm.Cache == nil || warm.Cache.Hits != 1 || warm.ImageID != cold.ImageID || warm.ManifestDigest != cold.ManifestDigest || publicNativeRead(t, warm.Exports[0].Destination) != proof {
 		t.Fatalf("export selection salted image identity or reran RUN: cold=%+v warm=%+v err=%v", cold, warm, err)
+	}
+	if publicNativeRead(t, filepath.Join(warm.Exports[1].Destination, "proof")) != proof {
+		t.Fatal("cached directory export changed its proof")
+	}
+	coldTool, coldErr := os.ReadFile(filepath.Join(cold.Exports[0].Destination, "tool"))
+	warmTool, warmErr := os.ReadFile(filepath.Join(warm.Exports[1].Destination, "tool"))
+	if err := errors.Join(coldErr, warmErr); err != nil || !bytes.Equal(coldTool, warmTool) {
+		t.Fatalf("cached directory export changed its executable bytes: %v", err)
+	}
+	info, err = os.Stat(filepath.Join(warm.Exports[1].Destination, "tool"))
+	if err != nil || info.Mode().Perm() != 0755 {
+		t.Fatalf("cached directory executable mode: %v %v", info, err)
 	}
 
 	for _, prerequisite := range []bool{false, true} {
