@@ -63,30 +63,16 @@ func planDefinitionInWorker(ctx context.Context, request planWorkerRequest) (*pl
 			return ResolvedImageSource{}, err
 		}
 		return withStore(func(store storage.Store) (ResolvedImageSource, error) {
-			// Publication checks package results before materializing bases. Keep
-			// newer eager so a failed pull binds the cached config before planning.
-			if request.Mode == "publish" && resolver.PullPolicy() != oci.PullNewer {
-				converted, err := policyImageSource(reference, sourcePolicy)
-				if err != nil {
-					return ResolvedImageSource{}, err
-				}
-				normalized, transport, err := normalizeBaseSource(converted, request.ContextDir)
-				if err != nil {
-					return ResolvedImageSource{}, err
-				}
-				if !transport {
-					return selectImageSource(ctx, resolver, normalized, platform, store)
-				}
-				return resolveBaseSourceWithPolicy(ctx, resolver, converted, platform, store, platformSystemContext(system, platform), request.ContextDir, nil)
-			}
-			return resolveBaseSourceWithPolicy(ctx, resolver, reference, platform, store, platformSystemContext(system, platform), request.ContextDir, sourcePolicy)
+			// Select exact metadata before demanding native image bytes. Keep newer
+			// eager so a failed pull binds the cached config before planning.
+			return selectBaseSourceWithPolicy(ctx, resolver, reference, platform, store, platformSystemContext(system, platform), request.ContextDir, sourcePolicy)
 		})
 	}, func(ctx context.Context, reference string, platform v1.Platform) (ResolvedImageSource, error) {
 		if err := ensureResolver(); err != nil {
 			return ResolvedImageSource{}, err
 		}
 		return withStore(func(store storage.Store) (ResolvedImageSource, error) {
-			if request.Mode == "publish" && resolver.PullPolicy() != oci.PullNewer {
+			if resolver.PullPolicy() != oci.PullNewer {
 				return selectFileSourceWithPolicy(ctx, resolver, reference, platform, store, platformSystemContext(system, platform), request.ContextDir, sourcePolicy)
 			}
 			return resolveFileSourceWithPolicy(ctx, resolver, reference, platform, store, platformSystemContext(system, platform), request.ContextDir, sourcePolicy)

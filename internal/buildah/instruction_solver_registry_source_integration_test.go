@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -22,6 +23,7 @@ import (
 	digest "github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/strio-dev/coopr/internal/cache"
+	"github.com/strio-dev/coopr/internal/planner"
 	"oras.land/oras-go/v2"
 	orasoci "oras.land/oras-go/v2/content/oci"
 	"oras.land/oras-go/v2/registry/remote"
@@ -43,15 +45,22 @@ func TestInstructionGraphRegistryCacheSelectiveRestoreAndOfflineExport(t *testin
   exec "/bin/busybox" "sh" "-eu" "-c" "/bin/busybox od -An -N16 -tx1 /dev/urandom > /proof; /bin/busybox head -c 131072 /dev/urandom > /payload; echo REGISTRY_FRESH_RUN";
  }
 }`)
-	build := func(lane string, force bool, local string, from, to []CacheSpec) (Result, string, string) {
+	build := func(plan *planner.Plan, lane string, force bool, local string, from, to []CacheSpec, nativeStore ...StoreOptions) (Result, string, string) {
 		t.Helper()
 		layout := filepath.Join(root, lane, "layout")
+		filesystem := filepath.Join(root, lane, "filesystem")
+		store := cacheTestStore(filepath.Join(root, lane))
+		if len(nativeStore) != 0 {
+			store = nativeStore[0]
+		}
 		var stdout, stderr bytes.Buffer
+		epoch := int64(0)
 		result, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
-			Store: cacheTestStore(filepath.Join(root, lane)), ContextDir: input,
+			Store: store, ContextDir: input,
 			Isolation: "rootless", Runtime: "crun", NoCache: force,
 			CacheLocalDir: local, CacheFrom: from, CacheTo: to, TLSVerify: new(false),
-			SignaturePolicyPath: policy, Output: Output{Path: layout}, Stdout: &stdout, Stderr: &stderr,
+			SignaturePolicyPath: policy, Timestamp: &epoch, RewriteTimestamp: true,
+			Output: Output{Path: layout, Format: "oci", CompressionFormat: "gzip", Filesystem: FilesystemOutput{Type: "local", Path: filesystem}}, Stdout: &stdout, Stderr: &stderr,
 		})
 		if err != nil {
 			t.Fatalf("%s: %v\n%s\n%s", lane, err, stdout.String(), stderr.String())
@@ -59,14 +68,18 @@ func TestInstructionGraphRegistryCacheSelectiveRestoreAndOfflineExport(t *testin
 		if result.CacheStats.Errors != 0 {
 			t.Fatalf("%s cache errors: %+v\n%s", lane, result.CacheStats, stderr.String())
 		}
-		return result, localComponentLastFile(t, layout, "proof"), stdout.String()
+		proof := localComponentLastFile(t, layout, "proof")
+		if data, err := os.ReadFile(filepath.Join(filesystem, "proof")); err != nil || string(data) != proof {
+			t.Fatalf("%s filesystem differs from image proof: %q, %v", lane, data, err)
+		}
+		return result, proof, stdout.String()
 	}
 	var latest string
 	var sources []string
 	catalog := instructionRegistryGraphCatalog{roots: map[digest.Digest][]string{}, results: map[string]cache.GraphResult{}, closures: map[string]map[digest.Digest]v1.Descriptor{}}
 	for i := range 3 {
 		source := filepath.Join(root, fmt.Sprintf("source-%d", i))
-		_, proof, output := build(fmt.Sprintf("producer-%d", i), i != 0, source, nil, nil)
+		_, proof, output := build(plan, fmt.Sprintf("producer-%d", i), i != 0, source, nil, nil)
 		if proof == latest || !strings.Contains(output, "REGISTRY_FRESH_RUN\n") {
 			t.Fatal("producer failed to execute its fresh nondeterministic RUN", proof, output)
 		}
@@ -113,9 +126,9 @@ func TestInstructionGraphRegistryCacheSelectiveRestoreAndOfflineExport(t *testin
 		}
 	}))
 	t.Cleanup(server.Close)
-	var from []CacheSpec
-	for index, source := range sources {
-		repository := fmt.Sprintf("%s/coopr/native-selective-%d", strings.TrimPrefix(server.URL, "http://"), index)
+	publish := func(source, name string) CacheSpec {
+		t.Helper()
+		repository := fmt.Sprintf("%s/coopr/%s", strings.TrimPrefix(server.URL, "http://"), name)
 		target, err := remote.NewRepository(repository)
 		if err != nil {
 			t.Fatal(err)
@@ -135,17 +148,72 @@ func TestInstructionGraphRegistryCacheSelectiveRestoreAndOfflineExport(t *testin
 		}); err != nil {
 			t.Fatal(err)
 		}
-		from = append(from, CacheSpec{Transport: "registry", Reference: repository})
+		return CacheSpec{Transport: "registry", Reference: repository}
 	}
+	var from []CacheSpec
+	for index, source := range sources {
+		from = append(from, publish(source, fmt.Sprintf("native-selective-%d", index)))
+	}
+	// Keep the selective/offline alternatives above unchanged, but measure the
+	// native writer with the benchmark's builder-to-scratch final COPY shape.
+	nativePlan := testPlan(t, `from "scratch" as="builder" {
+ copy "busybox" "/bin/busybox"
+ run network="none" {
+  exec "/bin/busybox" "sh" "-eu" "-c" "/bin/busybox od -An -N16 -tx1 /dev/urandom > /proof; /bin/busybox head -c 131072 /dev/urandom > /payload; echo REGISTRY_FRESH_RUN";
+ }
+}
+from "scratch" {
+ copy "/proof" "/payload" "/" from="builder"
+}`)
+	nativeSource := filepath.Join(root, "native-source")
+	first, firstProof, firstOutput := build(nativePlan, "native-producer", false, nativeSource, nil, nil)
+	if !strings.Contains(firstOutput, "REGISTRY_FRESH_RUN\n") {
+		t.Fatal("two-stage producer did not execute RUN", firstOutput)
+	}
+	nativeTarget := publish(nativeSource, "native-two-stage")
 	readOnly.Store(true)
+	// A native-only hit must not republish or consume a registry cache source.
+	nativeStore := cacheTestStore(filepath.Join(root, "native-producer"))
+
 	traffic.reset()
-	warm, proof, output := build("read-only", false, "", from, nil)
-	if warm.CacheStats.Hits != 2 || warm.CacheStats.Misses != 0 || proof != latest || strings.Contains(output, "REGISTRY_FRESH_RUN\n") {
+	warmStarted := time.Now()
+	nativeWarm, nativeProof, nativeOutput := build(nativePlan, "native-warm", false, "", nil, []CacheSpec{nativeTarget}, nativeStore)
+	nativeReads, nativeMethods, nativeBytes, nativeTags := traffic.snapshot()
+	t.Logf("two-stage native-warm HTTP: elapsed=%s methods=%v graph-tag-requests=%d GET-bytes=%d per-digest=%+v", time.Since(warmStarted), nativeMethods, nativeTags, nativeBytes, nativeReads)
+	if nativeWarm.CacheStats.Hits != 1 || nativeWarm.CacheStats.Misses != 0 || nativeWarm.CacheStats.Stored != 0 || nativeWarm.ManifestDigest != first.ManifestDigest || nativeProof != firstProof || strings.Contains(nativeOutput, "REGISTRY_FRESH_RUN\n") {
+		t.Fatalf("native cache hit republished or changed its result: stats=%+v proof=%q stdout=%s", nativeWarm.CacheStats, nativeProof, nativeOutput)
+	}
+	for method, count := range nativeMethods {
+		if count != 0 && method != http.MethodGet && method != http.MethodHead {
+			t.Fatalf("native cache hit attempted registry %s", method)
+		}
+	}
+
+	traffic.reset()
+	warm, proof, output := build(plan, "read-only", false, "", from, nil)
+	if warm.CacheStats.Hits != 1 || warm.CacheStats.Misses != 0 || proof != latest || strings.Contains(output, "REGISTRY_FRESH_RUN\n") {
 		t.Fatalf("read-only registry restore replayed or changed the selected result: proof=%q want=%q stats=%+v stdout=%s", proof, latest, warm.CacheStats, output)
 	}
 	selected := instructionRegistrySelectedResults(t, cacheTestStore(filepath.Join(root, "read-only")), catalog)
-	if len(selected) != 2 {
-		t.Fatalf("read-only registry restore imported %d native graph snapshots, want2", len(selected))
+	if len(selected) != 1 {
+		t.Fatalf("read-only registry restore selected %d graph results, want one terminal stage", len(selected))
+	}
+	for id := range selected {
+		var value instructionSolverResult
+		if err := json.Unmarshal(catalog.results[id].Metadata, &value); err != nil || len(value.Entry.LogicalConfig) == 0 {
+			t.Fatalf("selected result is not the complete stage state: %s, %v", id, err)
+		}
+	}
+	lease, err := acquireStore(cacheTestStore(filepath.Join(root, "read-only")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	images, imageErr := lease.store.Images()
+	if err := errors.Join(imageErr, lease.Close()); err != nil {
+		t.Fatal(err)
+	}
+	if len(images) != 1 || images[0].ID != warm.ImageID {
+		t.Fatalf("terminal restore imported base/ancestor images: images=%d final=%s", len(images), warm.ImageID)
 	}
 	reads, methods, selectedBytes, graphTags := traffic.snapshot()
 	if graphTags == 0 {
@@ -186,12 +254,14 @@ func TestInstructionGraphRegistryCacheSelectiveRestoreAndOfflineExport(t *testin
 
 	traffic.reset()
 	mirror := filepath.Join(root, "selected")
-	complete, proof, output := build("complete-consumer", false, "", from, []CacheSpec{{Transport: "oci-layout", Reference: mirror}})
-	if complete.CacheStats.Hits != 2 || complete.CacheStats.Misses != 0 || proof != latest || strings.Contains(output, "REGISTRY_FRESH_RUN\n") {
+	complete, proof, output := build(plan, "complete-consumer", false, "", from, []CacheSpec{from[len(from)-1], {Transport: "oci-layout", Reference: mirror}})
+	// The unchanged source root is reused; only the local destination needs the
+	// selected complete stage result, without importing instruction ancestors.
+	if complete.CacheStats.Hits != 1 || complete.CacheStats.Misses != 0 || complete.CacheStats.Stored != 1 || proof != latest || strings.Contains(output, "REGISTRY_FRESH_RUN\n") {
 		t.Fatalf("complete export replayed or changed the selected result: proof=%q want=%q stats=%+v stdout=%s", proof, latest, complete.CacheStats, output)
 	}
-	if got := instructionRegistrySelectedResults(t, cacheTestStore(filepath.Join(root, "complete-consumer")), catalog); len(got) != 2 {
-		t.Fatalf("complete export imported %d native graph snapshots, want2", len(got))
+	if got := instructionRegistrySelectedResults(t, cacheTestStore(filepath.Join(root, "complete-consumer")), catalog); len(got) != 1 {
+		t.Fatalf("complete export selected %d graph results, want one terminal stage", len(got))
 	}
 	completeReads, completeMethods, completeBytes, _ := traffic.snapshot()
 	for key := range unused {
@@ -220,6 +290,13 @@ func TestInstructionGraphRegistryCacheSelectiveRestoreAndOfflineExport(t *testin
 	if len(retained) != len(selected) {
 		t.Fatalf("selected export lost required results: got %v, want %v", retained, selected)
 	}
+	readOnly.Store(false)
+	traffic.reset()
+	fresh, freshProof, freshOutput := build(plan, "fresh-writer", true, "", from, []CacheSpec{from[len(from)-1]})
+	_, freshMethods, _, _ := traffic.snapshot()
+	if fresh.CacheStats.Stored == 0 || freshProof == latest || !strings.Contains(freshOutput, "REGISTRY_FRESH_RUN\n") || freshMethods[http.MethodPut] == 0 {
+		t.Fatalf("fresh execution did not publish its new result: stats=%+v methods=%v stdout=%s", fresh.CacheStats, freshMethods, freshOutput)
+	}
 	// All origins are now unavailable. Complete local lookup verifies every
 	// advertised payload, then a fresh store recovers the exact tested result.
 	server.Close()
@@ -236,11 +313,139 @@ func TestInstructionGraphRegistryCacheSelectiveRestoreAndOfflineExport(t *testin
 			t.Fatal(err)
 		}
 	}
-	offline, proof, output := build("offline-consumer", false, "", []CacheSpec{{Transport: "oci-layout", Reference: mirror}}, nil)
-	if offline.CacheStats.Hits != 2 || offline.CacheStats.Misses != 0 || proof != latest || strings.Contains(output, "REGISTRY_FRESH_RUN\n") {
+	offline, proof, output := build(plan, "offline-consumer", false, "", []CacheSpec{{Transport: "oci-layout", Reference: mirror}}, nil)
+	if offline.CacheStats.Hits != 1 || offline.CacheStats.Misses != 0 || proof != latest || strings.Contains(output, "REGISTRY_FRESH_RUN\n") {
 		t.Fatalf("offline mirror replayed or changed the selected result: proof=%q want=%q stats=%+v stdout=%s", proof, latest, offline.CacheStats, output)
 	}
-	t.Logf("native registry restore: selected2snapshots, %d total GET-body bytes, %d unique unused payload bytes omitted; cache-to %d GET-body bytes without unused alternatives; exact offline result retained", selectedBytes, unusedPayloadBytes, completeBytes)
+	t.Logf("native registry restore: one terminal image, %d total GET-body bytes, %d unique unused payload bytes omitted; cache-to %d GET-body bytes without unused alternatives; exact offline result retained", selectedBytes, unusedPayloadBytes, completeBytes)
+}
+
+func TestInstructionGraphRegistryCacheSharedPrefixPublisher(t *testing.T) {
+	requireLiveInstructionCache(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
+	defer cancel()
+	root := t.TempDir()
+	input := filepath.Join(root, "context")
+	if err := os.MkdirAll(filepath.Join(input, "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{"first": "first\n", "second": "second\n", "dir/payload": "directory\n"} {
+		if err := os.WriteFile(filepath.Join(input, name), []byte(value), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base, _ := newLiveBusyBoxRegistry(t, ctx)
+	policy := writeComponentTestPolicy(t, root)
+	var readOnly, attemptedWrite atomic.Bool
+	var mu sync.Mutex
+	graphWrites := map[string]int{}
+	handler := registry.New(registry.Logger(log.New(io.Discard, "", 0)))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if readOnly.Load() && r.Method != http.MethodGet && r.Method != http.MethodHead {
+			attemptedWrite.Store(true)
+			http.Error(w, "read-only test cache", http.StatusMethodNotAllowed)
+			return
+		}
+		if r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/manifests/graph-v3-") {
+			mu.Lock()
+			graphWrites[filepath.Base(r.URL.Path)]++
+			mu.Unlock()
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(server.Close)
+	cacheSpec := []CacheSpec{{Transport: "registry", Reference: strings.TrimPrefix(server.URL, "http://") + "/coopr/shared-prefix"}}
+	app := fmt.Sprintf(`from %q {
+ workdir "/workspace"
+ env ROLE="app"
+ copy "first" "second" "/workspace/"
+ copy "dir" "/workspace/dir"
+ run network="none" {
+  exec "/bin/busybox" "sh" "-eu" "-c" "/bin/busybox cat /workspace/first /workspace/second /workspace/dir/payload > /proof; /bin/busybox od -An -N16 -tx1 /dev/urandom >> /proof; echo SHARED_PREFIX_RUN_EXECUTED";
+ }
+}`, base)
+	environment := fmt.Sprintf(`from %q {
+ workdir "/workspace"
+ env ROLE="checks"
+}`, base)
+	build := func(lane, source string, from, to []CacheSpec) (Result, string, string) {
+		t.Helper()
+		layout := filepath.Join(root, lane, "layout")
+		var stdout, stderr bytes.Buffer
+		result, err := BuildPlanSupervised(ctx, testPlan(t, source), SupervisedPlanOptions{
+			Store: cacheTestStore(filepath.Join(root, lane)), ContextDir: input,
+			Isolation: "rootless", Runtime: "crun", CacheFrom: from, CacheTo: to,
+			TLSVerify: new(false), SignaturePolicyPath: policy,
+			Output: Output{Path: layout}, Stdout: &stdout, Stderr: &stderr,
+		})
+		if err != nil || result.CacheStats.Errors != 0 {
+			t.Fatalf("%s: %v stats=%+v\n%s\n%s", lane, err, result.CacheStats, stdout.String(), stderr.String())
+		}
+		return result, layout, stdout.String()
+	}
+	cold, coldLayout, coldOutput := build("cold-app", app, nil, cacheSpec)
+	proof := localComponentLastFile(t, coldLayout, "proof")
+	if cold.CacheStats.Hits != 0 || cold.CacheStats.Misses != 4 || !strings.HasPrefix(proof, "first\nsecond\ndirectory\n") || !strings.Contains(coldOutput, "SHARED_PREFIX_RUN_EXECUTED\n") {
+		t.Fatalf("cold app did not execute its selected inputs and RUN: stats=%+v proof=%q stdout=%s", cold.CacheStats, proof, coldOutput)
+	}
+	readOnly.Store(true)
+	control, controlLayout, controlOutput := build("control-app", app, cacheSpec, nil)
+	if attemptedWrite.Load() {
+		t.Fatal("control app attempted a registry write")
+	}
+	if got := localComponentLastFile(t, controlLayout, "proof"); control.CacheStats.Hits != 1 || control.CacheStats.Misses != 0 || got != proof || strings.Contains(controlOutput, "SHARED_PREFIX_RUN_EXECUTED\n") {
+		t.Fatalf("unmodified app failed its control cache restore: stats=%+v proof=%q want=%q stdout=%s", control.CacheStats, got, proof, controlOutput)
+	}
+	readOnly.Store(false)
+	mu.Lock()
+	before := maps.Clone(graphWrites)
+	mu.Unlock()
+	// This independent write-only producer replaces the shared WORKDIR root
+	// with its own native key IDs before the app's longer graph is restored.
+	checks, _, _ := build("environment", environment, nil, cacheSpec)
+	if checks.CacheStats.Hits != 0 || checks.CacheStats.Misses != 1 {
+		t.Fatalf("environment producer did not independently execute WORKDIR: %+v", checks.CacheStats)
+	}
+	mu.Lock()
+	sharedWrites := 0
+	for tag, count := range graphWrites {
+		if before[tag] != 0 {
+			sharedWrites += count - before[tag]
+		}
+	}
+	mu.Unlock()
+	if sharedWrites != 1 {
+		t.Fatalf("environment overwrote %d app graph tags, want the one shared WORKDIR root", sharedWrites)
+	}
+	// Change only final image metadata so the aggregate must miss and the four
+	// instruction keys must reconcile the independently published WORKDIR alias.
+	labeledApp := strings.TrimSuffix(app, "}") + " label cache_variant=\"continuation\"\n}"
+	labeledCache := []CacheSpec{{Transport: "oci-layout", Reference: filepath.Join(root, "labeled-cache")}}
+	readOnly.Store(true)
+	warm, warmLayout, warmOutput := build("warm-app", labeledApp, cacheSpec, labeledCache)
+	if attemptedWrite.Load() {
+		t.Fatal("warm app attempted a registry write")
+	}
+	// Four selected instruction roots and the new labeled aggregate seed the
+	// local cache without changing the read-only registry's method gate.
+	if got := localComponentLastFile(t, warmLayout, "proof"); warm.CacheStats.Hits != 4 || warm.CacheStats.Misses != 0 || warm.CacheStats.Stored != 5 || got != proof || strings.Contains(warmOutput, "SHARED_PREFIX_RUN_EXECUTED\n") {
+		t.Fatalf("shared-prefix publication lost the app's cache: stats=%+v proof=%q want=%q stdout=%s", warm.CacheStats, got, proof, warmOutput)
+	}
+	_, warmImage := readPlanImage(t, warmLayout)
+	if warmImage.Config.Labels["cache_variant"] != "continuation" {
+		t.Fatalf("warm instruction reuse lost the authored label: %+v", warmImage.Config.Labels)
+	}
+	// A fresh consumer can use the complete labeled stage and republish it to
+	// the registry without loading or executing its instruction ancestors.
+	readOnly.Store(false)
+	republished, republishedLayout, republishedOutput := build("warm-republish-app", labeledApp, labeledCache, cacheSpec)
+	if got := localComponentLastFile(t, republishedLayout, "proof"); republished.CacheStats.Hits != 1 || republished.CacheStats.Misses != 0 || republished.CacheStats.Stored != 1 || republished.ManifestDigest != warm.ManifestDigest || got != proof || strings.Contains(republishedOutput, "SHARED_PREFIX_RUN_EXECUTED\n") {
+		t.Fatalf("fresh-store read/write cache restore changed the app: stats=%+v proof=%q want=%q stdout=%s", republished.CacheStats, got, proof, republishedOutput)
+	}
+	_, republishedImage := readPlanImage(t, republishedLayout)
+	if republishedImage.Config.Labels["cache_variant"] != "continuation" {
+		t.Fatalf("terminal reuse lost the authored label: %+v", republishedImage.Config.Labels)
+	}
 }
 
 type instructionRegistryRead struct {
@@ -314,14 +519,19 @@ func instructionRegistryCatalog(t *testing.T, path string) instructionRegistryGr
 	}
 	catalog := instructionRegistryGraphCatalog{roots: instructionGraphArtifactResults(t, path), results: map[string]cache.GraphResult{}, closures: map[string]map[digest.Digest]v1.Descriptor{}}
 	for _, descriptor := range index.Manifests {
-		var manifest v1.Manifest
-		read(descriptor, &manifest)
-		if manifest.ArtifactType != cache.GraphArtifactType {
+		if descriptor.MediaType != v1.MediaTypeImageIndex {
 			continue
 		}
+		var envelope v1.Index
+		read(descriptor, &envelope)
+		if envelope.ArtifactType != cache.GraphArtifactType || len(envelope.Manifests) == 0 {
+			continue
+		}
+		var manifest v1.Manifest
+		read(envelope.Manifests[0], &manifest)
 		var record cache.GraphRecord
 		read(manifest.Config, &record)
-		if descriptor.Annotations[v1.AnnotationRefName] != "graph-"+record.Root.Encoded() {
+		if descriptor.Annotations[v1.AnnotationRefName] != "graph-v3-"+record.Root.Encoded() {
 			continue
 		}
 		for _, result := range record.Results {

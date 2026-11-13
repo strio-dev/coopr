@@ -32,13 +32,13 @@ from %q {
     run "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' >/proof" network="none"
 }
 `, base.reference))
-	var firstProof string
+	var firstProof, firstManifest string
 	var firstImage v1.Image
 	firstLayerCount := 0
 	for attempt := range 2 {
 		layout := filepath.Join(root, "final-layout-"+string(rune('1'+attempt)))
 		var stderr strings.Builder
-		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
+		result, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
 			Output:              Output{Path: layout},
 			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: &stderr,
@@ -46,11 +46,11 @@ from %q {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(stderr.String(), "STEP 1/2: FROM ") || !strings.Contains(stderr.String(), "STEP 2/2: RUN ") || strings.Count(stderr.String(), "COMMIT\n") != 1 {
+		if attempt == 0 && (!strings.Contains(stderr.String(), "STEP 1/2: FROM ") || !strings.Contains(stderr.String(), "STEP 2/2: RUN ") || strings.Count(stderr.String(), "COMMIT\n") != 1) {
 			t.Fatalf("build %d instruction/final progress = %q", attempt+1, stderr.String())
 		}
-		if attempt == 1 && !strings.Contains(stderr.String(), "--> Using cache ") {
-			t.Fatalf("warm build did not report instruction cache hit: %q", stderr.String())
+		if attempt == 1 && (!strings.Contains(stderr.String(), "--> Using cache ") || strings.Contains(stderr.String(), "STEP 2/2: RUN ") || strings.Contains(stderr.String(), "COMMIT\n")) {
+			t.Fatalf("warm build did not report terminal cache reuse without native execution: %q", stderr.String())
 		}
 		manifest, image := readPlanImage(t, layout)
 		if len(manifest.Layers) != len(image.RootFS.DiffIDs) {
@@ -59,8 +59,11 @@ from %q {
 		last := manifest.Layers[len(manifest.Layers)-1]
 		proof := readLayerFile(t, filepath.Join(layout, "blobs", "sha256", last.Digest.Encoded()), "proof")
 		if attempt == 0 {
-			firstProof, firstImage, firstLayerCount = proof, image, len(manifest.Layers)
+			firstProof, firstImage, firstLayerCount, firstManifest = proof, image, len(manifest.Layers), result.ManifestDigest
 			continue
+		}
+		if result.ManifestDigest != firstManifest {
+			t.Fatalf("final cached manifest = %s, want %s", result.ManifestDigest, firstManifest)
 		}
 		if len(manifest.Layers) != firstLayerCount {
 			t.Fatalf("final cached layer count = %d, want %d", len(manifest.Layers), firstLayerCount)
@@ -80,10 +83,11 @@ from %q {
 }
 `, base.reference))
 	firstProof = ""
+	firstManifest = ""
 	firstImage = v1.Image{}
 	for attempt := range 2 {
 		layout := filepath.Join(root, "tail-layout-"+string(rune('1'+attempt)))
-		_, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
+		result, err := BuildPlanSupervised(ctx, plan, SupervisedPlanOptions{
 			Store: store, ContextDir: root, Isolation: "rootless", Runtime: "crun",
 			Output:              Output{Path: layout},
 			SignaturePolicyPath: policy, Stdout: io.Discard, Stderr: io.Discard,
@@ -101,10 +105,10 @@ from %q {
 		last := manifest.Layers[len(manifest.Layers)-1]
 		proof := readLayerFile(t, filepath.Join(layout, "blobs", "sha256", last.Digest.Encoded()), "proof")
 		if attempt == 0 {
-			firstProof, firstImage = proof, image
+			firstProof, firstImage, firstManifest = proof, image, result.ManifestDigest
 			continue
 		}
-		if proof != firstProof || !reflect.DeepEqual(image, firstImage) {
+		if result.ManifestDigest != firstManifest || proof != firstProof || !reflect.DeepEqual(image, firstImage) {
 			t.Fatalf("config-tail cache changed output: proof %q/%q image equal=%v", firstProof, proof, reflect.DeepEqual(image, firstImage))
 		}
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,6 +30,95 @@ func (s solverTestStore) Image(id string) (*storage.Image, error) {
 }
 func (s solverTestStore) ImageBigData(id, key string) ([]byte, error) { return []byte(id), nil }
 func (s solverTestStore) AddNames(string, []string) error             { return nil }
+
+// Build the terminal edge once, as a worker does. Warm lookup must not execute
+// or load intermediate results merely to discover the terminal cache key.
+func TestInstructionSolverDeclaredGraphPrunesAncestors(t *testing.T) {
+	root := t.TempDir()
+	for _, phase := range []string{"cold", "warm", "changed"} {
+		t.Run(phase, func(t *testing.T) {
+			engine, err := newInstructionSolver(t.Context(), solverTestStore{root: root}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if err := engine.close(); err != nil {
+					t.Error(err)
+				}
+			}()
+			calls := 0
+			source := engine.source(digest.FromString("immutable source"), instructionSolverResult{}, false)
+			input := "source content"
+			if phase == "changed" {
+				input = "different source content"
+			}
+			operation := func(name string) func(context.Context, solver.Builder, []*instructionSolverResult) (*instructionSolverResult, error) {
+				return func(_ context.Context, _ solver.Builder, _ []*instructionSolverResult) (*instructionSolverResult, error) {
+					calls++
+					return &instructionSolverResult{Entry: instructionCacheEntry{ImageID: name, ManifestDigest: digest.FromString(name)}}, nil
+				}
+			}
+			copy := engine.declare(source, nil, digest.FromString(input), "COPY", false, operation("copy"))
+			build := engine.declare(copy, nil, digest.FromString("compile"), "RUN", false, operation("build"))
+			final := engine.declare(nil, []*instructionVertex{build}, digest.FromString("package"), "final COPY", false, operation("final"))
+			if phase == "warm" {
+				// Remove intermediate metadata without damaging the terminal image.
+				// A terminal hit must neither load these results nor execute them.
+				for _, name := range []string{"copy", "build"} {
+					id := (&instructionSolverResult{Entry: instructionCacheEntry{ImageID: name, ManifestDigest: digest.FromString(name)}}).ID()
+					path, err := engine.results.path(id)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Remove(path); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			result, err := engine.build(t.Context(), final, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantCalls := 3
+			if phase == "warm" {
+				wantCalls = 0
+			}
+			if calls != wantCalls || result.Entry.ImageID != "final" {
+				t.Fatalf("executions=%d result=%s, want %d/final", calls, result.Entry.ImageID, wantCalls)
+			}
+		})
+	}
+}
+
+func TestInstructionSolverAggregateUsesUpstreamSubBuild(t *testing.T) {
+	engine, err := newInstructionSolver(t.Context(), solverTestStore{root: t.TempDir()}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := engine.close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	source := engine.source(digest.FromString("source"), instructionSolverResult{}, false)
+	outer := engine.declare(source, nil, digest.FromString("stage"), "stage", false, func(ctx context.Context, builder solver.Builder, _ []*instructionSolverResult) (*instructionSolverResult, error) {
+		if builder == nil {
+			return nil, errors.New("stage lacks upstream subgraph builder")
+		}
+		child, err := engine.begin(withInstructionBuilder(ctx, builder), source, digest.FromString("operation"), "operation", false)
+		if err != nil {
+			return nil, err
+		}
+		defer child.abort()
+		if child.request != nil {
+			err = child.finish(&instructionSolverResult{Entry: instructionCacheEntry{ImageID: "complete", ManifestDigest: digest.FromString("complete")}})
+		}
+		return child.result, err
+	})
+	if _, err := engine.build(t.Context(), outer, nil); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // This test runs the real upstream solver and persistent key database. Physical
 // results are deliberately opaque: the graph must retain the original complete
@@ -143,6 +233,76 @@ func TestInstructionResultMetadataRejectsIdentityChanges(t *testing.T) {
 	}
 	if filepath.Dir(path) != s.dir {
 		t.Fatal("result escaped its private directory")
+	}
+}
+
+func TestInstructionResultSemanticStateIdentityAndValidation(t *testing.T) {
+	ctx := t.Context()
+	s := instructionResultStorage{ctx: ctx, store: solverTestStore{}, dir: t.TempDir()}
+	value := instructionSolverResult{Entry: instructionCacheEntry{
+		ImageID: "stage", ManifestDigest: digest.FromString("stage"),
+		LogicalConfig: json.RawMessage(`{"config":{"Cmd":["ready"]},"extension":"one"}`),
+		CommandSet:    new(true), RetainsCaller: new(true), BaseImageID: digest.FromString("base").Encoded(),
+	}}
+	record, err := s.Save(&value, time.Unix(1, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := s.read(record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := instructionStageState(loaded)
+	if err != nil || !state.config.CommandSet() || !state.retainsCaller || state.baseImageID != value.Entry.BaseImageID {
+		t.Fatalf("semantic state did not restore: state=%+v error=%v", state, err)
+	}
+	for _, test := range []struct {
+		name    string
+		invalid bool
+		change  func(*instructionCacheEntry)
+	}{
+		{"logical config", false, func(e *instructionCacheEntry) {
+			e.LogicalConfig = json.RawMessage(`{"config":{"Cmd":["ready"]},"extension":"two"}`)
+		}},
+		{"command authorship", false, func(e *instructionCacheEntry) { e.CommandSet = new(false) }},
+		{"caller lineage", false, func(e *instructionCacheEntry) { e.RetainsCaller = new(false) }},
+		{"base identity", false, func(e *instructionCacheEntry) { e.BaseImageID = digest.FromString("other base").Encoded() }},
+		{"missing config", true, func(e *instructionCacheEntry) { e.LogicalConfig = nil }},
+		{"missing command state", true, func(e *instructionCacheEntry) { e.CommandSet = nil }},
+		{"missing caller state", true, func(e *instructionCacheEntry) { e.RetainsCaller = nil }},
+		{"malformed config", true, func(e *instructionCacheEntry) { e.LogicalConfig = json.RawMessage(`[]`) }},
+		{"malformed base", true, func(e *instructionCacheEntry) { e.BaseImageID = "not-an-image" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			changed := value
+			test.change(&changed.Entry)
+			if changed.ID() == record.ID {
+				t.Fatal("changed semantic state retained the original result identity")
+			}
+			if _, err := instructionStageState(&changed); (err != nil) != test.invalid {
+				t.Fatalf("semantic state restore: invalid=%v error=%v", test.invalid, err)
+			}
+			// Valid edits cannot replace an existing result's semantic state.
+			// Malformed state must also fail with its own consistent result ID.
+			id := record.ID
+			if test.invalid {
+				id = changed.ID()
+			}
+			path, err := s.path(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := json.Marshal(changed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.read(id); err == nil {
+				t.Fatal("persisted semantic-state tampering was accepted")
+			}
+		})
 	}
 }
 
@@ -263,28 +423,55 @@ func TestInstructionSolverZeroTTLStillWritesFreshResults(t *testing.T) {
 	}
 }
 
-func TestInstructionGraphUnportableRootFallsBackToNativeExecution(t *testing.T) {
-	f := newLocalComponentFixture(t)
-	f.write(t, "payload", "native execution remains available\n")
-	base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
-	// user.overlay.* is writable in an unprivileged fixture but deliberately
-	// excluded from Coopr's portable metadata contract. Ordinary Buildah RUN
-	// still accepts it; cache eligibility must not reject the build.
-	for _, name := range []string{"cold", "again"} {
-		result, layout := f.build(t, name, fmt.Sprintf(`from %q {
+func TestInstructionGraphOverlayBookkeepingPreservesNativeReuse(t *testing.T) {
+	// containers/storage deliberately excludes overlay bookkeeping from image
+	// archives. Exposing it on a VFS builder must not disable ordinary reuse.
+	for _, test := range []struct {
+		name, source string
+	}{
+		{"within-stage", `from %q {
     run "/bin/busybox setfattr -n user.overlay.coopr-test -v native-only /" network="none"
     copy "payload" "/proof"
 }
-`, base.reference))
-		if got := localComponentLastFile(t, layout, "proof"); got != "native execution remains available\n" {
-			t.Fatalf("native continuation output = %q", got)
-		}
-		if result.CacheStats.Errors != 0 || result.CacheStats.Stored != 0 {
-			t.Fatalf("nonportable root advertised reusable graph results: %+v", result.CacheStats)
-		}
-		if count := instructionCacheRecordCount(t, f.options.Store); count != 0 {
-			t.Fatalf("nonportable root retained %d instruction keys", count)
-		}
+`},
+		{"next-stage", `from %q as="producer" {
+    run "/bin/busybox setfattr -n user.overlay.coopr-test -v native-only /" network="none"
+}
+from "producer" { copy "payload" "/proof"; }
+`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newLocalComponentFixture(t)
+			f.write(t, "payload", "native execution remains available\n")
+			base := newLiveBusyBoxStorage(t, f.ctx, f.root, f.options.Store)
+			var runs atomic.Int64
+			f.options.Progress = func(event OperationProgress) {
+				if event.Instruction == "run" && event.Phase == "execute" && event.State == "started" {
+					runs.Add(1)
+				}
+			}
+			var cold Result
+			var coldConfig digest.Digest
+			for _, name := range []string{"cold", "warm"} {
+				before := runs.Load()
+				result, layout := f.build(t, name, fmt.Sprintf(test.source, base.reference))
+				if got := localComponentLastFile(t, layout, "proof"); got != "native execution remains available\n" {
+					t.Fatalf("native continuation output = %q", got)
+				}
+				if result.CacheStats.Errors != 0 {
+					t.Fatalf("overlay bookkeeping caused cache errors: %+v", result.CacheStats)
+				}
+				manifest, _ := readPlanImage(t, layout)
+				if name == "cold" {
+					if runs.Load() != before+1 || result.CacheStats.Stored == 0 {
+						t.Fatalf("cold producer execution/cache publication: runs=%d stats=%+v", runs.Load()-before, result.CacheStats)
+					}
+					cold, coldConfig = result, manifest.Config.Digest
+				} else if runs.Load() != before || result.CacheStats.Hits != 1 || result.CacheStats.Misses != 0 || result.ManifestDigest != cold.ManifestDigest || manifest.Config.Digest != coldConfig {
+					t.Fatalf("overlay bookkeeping prevented exact terminal reuse: runs=%d cold=%+v warm=%+v", runs.Load()-before, cold, result)
+				}
+			}
+		})
 	}
 }
 
@@ -367,4 +554,13 @@ func TestInstructionGraphRestorationKeySeparatesParentShapes(t *testing.T) {
 	if first == instructionGraphRestorationKey(digest.FromString("different operation"), 1) {
 		t.Fatal("different operations alias")
 	}
+}
+
+func mustInstructionPortableDigest(t *testing.T, vertex *instructionVertex) digest.Digest {
+	t.Helper()
+	value, err := vertex.portableDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return value
 }

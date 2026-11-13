@@ -15,7 +15,7 @@ The second build reports `Using cache` for reused checkpoints. Coopr matches ope
 
 Local instruction snapshots live in the [native image store](storage.md). They work with the default `--layers=true`; `--layers=false` reruns filesystem instructions instead of reading those snapshots. See [layer and cache behavior](../reference/execution.md#layers-storage-and-copying).
 
-Local COPY/ADD can still read and extract files on a cache hit. Keep source files stable while building. Live host-directory binds, including native `--volume` settings, force their RUNs to execute even when read-only. Use contexts, images or artifacts for reusable inputs.
+An eligible terminal graph hit restores the final native image without importing its ancestors. Coopr still resolves image metadata, checks trust and authorization, and captures immutable local inputs. When a stage needs execution, individual COPY/ADD hits can still read and extract files. Live host-directory binds, including native `--volume` settings, force their RUNs to execute even when read-only. Use contexts, images or artifacts for reusable inputs.
 
 ## Share results through a registry
 
@@ -36,6 +36,29 @@ coopr component build examples/reusable-components/components/settings/component
 ```
 
 Both commands run from the repository checkout. `--cache-from` reads results and `--cache-to` writes them; supply both to use a repository in both directions. Each option is repeatable. Registry values name repositories without tags or digests.
+
+Independent producers can share one registry cache, including common instruction
+prefixes. Publishing a shorter prefix preserves otherwise matching cached
+continuations from other builds. Reuse still requires matching inputs and
+execution settings; identical output bytes alone do not prove a cache hit.
+
+Unchanged results already present in a primary registry avoid restaging their
+image payloads, whether reused from native storage or imported from that
+repository. Coopr verifies graph metadata and required content presence while
+retaining the record's original age. Missing content, other destinations,
+mirror reads and fresh execution use the normal publication path.
+
+An OCI index names the result images and a metadata artifact whose config
+contains the complete graph and result records. Portable format versions use
+separate namespaces: older entries remain intact and cause cache misses rather
+than being migrated.
+
+Registry and persistent OCI cache content is digest-verified when read.
+Portable caches support OCI and Docker image manifests and can reuse their
+shared uncompressed layers without changing either manifest.
+Staging uses separate, read-only blob files. Retained staging data is checked
+again before reuse; the following copy traversal reuses that verification
+within the same gated operation. Complete export still verifies its inputs.
 
 ## Use a portable local cache
 

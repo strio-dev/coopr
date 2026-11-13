@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -157,6 +160,70 @@ func TestInstructionGraphSnapshotDoesNotAttachResultToOtherMatchingKeys(t *testi
 	}
 }
 
+func TestInstructionGraphSnapshotPreservesSharedDAGInputSlots(t *testing.T) {
+	engine, _, record, _, _ := instructionGraphPublicationFixture(t)
+	root := addInstructionGraphSnapshotChain(t, engine, record.Results)
+	selected := engine.portable.roots[root]
+	parent := selected.vertex.parent
+	var value instructionSolverResult
+	if err := json.Unmarshal(record.Results[0].Metadata, &value); err != nil {
+		t.Fatal(err)
+	}
+	branch := &instructionVertex{parent: parent.parent, key: digest.FromString("snapshot branch"), completed: &value}
+	sourceID := solver.NewCacheKey(parent.parent.key, "", 0).ID
+	if err := engine.keys.AddLink(sourceID, solver.CacheInfoLink{Digest: branch.key}, "snapshot-branch"); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.results.lazy.add(nil, []instructionGraphNode{{ID: "snapshot-branch", Results: []solver.CacheResult{{ID: value.ID(), CreatedAt: value.CreatedAt}}}}); err != nil {
+		t.Fatal(err)
+	}
+	selected.vertex.dependencies = []*instructionVertex{branch, parent}
+	for slot, input := range []string{"snapshot-node-0", "snapshot-branch", "snapshot-node-0"} {
+		if err := engine.keys.AddLink(input, solver.CacheInfoLink{Input: solver.Index(slot), Digest: selected.vertex.key}, "snapshot-node-1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := engine.keys.AddLink("snapshot-node-0", solver.CacheInfoLink{Digest: selected.vertex.key}, "primary-only"); err != nil {
+		t.Fatal(err)
+	}
+	root = mustInstructionPortableDigest(t, selected.vertex)
+	export, err := newInstructionGraphExport(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(export.dir) }()
+	got, layout, err := engine.portable.snapshot(t.Context(), root, selected, export)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := got.NativeMetadata(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metadata.Nodes) != 4 || len(metadata.Roots) != 1 || metadata.Roots[0] != "snapshot-node-1" || len(got.Results) != 2 {
+		t.Fatalf("shared DAG duplicated nodes/results or admitted a partial match: %+v, %d results", metadata, len(got.Results))
+	}
+	for _, node := range metadata.Nodes {
+		if node.ID == "snapshot-node-1" {
+			if len(node.Inputs) != 3 {
+				t.Fatalf("lost ordered input links: %+v", node.Inputs)
+			}
+			for slot, source := range []string{"snapshot-node-0", "snapshot-branch", "snapshot-node-0"} {
+				if !slices.Contains(node.Inputs, instructionGraphInput{Source: source, Link: solver.CacheInfoLink{Input: solver.Index(slot), Digest: selected.vertex.key}}) {
+					t.Fatalf("input slot %d lost source %s: %+v", slot, source, node.Inputs)
+				}
+			}
+		}
+	}
+	target, err := cache.NewLocalStore(t.Context(), t.TempDir(), t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := target.PutGraph(t.Context(), root, got, layout); err != nil {
+		t.Fatal("DAG export lost its complete selected closure", err)
+	}
+}
+
 func TestInstructionGraphSelectedPublicationConcurrentReplacement(t *testing.T) {
 	first, target, record, _, _ := instructionGraphPublicationFixture(t)
 	second, _, _, _, _ := instructionGraphPublicationFixture(t)
@@ -192,6 +259,45 @@ func TestInstructionGraphSelectedPublicationConcurrentReplacement(t *testing.T) 
 	for err := range errors {
 		if err != nil {
 			t.Error(err)
+		}
+	}
+}
+
+func TestInstructionGraphPublicationReusesInvocationLayout(t *testing.T) {
+	engine, target, record, _, _ := instructionGraphPublicationFixture(t)
+	root := addInstructionGraphSnapshotChain(t, engine, record.Results)
+	ancestor := engine.portable.roots[root].vertex.parent
+	prefix := mustInstructionPortableDigest(t, ancestor)
+	engine.portable.roots[prefix] = instructionGraphRoot{vertex: ancestor, result: record.Results[0].ID}
+	if err := engine.publishPortable(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(target.layouts) != 2 || target.layouts[0] != target.layouts[1] || !strings.HasPrefix(filepath.Base(filepath.Dir(target.layouts[0])), "graph-export-") {
+		t.Fatalf("prefix publication did not share its invocation-owned export layout: %v", target.layouts)
+	}
+	if _, err := os.Stat(target.layouts[0]); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("publication retained its temporary export layout: %v", err)
+	}
+	if engine.portable.cache.stats.Stored != 2 {
+		t.Fatalf("publication did not store both prefixes: %+v", engine.portable.cache.stats)
+	}
+	for _, selected := range []digest.Digest{prefix, root} {
+		got, layout, err := target.LookupGraph(t.Context(), selected)
+		if err != nil {
+			t.Fatal("published prefix lacks its complete image closure", err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(layout) })
+		want := 1
+		if selected == root {
+			want = len(record.Results)
+		}
+		if len(got.Results) != want {
+			t.Fatalf("shared layout leaked unrelated results into prefix %s: %+v", selected, got.Results)
+		}
+		for index, result := range got.Results {
+			if result.ID != record.Results[index].ID {
+				t.Fatalf("prefix %s changed its selected result: got %s, want %s", selected, result.ID, record.Results[index].ID)
+			}
 		}
 	}
 }
@@ -269,26 +375,34 @@ func TestInstructionGraphSnapshotBatchesSharedPayloads(t *testing.T) {
 			counter := &instructionSnapshotFetchCounter{Target: exports.layout, counts: map[digest.Digest]int{}}
 			exports.layout = counter
 			record, layout, err := engine.portable.snapshot(t.Context(), key, engine.portable.roots[key], exports)
-			if corrupt {
-				if err == nil || layout != "" || len(record.Results) != 0 {
-					t.Fatalf("corrupt selected ancestor returned a graph: %+v, %q, %v", record, layout, err)
-				}
-				remaining, err := filepath.Glob(filepath.Join(engine.portable.cache.stagingDir, "graph-*"))
-				if err != nil || len(remaining) != 0 {
-					t.Fatalf("failed snapshot retained staging: %v, %v", remaining, err)
-				}
-				return
-			}
 			if err != nil {
 				t.Fatal(err)
+			}
+			if layout != filepath.Join(exports.dir, "layout") {
+				t.Fatalf("snapshot created a separate payload layout: %s", layout)
 			}
 			if len(record.Results) != len(results) {
 				t.Fatalf("snapshot lost selected ancestors: %+v", record.Results)
 			}
-			// One verification read and one initial transfer cover both roots.
-			// The old per-result snapshot copy performs three reads instead.
-			if reads := counter.counts[layer.Digest]; reads != 2 {
-				t.Fatalf("shared payload read %d times, want two", reads)
+			// The invocation already owns these exported bytes. Snapshotting only
+			// selects metadata; the destination verifies the complete closure.
+			if reads := counter.counts[layer.Digest]; reads != 0 {
+				t.Fatalf("snapshot reread shared payload %d times, want zero", reads)
+			}
+			target, err := cache.NewLocalStore(t.Context(), t.TempDir(), t.TempDir(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := target.PutGraph(t.Context(), key, record, layout); corrupt {
+				if err == nil {
+					t.Fatal("corrupt selected ancestor was published")
+				}
+				if _, _, err := target.LookupGraph(t.Context(), key); !errors.Is(err, cache.ErrMiss) {
+					t.Fatalf("failed publication exposed a graph root: %v", err)
+				}
+				return
+			} else if err != nil {
+				t.Fatal("complete selected image closure was rejected", err)
 			}
 			destination, err := orasoci.New(layout)
 			if err != nil {
@@ -328,7 +442,7 @@ func addInstructionGraphSnapshotChain(t *testing.T, engine *instructionSolver, r
 		}
 		parent, parentID = vertex, id
 	}
-	root := parent.portableDigest()
+	root := mustInstructionPortableDigest(t, parent)
 	engine.portable.roots[root] = instructionGraphRoot{vertex: parent, result: results[len(results)-1].ID}
 	return root
 }

@@ -22,12 +22,14 @@ import (
 
 type instructionGraphPublicationTarget struct {
 	*cache.OCIStore
-	calls []digest.Digest
-	fail  error
+	calls   []digest.Digest
+	layouts []string
+	fail    error
 }
 
 func (target *instructionGraphPublicationTarget) PutGraph(ctx context.Context, root digest.Digest, record cache.GraphRecord, layout string) (v1.Descriptor, error) {
 	target.calls = append(target.calls, root)
+	target.layouts = append(target.layouts, layout)
 	if target.fail != nil {
 		return v1.Descriptor{}, target.fail
 	}
@@ -223,6 +225,10 @@ func TestInstructionGraphPublicationKeepsOtherFailuresFatal(t *testing.T) {
 				if _, err := engine.results.Save(&value, value.CreatedAt); err != nil {
 					t.Fatal(err)
 				}
+				// This result has only native storage, so export must use it.
+				engine.results.lazy.mu.Lock()
+				delete(engine.results.lazy.results, record.Results[0].ID)
+				engine.results.lazy.mu.Unlock()
 			case "write":
 				target.fail, want = syscall.ENOSPC, syscall.ENOSPC
 			}

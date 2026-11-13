@@ -12,21 +12,13 @@ import (
 	"go.podman.io/image/v5/pkg/blobinfocache"
 	nativecredentials "go.podman.io/image/v5/pkg/docker/config"
 	"go.podman.io/image/v5/types"
-	"oras.land/oras-go/v2/registry"
 )
-
-// orasArtifactBlobs uses the native shared blob cache as location hints while
-// configured ORAS clients own every registry request.
-type orasArtifactBlobs struct {
-	resolver *Resolver
-	ref      registry.Reference
-}
 
 // Cache coordinates match containers/image v5.41.2's Docker transport:
 // registry domains are scopes and normalized repository names are locations.
 // Keep this mapping isolated when updating containers/image; cache lookup and
 // recording use its public API, while all network access stays with ORAS.
-func (r orasArtifactBlobs) cacheCoordinates() (types.BlobInfoCache, types.BICTransportScope, nativereference.Named, error) {
+func (r *orasArtifactRepository) cacheCoordinates() (types.BlobInfoCache, types.BICTransportScope, nativereference.Named, error) {
 	named, err := nativereference.ParseNormalizedNamed(r.ref.Registry + "/" + r.ref.Repository)
 	if err != nil {
 		return nil, types.BICTransportScope{}, nil, err
@@ -34,13 +26,13 @@ func (r orasArtifactBlobs) cacheCoordinates() (types.BlobInfoCache, types.BICTra
 	return blobinfocache.DefaultCache(r.resolver.SystemContext()), types.BICTransportScope{Opaque: nativereference.Domain(named)}, named, nil
 }
 
-func (r orasArtifactBlobs) Exists(ctx context.Context, descriptor v1.Descriptor) (bool, error) {
+func (r *orasArtifactRepository) blobExists(ctx context.Context, descriptor v1.Descriptor) (bool, error) {
 	if err := checkDescriptor(descriptor); err != nil {
 		return false, err
 	}
 	var exists bool
 	err := retry.IfNecessary(ctx, func() error {
-		repo, err := r.resolver.orasRepository(ctx, r.ref.Registry+"/"+r.ref.Repository, nil, r.resolver.SystemContext(), 0)
+		repo, err := r.primaryRepository(ctx)
 		if err != nil {
 			return err
 		}
@@ -57,7 +49,7 @@ func (r orasArtifactBlobs) Exists(ctx context.Context, descriptor v1.Descriptor)
 	return exists, err
 }
 
-func (r orasArtifactBlobs) Push(ctx context.Context, descriptor v1.Descriptor, reader io.Reader) error {
+func (r *orasArtifactRepository) pushBlob(ctx context.Context, descriptor v1.Descriptor, reader io.Reader) error {
 	file, err := spoolArtifact(reader, descriptor)
 	if err != nil {
 		return err
@@ -72,7 +64,7 @@ func (r orasArtifactBlobs) Push(ctx context.Context, descriptor v1.Descriptor, r
 		cache.RecordKnownLocation(docker.Transport, scope, descriptor.Digest, types.BICLocationReference{Opaque: destination.Name()})
 	}
 	return retry.IfNecessary(ctx, func() error {
-		repo, err := r.resolver.orasRepository(ctx, r.ref.Registry+"/"+r.ref.Repository, nil, r.resolver.SystemContext(), 0)
+		repo, err := r.primaryRepository(ctx)
 		if err != nil {
 			return err
 		}

@@ -79,9 +79,6 @@ func captureBuildContext(ctx context.Context, options PlanOptions, indexed bool)
 		return options, capturedContext{}, errors.Join(err, snapshot.cleanup())
 	}
 	options.ContextDir, options.ContextPrepared = snapshot.directory, true
-	// Aggregate lookup retains the complete digest and directory, not a RUN
-	// selection index. Release this unused metadata reference before execution.
-	snapshot.index = nil
 	return options, snapshot, nil
 }
 

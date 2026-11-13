@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -104,16 +105,61 @@ func TestGraphSourceMetadataDoesNotFetchImagesAndSelectedRestoreIsComplete(t *te
 			t.Fatalf("selected plus complete retrieval duplicated payload %s: fetches=%d bytes=%d", payload.Digest, target.fetches[payload.Digest], target.read[payload.Digest])
 		}
 	}
+	// Ingestion must own separate bytes, not a link into mutable source storage.
+	stream, err := target.Target.Fetch(t.Context(), payloads[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := stream.(*os.File)
+	original, statErr := file.Stat()
+	if err := errors.Join(statErr, stream.Close()); err != nil {
+		t.Fatal(err)
+	}
+	owned, err := os.Stat(filepath.Join(layout, "blobs", payloads[0].Digest.Algorithm().String(), payloads[0].Digest.Encoded()))
+	if err != nil || os.SameFile(original, owned) || owned.Mode().Perm()&0o222 != 0 {
+		t.Fatal("private payload aliases source storage or remains writable", err)
+	}
+	if err := os.Chmod(file.Name(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file.Name(), bytes.Repeat([]byte("x"), int(payloads[0].Size)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assertGraphReaderImages(t, layout, record)
+	fresh, err := NewGraphReader(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = fresh.Close() }()
+	if _, _, err := fresh.Lookup(t.Context(), store, record.Root); err == nil {
+		t.Fatal("fresh reader accepted persistent source corruption")
+	}
 }
 
 func TestGraphSourceRecordIsDefensiveAndArtifactIsImmutable(t *testing.T) {
-	_, source, _, record, _, target := graphSourceFixture(t)
+	_, source, store, record, _, target := graphSourceFixture(t)
 	artifact, err := target.Resolve(t.Context(), graphTag(record.Root))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if source.Artifact().Digest != artifact.Digest {
 		t.Fatal("source lost admitted artifact identity")
+	}
+	source.primary = true // Model primary admission for this identity-only fixture.
+	source.MarkUsed(record.Results[1].ID)
+	if reuse, err := source.CanReuseAt(t.Context(), store, record.Root, record.Results[1]); err != nil || !reuse {
+		t.Fatal("used unchanged root result rejected", reuse, err)
+	}
+	for _, change := range []func(*GraphResult){
+		func(result *GraphResult) { result.Metadata = json.RawMessage(`{"root_mode":448}`) },
+		func(result *GraphResult) { result.Image.Size++ },
+		func(result *GraphResult) { result.BaseImage = nil },
+	} {
+		current := record.Results[1]
+		change(&current)
+		if reuse, err := source.CanReuseAt(t.Context(), store, record.Root, current); err != nil || reuse {
+			t.Fatal("changed result metadata or descriptor accepted", reuse, err)
+		}
 	}
 	got, err := source.Record()
 	if err != nil {
@@ -141,6 +187,35 @@ func TestGraphSourceRecordIsDefensiveAndArtifactIsImmutable(t *testing.T) {
 	}
 }
 
+func TestGraphSourceUsedResultMustBelongToRoot(t *testing.T) {
+	store, record, _, target := graphLookupFixture(t, v1.MediaTypeImageLayer, nil)
+	var metadata GraphMetadata
+	if err := json.Unmarshal(record.Metadata, &metadata); err != nil {
+		t.Fatal(err)
+	}
+	metadata.Roots = []string{metadata.Nodes[0].ID} // Results belong only to another node.
+	var err error
+	record.Metadata, err = json.Marshal(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record = publishGraphLookupRecord(t, target, record)
+	reader, err := NewGraphReader(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reader.Close() }()
+	source, err := reader.LookupMetadata(t.Context(), store, record.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.primary = true
+	source.MarkUsed(record.Results[0].ID)
+	if reuse, err := source.CanReuseAt(t.Context(), store, record.Root, record.Results[0]); err != nil || reuse {
+		t.Fatal("non-root use suppressed root publication", reuse, err)
+	}
+}
+
 func TestGraphSourceRecordPreservesRawMetadata(t *testing.T) {
 	store, record, _, target := graphLookupFixture(t, v1.MediaTypeImageLayer, nil)
 	record.Metadata = bytes.ReplaceAll(record.Metadata, []byte("\":"), []byte("\": "))
@@ -150,20 +225,13 @@ func TestGraphSourceRecordPreservesRawMetadata(t *testing.T) {
 	}
 	record.Results[0].Metadata = json.RawMessage(`{ "result": [ 3, 4 ] }`)
 	// Artifact encoders may preserve whitespace in embedded raw metadata.
-	// Keep sidecars canonical, but publish a valid noncanonical config value.
+	// Publish a valid noncanonical config value without normalizing raw metadata.
 	record = publishGraphLookupRecord(t, target.Target, record)
 	artifact, err := target.Resolve(t.Context(), graphTag(record.Root))
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifestData, err := fetchVerified(t.Context(), target, artifact, maxGraphRecordBytes)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var manifest v1.Manifest
-	if err := json.Unmarshal(manifestData, &manifest); err != nil {
-		t.Fatal(err)
-	}
+	index, manifest := graphTestMetadata(t, target, artifact)
 	configData, err := json.Marshal(record)
 	if err != nil {
 		t.Fatal(err)
@@ -172,11 +240,12 @@ func TestGraphSourceRecordPreservesRawMetadata(t *testing.T) {
 	configData = []byte(strings.ReplaceAll(string(configData), `{"result":[3,4]}`, string(record.Results[0].Metadata)))
 	config := pushSourceTestJSON(t, target, GraphConfigMediaType, configData)
 	manifest.Config = config
-	manifestData, err = json.Marshal(manifest)
+	manifestData, err := json.Marshal(manifest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	artifact = pushSourceTestJSON(t, target, v1.MediaTypeImageManifest, manifestData)
+	index.Manifests[0] = pushSourceTestJSON(t, target, v1.MediaTypeImageManifest, manifestData)
+	artifact = pushGraphTestJSON(t, target, v1.MediaTypeImageIndex, index)
 	if err := target.Tag(t.Context(), artifact, graphTag(record.Root)); err != nil {
 		t.Fatal(err)
 	}
@@ -380,21 +449,22 @@ func TestGraphSourceCloseDrainsActiveFetchAndRejectsNewWork(t *testing.T) {
 }
 
 func TestGraphSourceAdmissionChecksMetadataAndBounds(t *testing.T) {
-	for _, fault := range []string{"corrupt", "truncated", "trailing", "close"} {
+	for _, fault := range []string{"missing", "corrupt", "truncated", "trailing", "close"} {
 		t.Run(fault, func(t *testing.T) {
 			store, record, _, target := graphLookupFixture(t, v1.MediaTypeImageLayer, nil)
-			desc, err := record.Results[0].Descriptor()
+			artifact, err := target.Resolve(t.Context(), graphTag(record.Root))
 			if err != nil {
 				t.Fatal(err)
 			}
-			target.alter, target.failure = desc.Digest, fault
+			_, manifest := graphTestMetadata(t, target, artifact)
+			target.alter, target.failure = manifest.Config.Digest, fault
 			reader, err := NewGraphReader(t.TempDir())
 			if err != nil {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = reader.Close() })
 			if _, err := reader.LookupMetadata(t.Context(), store, record.Root); err == nil {
-				t.Fatal("invalid sidecar admitted")
+				t.Fatal("invalid record config admitted")
 			}
 			if len(reader.sources) != 0 || len(reader.declared) != 0 || reader.metadataBytes != 0 {
 				t.Fatal("failed metadata admission retained state")

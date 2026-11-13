@@ -53,7 +53,9 @@ func TestDirectionalComponentCacheReusesDefaultNetworkRunAcrossStores(t *testing
 	cacheSpec := []CacheSpec{{Transport: "oci-layout", Reference: cacheDir}}
 	cold := build("cold", nil, cacheSpec)
 	warm := build("warm", cacheSpec, nil)
-	if cold.CacheStats.Misses != 2 || cold.CacheStats.Stored != 2 || warm.CacheStats.Hits != 1 || warm.CacheStats.Misses != 0 {
+	// Cold publication includes the RUN, component image and both stage graphs;
+	// the read-only consumer publishes none of them.
+	if cold.CacheStats.Misses != 2 || cold.CacheStats.Stored != 4 || warm.CacheStats.Hits != 1 || warm.CacheStats.Misses != 0 || warm.CacheStats.Stored != 0 {
 		t.Fatalf("networked component cache result: cold=%s %+v warm=%s %+v", cold.ManifestDigest, cold.CacheStats, warm.ManifestDigest, warm.CacheStats)
 	}
 	coldManifest, _ := readPlanImage(t, filepath.Join(root, "cold", "layout"))

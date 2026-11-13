@@ -62,23 +62,64 @@ func TestInstructionImageStorePreservesExactGraph(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	record := ImageRecord{Key: key, Image: manifest, RootMetadata: json.RawMessage(`{"mode":493}`)}
-	if _, err := store.PutImage(ctx, key, record, sourcePath); err != nil {
+	source, err := orasoci.New(sourcePath)
+	if err != nil {
 		t.Fatal(err)
+	}
+	baseManifest := oci.VersionedManifest(config, []v1.Descriptor{layer}, "")
+	baseManifest.Annotations = map[string]string{"test": "base-image"}
+	base := pushGraphTestJSON(t, source, v1.MediaTypeImageManifest, baseManifest)
+	record := ImageRecord{Key: key, Image: manifest, BaseImage: &base, RootMetadata: json.RawMessage(`{"mode":493}`)}
+	root, err := store.PutImage(ctx, key, record, sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := fetchVerified(ctx, store.target, root, maxImageRecordBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var index v1.Index
+	if err := json.Unmarshal(data, &index); err != nil {
+		t.Fatal(err)
+	}
+	if root.MediaType != v1.MediaTypeImageIndex || index.ArtifactType != ImageArtifactType || len(index.Manifests) != 3 || !content.Equal(index.Manifests[1], manifest) || !content.Equal(index.Manifests[2], base) {
+		t.Fatalf("cache index does not retain exact image/base members: %+v", index)
+	}
+	data, err = fetchVerified(ctx, store.target, index.Manifests[0], maxImageRecordBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var metadata v1.Manifest
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		t.Fatal(err)
+	}
+	if metadata.ArtifactType != ImageArtifactType || metadata.Config.MediaType != ImageConfigMediaType || metadata.Layers == nil || len(metadata.Layers) != 0 {
+		t.Fatalf("metadata artifact does not contain only its record config: %+v", metadata)
+	}
+	var captured ImageRecord
+	data, err = fetchVerified(ctx, store.target, metadata.Config, maxImageRecordBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &captured); err != nil {
+		t.Fatal(err)
+	}
+	if captured.Version != ImageRecordVersion || !content.Equal(captured.Image, manifest) || captured.BaseImage == nil || !content.Equal(*captured.BaseImage, base) || !bytes.Equal(captured.RootMetadata, record.RootMetadata) {
+		t.Fatalf("metadata record changed: %+v", captured)
 	}
 	got, layout, err := store.LookupImage(ctx, key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = os.RemoveAll(layout) }()
-	if !content.Equal(got.Image, manifest) || !bytes.Equal(got.RootMetadata, record.RootMetadata) {
+	if !content.Equal(got.Image, manifest) || got.BaseImage == nil || !content.Equal(*got.BaseImage, base) || !bytes.Equal(got.RootMetadata, record.RootMetadata) {
 		t.Fatalf("record = %+v, want %+v", got, record)
 	}
 	restored, err := orasoci.New(layout)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, desc := range []v1.Descriptor{manifest, config, layer} {
+	for _, desc := range []v1.Descriptor{manifest, config, layer, base} {
 		stream, err := restored.Fetch(ctx, desc)
 		if err != nil {
 			t.Fatalf("restored graph lacks %s: %v", desc.Digest, err)
@@ -113,6 +154,84 @@ func TestInstructionImageStorePreservesExactGraph(t *testing.T) {
 	}
 	if _, err := broken.PutImage(ctx, key, record, sourcePath); err == nil {
 		t.Fatal("PutImage accepted an incomplete image graph")
+	}
+}
+
+//nolint:staticcheck // Existing nondistributable image and base layers must survive cache round trips.
+func TestInstructionImageStoreRetainsNondistributableImageAndBase(t *testing.T) {
+	ctx := t.Context()
+	fixture, sourcePath, foreignLayers := graphPublicationForeignFixture(t, v1.MediaTypeImageLayerNonDistributableGzip, false)
+	image, base := fixture.Results[1].Image, fixture.Results[0].Image
+	source, err := orasoci.New(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[digest.Digest][]byte{}
+	payloads := map[digest.Digest]v1.Descriptor{}
+	for _, root := range []v1.Descriptor{image, base} {
+		descriptors, err := imageGraphDescriptors(ctx, source, root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, descriptor := range descriptors {
+			data, err := fetchVerified(ctx, source, descriptor, maxImageRecordBytes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			payloads[descriptor.Digest], want[descriptor.Digest] = descriptor, data
+		}
+	}
+	cacheRoot := t.TempDir()
+	store, err := NewLocalStore(ctx, cacheRoot, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := ImageKey{Instruction: digest.FromString("foreign-image"), Parent: digest.FromString("parent"), Platform: v1.Platform{OS: "linux", Architecture: "amd64"}, Executor: "test", Format: "oci"}
+	record := ImageRecord{Key: key, Image: image, BaseImage: &base, CreatedAt: time.Now(), RootMetadata: json.RawMessage(`{"mode":493}`)}
+	if _, err := store.PutImage(ctx, key, record, sourcePath); err != nil {
+		t.Fatal(err)
+	}
+	// A new reader can restore the complete closure after the producer's
+	// source disappears; neither preexisting payloads nor its open store help.
+	if err := os.RemoveAll(sourcePath); err != nil {
+		t.Fatal(err)
+	}
+	target, err := orasoci.New(cacheRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counted := &countedCacheTarget{Target: target, fetches: map[digest.Digest]int{}}
+	reader := &OCIStore{target: counted, stagingDir: t.TempDir()}
+	got, layout, err := reader.LookupImage(ctx, key)
+	if err != nil {
+		t.Fatal("successful publication did not restore the foreign image and base", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(layout) })
+	if !content.Equal(got.Image, image) || got.BaseImage == nil || !content.Equal(*got.BaseImage, base) || !bytes.Equal(got.RootMetadata, record.RootMetadata) {
+		t.Fatalf("restored record changed: %+v", got)
+	}
+	restored, err := orasoci.New(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, descriptor := range []v1.Descriptor{image, base} {
+		if _, err := fetchVerified(ctx, restored, descriptor, maxImageRecordBytes); err != nil {
+			t.Fatal("restored image manifest is missing", descriptor.Digest, err)
+		}
+	}
+	for _, descriptor := range payloads {
+		data, err := fetchVerified(ctx, restored, descriptor, maxImageRecordBytes)
+		if err != nil || !bytes.Equal(data, want[descriptor.Digest]) {
+			t.Fatal("restored image payload differs", descriptor.Digest, err)
+		}
+		if counted.fetches[descriptor.Digest] != 1 {
+			t.Errorf("image/base payload %s fetched %d times; want once", descriptor.Digest, counted.fetches[descriptor.Digest])
+		}
+	}
+	for _, descriptor := range foreignLayers {
+		if _, err := fetchVerified(ctx, target, descriptor, maxImageRecordBytes); err != nil {
+			t.Fatal("cache publication omitted a nondistributable payload", descriptor.Digest, err)
+		}
 	}
 }
 

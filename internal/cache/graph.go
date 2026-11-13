@@ -10,21 +10,19 @@ import (
 	"github.com/moby/buildkit/solver"
 	digest "github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
-	"github.com/strio-dev/coopr/internal/oci"
 )
 
 const (
-	GraphRecordVersion   = "coopr.strio.dev/graph-cache-record"
-	GraphArtifactType    = "application/vnd.coopr.strio.dev.graph-cache.v1+json"
-	GraphConfigMediaType = "application/vnd.coopr.strio.dev.graph-cache.config.v1+json"
-	GraphResultMediaType = "application/vnd.coopr.strio.dev.graph-cache.result.v1+json"
+	GraphRecordVersion   = "coopr.strio.dev/graph-cache-record/v3"
+	GraphArtifactType    = "application/vnd.coopr.strio.dev.graph-cache.v3+json"
+	GraphConfigMediaType = "application/vnd.coopr.strio.dev.graph-cache.config.v3+json"
 	maxGraphRecordBytes  = 8 << 20
 	maxGraphEntries      = 4096
 	maxGraphDepth        = 512
 )
 
 // GraphResult retains a complete immutable image and executor-owned restoration
-// metadata. Its descriptor binds both in portable artifacts; identical images
+// metadata, bound together by the graph record's config digest. Identical images
 // may have distinct restoration metadata.
 type GraphResult struct {
 	ID        string          `json:"id"`
@@ -33,29 +31,29 @@ type GraphResult struct {
 	Metadata  json.RawMessage `json:"metadata"`
 }
 
-func (r GraphResult) Descriptor() (v1.Descriptor, error) {
+func (r GraphResult) validate() error {
 	if r.ID == "" || len(r.ID) > 1024 || strings.ContainsRune(r.ID, '\x00') {
-		return v1.Descriptor{}, errors.New("invalid graph result ID")
+		return errors.New("invalid graph result ID")
 	}
 	if err := validGraphImage(r.Image); err != nil {
-		return v1.Descriptor{}, err
+		return err
 	}
 	if r.BaseImage != nil {
 		if err := validGraphImage(*r.BaseImage); err != nil {
-			return v1.Descriptor{}, err
+			return err
 		}
 	}
 	if len(r.Metadata) == 0 || !json.Valid(r.Metadata) {
-		return v1.Descriptor{}, errors.New("invalid graph result metadata")
+		return errors.New("invalid graph result metadata")
 	}
 	data, err := json.Marshal(r)
 	if err != nil {
-		return v1.Descriptor{}, err
+		return err
 	}
 	if len(data) > maxGraphRecordBytes {
-		return v1.Descriptor{}, errors.New("graph result too large")
+		return errors.New("graph result too large")
 	}
-	return oci.Descriptor(GraphResultMediaType, data), nil
+	return nil
 }
 
 func validGraphImage(d v1.Descriptor) error {
@@ -85,7 +83,7 @@ type GraphInput struct {
 }
 
 // GraphRecord binds the native dependency topology in Metadata to complete
-// immutable image sidecars. Multiple physical results remain explicit.
+// immutable images and restoration metadata. Multiple results remain explicit.
 type GraphRecord struct {
 	Version   string          `json:"version"`
 	CreatedAt time.Time       `json:"created_at"`
@@ -100,7 +98,7 @@ func (r GraphRecord) Validate(root digest.Digest) error {
 	return err
 }
 
-// NativeMetadata admits the complete native topology and every result sidecar
+// NativeMetadata admits the complete native topology and every result
 // before importing images or exposing any dependency link to the solver.
 func (r GraphRecord) NativeMetadata(root digest.Digest) (metadata GraphMetadata, err error) {
 	if err := validSHA(root); err != nil {
@@ -121,7 +119,7 @@ func (r GraphRecord) NativeMetadata(root digest.Digest) (metadata GraphMetadata,
 	if len(metadata.Nodes) == 0 || len(metadata.Nodes) > maxGraphEntries || len(metadata.Roots) == 0 || len(metadata.Roots) > maxGraphEntries || len(r.Results) == 0 || len(r.Results) > maxGraphEntries {
 		return metadata, errors.New("graph cache entry count outside limits")
 	}
-	ids, descriptors := map[string]bool{}, map[digest.Digest]bool{}
+	ids := map[string]bool{}
 	images := map[digest.Digest]v1.Descriptor{}
 	metadataBytes := len(r.Metadata)
 	for _, result := range r.Results {
@@ -129,14 +127,13 @@ func (r GraphRecord) NativeMetadata(root digest.Digest) (metadata GraphMetadata,
 		if metadataBytes > maxGraphRecordBytes {
 			return metadata, errors.New("graph cache metadata too large")
 		}
-		desc, err := result.Descriptor()
-		if err != nil {
+		if err := result.validate(); err != nil {
 			return metadata, err
 		}
-		if ids[result.ID] || descriptors[desc.Digest] {
+		if ids[result.ID] {
 			return metadata, errors.New("duplicate graph result identity")
 		}
-		ids[result.ID], descriptors[desc.Digest] = true, true
+		ids[result.ID] = true
 		for _, image := range []*v1.Descriptor{&result.Image, result.BaseImage} {
 			if image == nil {
 				continue
@@ -209,7 +206,7 @@ func (r GraphRecord) NativeMetadata(root digest.Digest) (metadata GraphMetadata,
 		}
 	}
 	if len(used) != len(ids) {
-		return metadata, errors.New("unreferenced graph result sidecar")
+		return metadata, errors.New("unreferenced graph result")
 	}
 	return metadata, validateGraphDepth(nodes)
 }
