@@ -20,6 +20,7 @@ import (
 	"github.com/cyphar/filepath-securejoin"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/api"
 	"github.com/strio-dev/coopr/internal/buildah"
 	"github.com/strio-dev/coopr/internal/buildcontext"
 	"github.com/strio-dev/coopr/internal/componentstore"
@@ -37,6 +38,8 @@ import (
 type Options struct {
 	Progress             buildah.OperationProgressFunc
 	ProgressDropped      func(uint64)
+	Exports              []api.FileExport
+	ExportResults        func([]api.ExportResult)
 	Lifecycle            buildah.LifecycleControls
 	Output               buildah.FilesystemOutput
 	Outputs              []buildah.FilesystemOutput
@@ -436,7 +439,7 @@ func Run(ctx context.Context, opts Options) (_ Result, retErr error) {
 			ProgressPrefix:    progressPrefix,
 			ProgressReference: progressReference,
 			Store:             buildStore, ContextDir: opts.Context, IgnoreFile: opts.IgnoreFile, ContextArtifacts: contextArtifacts,
-			Output: buildah.Output{Path: output, Format: opts.Format, Squash: opts.Squash, SquashAll: opts.SquashAll, DisableCompression: opts.DisableCompression, BlobDirectory: opts.BlobDirectory, CompressionFormat: opts.CompressionFormat, CompressionLevel: opts.CompressionLevel, ForceCompression: opts.ForceCompression, ConfidentialWorkload: opts.ConfidentialWorkload, SBOM: opts.SBOM, Filesystems: platformFilesystemOutputs(outputs, targetPlatform, len(targets))}, ComponentStoreDir: componentStoreDir,
+			Output: buildah.Output{Path: output, Format: opts.Format, Squash: opts.Squash, SquashAll: opts.SquashAll, DisableCompression: opts.DisableCompression, BlobDirectory: opts.BlobDirectory, CompressionFormat: opts.CompressionFormat, CompressionLevel: opts.CompressionLevel, ForceCompression: opts.ForceCompression, ConfidentialWorkload: opts.ConfidentialWorkload, SBOM: opts.SBOM, Filesystems: platformFilesystemOutputs(outputs, targetPlatform, len(targets)), Exports: opts.Exports}, ComponentStoreDir: componentStoreDir,
 			PullPolicy: opts.PullPolicy, SourcePolicyFile: opts.SourcePolicyFile, TransientRunMounts: opts.TransientRunMounts,
 			NoCache:     opts.NoCache,
 			Network:     opts.Network,
@@ -464,6 +467,9 @@ func Run(ctx context.Context, opts Options) (_ Result, retErr error) {
 		})
 		if opts.ProgressDropped != nil {
 			opts.ProgressDropped(result.ProgressDropped)
+		}
+		if opts.ExportResults != nil {
+			opts.ExportResults(result.Exports)
 		}
 		if buildErr != nil {
 			return platformBuild{}, fmt.Errorf("build %s for %s: %w", definitionDisplayName(opts.File), targetPlatform, buildErr)

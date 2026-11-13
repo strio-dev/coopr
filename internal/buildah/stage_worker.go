@@ -354,7 +354,7 @@ func (executor *graphExecutor) completeStageWorkerResponse(ctx context.Context, 
 func stageWorkerResult(response stageWorkerResponse, stageID string, store storage.Store) (executedGraphStage, error) {
 	if response.ImageID == "" {
 		if response.Failure != nil {
-			return executedGraphStage{}, nil
+			return executedGraphStage{result: response.Result}, nil
 		}
 		return executedGraphStage{}, fmt.Errorf("stage %s result lacks an image ID", stageID)
 	}
@@ -599,6 +599,7 @@ func executeStageWorkerRequestControlled(ctx context.Context, request stageWorke
 		cacheMountID: cacheMountID, cacheScope: request.CacheScope, progressPrefix: request.ProgressPrefix, delivery: request.Delivery,
 		graphEndpoint: graphParent,
 	}, request.Aliases, images, outputStageID(request), observedStage(request), true)
+	response.Result = finished.result
 	if err != nil {
 		return response, err
 	}

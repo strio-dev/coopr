@@ -106,6 +106,7 @@ func TestCompatibilityMatrixAndCapabilityPreflight(t *testing.T) {
 		"registry write": execution(),
 		"contexts":       execution(),
 		"copy context":   execution(),
+		"file exports":   execution(),
 	}
 	read := tests["registry read"]
 	read.Options.Cache.RegistryFrom = []string{"registry.example/cache"}
@@ -119,6 +120,9 @@ func TestCompatibilityMatrixAndCapabilityPreflight(t *testing.T) {
 	copyContext := tests["copy context"]
 	copyContext.Program.States[0].Operations = []api.Operation{{Kind: "copy", From: api.Source{Context: "assets"}}}
 	tests["copy context"] = copyContext
+	fileExports := tests["file exports"]
+	fileExports.Options.Output.Exports = []api.FileExport{{Source: "/report", Destination: "/owned/report"}}
+	tests["file exports"] = fileExports
 	for name, request := range tests {
 		t.Run(name, func(t *testing.T) {
 			var posts atomic.Int32
@@ -127,6 +131,27 @@ func TestCompatibilityMatrixAndCapabilityPreflight(t *testing.T) {
 				t.Fatalf("missing required capability reached POST: posts=%d err=%v", posts.Load(), err)
 			}
 		})
+	}
+}
+
+func TestSelectedFileExportsSurviveExecutionFailure(t *testing.T) {
+	want := api.FileExport{Source: "/report.json", Destination: "/owned/report.json"}
+	c := testClient(t, `{"apiVersion":1,"capabilities":["execute","selected-file-exports"]}`, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request api.Request
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+		}
+		if len(request.Options.Output.Exports) != 1 || request.Options.Output.Exports[0] != want {
+			t.Errorf("export request changed: %+v", request.Options.Output)
+		}
+		encode(t, w, api.Event{Type: "result", Result: &api.Result{Exports: []api.ExportResult{{Source: want.Source, Destination: want.Destination, Status: "passed"}}}, Error: &api.Error{Code: "execution_failed", Message: "RUN exited 23"}})
+	}))
+	request := execution()
+	request.Options.Output.Exports = []api.FileExport{want}
+	result, err := c.Execute(t.Context(), request, StreamOptions{})
+	var remote *api.Error
+	if !errors.As(err, &remote) || remote.Code != "execution_failed" || len(result.Exports) != 1 || result.Exports[0].Status != "passed" || result.Exports[0].Destination != want.Destination {
+		t.Fatalf("failed RUN lost diagnostic receipt or failure: %+v %v", result, err)
 	}
 }
 

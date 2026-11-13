@@ -286,7 +286,9 @@ func TestPublicClientNativeCancellationWaitsForWorkerDrain(t *testing.T) {
 	defer cancel()
 	c, _ := publicNativeClient(t)
 	run, cancelRun := context.WithCancel(ctx)
-	done := startPublicNative(run, c, f.request("client-cancel", "canceled", "shared"))
+	request := f.request("client-cancel", "canceled", "shared")
+	request.Options.Output.Exports = []api.FileExport{{Source: "/proof", Destination: filepath.Join(f.root, "canceled-proof")}}
+	done := startPublicNative(run, c, request)
 	awaitNativeAPIArrivals(t, ctx, f, "canceled")
 	if workers := directNativeAPIWorkers(t); len(workers) != 1 {
 		t.Fatalf("missing worker before cancellation: %v", workers)
@@ -313,6 +315,9 @@ func TestPublicClientNativeCancellationWaitsForWorkerDrain(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(f.root, "client-cancel.oci")); !os.IsNotExist(err) {
 		t.Fatalf("canceled client invocation published output: %v", err)
+	}
+	if _, err := os.Lstat(request.Options.Output.Exports[0].Destination); !os.IsNotExist(err) {
+		t.Fatalf("canceled client invocation published a selected file: %v", err)
 	}
 	f.once.Do(func() { close(f.release) })
 	retry := awaitPublicNative(t, ctx, startPublicNative(ctx, c, f.request("client-cancel-retry", "canceled", "shared")))

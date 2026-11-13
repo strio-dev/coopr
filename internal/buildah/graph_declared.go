@@ -190,6 +190,7 @@ func (graph *declaredStageGraph) declare(ctx context.Context, plan *planner.Plan
 		// Filesystem destinations are replayed after selecting the image, just
 		// like the OCI destination. They do not change that image's identity.
 		keyOutput.Filesystem, keyOutput.Filesystems = FilesystemOutput{}, nil
+		keyOutput.Exports = nil
 		raw, err := json.Marshal(struct {
 			Namespace                  string
 			Stage                      planner.Stage

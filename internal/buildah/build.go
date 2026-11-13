@@ -12,6 +12,7 @@ import (
 
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/api"
 	"github.com/strio-dev/coopr/internal/oci"
 	upstream "go.podman.io/buildah"
 	"go.podman.io/buildah/copier"
@@ -61,6 +62,7 @@ type Output struct {
 	SBOM                 []define.SBOMScanOptions
 	Filesystem           FilesystemOutput
 	Filesystems          []FilesystemOutput
+	Exports              []api.FileExport
 }
 
 const (
@@ -103,6 +105,7 @@ type Result struct {
 	Reference       string
 	Platform        string
 	CacheStats      CacheStats
+	Exports         []api.ExportResult
 }
 
 func newBuilderOptionsWithHosts(base string, isolation define.Isolation, capabilities []string, network nettypes.ContainerNetwork, temporaryDir, outputFormat string, addHosts []string, controls RunControls) (upstream.BuilderOptions, error) {
@@ -373,6 +376,13 @@ func validateBuildInputs(store StoreOptions, contextDir string, output Output) e
 		return err
 	}
 	if err := validateFinalizationOutput(output); err != nil {
+		return err
+	}
+	resources := []string{store.RunRoot, store.GraphRoot, store.ImageStore, contextDir, output.Path, output.Filesystem.Path}
+	for _, filesystem := range output.Filesystems {
+		resources = append(resources, filesystem.Path)
+	}
+	if err := ValidateFileExportResources(output.Exports, resources...); err != nil {
 		return err
 	}
 	if output.Path == "" {

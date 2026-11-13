@@ -49,7 +49,7 @@ func reply(w http.ResponseWriter, code int, value any) {
 }
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/v1/info" && r.Method == http.MethodGet {
-		reply(w, 200, api.Info{APIVersion: api.Version, Version: s.version, Capabilities: []string{api.CapabilityComponentLoad, api.CapabilityComponentLoadName, api.CapabilityRunNetwork, api.CapabilityExecute, api.CapabilityBuild, api.CapabilityComponent, api.CapabilityPublish, api.CapabilityPublishOCILayout, api.CapabilityRegistryCache, api.CapabilityOperationProgress, api.CapabilityNamedContexts, api.CapabilityRunMounts, api.CapabilityBuildPlatform}})
+		reply(w, 200, api.Info{APIVersion: api.Version, Version: s.version, Capabilities: []string{api.CapabilityComponentLoad, api.CapabilityComponentLoadName, api.CapabilityRunNetwork, api.CapabilityExecute, api.CapabilityBuild, api.CapabilityComponent, api.CapabilityPublish, api.CapabilityPublishOCILayout, api.CapabilityRegistryCache, api.CapabilityOperationProgress, api.CapabilityNamedContexts, api.CapabilityRunMounts, api.CapabilityBuildPlatform, api.CapabilitySelectedFileExports}})
 		return
 	}
 	id := strings.TrimPrefix(r.URL.Path, "/v1/executions/")

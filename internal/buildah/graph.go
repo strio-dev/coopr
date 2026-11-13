@@ -617,7 +617,8 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 				return Result{}, false, err
 			}
 		}
-		return finished.result, true, nil
+		finished.result.Exports, err = exportImageFiles(graphCtx, executor.store, finished.result.ImageID, executor.options.Output.Exports, timestampPolicyFromOptions(executor.options))
+		return finished.result, true, err
 	}
 
 	for {
@@ -829,7 +830,7 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 		if progressed {
 			result, done, err := reportCompleted()
 			if err != nil {
-				return Result{}, drain("", err)
+				return result, drain("", err)
 			}
 			if done {
 				return result, nil
@@ -879,7 +880,7 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 			finishedStages[solved.stageID] = finished
 			result, done, err := reportCompleted()
 			if err != nil {
-				return Result{}, drain(solved.stageID, err)
+				return result, drain(solved.stageID, err)
 			}
 			if done {
 				return result, nil
@@ -995,7 +996,7 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 			images[completion.stageID] = completion.result.state
 		}
 		if completion.err != nil {
-			return Result{}, drain(completion.stageID, completion.err)
+			return completion.result.result, drain(completion.stageID, completion.err)
 		}
 		completed[completion.stageID] = true
 		finishedStages[completion.stageID] = completion.result
@@ -1017,7 +1018,7 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 		}
 		result, done, err := reportCompleted()
 		if err != nil {
-			return Result{}, drain(completion.stageID, err)
+			return result, drain(completion.stageID, err)
 		}
 		if done {
 			return result, nil
@@ -1487,7 +1488,7 @@ func (executor *graphExecutor) executeGraphStage(ctx context.Context, plan *plan
 	var graphEndpoint *instructionVertex
 	imageID, stageResult, rootMetadata, err := executor.executePlanStage(ctx, builder, builderOptions, prepared.operations, aliases, images, stagePlatform, prepared.cacheMountID, prepared.logical, prepared.baseLogical, prepared.baseManifest, rootBaseline, stage.ID == imageOutputID, graphStageNeedsRootMetadata(plan, stage.ID, observed), allowInstructionCache, progress, &effectiveBase, &retainsCaller, prepared.componentReturnHandler, prepared.graphEndpoint, &graphEndpoint, prepared.delivery)
 	if err != nil {
-		return executedGraphStage{}, fmt.Errorf("stage %s: %w", stage.ID, err)
+		return executedGraphStage{result: stageResult}, fmt.Errorf("stage %s: %w", stage.ID, err)
 	}
 	if stage.ID == imageOutputID {
 		progress.commit(executor.options.ProgressReference)
@@ -2411,7 +2412,13 @@ func (executor *graphExecutor) executePlanStage(ctx context.Context, builder *up
 						err = applyOperationWithContextContext(ctx, adapter, options.ContextDir, artifacts, operation)
 					}
 					if err != nil {
-						return "", Result{}, nil, fmt.Errorf("operation %d: %w", index+1, err)
+						operationErr := fmt.Errorf("operation %d: %w", index+1, err)
+						var status interface{ ExitCode() int }
+						if output && len(options.Output.Exports) != 0 && plannedOperation.Name == "run" && ctx.Err() == nil && !errors.Is(err, ErrWorkerWaitIncomplete) && errors.As(err, &status) && status.ExitCode() > 0 {
+							receipts, exportErr := exportBuilderFiles(ctx, store, current, options.Output.Exports, timestampPolicyFromOptions(options))
+							return "", Result{Exports: receipts}, nil, errors.Join(operationErr, exportErr)
+						}
+						return "", Result{}, nil, operationErr
 					}
 				}
 			}

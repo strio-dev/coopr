@@ -23,6 +23,43 @@ func request(t *testing.T) api.Request {
 	}
 	return api.Request{Kind: "execute", Program: &api.Program{States: []api.State{{ID: "result", From: api.Source{Image: "scratch"}}}, Output: "result"}, Options: api.Options{ContextDir: contextDir, Store: api.Store{RunRoot: filepath.Join(root, "run"), GraphRoot: filepath.Join(root, "graph")}, Output: api.Output{OCI: filepath.Join(root, "output")}}}
 }
+
+func TestSelectedFileExportsValidateBeforeNativeMutation(t *testing.T) {
+	for _, scenario := range []string{"valid", "relative-source", "traversal", "context", "store", "output", "overlapping", "symlink"} {
+		t.Run(scenario, func(t *testing.T) {
+			r := request(t)
+			root := filepath.Dir(r.Options.ContextDir)
+			r.Options.Output.Exports = []api.FileExport{{Source: "/report", Destination: filepath.Join(root, "report")}}
+			switch scenario {
+			case "relative-source":
+				r.Options.Output.Exports[0].Source = "report"
+			case "traversal":
+				r.Options.Output.Exports[0].Source = "/a/../report"
+			case "context":
+				r.Options.Output.Exports[0].Destination = filepath.Join(r.Options.ContextDir, "report")
+			case "store":
+				r.Options.Output.Exports[0].Destination = filepath.Join(r.Options.Store.GraphRoot, "report")
+			case "output":
+				r.Options.Output.Exports[0].Destination = filepath.Join(r.Options.Output.OCI, "report")
+			case "overlapping":
+				r.Options.Output.Exports = append(r.Options.Output.Exports, api.FileExport{Source: "/second", Destination: filepath.Join(root, "report", "second")})
+			case "symlink":
+				alias := filepath.Join(root, "alias")
+				if err := os.Symlink(r.Options.ContextDir, alias); err != nil {
+					t.Fatal(err)
+				}
+				r.Options.Output.Exports[0].Destination = filepath.Join(alias, "report")
+			}
+			err := validate(r)
+			if (err == nil) != (scenario == "valid") {
+				t.Fatalf("selected export admission %s: %v", scenario, err)
+			}
+			if _, err := os.Lstat(r.Options.Store.GraphRoot); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("validation created native storage: %v", err)
+			}
+		})
+	}
+}
 func TestLiteralProgram(t *testing.T) {
 	args := []string{"sh", "-c", `${literal} 'quotes' spaces\n`}
 	input := api.Program{Output: "out", States: []api.State{{ID: "out", From: api.Source{Image: "scratch"}, Operations: []api.Operation{{Kind: "env", Name: "VALUE", Value: "${literal}"}, {Kind: "run", Args: args}, {Kind: "copy", Sources: []string{"a b"}, Destination: "/a b"}}}}}

@@ -90,7 +90,7 @@ func Execute(ctx context.Context, request api.Request, stdout, stderr io.Writer)
 		}
 		result, err := coopr.Execute(ctx, program, coopr.Options{Contexts: opts.Contexts, Store: coopr.StoreOptions(opts.Store), ContextDir: opts.ContextDir, Runtime: opts.Runtime, Isolation: opts.Isolation, Network: opts.Network, Jobs: opts.Jobs, Output: coopr.Output(opts.Output), Cache: coopr.CacheOptions(opts.Cache), Registry: coopr.RegistryOptions{AuthFile: opts.Registry.AuthFile, CertDir: opts.Registry.CertDir, PullPolicy: opts.Registry.PullPolicy, SignaturePolicyPath: opts.Registry.SignaturePolicyPath, TLSVerify: opts.Registry.TLSVerify}, Stdout: stdout, Stderr: stderr, Progress: api.ProgressObserver(ctx)})
 		stats := api.CacheStats(result.Cache)
-		return api.Result{ImageID: result.ImageID, ManifestDigest: result.ManifestDigest, Platform: result.Platform, OCI: result.OCI, Filesystem: result.Filesystem, Cache: &stats, ProgressDropped: result.ProgressDropped}, executionError(err)
+		return api.Result{ImageID: result.ImageID, ManifestDigest: result.ManifestDigest, Platform: result.Platform, OCI: result.OCI, Filesystem: result.Filesystem, Cache: &stats, ProgressDropped: result.ProgressDropped, Exports: result.Exports}, executionError(err)
 	}
 	if request.Kind == "publish" {
 		_, finish := buildah.ObserveOperationPhase(ctx, buildah.OperationProgress{Instruction: "publish", Phase: "export"})
@@ -136,7 +136,7 @@ func Execute(ctx context.Context, request api.Request, stdout, stderr io.Writer)
 			if target.Name != "" {
 				outputs = []buildah.FilesystemOutput{{Type: "local", Path: target.Name}}
 			}
-			built, buildErr := build.Run(ctx, build.Options{Platform: requestedPlatform, Files: definition.Files, File: definition.Files[0], Context: opts.ContextDir, BuildContexts: namedContexts, Target: definition.Target, Args: definition.Args, MetadataFile: metadata, Outputs: outputs, BuildStore: store, ComponentStoreDir: componentStore(definition.ComponentStoreDir, opts.Store.GraphRoot), CacheMountDir: opts.Cache.MountDir, CacheLocalDir: opts.Cache.LocalDir, CacheFrom: cacheFrom, CacheTo: cacheTo, NoCache: opts.Cache.NoCache, Network: opts.Network, RunControls: controls, Jobs: opts.Jobs, AuthFile: opts.Registry.AuthFile, CertDir: opts.Registry.CertDir, PullPolicy: opts.Registry.PullPolicy, SignaturePolicyPath: opts.Registry.SignaturePolicyPath, TLSVerify: opts.Registry.TLSVerify, Stdout: stdout, Stderr: stderr, Progress: buildah.OperationProgressFunc(api.ProgressObserver(ctx)), ProgressDropped: recordDropped})
+			built, buildErr := build.Run(ctx, build.Options{Platform: requestedPlatform, Files: definition.Files, File: definition.Files[0], Context: opts.ContextDir, BuildContexts: namedContexts, Target: definition.Target, Args: definition.Args, MetadataFile: metadata, Outputs: outputs, Exports: opts.Output.Exports, ExportResults: func(exports []api.ExportResult) { result.Exports = exports }, BuildStore: store, ComponentStoreDir: componentStore(definition.ComponentStoreDir, opts.Store.GraphRoot), CacheMountDir: opts.Cache.MountDir, CacheLocalDir: opts.Cache.LocalDir, CacheFrom: cacheFrom, CacheTo: cacheTo, NoCache: opts.Cache.NoCache, Network: opts.Network, RunControls: controls, Jobs: opts.Jobs, AuthFile: opts.Registry.AuthFile, CertDir: opts.Registry.CertDir, PullPolicy: opts.Registry.PullPolicy, SignaturePolicyPath: opts.Registry.SignaturePolicyPath, TLSVerify: opts.Registry.TLSVerify, Stdout: stdout, Stderr: stderr, Progress: buildah.OperationProgressFunc(api.ProgressObserver(ctx)), ProgressDropped: recordDropped})
 			result.ImageID = built.ImageID
 			return "", buildErr
 		}
@@ -504,6 +504,16 @@ func validate(r api.Request) error {
 			*p = normalized
 		}
 	}
+	if err := buildah.ValidateFileExports(o.Output.Exports); err != nil {
+		return err
+	}
+	for i := range o.Output.Exports {
+		normalized, err := canonical(o.Output.Exports[i].Destination)
+		if err != nil {
+			return err
+		}
+		o.Output.Exports[i].Destination = normalized
+	}
 	if overlap(o.Store.RunRoot, o.Store.GraphRoot) {
 		return errors.New("native store roots must not overlap")
 	}
@@ -590,6 +600,7 @@ func validate(r api.Request) error {
 						if !info.IsDir() {
 							return errors.New("live host bind must be a directory")
 						}
+						resources = append(resources, host)
 						for _, resource := range []string{o.Store.RunRoot, o.Store.GraphRoot, o.Cache.LocalDir, o.Cache.MountDir, o.Output.OCI, o.Output.Filesystem} {
 							if resource != "" && overlap(host, resource) {
 								return errors.New("live host bind overlaps store, cache or output")
@@ -687,7 +698,7 @@ func validate(r api.Request) error {
 				}
 			}
 		}
-		if o.Output.OCI != "" || o.Output.Filesystem != "" {
+		if o.Output.OCI != "" || o.Output.Filesystem != "" || len(o.Output.Exports) != 0 {
 			return errors.New("publish uses explicit destinations, not build outputs")
 		}
 		return nil
@@ -711,6 +722,24 @@ func validate(r api.Request) error {
 	}
 	if o.Output.Filesystem != "" && overlap(o.Output.OCI, o.Output.Filesystem) {
 		return errors.New("output paths overlap")
+	}
+	if len(o.Output.Exports) != 0 && r.Kind != "execute" && r.Kind != "build" {
+		return errors.New("selected file exports require an image build or execution")
+	}
+	for i, export := range o.Output.Exports {
+		if err := fresh(export.Destination); err != nil {
+			return err
+		}
+		for _, resource := range append(append([]string(nil), resources...), o.Output.OCI, o.Output.Filesystem) {
+			if resource != "" && overlap(resource, export.Destination) {
+				return errors.New("selected export overlaps store, cache, context or output")
+			}
+		}
+		for _, previous := range o.Output.Exports[:i] {
+			if overlap(previous.Destination, export.Destination) {
+				return errors.New("selected export destinations overlap")
+			}
+		}
 	}
 	return nil
 }

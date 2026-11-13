@@ -81,6 +81,7 @@ or `Negotiate(ctx, caps...)` to require features in advance.
 | Registry cache sources or destinations | `registry-cache` |
 | Named contexts | `named-contexts` |
 | Image/context/host RUN mounts or persistent cache mount directory | `run-mounts` |
+| Selected file or directory exports | `selected-file-exports` |
 
 Compatibility depends on the API version and capabilities, not identical client
 and executable version strings. A client caches the service version and
@@ -91,7 +92,10 @@ capabilities; create a new client when restarting or replacing the service.
 
 Inspect both the result and error. Publication to several destinations can
 partially succeed; the result retains successful destinations even when another
-fails. Use `errors.As` to inspect structured `*api.Error`, `*client.HTTPError`
+fails. `Output.Exports` similarly returns `Result.Exports`, including diagnostics
+captured from an ordinary failed RUN in the selected output state. The execution
+error remains authoritative for success gates. See [selected file exports](../reference/api.md#selected-file-exports)
+for source, staging and cleanup rules. Use `errors.As` to inspect structured `*api.Error`, `*client.HTTPError`
 and `*client.ExecutionError` values. An execution error includes its ID, cause
 and any cleanup error.
 

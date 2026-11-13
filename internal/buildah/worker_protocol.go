@@ -174,7 +174,7 @@ func BuildPlanSupervised(ctx context.Context, plan *planner.Plan, options Superv
 	}
 	response, err := runPlanSupervised(ctx, plan, options, "build")
 	if err != nil {
-		return Result{ProgressDropped: response.ProgressDropped}, err
+		return Result{ProgressDropped: response.ProgressDropped, Exports: response.Result.Exports}, err
 	}
 	response.Result.Layout = options.Output.Path
 	return response.Result, nil
@@ -198,7 +198,7 @@ func BuildDefinitionSupervised(ctx context.Context, def *definition.Definition, 
 	}
 	response, err := runDefinitionSupervised(ctx, def, planning, options, "build")
 	if err != nil {
-		return Result{ProgressDropped: response.ProgressDropped}, err
+		return Result{ProgressDropped: response.ProgressDropped, Exports: response.Result.Exports}, err
 	}
 	response.Result.Layout = options.Output.Path
 	return response.Result, nil
@@ -276,7 +276,13 @@ func runDefinitionSupervised(ctx context.Context, def *definition.Definition, pl
 	return runBuildSupervised(ctx, nil, def, &planning, options, mode, executionRecipe...)
 }
 
-func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition.Definition, planning *planner.Options, options SupervisedPlanOptions, mode string, executionRecipe ...bool) (_ planWorkerResponse, retErr error) {
+func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition.Definition, planning *planner.Options, options SupervisedPlanOptions, mode string, executionRecipe ...bool) (result planWorkerResponse, retErr error) {
+	exportsPublished := false
+	defer func() {
+		if !exportsPublished && len(options.Output.Exports) != 0 {
+			result.Result.Exports = skippedFileExports(options.Output.Exports, "execution did not confirm uncanceled cleanup")
+		}
+	}()
 	sourcePolicy, err := loadSourcePolicy(options.SourcePolicyFile)
 	if err != nil {
 		return planWorkerResponse{}, err
@@ -293,6 +299,15 @@ func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition
 	}
 	if options.Jobs < 0 {
 		return planWorkerResponse{}, errors.New("jobs must be nonnegative")
+	}
+	resources := []string{options.CacheLocalDir, options.CacheMountDir, options.ComponentStoreDir, options.AuthFile, options.CertDir}
+	for _, input := range options.BuildContexts {
+		if input.Kind == buildcontext.Local {
+			resources = append(resources, input.Path)
+		}
+	}
+	if err := ValidateFileExportResources(options.Output.Exports, resources...); err != nil {
+		return planWorkerResponse{}, err
 	}
 	activity, err := acquireSupervisedActivity(ctx, options)
 	if err != nil {
@@ -366,6 +381,19 @@ func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition
 	}
 	workerOutput := options.Output
 	workerOutput.Path = filepath.Join(jobDir, "layout")
+	stagedExports, exportDirectories, err := stageFileExports(options.Output.Exports)
+	defer func() {
+		if removeJobDir {
+			for _, directory := range exportDirectories {
+				retErr = RemoveWorkerDirectory(directory, retErr)
+			}
+		}
+	}()
+	if err != nil {
+		return planWorkerResponse{}, err
+	}
+	workerOutput.Exports = stagedExports
+	options.ContextArtifacts = append(slices.Clone(options.ContextArtifacts), exportDirectories...)
 	executableOrigin := currentRunSequenceOrigin()
 	request := planWorkerRequest{
 		workerExecutionOptions: workerExecutionOptions{
@@ -450,9 +478,13 @@ func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition
 		}
 		if readErr == nil && response.Failure != nil {
 			if ctx.Err() != nil {
+				response.Result.Exports = skippedFileExports(options.Output.Exports, "execution canceled")
 				return response, errors.Join(ctx.Err(), fmt.Errorf("build worker exited after cleanup: %w", response.failure()), processErr, cleanupErr, progressErr)
 			}
-			return response, errors.Join(WorkerFailure(response.failure()), processErr, cleanupErr, progressErr)
+			var exportErr error
+			response.Result.Exports, exportErr = publishFileExports(ctx, options.Output.Exports, stagedExports, response.Result.Exports, cleanupErr == nil && progressErr == nil && processErr == nil)
+			exportsPublished = true
+			return response, errors.Join(WorkerFailure(response.failure()), processErr, cleanupErr, progressErr, exportErr)
 		}
 		return response, errors.Join(processErr, cleanupErr, readErr, progressErr)
 	}
@@ -468,10 +500,18 @@ func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition
 	if err := ctx.Err(); err != nil {
 		return response, err
 	}
+	if len(options.Output.Exports) != 0 && len(response.Result.Exports) == 0 {
+		return response, errors.New("successful selected output omitted file export receipts")
+	}
 	if mode != "verify" {
 		if err := promoteCompleteOutput(request.Output.Path, options.Output.Path, response.CleanupComplete); err != nil {
 			return response, fmt.Errorf("promote complete OCI output: %w", err)
 		}
+	}
+	response.Result.Exports, err = publishFileExports(ctx, options.Output.Exports, stagedExports, response.Result.Exports, true)
+	exportsPublished = true
+	if err != nil {
+		return response, err
 	}
 	return response, nil
 }
