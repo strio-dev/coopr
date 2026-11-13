@@ -174,7 +174,7 @@ func (s *instructionResultStorage) writeResult(r *instructionSolverResult, creat
 		if _, err = s.store.Image(c.Entry.ImageID); err != nil {
 			return solver.CacheResult{}, err
 		}
-		if err = s.store.AddNames(c.Entry.ImageID, []string{graphResultNamePrefix + digest.Digest(id).Encoded()}); err != nil {
+		if err = s.store.AddNames(c.Entry.ImageID, []string{graphResultNamePrefix + digest.Digest(id).Encoded() + ":latest"}); err != nil {
 			return solver.CacheResult{}, err
 		}
 	}

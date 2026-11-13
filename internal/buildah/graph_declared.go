@@ -60,7 +60,7 @@ func (graph *declaredStageGraph) declare(ctx context.Context, plan *planner.Plan
 	}
 	options, output := graph.options, graph.options.Output
 	forceAll := graph.observing || bindings != nil || options.NoCache || options.Lifecycle.NoLayers || options.Lifecycle.KeepIntermediate || options.Lifecycle.KeepFailed || options.Lifecycle.BuildUnusedStages || len(options.RunControls.Volumes) != 0 || len(options.RunControls.Devices) != 0 || output.Squash || output.SquashAll || len(output.SBOM) != 0 || output.ConfidentialWorkload.Convert
-	immutable := !options.Lifecycle.NoLayers && bindings == nil && len(plan.Contexts) == 0 && len(options.TransientRunMounts) == 0 && !planUsesWritableContext(plan, nil)
+	immutable := !options.Lifecycle.NoLayers && !options.Lifecycle.KeepFailed && len(options.RunControls.Volumes) == 0 && bindings == nil && len(plan.Contexts) == 0 && len(options.TransientRunMounts) == 0 && !planUsesWritableContext(plan, nil)
 	forced := map[string]bool{}
 	sources := map[string]map[string]digest.Digest{}
 	aliasesByStage := graphStageAliases(stages)
@@ -147,8 +147,16 @@ func (graph *declaredStageGraph) declare(ctx context.Context, plan *planner.Plan
 			return err
 		}
 	}
-	for _, stage := range stages {
+	for index, stage := range stages {
 		inputIDs := slices.Clone(stage.Dependencies)
+		// Serial mutable plans retain native source order, including producers
+		// selected by planning without an explicit filesystem dependency.
+		if index > 0 && !immutable && graphParallelism(options.Jobs, len(stages)) == 1 {
+			previous := stages[index-1].ID
+			if !slices.Contains(inputIDs, previous) {
+				inputIDs = append(inputIDs, previous)
+			}
+		}
 		primary := aliasesByStage[stage.ID][strings.ToLower(stage.Source)]
 		if index := slices.Index(inputIDs, primary); primary != "" && index >= 0 {
 			copy(inputIDs[1:index+1], inputIDs[:index])

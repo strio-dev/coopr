@@ -530,7 +530,8 @@ func TestComponentCacheReusesNonemptyCaller(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if index == 0 && (result.CacheStats.Misses != 1 || result.CacheStats.Stored != 1) ||
+		// The component image and inner/outer stage graphs are separate exports.
+		if index == 0 && (result.CacheStats.Misses != 1 || result.CacheStats.Stored != 3) ||
 			index == 1 && result.CacheStats.Hits != 1 {
 			t.Fatalf("%s nonempty caller cache stats: %+v", name, result.CacheStats)
 		}
@@ -710,8 +711,25 @@ func TestBuildPlanReusesPortableConfigOnlyComponentCache(t *testing.T) {
 	if _, _, err := imageCache.LookupImage(ctx, record.Key); err != nil {
 		t.Fatalf("invalid component image cache: %v", err)
 	}
-	if roots := instructionGraphArtifactResults(t, cacheDir); len(roots) != 0 {
-		t.Fatalf("config-only component stored %d filesystem graphs", len(roots))
+	roots := instructionGraphArtifactResults(t, cacheDir)
+	if len(roots) != 2 {
+		t.Fatalf("config-only component stored %d stage graphs, want inner and outer stages", len(roots))
+	}
+	for root := range roots {
+		graph, _, err := imageCache.LookupGraph(ctx, root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, result := range graph.Results {
+			var value instructionSolverResult
+			if err := json.Unmarshal(result.Metadata, &value); err != nil || len(value.Entry.LogicalConfig) == 0 || validateInstructionResultState(&value) != nil {
+				t.Fatalf("config-only graph contains a filesystem instruction result: %s, %v", result.ID, err)
+			}
+			children, err := content.Successors(ctx, layout, result.Image)
+			if err != nil || len(children) != 1 || children[0].MediaType != v1.MediaTypeImageConfig {
+				t.Fatalf("config-only stage has filesystem layers: %s successors=%+v error=%v", result.ID, children, err)
+			}
+		}
 	}
 
 	if err := os.WriteFile(manifestPath, []byte("corrupt"), 0o600); err != nil {
@@ -825,7 +843,9 @@ func TestBuildPlanReusesRegistryComponentCacheAcrossStores(t *testing.T) {
 	}
 	cold := build(filepath.Join(root, "cold"), "first-store", false)
 	warm := build(filepath.Join(root, "warm"), "second-store", true)
-	if cold.CacheStats.Misses < 1 || cold.CacheStats.Stored < 1 || warm.CacheStats.Hits != 1 || warm.CacheStats.Stored != 1 {
+	// The registry hit seeds one local component image, then the outer stage is
+	// published to both explicitly writable stores.
+	if cold.CacheStats.Misses != 2 || cold.CacheStats.Stored != 4 || warm.CacheStats.Hits != 1 || warm.CacheStats.Misses != 0 || warm.CacheStats.Stored != 3 {
 		t.Fatalf("registry cache stats: cold=%+v warm=%+v", cold.CacheStats, warm.CacheStats)
 	}
 	if _, err := os.Stat(filepath.Join(localCache, "index.json")); err != nil {

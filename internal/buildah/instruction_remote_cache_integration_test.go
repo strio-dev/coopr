@@ -400,7 +400,7 @@ func TestBuildPlanReusesScratchCopyFromRegistryAcrossStores(t *testing.T) {
 	}
 	cold := build("cold")
 	warm := build("warm")
-	if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 1 || cold.CacheStats.Hits != 0 {
+	if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 2 || cold.CacheStats.Hits != 0 {
 		t.Fatalf("cold scratch cache stats = %+v", cold.CacheStats)
 	}
 	if warm.CacheStats.Hits != 1 || warm.CacheStats.Misses != 0 {
@@ -497,7 +497,7 @@ func TestFailedBuildDoesNotPublishInstructionImages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.CacheStats.Hits != 0 || result.CacheStats.Misses != 1 || result.CacheStats.Stored != 1 {
+	if result.CacheStats.Hits != 0 || result.CacheStats.Misses != 1 || result.CacheStats.Stored != 2 {
 		t.Fatalf("build after failed publication stats = %+v", result.CacheStats)
 	}
 }

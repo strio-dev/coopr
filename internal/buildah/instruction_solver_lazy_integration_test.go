@@ -207,7 +207,7 @@ func instructionGraphStoredResultIDs(t *testing.T, options StoreOptions) map[str
 	for _, image := range images {
 		for _, name := range image.Names {
 			if strings.HasPrefix(name, graphResultNamePrefix) {
-				selected["sha256:"+strings.TrimPrefix(name, graphResultNamePrefix)] = true
+				selected["sha256:"+strings.TrimSuffix(strings.TrimPrefix(name, graphResultNamePrefix), ":latest")] = true
 			}
 		}
 	}
