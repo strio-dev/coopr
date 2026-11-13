@@ -423,24 +423,22 @@ func TestInstructionSolverZeroTTLStillWritesFreshResults(t *testing.T) {
 	}
 }
 
-func TestInstructionGraphUnportableRootFallsBackToNativeExecution(t *testing.T) {
-	// user.overlay.* is writable in an unprivileged fixture but deliberately
-	// excluded from Coopr's portable metadata contract. Ordinary Buildah RUN
-	// still accepts it; cache eligibility must not reject the build.
+func TestInstructionGraphOverlayBookkeepingPreservesNativeReuse(t *testing.T) {
+	// containers/storage deliberately excludes overlay bookkeeping from image
+	// archives. Exposing it on a VFS builder must not disable ordinary reuse.
 	for _, test := range []struct {
 		name, source string
-		instructions int
 	}{
 		{"within-stage", `from %q {
     run "/bin/busybox setfattr -n user.overlay.coopr-test -v native-only /" network="none"
     copy "payload" "/proof"
 }
-`, 0},
+`},
 		{"next-stage", `from %q as="producer" {
     run "/bin/busybox setfattr -n user.overlay.coopr-test -v native-only /" network="none"
 }
 from "producer" { copy "payload" "/proof"; }
-`, 1},
+`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newLocalComponentFixture(t)
@@ -452,24 +450,25 @@ from "producer" { copy "payload" "/proof"; }
 					runs.Add(1)
 				}
 			}
-			for _, name := range []string{"cold", "again"} {
+			var cold Result
+			var coldConfig digest.Digest
+			for _, name := range []string{"cold", "warm"} {
 				before := runs.Load()
 				result, layout := f.build(t, name, fmt.Sprintf(test.source, base.reference))
-				if runs.Load() != before+1 {
-					t.Fatal("unportable producer did not execute again")
-				}
 				if got := localComponentLastFile(t, layout, "proof"); got != "native execution remains available\n" {
 					t.Fatalf("native continuation output = %q", got)
 				}
-				// A new native stage may cache its valid COPY, but neither
-				// aggregate may advertise the unportable producer ancestry.
-				if result.CacheStats.Errors != 0 || result.CacheStats.Stored != test.instructions {
-					t.Fatalf("nonportable root advertised reusable graph results: %+v", result.CacheStats)
+				if result.CacheStats.Errors != 0 {
+					t.Fatalf("overlay bookkeeping caused cache errors: %+v", result.CacheStats)
 				}
-				if test.instructions == 0 {
-					if count := instructionCacheRecordCount(t, f.options.Store); count != 0 {
-						t.Fatalf("nonportable root retained %d instruction keys", count)
+				manifest, _ := readPlanImage(t, layout)
+				if name == "cold" {
+					if runs.Load() != before+1 || result.CacheStats.Stored == 0 {
+						t.Fatalf("cold producer execution/cache publication: runs=%d stats=%+v", runs.Load()-before, result.CacheStats)
 					}
+					cold, coldConfig = result, manifest.Config.Digest
+				} else if runs.Load() != before || result.CacheStats.Hits != 1 || result.CacheStats.Misses != 0 || result.ManifestDigest != cold.ManifestDigest || manifest.Config.Digest != coldConfig {
+					t.Fatalf("overlay bookkeeping prevented exact terminal reuse: runs=%d cold=%+v warm=%+v", runs.Load()-before, cold, result)
 				}
 			}
 		})
