@@ -508,6 +508,9 @@ func validate(r api.Request) error {
 		return err
 	}
 	for i := range o.Output.Exports {
+		if o.Output.Exports[i].State != "" && r.Kind != "execute" {
+			return errors.New("file export state selection requires a typed program")
+		}
 		normalized, err := canonical(o.Output.Exports[i].Destination)
 		if err != nil {
 			return err

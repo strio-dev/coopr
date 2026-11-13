@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -299,7 +300,13 @@ func Execute(ctx context.Context, program Program, options Options) (result Resu
 	if err := buildah.ValidateFileExportResources(options.Output.Exports, exportResources...); err != nil {
 		return Result{}, err
 	}
-	plan, err := compile(program, contexts...)
+	var exportStates []StateID
+	for _, export := range options.Output.Exports {
+		if export.State != "" {
+			exportStates = append(exportStates, StateID(export.State))
+		}
+	}
+	plan, err := compileSelected(program, exportStates, contexts...)
 	if err != nil {
 		return Result{}, err
 	}
@@ -334,7 +341,19 @@ func Execute(ctx context.Context, program Program, options Options) (result Resu
 	if err != nil {
 		return Result{}, fmt.Errorf("native execution defaults: %w", err)
 	}
-	out := buildah.Output{Path: options.Output.OCI, Exports: options.Output.Exports}
+	exports := slices.Clone(options.Output.Exports)
+	if len(exportStates) != 0 {
+		stageIDs := make(map[string]string, len(program.States))
+		for index, state := range program.States {
+			stageIDs[string(state.ID)] = strconv.Itoa(index)
+		}
+		for i := range exports {
+			if exports[i].State != "" {
+				exports[i].State = stageIDs[exports[i].State]
+			}
+		}
+	}
+	out := buildah.Output{Path: options.Output.OCI, Exports: exports}
 	var contextArtifacts []string
 	if options.Output.Filesystem != "" {
 		staging, err := os.MkdirTemp(filepath.Dir(options.Output.Filesystem), ".coopr-export-*")
@@ -356,15 +375,20 @@ func Execute(ctx context.Context, program Program, options Options) (result Resu
 		AuthFile: options.Registry.AuthFile, CertDir: options.Registry.CertDir, Credentials: options.Registry.Credentials, TLSVerify: options.Registry.TLSVerify, PullPolicy: options.Registry.PullPolicy, SignaturePolicyPath: options.Registry.SignaturePolicyPath,
 		Stdout: options.Stdout, Stderr: options.Stderr, Progress: options.Progress,
 	})
+	for i := range native.Exports {
+		if i < len(options.Output.Exports) {
+			native.Exports[i].State = options.Output.Exports[i].State
+		}
+	}
 	if err != nil {
 		return Result{ProgressDropped: native.ProgressDropped, Exports: native.Exports}, err
 	}
 	if err := ctx.Err(); err != nil {
-		return Result{}, err
+		return Result{ProgressDropped: native.ProgressDropped, Exports: native.Exports}, err
 	}
 	if options.Output.Filesystem != "" {
 		if err := promoteFilesystem(out.Filesystem.Path, options.Output.Filesystem); err != nil {
-			return Result{}, fmt.Errorf("promote filesystem output: %w", err)
+			return Result{ProgressDropped: native.ProgressDropped, Exports: native.Exports}, fmt.Errorf("promote filesystem output: %w", err)
 		}
 	}
 	return Result{ImageID: native.ImageID, ManifestDigest: native.ManifestDigest, Platform: native.Platform, OCI: native.Layout, Filesystem: options.Output.Filesystem, ProgressDropped: native.ProgressDropped, Exports: native.Exports, Cache: CacheStats{Hits: native.CacheStats.Hits, Misses: native.CacheStats.Misses, Stored: native.CacheStats.Stored, Skipped: native.CacheStats.Skipped, Errors: native.CacheStats.Errors}}, nil

@@ -197,6 +197,11 @@ func TestFrontendValidationAndNoFabricatedCache(t *testing.T) {
 	if err := validate(r); err != nil {
 		t.Fatal(err)
 	}
+	r.Options.Output.Exports = []api.FileExport{{State: "named", Source: "/report", Destination: filepath.Join(filepath.Dir(r.Options.ContextDir), "report")}}
+	if err := validate(r); err == nil {
+		t.Fatal("native definition accepted typed-program state selector")
+	}
+	r.Options.Output.Exports = nil
 	r.Kind = "component"
 	r.Options.Output.Filesystem = filepath.Join(filepath.Dir(r.Options.ContextDir), "rootfs")
 	if err := validate(r); err == nil {

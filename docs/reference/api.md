@@ -136,13 +136,21 @@ Rootless exports strip setuid/setgid bits
 and xattrs, as full filesystem exports do. RUN-only secret, cache and live
 mount views are absent when files are captured.
 
+Typed programs may add `state` to select a declared program state; an empty or
+absent value selects `program.output`. The engine requests those states through
+its existing graph, capturing each requested prefix before dependent native
+work proceeds. A cached prefix restores only its selected image. Native
+definition builds accept only an empty `state`, selecting their final target.
+
 Exports run after success, including a terminal cache hit, or after an ordinary
 failed RUN in the selected output state before its builder is removed. The
 execution remains failed. A failed prerequisite has no selected output
 filesystem and yields skipped receipts. Cancellation or unconfirmed worker
 cleanup prevents publication. Each result entry in `exports` reports `source`,
-`destination`, `status` (`passed`, `failed` or `skipped`) and optional `error`;
-inspect it even when execution returns an error. Each path is promoted after
+`destination`, `status` (`passed`, `failed` or `skipped`), optional `state` and
+optional `error`, in the original request order. Completed prefix exports remain
+available after a later ordinary RUN failure; later unexecuted states are skipped.
+Inspect the receipts even when execution returns an error. Each path is promoted after
 confirmed cleanup without replacing an existing destination. Several exports
 are not a single filesystem transaction.
 

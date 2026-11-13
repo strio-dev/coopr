@@ -12,7 +12,7 @@
   src = coopr.testSource;
   modRoot = "examples/library";
   # The local Coopr replacement is vendored, so source edits also change this hash.
-  vendorHash = "sha256-a62QcPgdDqmaYVPx1g8+VQY/bS91tmCQEythC6rwVD4=";
+  vendorHash = "sha256-q6TDw/8L1u1AmsBCZ8z5FVHM71m0Dgwi81ShlA8vZDw=";
   subPackages = [ "." ];
   inherit (coopr) tags nativeBuildInputs buildInputs;
   env.CGO_ENABLED = "1";

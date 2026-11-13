@@ -205,6 +205,7 @@ func (executor *graphExecutor) executeGraphStageIsolated(ctx context.Context, pl
 		BigFilesTempDir: executor.system.BigFilesTemporaryDir,
 		ResultPath:      filepath.Join(jobDir, "result.json"),
 	}
+	request.ImageOutput.Exports = prepared.exports
 	if executor.system.DockerInsecureSkipTLSVerify != types.OptionalBoolUndefined {
 		request.TLSVerify = new(executor.system.DockerInsecureSkipTLSVerify == types.OptionalBoolFalse)
 	}
@@ -595,7 +596,8 @@ func executeStageWorkerRequestControlled(ctx context.Context, request stageWorke
 		return response, fmt.Errorf("restore stage %s graph parent: %w", request.Stage.ID, err)
 	}
 	finished, err := executor.executeGraphStage(ctx, &planner.Plan{Mode: request.Mode}, preparedGraphStage{
-		stage: request.Stage, base: request.Base, baseName: request.BaseName, baseRoot: request.BaseRoot, retainsCaller: request.RetainsCaller, preserveBaseImageAnnotations: request.PreserveBaseImageAnns, baseManifest: request.BaseManifest, logical: logical, baseLogical: baseLogical, operations: request.Operations,
+		exports: request.ImageOutput.Exports,
+		stage:   request.Stage, base: request.Base, baseName: request.BaseName, baseRoot: request.BaseRoot, retainsCaller: request.RetainsCaller, preserveBaseImageAnnotations: request.PreserveBaseImageAnns, baseManifest: request.BaseManifest, logical: logical, baseLogical: baseLogical, operations: request.Operations,
 		cacheMountID: cacheMountID, cacheScope: request.CacheScope, progressPrefix: request.ProgressPrefix, delivery: request.Delivery,
 		graphEndpoint: graphParent,
 	}, request.Aliases, images, outputStageID(request), observedStage(request), true)

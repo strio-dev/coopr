@@ -135,7 +135,7 @@ func TestCompatibilityMatrixAndCapabilityPreflight(t *testing.T) {
 }
 
 func TestSelectedFileExportsSurviveExecutionFailure(t *testing.T) {
-	want := api.FileExport{Source: "/report.json", Destination: "/owned/report.json"}
+	want := api.FileExport{State: "checkpoint", Source: "/report.json", Destination: "/owned/report.json"}
 	c := testClient(t, `{"apiVersion":1,"capabilities":["execute","selected-file-exports"]}`, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request api.Request
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -144,13 +144,13 @@ func TestSelectedFileExportsSurviveExecutionFailure(t *testing.T) {
 		if len(request.Options.Output.Exports) != 1 || request.Options.Output.Exports[0] != want {
 			t.Errorf("export request changed: %+v", request.Options.Output)
 		}
-		encode(t, w, api.Event{Type: "result", Result: &api.Result{Exports: []api.ExportResult{{Source: want.Source, Destination: want.Destination, Status: "passed"}}}, Error: &api.Error{Code: "execution_failed", Message: "RUN exited 23"}})
+		encode(t, w, api.Event{Type: "result", Result: &api.Result{Exports: []api.ExportResult{{State: want.State, Source: want.Source, Destination: want.Destination, Status: "passed"}}}, Error: &api.Error{Code: "execution_failed", Message: "RUN exited 23"}})
 	}))
 	request := execution()
 	request.Options.Output.Exports = []api.FileExport{want}
 	result, err := c.Execute(t.Context(), request, StreamOptions{})
 	var remote *api.Error
-	if !errors.As(err, &remote) || remote.Code != "execution_failed" || len(result.Exports) != 1 || result.Exports[0].Status != "passed" || result.Exports[0].Destination != want.Destination {
+	if !errors.As(err, &remote) || remote.Code != "execution_failed" || len(result.Exports) != 1 || result.Exports[0].State != want.State || result.Exports[0].Status != "passed" || result.Exports[0].Destination != want.Destination {
 		t.Fatalf("failed RUN lost diagnostic receipt or failure: %+v %v", result, err)
 	}
 }

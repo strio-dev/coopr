@@ -73,15 +73,17 @@ type Output struct {
 	Exports    []FileExport `json:"exports,omitempty"`
 }
 
-// FileExport selects a literal path from the output state's filesystem.
-// It also captures an ordinary failed RUN in that state, before cleanup.
+// FileExport selects a literal path from a typed program state, or the final
+// output when State is empty. It also captures an ordinary failed RUN there.
 // Destinations are fresh, caller-owned paths, separate from image identity.
 type FileExport struct {
+	State       string `json:"state,omitempty"`
 	Source      string `json:"source"`
 	Destination string `json:"destination"`
 }
 
 type ExportResult struct {
+	State       string `json:"state,omitempty"`
 	Source      string `json:"source"`
 	Destination string `json:"destination"`
 	Status      string `json:"status"` // passed, failed or skipped

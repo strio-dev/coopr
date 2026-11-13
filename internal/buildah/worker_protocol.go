@@ -190,6 +190,11 @@ func BuildDefinitionSupervised(ctx context.Context, def *definition.Definition, 
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
 	}
+	for _, export := range options.Output.Exports {
+		if export.State != "" {
+			return Result{}, errors.New("file export state selection requires a typed program")
+		}
+	}
 	if err := validateDefinitionPlanning(def, planning, planner.Build); err != nil {
 		return Result{}, err
 	}

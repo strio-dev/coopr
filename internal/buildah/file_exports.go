@@ -76,9 +76,22 @@ func ValidateFileExportResources(exports []api.FileExport, resources ...string) 
 func skippedFileExports(exports []api.FileExport, reason string) []api.ExportResult {
 	results := make([]api.ExportResult, len(exports))
 	for i, export := range exports {
-		results[i] = api.ExportResult{Source: export.Source, Destination: export.Destination, Status: "skipped", Error: reason}
+		results[i] = api.ExportResult{State: export.State, Source: export.Source, Destination: export.Destination, Status: "skipped", Error: reason}
 	}
 	return results
+}
+
+func fileExportsForStage(exports []api.FileExport, stage, output string) (selected []api.FileExport, indices []int) {
+	for i, export := range exports {
+		state := export.State
+		if state == "" {
+			state = output
+		}
+		if state == stage {
+			selected, indices = append(selected, export), append(indices, i)
+		}
+	}
+	return selected, indices
 }
 
 func exportImageFiles(ctx context.Context, store storage.Store, imageID string, exports []api.FileExport, policy timestampPolicy) (results []api.ExportResult, retErr error) {
@@ -133,7 +146,7 @@ func exportFilePaths(ctx context.Context, root string, uidMap, gidMap []idtools.
 	results := make([]api.ExportResult, len(exports))
 	var failures error
 	for i, export := range exports {
-		result := api.ExportResult{Source: export.Source, Destination: export.Destination, Status: "passed"}
+		result := api.ExportResult{State: export.State, Source: export.Source, Destination: export.Destination, Status: "passed"}
 		if err := exportFilePath(ctx, root, uidMap, gidMap, export, policy); err != nil {
 			result.Status, result.Error = "failed", err.Error()
 			failures = errors.Join(failures, fmt.Errorf("export %s: %w", export.Source, err))
@@ -239,7 +252,8 @@ func stageFileExports(exports []api.FileExport) ([]api.FileExport, []string, err
 			return nil, directories, err
 		}
 		directories = append(directories, directory)
-		staged[i] = api.FileExport{Source: export.Source, Destination: filepath.Join(directory, "artifact")}
+		staged[i] = export
+		staged[i].Destination = filepath.Join(directory, "artifact")
 	}
 	return staged, directories, nil
 }
@@ -256,7 +270,7 @@ func publishFileExports(ctx context.Context, exports, staged []api.FileExport, r
 	}
 	// Validate the entire response before publishing any caller-visible output.
 	for i, receipt := range receipts {
-		if receipt.Source != staged[i].Source || receipt.Destination != staged[i].Destination ||
+		if receipt.State != staged[i].State || receipt.Source != staged[i].Source || receipt.Destination != staged[i].Destination ||
 			(receipt.Status != "passed" && receipt.Status != "failed" && receipt.Status != "skipped") {
 			return skippedFileExports(exports, "invalid selected export receipt"), errors.New("selected export receipt differs from request")
 		}

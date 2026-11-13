@@ -18,6 +18,10 @@ import (
 
 // compile adapts already-typed operations without definition parsing or expansion.
 func compile(program Program, contexts ...buildcontext.Spec) (*planner.Plan, error) {
+	return compileSelected(program, nil, contexts...)
+}
+
+func compileSelected(program Program, outputs []StateID, contexts ...buildcontext.Spec) (*planner.Plan, error) {
 	contextSpecs := map[string]buildcontext.Spec{}
 	for _, spec := range contexts {
 		if spec.Name == "" || spec.Name == "build" || spec.Name == "scratch" || spec.Kind != buildcontext.Local {
@@ -247,9 +251,16 @@ func compile(program Program, contexts ...buildcontext.Spec) (*planner.Plan, err
 		plan.Stages = append(plan.Stages, stage)
 	}
 	plan.Outputs = []string{known[program.Output]}
-	// Retain only sources reachable from the selected output. The backend remains
-	// the sole scheduler; this is selection, not a second execution graph.
+	// Retain only sources reachable from the final output or explicit file-export
+	// states. The backend remains the sole scheduler.
 	selected := map[string]bool{known[program.Output]: true}
+	for _, output := range outputs {
+		id, found := known[output]
+		if !found {
+			return nil, fmt.Errorf("file export selects unknown state %q", output)
+		}
+		selected[id] = true
+	}
 	for i := len(plan.Stages) - 1; i >= 0; i-- {
 		if selected[plan.Stages[i].ID] {
 			for _, id := range plan.Stages[i].Dependencies {

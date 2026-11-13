@@ -17,6 +17,29 @@ import (
 	"github.com/strio-dev/coopr/internal/planner"
 )
 
+func TestLiteralFileExportsRetainOnlySelectedStateClosures(t *testing.T) {
+	program := Program{Output: "final", States: []State{
+		{ID: "base", From: Source{Image: "scratch"}},
+		{ID: "selected", From: Source{State: "base"}},
+		{ID: "unused", From: Source{Image: "scratch"}},
+		{ID: "final", From: Source{Image: "scratch"}},
+	}}
+	plan, err := compileSelected(program, []StateID{"selected"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, stage := range plan.Stages {
+		ids = append(ids, stage.ID)
+	}
+	if !reflect.DeepEqual(ids, []string{"0", "1", "3"}) || !reflect.DeepEqual(plan.Outputs, []string{"3"}) {
+		t.Fatalf("export selection changed final role, numbering or closure: ids=%v outputs=%v", ids, plan.Outputs)
+	}
+	if _, err := compileSelected(program, []StateID{"unknown"}); err == nil {
+		t.Fatal("unknown export state admitted")
+	}
+}
+
 func TestLiteralProgramAndDependencies(t *testing.T) {
 	literal := `$VALUE "quoted" \\ path`
 	p := Program{Platform: "linux/amd64", Output: "result", States: []State{
