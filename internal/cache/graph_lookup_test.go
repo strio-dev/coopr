@@ -176,13 +176,8 @@ func graphLookupCustomLayerFixture(t *testing.T, layerMediaType string, changeSe
 
 func publishGraphLookupRecord(t *testing.T, target oras.Target, record GraphRecord) GraphRecord {
 	t.Helper()
-	layers := make([]v1.Descriptor, 0, len(record.Results))
-	for _, result := range record.Results {
-		desc := pushGraphTestJSON(t, target, GraphResultMediaType, result)
-		layers = append(layers, desc)
-	}
 	config := pushGraphTestJSON(t, target, GraphConfigMediaType, record)
-	metadata := pushGraphTestJSON(t, target, v1.MediaTypeImageManifest, oci.VersionedManifest(config, layers, GraphArtifactType))
+	metadata := pushGraphTestJSON(t, target, v1.MediaTypeImageManifest, oci.VersionedManifest(config, []v1.Descriptor{}, GraphArtifactType))
 	artifact := pushGraphTestJSON(t, target, v1.MediaTypeImageIndex, oci.VersionedIndex(append([]v1.Descriptor{metadata}, graphImages(record)...), GraphArtifactType))
 	if err := target.Tag(t.Context(), artifact, graphTag(record.Root)); err != nil {
 		t.Fatal(err)
@@ -193,7 +188,7 @@ func publishGraphLookupRecord(t *testing.T, target oras.Target, record GraphReco
 func TestGraphMetadataAdmissionRejectsIndexAndArtifactBindingChanges(t *testing.T) {
 	for _, fault := range []string{
 		"legacy manifest root", "empty index", "missing image", "extra image", "reordered images", "image size",
-		"metadata descriptor hint", "metadata type", "metadata subject", "config type", "image as sidecar", "extra sidecar",
+		"metadata descriptor hint", "metadata type", "metadata subject", "config type", "image as layer", "record as layer", "null layers",
 	} {
 		t.Run(fault, func(t *testing.T) {
 			store, record, _, target := graphLookupFixture(t, v1.MediaTypeImageLayer, nil)
@@ -209,10 +204,12 @@ func TestGraphMetadataAdmissionRejectsIndexAndArtifactBindingChanges(t *testing.
 				manifest.Subject = &record.Results[0].Image
 			case "config type":
 				manifest.Config.MediaType = v1.MediaTypeImageConfig
-			case "image as sidecar":
-				manifest.Layers[0] = record.Results[0].Image
-			case "extra sidecar":
-				manifest.Layers = append(manifest.Layers, manifest.Layers[0])
+			case "image as layer":
+				manifest.Layers = []v1.Descriptor{record.Results[0].Image}
+			case "record as layer":
+				manifest.Layers = []v1.Descriptor{manifest.Config}
+			case "null layers":
+				manifest.Layers = nil
 			}
 			metadata := pushGraphTestJSON(t, target, v1.MediaTypeImageManifest, manifest)
 			index.Manifests[0] = metadata

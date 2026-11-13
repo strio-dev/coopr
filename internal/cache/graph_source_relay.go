@@ -3,7 +3,6 @@ package cache
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"slices"
@@ -87,17 +86,6 @@ func (reader *GraphReader) RestoreMetadata(ctx context.Context, store *OCIStore,
 		index.Manifests[0].Digest: snapshot.Manifest,
 		manifest.Config.Digest:    snapshot.Record,
 	}}
-	for _, result := range record.Results {
-		descriptor, err := result.Descriptor()
-		if err != nil {
-			return nil, err
-		}
-		data, err := json.Marshal(result)
-		if err != nil {
-			return nil, err
-		}
-		target.blobs[descriptor.Digest] = data
-	}
 	used := make(map[string]bool, len(snapshot.UsedResults))
 	for _, id := range snapshot.UsedResults {
 		if used[id] || !slices.ContainsFunc(record.Results, func(result GraphResult) bool { return result.ID == id }) {

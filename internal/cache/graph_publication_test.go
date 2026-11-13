@@ -247,7 +247,7 @@ func TestGraphExistingPayloadVerificationHonorsCancellation(t *testing.T) {
 }
 
 func TestGraphPublicationRejectsCorruptGeneratedMetadataBeforeRetagging(t *testing.T) {
-	for _, kind := range []string{"sidecar", "config", "metadata manifest", "artifact"} {
+	for _, kind := range []string{"config", "metadata manifest", "artifact"} {
 		t.Run(kind, func(t *testing.T) {
 			record, source := graphFixture(t)
 			cacheRoot := t.TempDir()
@@ -279,11 +279,6 @@ func TestGraphPublicationRejectsCorruptGeneratedMetadataBeforeRetagging(t *testi
 				descriptor = index.Manifests[0]
 			case "config":
 				descriptor = manifest.Config
-			case "sidecar":
-				descriptor, err = record.Results[0].Descriptor()
-				if err != nil {
-					t.Fatal(err)
-				}
 			}
 			path := filepath.Join(cacheRoot, "blobs", descriptor.Digest.Algorithm().String(), descriptor.Digest.Encoded())
 			if _, err := os.Stat(path); err == nil {

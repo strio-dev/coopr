@@ -42,10 +42,16 @@ prefixes. Publishing a shorter prefix preserves otherwise matching cached
 continuations from other builds. Reuse still requires matching inputs and
 execution settings; identical output bytes alone do not prove a cache hit.
 
-Fully cached instruction chains imported from a primary registry are not
-exported back to that same repository, retaining their original record age.
-Other destinations still receive complete exports. Local hits, mirror reads
-and fresh execution use the normal publication path.
+Unchanged results already present in a primary registry avoid restaging their
+image payloads, whether reused from native storage or imported from that
+repository. Coopr verifies graph metadata and required content presence while
+retaining the record's original age. Missing content, other destinations,
+mirror reads and fresh execution use the normal publication path.
+
+An OCI index names the result images and a metadata artifact whose config
+contains the complete graph and result records. Portable format versions use
+separate namespaces: older entries remain intact and cause cache misses rather
+than being migrated.
 
 Registry and persistent OCI cache content is digest-verified when read.
 Portable caches support OCI and Docker image manifests and can reuse their

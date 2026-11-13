@@ -207,12 +207,7 @@ func TestInstructionGraphSourceWorkerHandoffSurvivesChildAndMetadataRemoval(t *t
 	if err := json.Unmarshal(snapshot.Manifest, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	descriptors := []v1.Descriptor{snapshot.Artifact, manifest.Config}
-	for _, layer := range manifest.Layers {
-		if layer.MediaType == cache.GraphResultMediaType {
-			descriptors = append(descriptors, layer)
-		}
-	}
+	descriptors := []v1.Descriptor{snapshot.Artifact, manifest.Config, oci.Descriptor(v1.MediaTypeImageManifest, snapshot.Manifest)}
 	for _, descriptor := range descriptors {
 		if err := layout.Delete(t.Context(), descriptor); err != nil {
 			t.Fatal(err)
