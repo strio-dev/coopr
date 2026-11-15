@@ -44,6 +44,20 @@ def file_hash(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+def storage_environment(root):
+    config = root / "storage.conf"
+    config.write_text('[storage]\ndriver="vfs"\n'
+                      + 'graphroot=' + json.dumps(str(root / "graph")) + '\n'
+                      + 'runroot=' + json.dumps(str(root / "run")) + '\n'
+                      + 'imagestore=""\n[storage.options]\n'
+                      + 'additionalimagestores=[]\nadditionallayerstores=[]\n')
+    env = os.environ.copy()
+    for key in ["CONTAINERS_STORAGE_CONF_OVERRIDE", "STORAGE_OPTS", "STORAGE_DRIVER"]:
+        env.pop(key, None)
+    env["CONTAINERS_STORAGE_CONF"] = str(config)
+    return env
+
+
 class Qualification:
     def __init__(self, options):
         self.options = options
@@ -85,7 +99,7 @@ class Qualification:
             return self.phases[name]
         root = self.scratch / name
         root.mkdir()
-        env = os.environ.copy()
+        env = storage_environment(root)
         # The fixture declares --timestamp=1. A developer shell's inherited
         # SOURCE_DATE_EPOCH would request the mutually exclusive native option.
         env.pop("SOURCE_DATE_EPOCH", None)
@@ -161,16 +175,7 @@ class Qualification:
         # Keep Podman's empty control store outside the tree it removes, as in
         # the benchmark harness. Never open or prune the user's normal store.
         control = Path(tempfile.mkdtemp(prefix="coopr-nix-cleanup-", dir=self.scratch.parent))
-        config = control / "storage.conf"
-        config.write_text('[storage]\ndriver="vfs"\n'
-                          + 'graphroot=' + json.dumps(str(control / "graph")) + '\n'
-                          + 'runroot=' + json.dumps(str(control / "run")) + '\n'
-                          + 'imagestore=""\n[storage.options]\n'
-                          + 'additionalimagestores=[]\nadditionallayerstores=[]\n')
-        env = os.environ.copy()
-        for key in ["CONTAINERS_STORAGE_CONF_OVERRIDE", "STORAGE_OPTS", "STORAGE_DRIVER"]:
-            env.pop(key, None)
-        env["CONTAINERS_STORAGE_CONF"] = str(config)
+        env = storage_environment(control)
         command = [self.podman, "--root", str(control / "graph"), "--runroot", str(control / "run"),
                    "--storage-driver", "vfs", "unshare", "rm", "-rf", "--", str(self.scratch)]
         json_write(self.evidence / "cleanup.json", {"scratch": str(self.scratch), "control": str(control), "status": "pending"})
@@ -233,7 +238,8 @@ class Qualification:
             arguments = "{ }" if replacement else (
                 '{ message = builtins.fromJSON (builtins.readFile ' + nix_path(message_file)
                 + '); tool = "${pkgs.hello}/bin/hello"; }')
-            component_declaration = "[{ ref = " + json.dumps(digest) + "; archive = " + nix_path(archive)
+            component_declaration = ("[{ ref = " + json.dumps(digest) + "; archive = builtins.path { path = "
+                                     + nix_path(archive) + '; name = "component.oci.tar"; }')
             component_declaration += "; args = " + arguments + "; }]"
         expression = self.context / (name + ".nix")
         expression.write_text('''let
