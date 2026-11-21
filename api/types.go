@@ -94,6 +94,7 @@ type ExportResult struct {
 	Error       string `json:"error,omitempty"`
 }
 type Cache struct {
+	RequireHit   bool     `json:"requireHit,omitempty"`
 	MountDir     string   `json:"mountDir,omitempty"`
 	LocalDir     string   `json:"localDir,omitempty"`
 	NoCache      bool     `json:"noCache,omitempty"`

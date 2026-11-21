@@ -217,6 +217,9 @@ func requestCapabilities(request api.Request) ([]string, error) {
 		return nil, fmt.Errorf("unsupported Coopr request kind %q", request.Kind)
 	}
 	required := []string{operation}
+	if request.Options.Cache.RequireHit {
+		required = append(required, api.CapabilityCacheRequireHit)
+	}
 	if request.Kind == "execute" && request.Options.Output.OCI == "" {
 		required = append(required, api.CapabilityOptionalOCIOutput)
 	}

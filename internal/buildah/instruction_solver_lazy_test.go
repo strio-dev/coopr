@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -180,10 +181,18 @@ func TestInstructionLazyResultConcurrentLoadsAndCanceledWaiter(t *testing.T) {
 }
 
 func TestInstructionLazyLoadFailureFallsBackThroughBuildKit(t *testing.T) {
-	for _, validAlternative := range []bool{false, true} {
-		t.Run(map[bool]string{false: "execute", true: "older alternative"}[validAlternative], func(t *testing.T) {
+	for _, tc := range []struct {
+		name                         string
+		requireHit, validAlternative bool
+	}{
+		{name: "execute"},
+		{name: "cache-only error", requireHit: true},
+		{name: "cache-only older alternative", requireHit: true, validAlternative: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			ctx := t.Context()
 			engine := newLazyInstructionSolver(t, ctx, t.TempDir(), nil)
+			engine.requireCacheHit = tc.requireHit
 			sourceKey, operation := digest.FromString("scratch"), digest.FromString("operation")
 			const node = "portable-operation"
 			if err := engine.keys.AddLink(solver.NewCacheKey(sourceKey, "", 0).ID, solver.CacheInfoLink{Digest: operation}, node); err != nil {
@@ -194,17 +203,23 @@ func TestInstructionLazyLoadFailureFallsBackThroughBuildKit(t *testing.T) {
 				failed.Add(1)
 				return "", errors.New("selected image digest differs")
 			})
-			if validAlternative {
+			if tc.validAlternative {
 				addLazyInstructionFixture(t, engine, node, "valid old", time.Now().Add(-time.Hour).UTC(), func(context.Context) (string, error) { imported.Add(1); return "valid old", nil })
 			}
 			pending, err := engine.begin(ctx, engine.source(sourceKey, instructionSolverResult{}, false), operation, "RUN", false)
-			if err != nil {
-				t.Fatal(err)
-			}
 			if failed.Load() != 1 || !bad.failed.Load() || bad.owner.cache.stats.Errors != 1 {
 				t.Fatal("failed selected import was not isolated and reported once")
 			}
-			if validAlternative {
+			if tc.requireHit && !tc.validAlternative {
+				if pending != nil || err == nil || !strings.Contains(err.Error(), "required cache result unavailable") {
+					t.Fatalf("cache-only load failure yielded execution: pending=%v error=%v", pending, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.validAlternative {
 				if pending.request != nil || imported.Load() != 1 || pending.result.Entry.ImageID != "valid old" {
 					t.Fatal("BuildKit did not try the valid historical result")
 				}

@@ -136,7 +136,7 @@ func Execute(ctx context.Context, request api.Request, stdout, stderr io.Writer)
 			if target.Name != "" {
 				outputs = []buildah.FilesystemOutput{{Type: "local", Path: target.Name}}
 			}
-			built, buildErr := build.Run(ctx, build.Options{Platform: requestedPlatform, Files: definition.Files, File: definition.Files[0], Context: opts.ContextDir, BuildContexts: namedContexts, Target: definition.Target, Args: definition.Args, MetadataFile: metadata, Outputs: outputs, Exports: opts.Output.Exports, ExportResults: func(exports []api.ExportResult) { result.Exports = exports }, BuildStore: store, ComponentStoreDir: componentStore(definition.ComponentStoreDir, opts.Store.GraphRoot), CacheMountDir: opts.Cache.MountDir, CacheLocalDir: opts.Cache.LocalDir, CacheFrom: cacheFrom, CacheTo: cacheTo, NoCache: opts.Cache.NoCache, Network: opts.Network, RunControls: controls, Jobs: opts.Jobs, AuthFile: opts.Registry.AuthFile, CertDir: opts.Registry.CertDir, PullPolicy: opts.Registry.PullPolicy, SignaturePolicyPath: opts.Registry.SignaturePolicyPath, TLSVerify: opts.Registry.TLSVerify, Stdout: stdout, Stderr: stderr, Progress: buildah.OperationProgressFunc(api.ProgressObserver(ctx)), ProgressDropped: recordDropped})
+			built, buildErr := build.Run(ctx, build.Options{Platform: requestedPlatform, Files: definition.Files, File: definition.Files[0], Context: opts.ContextDir, BuildContexts: namedContexts, Target: definition.Target, Args: definition.Args, MetadataFile: metadata, Outputs: outputs, Exports: opts.Output.Exports, ExportResults: func(exports []api.ExportResult) { result.Exports = exports }, BuildStore: store, ComponentStoreDir: componentStore(definition.ComponentStoreDir, opts.Store.GraphRoot), CacheMountDir: opts.Cache.MountDir, CacheLocalDir: opts.Cache.LocalDir, CacheFrom: cacheFrom, CacheTo: cacheTo, RequireCacheHit: opts.Cache.RequireHit, NoCache: opts.Cache.NoCache, Network: opts.Network, RunControls: controls, Jobs: opts.Jobs, AuthFile: opts.Registry.AuthFile, CertDir: opts.Registry.CertDir, PullPolicy: opts.Registry.PullPolicy, SignaturePolicyPath: opts.Registry.SignaturePolicyPath, TLSVerify: opts.Registry.TLSVerify, Stdout: stdout, Stderr: stderr, Progress: buildah.OperationProgressFunc(api.ProgressObserver(ctx)), ProgressDropped: recordDropped})
 			result.ImageID = built.ImageID
 			return "", buildErr
 		}
@@ -446,6 +446,9 @@ func canonical(path string) (string, error) {
 }
 
 func validate(r api.Request) error {
+	if r.Options.Cache.RequireHit && (r.Kind != "execute" && r.Kind != "build" || r.Options.Cache.NoCache || len(r.Options.Cache.RegistryTo) != 0) {
+		return errors.New("requireHit needs an image build with caching enabled and no registry cache writes")
+	}
 	if r.Kind == "component-load" {
 		return validateComponentLoad(r)
 	}

@@ -272,6 +272,7 @@ func newGraphExecutor(ctx context.Context, options PlanOptions) (*graphExecutor,
 			return nil, errors.Join(err, executor.componentCache.close(), executor.instructionPortableCache.close(), lease.Close())
 		}
 		executor.ownsInstructionSolver = true
+		executor.instructionSolver.requireCacheHit = options.RequireCacheHit
 		executor.instructionSolver.portable = newInstructionGraphPortable(executor, executor.instructionSolver)
 	}
 	return executor, nil
@@ -533,6 +534,13 @@ func (executor *graphExecutor) executePlanGraph(ctx context.Context, plan *plann
 	}
 	if len(requested) == 0 {
 		return Result{}, errors.New("build graph has no requested output")
+	}
+	if executor.options.RequireCacheHit {
+		for _, stage := range stages {
+			if requested[stage.ID] && declared.vertices[stage.ID].ignore {
+				return Result{}, fmt.Errorf("stage %s is ineligible for cache-only restoration", stage.ID)
+			}
+		}
 	}
 	rootCount := len(requested)
 	startBuild := func(id string, builder solver.Builder) {

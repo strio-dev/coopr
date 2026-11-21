@@ -78,6 +78,7 @@ type SupervisedPlanOptions struct {
 	CacheRepository     string
 	CacheFrom           []CacheSpec
 	CacheTo             []CacheSpec
+	RequireCacheHit     bool
 	NoCache             bool
 	Network             string
 	AddHosts            []string
@@ -414,6 +415,7 @@ func runBuildSupervised(ctx context.Context, plan *planner.Plan, def *definition
 			CacheFrom:          slices.Clone(options.CacheFrom),
 			CacheTo:            slices.Clone(options.CacheTo),
 			NoCache:            options.NoCache,
+			RequireCacheHit:    options.RequireCacheHit,
 			Network:            options.Network,
 			AddHosts:           append([]string(nil), options.AddHosts...),
 			TransientRunMounts: options.TransientRunMounts,

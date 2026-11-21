@@ -135,6 +135,7 @@ type Output struct {
 // combined with LocalDir. Leaving all locations empty disables portable caching.
 // Native local Buildah layer reuse is separate and is not counted by CacheStats.
 type CacheOptions struct {
+	RequireHit bool // Restore a cached image or fail without executing its build.
 	// MountDir selects the private persistent parent for native RUN cache mounts.
 	// Contents are disposable acceleration and are not hashed into build inputs.
 	MountDir     string
@@ -371,7 +372,7 @@ func Execute(ctx context.Context, program Program, options Options) (result Resu
 		ContextDir: options.ContextDir, ContextArtifacts: contextArtifacts, Runtime: options.Runtime, Isolation: options.Isolation, Jobs: options.Jobs, Output: out,
 		Network:       options.Network,
 		RunControls:   controls,
-		CacheMountDir: options.Cache.MountDir, CacheLocalDir: options.Cache.LocalDir, CacheFrom: cacheFrom, CacheTo: cacheTo, NoCache: options.Cache.NoCache,
+		CacheMountDir: options.Cache.MountDir, CacheLocalDir: options.Cache.LocalDir, CacheFrom: cacheFrom, CacheTo: cacheTo, RequireCacheHit: options.Cache.RequireHit, NoCache: options.Cache.NoCache,
 		AuthFile: options.Registry.AuthFile, CertDir: options.Registry.CertDir, Credentials: options.Registry.Credentials, TLSVerify: options.Registry.TLSVerify, PullPolicy: options.Registry.PullPolicy, SignaturePolicyPath: options.Registry.SignaturePolicyPath,
 		Stdout: options.Stdout, Stderr: options.Stderr, Progress: options.Progress,
 	})

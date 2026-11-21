@@ -535,3 +535,14 @@ func TestOptionalOCIOutputRequiresCapabilityBeforePOST(t *testing.T) {
 		})
 	}
 }
+
+func TestRequireCacheHitRejectsOlderEngineBeforePOST(t *testing.T) {
+	c := testClient(t, allInfo, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("cache-only request reached an engine that could rebuild")
+	}))
+	request := execution()
+	request.Options.Cache.RequireHit = true
+	if _, err := c.Execute(t.Context(), request, StreamOptions{}); !errors.Is(err, ErrMissingCapability) || !strings.Contains(err.Error(), api.CapabilityCacheRequireHit) {
+		t.Fatalf("cache-only request was not refused: %v", err)
+	}
+}
