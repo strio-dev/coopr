@@ -11,7 +11,41 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/strio-dev/coopr/api"
+	"github.com/strio-dev/coopr/internal/planner"
 )
+
+func TestDeclaredStageKeyMatchesPR24(t *testing.T) {
+	// Calculated from Output and the stage-key payload at #24
+	// (19b8bf350426800f754f01dec7b7ba916e8078de), not the current Output type.
+	const historicalKey = "sha256:aefa0571a88ae5bbd9be183ae646ea098eb0abbd0b4a9fabbef217d71af01298"
+	stage := planner.Stage{ID: "final", Kind: "from", Source: "scratch", Platform: "linux/amd64"}
+	graph := declaredStageGraph{
+		executor: &graphExecutor{instructionSolver: &instructionSolver{}},
+		vertices: map[string]*instructionVertex{}, namespace: "declared-key-fixture", outputID: stage.ID,
+		options: PlanOptions{Output: Output{
+			Path: "/output", Reference: "fixture:final", Format: "oci", CompressionFormat: "gzip",
+			CompressionLevel: new(6), ForceCompression: new(true), BlobDirectory: "/blobs",
+			Filesystem:  FilesystemOutput{Type: "local", Path: "/tree"},
+			Filesystems: []FilesystemOutput{{Type: "local", Path: "/other"}},
+		}},
+	}
+	check := func() {
+		t.Helper()
+		if err := graph.declare(t.Context(), &planner.Plan{}, []planner.Stage{stage}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := graph.vertices[stage.ID].key.String(); got != historicalKey {
+			t.Fatalf("declared stage key = %s, want #24 key %s", got, historicalKey)
+		}
+	}
+
+	check()
+	graph.options.Output.Path = "/different-output"
+	graph.options.Output.Exports = []api.FileExport{{Source: "/payload", Destination: "/host/payload"}}
+	check()
+}
 
 func TestBuildPlanDeclaredGraphRestoresOnlyTerminalImage(t *testing.T) {
 	requireLiveInstructionCache(t)
