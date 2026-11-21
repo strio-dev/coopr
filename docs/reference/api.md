@@ -255,7 +255,7 @@ For filesystem destinations (`oci`, `oci-archive`, `dir`, `docker-archive`), the
 | Object | Fields |
 | --- | --- |
 | `store` | Required absolute nonoverlapping `runRoot` and `graphRoot` for `execute`, `build`, `component` and `publish`, including OCI-layout publication. Omit for `component-load`. Optional `driver`, `driverOptions`. |
-| `output` | Required fresh absolute `oci` for execution/build/component; optional fresh absolute `filesystem` for image/literal builds. Parents must already exist. |
+| `output` | Fresh absolute `oci` is required for native `build` and `component`, but optional for typed `execute` with `optional-oci-output`. Optional fresh absolute `filesystem` and selected-file `exports` are independent of OCI output and supported for image builds and typed execution, not components. Parents must already exist. |
 | `cache` | Optional absolute `localDir` and separate private `mountDir`, boolean `noCache`, and independent `registryFrom`/`registryTo` repository arrays. Coopr determines which cached results can be reused. |
 | `registry` | Optional absolute `authFile`, `certDir`, `signaturePolicyPath`; `pullPolicy`, `tlsVerify`. |
 | `contexts` | Optional mapping of native lowercase context names to existing absolute local directories. `build` and `scratch` are reserved; unknown COPY context names are errors. |
@@ -283,7 +283,7 @@ The `operation-progress` capability advertises typed progress events alongside s
 
 `data` is base64-encoded bytes; decode it before writing to stdout/stderr. Chunk boundaries need not coincide with lines or UTF-8 characters. The service splits log writes into chunks; clients must enforce the event size limit. One terminal `type: result` event carries a `result` object and optional `error` object with `code` and `message`. A result may retain partial output information on failure. Clients must validate the terminal event and its error, not merely successful HTTP transport.
 
-Result fields are optional according to operation: `imageID`, `manifestDigest`, `platform`, `oci`, `filesystem`, `reference`, `cache`, `metadata`, `destinations`. Literal execution supplies portable-cache counters (`Hits`, `Misses`, `Stored`, `Skipped`, `Errors`). Native frontend build/component results currently omit `cache`; absence means unavailable, not zero activity.
+Result fields are optional according to operation: `imageID`, `manifestDigest`, `platform`, `oci`, `filesystem`, `reference`, `cache`, `metadata`, `destinations`, `exports`. `exports` contains selected-file receipts in request order, with `source`, `destination`, `status` (`passed`, `failed` or `skipped`), optional `state` and optional `error`; receipts can be present on failure. Literal execution supplies portable-cache counters (`Hits`, `Misses`, `Stored`, `Skipped`, `Errors`). Native frontend build/component results currently omit `cache`; absence means unavailable, not zero activity.
 
 Progress states are `started`, `completed`, `failed` and `canceled`. Terminal
 phase observations carry a completion time and nonnegative `durationNanos`;

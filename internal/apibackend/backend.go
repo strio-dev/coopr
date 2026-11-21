@@ -586,6 +586,11 @@ func validate(r api.Request) error {
 		if _, err := program(*r.Program); err != nil {
 			return err
 		}
+		for _, export := range o.Output.Exports {
+			if export.State != "" && !slices.ContainsFunc(r.Program.States, func(state api.State) bool { return state.ID == export.State }) {
+				return fmt.Errorf("file export selects unknown state %q", export.State)
+			}
+		}
 		for _, state := range r.Program.States {
 			for _, op := range state.Operations {
 				for _, mount := range op.Mounts {

@@ -47,16 +47,24 @@ func ValidateFileExports(exports []api.FileExport) error {
 	return nil
 }
 
-// ValidateFileExportResources rejects selected outputs overlapping caller-owned inputs.
+// ValidateFileExportResources rejects selected outputs that overlap each other
+// or caller-owned inputs, including through aliases in host paths.
 func ValidateFileExportResources(exports []api.FileExport, resources ...string) error {
 	if err := ValidateFileExports(exports); err != nil {
 		return err
 	}
+	destinations := make([]string, 0, len(exports))
 	for _, export := range exports {
 		destination, err := canonicalStorePath(export.Destination)
 		if err != nil {
 			return err
 		}
+		for _, previous := range destinations {
+			if pathsOverlap(previous, destination) {
+				return errors.New("selected export destinations overlap")
+			}
+		}
+		destinations = append(destinations, destination)
 		for _, resource := range resources {
 			if resource == "" {
 				continue
