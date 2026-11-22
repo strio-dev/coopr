@@ -37,8 +37,6 @@ coopr component build examples/reusable-components/components/settings/component
 
 Both commands run from the repository checkout. `--cache-from` reads results and `--cache-to` writes them; supply both to use a repository in both directions. Each option is repeatable. Registry values name repositories without tags or digests.
 
-Older portable cache entries are not reused. Run a build with `--cache-to` to warm the new cache.
-
 ## Use a portable local cache
 
 Write an OCI cache directory that you can retain between CI jobs or move to another machine:
