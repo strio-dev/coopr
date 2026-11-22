@@ -24,13 +24,13 @@ func TestBuildCommandsAcceptSSHContextBeforeBuilding(t *testing.T) {
 	}
 }
 
-func TestBuildCommandsRejectGitContextFragmentsBeforeBuilding(t *testing.T) {
+func TestBuildCommandsRejectMixedGitContextSelectorsBeforeBuilding(t *testing.T) {
 	for _, command := range [][]string{{"build"}, {"component", "build"}} {
 		for _, named := range []bool{false, true} {
 			for _, source := range []string{
-				"https://example.invalid/source.git#main:src",
+				"https://example.invalid/source.git?submodules=false#main:src",
 				"https://example.invalid/source.git?branch=main&subdir=src#refs/heads/main:src",
-				"git@example.invalid:team/source.git#",
+				"git@example.invalid:team/source.git?#",
 			} {
 				args := append([]string{}, command...)
 				if named {
@@ -40,7 +40,7 @@ func TestBuildCommandsRejectGitContextFragmentsBeforeBuilding(t *testing.T) {
 				}
 				var stdout, stderr bytes.Buffer
 				status := run(args, &stdout, &stderr)
-				if status == 0 || !strings.Contains(stderr.String(), "query selectors") {
+				if status == 0 || !strings.Contains(stderr.String(), "cannot combine") {
 					t.Errorf("run(%v) status = %d, stderr = %q", args, status, stderr.String())
 				}
 				if stdout.Len() != 0 || strings.Contains(stderr.String(), "example.invalid") {

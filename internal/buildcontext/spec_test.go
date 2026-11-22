@@ -55,10 +55,9 @@ func TestParseRejectsInvalidContexts(t *testing.T) {
 		{"source=ssh://git:password@example.com/repo.git", "must not contain credentials"},
 		{"source=https://user:secret@example.com/context.tar", "must not contain credentials"},
 		{"source=ftp://example.com/context", "unsupported build context scheme"},
-		{"source=https://example.com/source.git#main:src", "query selectors"},
-		{"source=https://example.com/source.git?branch=main#refs/heads/main", "query selectors"},
-		{"source=git@example.com:team/source.git#main", "query selectors"},
-		{"source=git://example.com/source.git#", "query selectors"},
+		{"source=https://example.com/source.git?branch=main#refs/heads/main", "cannot combine"},
+		{"source=git@example.com:team/source.git?ref=main#main", "cannot combine"},
+		{"source=git://example.com/source.git?#", "cannot combine"},
 		{"base=docker-image://", "invalid build context"},
 		{"base=container-image://", "invalid build context"},
 		{"base=docker://", "invalid build context"},
@@ -84,6 +83,10 @@ func TestParsePrimary(t *testing.T) {
 		{name: "default local", kind: Local},
 		{name: "explicit local", value: local, kind: Local},
 		{name: "git", value: "https://example.com/source.git?branch=main&checksum=0123456789ab", kind: Git},
+		{name: "fragment ref and subdir", value: "https://example.com/source.git#main:src", kind: Git},
+		{name: "fragment ref", value: "git@example.com:team/source.git#main", kind: Git},
+		{name: "fragment subdir", value: "https://example.com/source.git#:src", kind: Git},
+		{name: "empty fragment", value: "git://example.com/source.git#", kind: Git},
 		{name: "http archive", value: "https://example.com/context.tar.gz", kind: HTTPArchive},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -96,8 +99,8 @@ func TestParsePrimary(t *testing.T) {
 			}
 		})
 	}
-	for _, source := range []string{"https://example.com/source.git#main:src", "https://example.com/source.git?branch=main#refs/heads/main", "git@example.com:team/source.git#"} {
-		if _, err := ParsePrimary(source, local); err == nil || !strings.Contains(err.Error(), "query selectors") {
+	for _, source := range []string{"https://example.com/source.git?branch=main#refs/heads/main", "git@example.com:team/source.git?ref=main#main", "git://example.com/source.git?#"} {
+		if _, err := ParsePrimary(source, local); err == nil || !strings.Contains(err.Error(), "cannot combine") {
 			t.Errorf("ParsePrimary(%q) error = %v", source, err)
 		}
 	}
@@ -162,5 +165,19 @@ func TestParseNativeImageAliases(t *testing.T) {
 				t.Fatal("accepted image as primary filesystem context")
 			}
 		})
+	}
+}
+
+func TestParsePreservesNativeGitSelectors(t *testing.T) {
+	for _, source := range []string{
+		"https://example.com/source.git#main:src",
+		"ssh://git@example.com/source.git#main",
+		"git@example.com:team/source.git#:src",
+		"git://example.com/source.git#",
+	} {
+		contexts, err := Parse([]string{"source=" + source})
+		if err != nil || len(contexts) != 1 || contexts[0].Kind != Git || contexts[0].Reference != source {
+			t.Errorf("Parse(%q) = %+v, %v", source, contexts, err)
+		}
 	}
 }

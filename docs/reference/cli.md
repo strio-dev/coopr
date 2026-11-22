@@ -126,7 +126,7 @@ Each entry records the instruction, phase, cache outcome and duration. Cache loo
 
 `--build-context NAME=VALUE` accepts local directories, image references with `docker-image://`, `container-image://` or `docker://`, selected `oci-layout://PATH:TAG`, public HTTP(S) tar archives, and HTTP(S)/Git/SSH/SCP-style Git repositories.
 
-Primary and named Git contexts use query selectors, for example `https://example.com/source.git?branch=main&subdir=src`. Options are `branch`, `tag`, or `ref`; optional `subdir` and `checksum`/`commit`; `submodules=false`; `keep-git-dir=true`; `mtime=commit`; and `fetch-by-commit=true`. The last requires a full lowercase commit SHA in `checksum`. Nested submodules fetch by default. ADD retains its instruction-level Git options.
+Primary and named Git contexts accept standalone `#ref:subdir`, `#ref`, or `#:subdir` fragments, or query selectors such as `https://example.com/source.git?branch=main&subdir=src`. Do not combine query selectors and fragments. Query options are `branch`, `tag`, or `ref`; optional `subdir` and `checksum`/`commit`; `submodules=false`; `keep-git-dir=true`; `mtime=commit`; and `fetch-by-commit=true`. The last requires a full lowercase commit SHA in `checksum`. Nested submodules fetch by default. ADD retains its instruction-level Git options.
 
 ## Names and transfer destinations
 

@@ -250,8 +250,15 @@ type gitNamedContextOptions struct {
 
 func normalizeGitNamedContextURL(source string) (gitNamedContextOptions, error) {
 	options := gitNamedContextOptions{submodules: true, mtime: "checkout"}
-	if strings.ContainsRune(source, '#') {
-		return gitNamedContextOptions{}, errors.New("git contexts use query selectors, not URL fragments")
+	if remote, fragment, hasFragment := strings.Cut(source, "#"); hasFragment {
+		if strings.ContainsRune(remote, '?') {
+			return gitNamedContextOptions{}, errors.New("git contexts cannot combine query selectors and URL fragments")
+		}
+		if strings.ContainsAny(fragment, "#?") {
+			return gitNamedContextOptions{}, errors.New("git context fragment cannot contain '#' or '?'")
+		}
+		options.cloneSource = source
+		return options, nil
 	}
 	remote, rawQuery, hasQuery := strings.Cut(source, "?")
 	if !hasQuery {
