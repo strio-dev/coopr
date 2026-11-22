@@ -289,9 +289,7 @@ Instruction keys describe operations, dependencies, execution settings and measu
 | Package result | Completed package snapshots during component build. | A cache miss runs package production during packaging only. |
 | Cache mount | Disposable tool data. | Names are scoped to their use unless explicitly supplied. Builds must work with empty mounts. |
 
-The solver requests the output from a declared stage graph. An eligible terminal hit restores only that image into native storage, leaving unused ancestor filesystems unloaded. Image selection, native trust policy and request authorization still run before reuse. Owned immutable context captures retain content hashes for selected COPY/ADD inputs.
-
-COPY/ADD measure their selected inputs; instruction hits can still read and extract files when a stage needs execution. Checksum-pinned HTTP ADD can hit without downloading again; Git ADD resolves the commit and submodules before checking the cache. A cache hit therefore does not guarantee an offline build.
+COPY/ADD measure their selected inputs; local hits can still read and extract files. Checksum-pinned HTTP ADD can hit without downloading again; Git ADD resolves the commit and submodules before checking the cache. A cache hit therefore does not guarantee an offline build.
 
 Whole-component reuse requires a resolved invocation graph. COPY/ADD and bind inputs must identify retained stages, packages, or selected images and named contexts. Dynamic bases, generated image inputs, nested component calls, and caller-context inputs still pass through planning and execution, where individual instructions can reuse their snapshots. This keeps transitive input resolution and context side effects visible.
 
@@ -306,8 +304,6 @@ Stored package snapshots are artifact inputs, not cache hits. `--no-cache` does 
 ### State identity and metadata limits
 
 Portable instruction graphs preserve dependency associations, execution identities and complete selected image results. The format is not interchangeable with BuildKit registry caches. Source boundaries can distinguish equal flattened filesystems with different layer chains. Intermediate generated parent layer timestamps do not replace logical dependency identity.
-
-Graph and instruction-image cache entries use an OCI index referencing the checkpoint images and a Coopr metadata artifact. They carry complete image filesystem layers, not only graph JSON. The 8 MiB bound applies to individual metadata records; bulk filesystem layers stream through the configured registry transport. These v2 cache formats are a clean break: older graph and instruction-image entries are not read, and misses rebuild the requested work. No migration or legacy reader is provided.
 
 Component-result cache identity also includes the input image chain. Restoration retains the selected output's image graph, configuration and root metadata; identity ignores the root directory's modification time. Metadata that the exporter cannot preserve can prevent portable reuse.
 
