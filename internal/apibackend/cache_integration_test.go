@@ -293,7 +293,7 @@ func TestAPIWorkersOverlapAndRecoverGraphCacheAcrossRestarts(t *testing.T) {
 			request := f.request("warm-"+store+"-"+lane, lane, store)
 			_, done := startNativeAPI(ctx, server, request)
 			response := awaitNativeAPI(t, ctx, done, true)
-			if response.result.Cache == nil || response.result.Cache.Hits != 2 || response.result.Cache.Misses != 0 || response.result.Cache.Errors != 0 {
+			if response.result.Cache == nil || response.result.Cache.Hits != 1 || response.result.Cache.Misses != 0 || response.result.Cache.Errors != 0 {
 				t.Fatalf("%s/%s did not restore complete graph: %+v\n%s", store, lane, response.result.Cache, response.logs)
 			}
 			data, err := os.ReadFile(filepath.Join(request.Options.Output.Filesystem, "proof"))

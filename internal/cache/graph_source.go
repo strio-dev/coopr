@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
+	"slices"
+	"sync"
 
 	digest "github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -31,13 +34,16 @@ type GraphSource struct {
 	reader       *GraphReader
 	store        *OCIStore
 	artifact     v1.Descriptor
+	indexJSON    []byte
 	recordJSON   []byte
 	manifestJSON []byte
 	results      map[string]GraphResult
 	images       []v1.Descriptor
+	primary      bool
+	used         sync.Map // Known result IDs successfully imported from this source.
 }
 
-// LookupMetadata verifies the artifact, record and every sidecar without
+// LookupMetadata verifies the artifact and complete graph record without
 // fetching image manifests or payloads. TTL applies to admission, not later
 // materialization of an already admitted source. Repeated immutable sources
 // share a handle; retained metadata is bounded for the reader's lifetime.
@@ -58,14 +64,18 @@ func (reader *GraphReader) LookupMetadata(ctx context.Context, store *OCIStore, 
 	if err != nil {
 		return nil, err
 	}
+	if origin, ok := target.(interface{ ResolvedFromPrimary(v1.Descriptor) bool }); ok {
+		metadata.primary = origin.ResolvedFromPrimary(metadata.artifact)
+	}
 	return reader.admitMetadata(store, metadata)
 }
 
 type graphMetadata struct {
-	record                   GraphRecord
-	artifact                 v1.Descriptor
-	manifestJSON, recordJSON []byte
-	bytes                    int
+	record                              GraphRecord
+	artifact                            v1.Descriptor
+	indexJSON, manifestJSON, recordJSON []byte
+	bytes                               int
+	primary                             bool
 }
 
 // admitMetadata requires the owning reader gate.
@@ -87,10 +97,10 @@ func (reader *GraphReader) admitMetadata(store *OCIStore, metadata *graphMetadat
 		}
 	}
 	source := &GraphSource{
-		reader: reader, store: store,
+		reader: reader, store: store, primary: metadata.primary,
 		// Strict metadata descriptors contain no mutable selection fields.
-		artifact:   v1.Descriptor{MediaType: artifact.MediaType, Digest: artifact.Digest, Size: artifact.Size},
-		recordJSON: metadata.recordJSON, manifestJSON: metadata.manifestJSON, results: make(map[string]GraphResult, len(record.Results)), images: images,
+		artifact:  v1.Descriptor{MediaType: artifact.MediaType, Digest: artifact.Digest, Size: artifact.Size},
+		indexJSON: metadata.indexJSON, recordJSON: metadata.recordJSON, manifestJSON: metadata.manifestJSON, results: make(map[string]GraphResult, len(record.Results)), images: images,
 	}
 	for _, result := range record.Results {
 		source.results[result.ID] = result
@@ -120,6 +130,74 @@ func (source *GraphSource) Artifact() v1.Descriptor {
 		return v1.Descriptor{}
 	}
 	return source.artifact
+}
+
+// MarkUsed records a successful selected native import. Materialization for
+// export alone does not mark use; pooled verified blobs may satisfy the import.
+func (source *GraphSource) MarkUsed(resultID string) {
+	if source == nil || !source.primary {
+		return
+	}
+	if _, bound := source.results[resultID]; !bound {
+		return
+	}
+	select {
+	case <-source.reader.closing:
+		return
+	default:
+		source.used.Store(resultID, true)
+	}
+}
+
+// CanReuseAt avoids republishing an unchanged result pulled and used at its
+// original registry destination. It retains the admitted age and makes no
+// claim that remote content survives later garbage collection.
+func (source *GraphSource) CanReuseAt(ctx context.Context, destination *OCIStore, root digest.Digest, current GraphResult) (bool, error) {
+	if source == nil {
+		return false, nil
+	}
+	if err := source.reader.enter(ctx); err != nil {
+		return false, err
+	}
+	defer source.reader.leave()
+	if destination == nil || source.store != destination || destination.localRoot != "" {
+		return false, nil
+	}
+	if _, used := source.used.Load(current.ID); !used {
+		return false, nil
+	}
+	record, err := source.Record()
+	if err != nil {
+		return false, err
+	}
+	return graphRootMatchesResult(record, root, current)
+}
+
+func graphRootMatchesResult(record GraphRecord, root digest.Digest, current GraphResult) (bool, error) {
+	if record.Root != root {
+		return false, nil
+	}
+	metadata, err := record.NativeMetadata(root)
+	if err != nil {
+		return false, err
+	}
+	matched := false
+	for _, result := range record.Results {
+		matched = matched || reflect.DeepEqual(result, current)
+	}
+	if !matched {
+		return false, nil
+	}
+	for _, node := range metadata.Nodes {
+		if slices.Contains(metadata.Roots, node.ID) {
+			for _, result := range node.Results {
+				if result.ID == current.ID {
+					return true, nil
+				}
+			}
+		}
+	}
+	return false, nil
 }
 
 // EnsureResult retrieves and verifies only the selected result image and its

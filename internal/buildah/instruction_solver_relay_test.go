@@ -67,8 +67,11 @@ func TestInstructionGraphRelayRoundTripAndCompletedParent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parent.request != nil || parent.source == nil || parent.source.Entry.ImageID != "parent" || parent.portableDigest() != relay.Root {
+	if parent.request != nil || parent.source == nil || parent.source.Entry.ImageID != "parent" || mustInstructionPortableDigest(t, parent) != relay.Root {
 		t.Fatal("relay did not restore an immutable completed parent")
+	}
+	if !parent.executed.Load() || parent.parent.executed.Load() {
+		t.Fatal("relay changed the executed parent or untouched source status")
 	}
 	result, err := child.job.Build(t.Context(), parent.Inputs()[0])
 	if err != nil {
@@ -80,6 +83,92 @@ func TestInstructionGraphRelayRoundTripAndCompletedParent(t *testing.T) {
 	again, err := encodeInstructionVertexRelay(parent)
 	if err != nil || !reflect.DeepEqual(again, relay) {
 		t.Fatalf("relay changed during roundtrip: %v", err)
+	}
+}
+
+func TestInstructionGraphRelayPreservesDAGAndLazyAncestors(t *testing.T) {
+	engine, historyRelay := instructionRelayFixture(t, false)
+	history, err := engine.restoreInstructionVertexRelay(historyRelay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A final hit need not execute its secondary input. Both branches share the
+	// original source, while the primary parent still defines image history.
+	lazy := engine.declare(history.parent, nil, digest.FromString("lazy stage input"), "COPY source", false, nil)
+	endpoint := engine.declare(history, []*instructionVertex{lazy, history.parent}, digest.FromString("stage output"), "stage", false, nil)
+	endpoint.completed = history.completed
+	relay, err := encodeInstructionVertexRelay(endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(relay.Nodes) != 4 {
+		t.Fatalf("DAG relay has %d nodes, want four with one shared source", len(relay.Nodes))
+	}
+	child, err := newInstructionSolver(t.Context(), engine.results.store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := child.close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	restored, err := child.restoreInstructionVertexRelay(relay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.parent == nil || restored.parent.key != history.key || len(restored.dependencies) != 2 {
+		t.Fatal("relay lost the primary history parent or secondary input")
+	}
+	secondary := restored.dependencies[0]
+	if secondary.key != lazy.key || secondary.parent != restored.parent.parent || restored.dependencies[1] != restored.parent.parent || secondary.source != nil || secondary.completed != nil {
+		t.Fatal("relay materialized a lazy ancestor or lost the shared source")
+	}
+	if mustInstructionPortableDigest(t, restored) != mustInstructionPortableDigest(t, endpoint) || restored.source.ID() != endpoint.completed.ID() {
+		t.Fatal("relay changed the selected output or DAG identity")
+	}
+	again, err := encodeInstructionVertexRelay(restored)
+	if err != nil || !reflect.DeepEqual(again, relay) {
+		t.Fatalf("DAG relay changed during roundtrip: %v", err)
+	}
+	for _, name := range []string{"forward-parent", "forward-input", "negative-input", "executed-lazy", "missing-endpoint", "unreachable-source"} {
+		t.Run(name, func(t *testing.T) {
+			raw, err := json.Marshal(relay)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var invalid instructionVertexRelay
+			if err := json.Unmarshal(raw, &invalid); err != nil {
+				t.Fatal(err)
+			}
+			switch name {
+			case "forward-parent":
+				invalid.Nodes[1].Parent = 1
+			case "forward-input":
+				invalid.Nodes[2].Dependencies = []int{3}
+			case "negative-input":
+				invalid.Nodes[2].Dependencies = []int{-1}
+			case "executed-lazy":
+				invalid.Nodes[2].Executed = true
+			case "missing-endpoint":
+				invalid.Nodes[3].ResultID = ""
+			case "unreachable-source":
+				invalid.Nodes[2].Parent = -1
+				invalid.Nodes[2].Digest = invalid.Nodes[2].Key
+				invalid.Nodes[1].Parent = -1
+				invalid.Nodes[1].Digest = invalid.Nodes[1].Key
+				invalid.Nodes[3].Dependencies = []int{2}
+				invalid.Nodes[3].Digest = digest.FromString(instructionSolverVersion + "\n" + invalid.Nodes[3].Key.String() + "\n" + invalid.Nodes[1].Digest.String() + "\n" + invalid.Nodes[2].Digest.String())
+				invalid.Root = invalid.Nodes[3].Digest
+			}
+			if _, err := child.restoreInstructionVertexRelay(&invalid); err == nil {
+				t.Fatal("invalid DAG relay accepted")
+			}
+		})
+	}
+	lazy.dependencies = []*instructionVertex{endpoint}
+	if _, err := encodeInstructionVertexRelay(endpoint); err == nil {
+		t.Fatal("secondary-input cycle accepted")
 	}
 }
 

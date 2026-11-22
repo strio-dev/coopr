@@ -18,7 +18,8 @@ import (
 	digest "github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/strio-dev/coopr/internal/cache"
-	orasoci "oras.land/oras-go/v2/content/oci"
+	"go.podman.io/image/v5/manifest"
+	"go.podman.io/storage"
 )
 
 // Keep the executor's native graph names at the existing local boundary.
@@ -34,7 +35,7 @@ type instructionGraphPortable struct {
 	engine           *instructionSolver
 	cache            *portableInstructionCache
 	roots            map[digest.Digest]instructionGraphRoot
-	read             map[digest.Digest]bool
+	read             map[digest.Digest]bool // attempted roots; true means metadata was admitted
 	reader           *cache.GraphReader
 	sources          []instructionGraphSource
 	relayBindings    []digest.Digest
@@ -78,14 +79,21 @@ func (s *instructionSolver) preparePortable(ctx context.Context, vertex *instruc
 	if p == nil {
 		return nil
 	}
-	root := vertex.portableDigest()
-	p.mu.Lock()
-	if p.read[root] {
-		p.mu.Unlock()
-		return nil
+	root, err := vertex.portableDigest()
+	if err != nil {
+		return err
 	}
-	p.read[root] = true
+	p.mu.Lock()
+	if admitted, read := p.read[root]; read {
+		p.mu.Unlock()
+		if admitted {
+			return s.linkPortableKeys(vertex)
+		}
+		return s.keys.Err()
+	}
+	p.read[root] = false
 	p.mu.Unlock()
+	admitted := false
 	for index, candidate := range p.cache.readStores {
 		store, ok := candidate.(*cache.OCIStore)
 		if !ok {
@@ -143,23 +151,122 @@ func (s *instructionSolver) preparePortable(ctx context.Context, vertex *instruc
 		}
 		// Only metadata is admitted before matching. BuildKit loads the selected
 		// result on demand; IgnoreCache still controls execution.
+		admitted = true
 	}
-	return nil
+	p.mu.Lock()
+	p.read[root] = admitted
+	p.mu.Unlock()
+	if !admitted {
+		return s.keys.Err()
+	}
+	return s.linkPortableKeys(vertex)
 }
 
-func (s *instructionSolver) stagePortable(vertex *instructionVertex, result *instructionSolverResult) {
+// Independently published prefixes can use different native key IDs for the
+// same authored graph. A completed solver edge retains its earlier IDs when a
+// later graph is admitted. Requery the exact authored graph so BuildKit's Query
+// associates every matching parent key with its matching children before that
+// completed edge is reused. This reads key metadata, never result payloads.
+func (s *instructionSolver) linkPortableKeys(vertex *instructionVertex) error {
+	vertices, err := instructionGraphOrder(vertex)
+	if err != nil {
+		return err
+	}
+	for _, current := range vertices {
+		if current.ignore {
+			return s.keys.Err()
+		}
+	}
+	matched := map[*instructionVertex][]solver.CacheKeyWithSelector{}
+	for _, current := range vertices {
+		var candidates map[string]*solver.CacheKey
+		inputs := current.inputVertices()
+		for slot := 0; slot < max(1, len(inputs)); slot++ {
+			var dependencies []solver.CacheKeyWithSelector
+			if len(inputs) != 0 {
+				dependencies = matched[inputs[slot]]
+				if len(dependencies) == 0 {
+					candidates = nil
+					break
+				}
+			}
+			keys, err := s.manager.Query(dependencies, solver.Index(slot), current.key, 0)
+			if err != nil {
+				return err
+			}
+			found := make(map[string]*solver.CacheKey, len(keys))
+			for _, key := range keys {
+				if slot == 0 || candidates[key.ID] != nil {
+					found[key.ID] = key
+				}
+			}
+			candidates = found
+			if len(candidates) == 0 {
+				break
+			}
+		}
+		for _, key := range candidates {
+			matched[current] = append(matched[current], solver.CacheKeyWithSelector{CacheKey: solver.ExportableCacheKey{CacheKey: key}})
+		}
+	}
+	return s.keys.Err()
+}
+
+// A shared input is visited once, after its own inputs. Reject cycles before
+// reconciling links or making a publication decision.
+func instructionGraphOrder(root *instructionVertex) ([]*instructionVertex, error) {
+	var vertices []*instructionVertex
+	states := map[*instructionVertex]uint8{}
+	var visit func(*instructionVertex) error
+	visit = func(vertex *instructionVertex) error {
+		if vertex == nil {
+			return errors.New("portable graph has no vertex")
+		}
+		switch states[vertex] {
+		case 1:
+			return errors.New("portable graph contains a cycle")
+		case 2:
+			return nil
+		}
+		if len(states) >= 4096 {
+			return errors.New("portable graph exceeds record limit")
+		}
+		states[vertex] = 1
+		for _, input := range vertex.inputVertices() {
+			if err := visit(input); err != nil {
+				return err
+			}
+		}
+		states[vertex] = 2
+		vertices = append(vertices, vertex)
+		return nil
+	}
+	err := visit(root)
+	return vertices, err
+}
+
+func (s *instructionSolver) stagePortable(vertex *instructionVertex, result *instructionSolverResult) error {
 	if s.portable != nil && result != nil {
+		root, err := vertex.portableDigest()
+		if err != nil {
+			return err
+		}
 		s.portable.mu.Lock()
 		defer s.portable.mu.Unlock()
-		s.portable.roots[vertex.portableDigest()] = instructionGraphRoot{vertex: vertex, result: result.ID()}
+		s.portable.roots[root] = instructionGraphRoot{vertex: vertex, result: result.ID()}
 		if !vertex.ignore {
 			if vertex.executed.Load() {
-				s.portable.cache.stats.Misses++
+				// Stage callbacks reuse instruction subgraphs; counting their
+				// misses again would report execution that never happened.
+				if vertex.run == nil {
+					s.portable.cache.stats.Misses++
+				}
 			} else {
 				s.portable.cache.stats.Hits++
 			}
 		}
 	}
+	return nil
 }
 
 func (s *instructionSolver) publishPortable(ctx context.Context) (err error) {
@@ -184,11 +291,19 @@ func (s *instructionSolver) publishPortable(ctx context.Context) (err error) {
 		roots = append(roots, root)
 		selected[root] = p.roots[root]
 	}
+	sources := slices.Clone(p.sources)
 	p.mu.Unlock()
 	slices.Sort(roots)
 	for _, root := range roots {
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		writers, err := p.graphPublicationWriters(ctx, root, selected[root], sources)
+		if err != nil {
+			return err
+		}
+		if len(writers) == 0 {
+			continue
 		}
 		record, layout, err := p.snapshot(ctx, root, selected[root], exports)
 		if err != nil {
@@ -206,7 +321,7 @@ func (s *instructionSolver) publishPortable(ctx context.Context) (err error) {
 			return fmt.Errorf("stage graph cache: %w", err)
 		}
 		var writeErr error
-		for _, candidate := range p.cache.writeStores {
+		for _, candidate := range writers {
 			store, ok := candidate.(instructionGraphStore)
 			if !ok {
 				continue
@@ -218,12 +333,81 @@ func (s *instructionSolver) publishPortable(ctx context.Context) (err error) {
 				p.cache.stats.Stored++
 			}
 		}
-		writeErr = errors.Join(writeErr, os.RemoveAll(filepath.Dir(layout)))
 		if writeErr != nil {
 			return fmt.Errorf("write graph cache: %w", writeErr)
 		}
 	}
 	return nil
+}
+
+func (p *instructionGraphPortable) graphPublicationWriters(ctx context.Context, root digest.Digest, selected instructionGraphRoot, sources []instructionGraphSource) ([]instructionCacheStore, error) {
+	if selected.vertex == nil {
+		return p.cache.writeStores, nil
+	}
+	vertices, err := instructionGraphOrder(selected.vertex)
+	if err != nil {
+		return nil, err
+	}
+	for _, vertex := range vertices {
+		if vertex.ignore || vertex.executed.Load() {
+			return p.cache.writeStores, nil
+		}
+	}
+	pending := p.engine.results.lazy.get(selected.result)
+	if pending != nil && pending.failed.Load() {
+		return p.cache.writeStores, nil
+	}
+	value, err := p.engine.results.read(selected.result)
+	if err != nil || value.Boundary != "" {
+		return p.cache.writeStores, nil
+	}
+	if pending != nil && value.CreatedAt.Before(pending.value.CreatedAt) {
+		value.CreatedAt = pending.value.CreatedAt
+	}
+	var image v1.Descriptor
+	if pending != nil {
+		image = pending.record.Image
+	} else {
+		data, err := p.executor.store.ImageBigData(value.Entry.ImageID, storage.ImageDigestManifestBigDataNamePrefix+"-"+value.Entry.ManifestDigest.String())
+		if err != nil {
+			return nil, err
+		}
+		image = v1.Descriptor{MediaType: manifest.GuessMIMEType(data), Digest: digest.FromBytes(data), Size: int64(len(data))}
+		if image.Digest != value.Entry.ManifestDigest {
+			return nil, errors.New("native graph publication manifest changed")
+		}
+	}
+	value.Entry.ImageID = ""
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	current := cache.GraphResult{ID: selected.result, Image: image, Metadata: raw}
+	writers := make([]instructionCacheStore, 0, len(p.cache.writeStores))
+	for _, writer := range p.cache.writeStores {
+		reuse := false
+		if destination, ok := writer.(*cache.OCIStore); ok {
+			for _, admitted := range sources {
+				reuse, err = admitted.source.CanReuseAt(ctx, destination, root, current)
+				if err != nil {
+					return nil, err
+				}
+				if reuse {
+					break
+				}
+			}
+			if !reuse && pending == nil {
+				reuse, err = destination.CanReuseGraph(ctx, root, current)
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
+		if !reuse {
+			writers = append(writers, writer)
+		}
+	}
+	return writers, nil
 }
 
 func (p *instructionGraphPortable) snapshot(ctx context.Context, root digest.Digest, selected instructionGraphRoot, exports *instructionGraphExport) (cache.GraphRecord, string, error) {
@@ -235,22 +419,24 @@ func (p *instructionGraphPortable) snapshot(ctx context.Context, root digest.Dig
 	// Reconstruct the selected graph from its authored vertices and forward
 	// matches. Upstream WalkBacklinks returns output-normalized digests, not
 	// the original operation digests required by AddLink during import.
-	var visit func(*instructionVertex, string) ([]string, error)
-	visit = func(vertex *instructionVertex, resultID string) ([]string, error) {
-		if vertex == nil {
-			return nil, errors.New("portable graph has no vertex")
+	vertices, err := instructionGraphOrder(selected.vertex)
+	if err != nil {
+		return cache.GraphRecord{}, "", err
+	}
+	matched := map[*instructionVertex][]string{}
+	for _, vertex := range vertices {
+		inputs := make([][]string, len(vertex.inputVertices()))
+		for slot, input := range vertex.inputVertices() {
+			inputs[slot] = matched[input]
 		}
-		var parents []string
-		var err error
-		if vertex.parent != nil {
-			parents, err = visit(vertex.parent, "")
-			if err != nil {
-				return nil, err
-			}
-		}
-		ids, err := instructionGraphKeyIDs(p.engine.keys, vertex)
+		ids, err := instructionGraphLinkedIDs(p.engine.keys, vertex.key, inputs)
 		if err != nil {
-			return nil, err
+			return cache.GraphRecord{}, "", err
+		}
+		matched[vertex] = ids
+		resultID := ""
+		if vertex == selected.vertex {
+			resultID = selected.result
 		}
 		if resultID == "" && vertex.completed != nil && vertex.completed.Boundary == "" {
 			resultID = vertex.completed.ID()
@@ -263,7 +449,7 @@ func (p *instructionGraphPortable) snapshot(ctx context.Context, root digest.Dig
 			node := nodes[id]
 			if node == nil {
 				if len(nodes) >= 4096 {
-					return nil, errors.New("portable graph exceeds record limit")
+					return cache.GraphRecord{}, "", errors.New("portable graph exceeds record limit")
 				}
 				node = &instructionGraphNode{ID: id}
 				nodes[id] = node
@@ -271,7 +457,7 @@ func (p *instructionGraphPortable) snapshot(ctx context.Context, root digest.Dig
 			if includeResult {
 				result, err := p.snapshotResult(id, resultID)
 				if err != nil {
-					return nil, err
+					return cache.GraphRecord{}, "", err
 				}
 				if result != nil {
 					associated = true
@@ -280,26 +466,23 @@ func (p *instructionGraphPortable) snapshot(ctx context.Context, root digest.Dig
 					}
 				}
 			}
-			link := solver.CacheInfoLink{Digest: vertex.key}
-			for _, parent := range parents {
-				if p.engine.keys.HasLink(parent, link, id) {
-					input := instructionGraphInput{Source: parent, Link: link}
-					if !slices.Contains(node.Inputs, input) {
-						node.Inputs = append(node.Inputs, input)
+			for slot, parents := range inputs {
+				link := solver.CacheInfoLink{Input: solver.Index(slot), Digest: vertex.key}
+				for _, parent := range parents {
+					if p.engine.keys.HasLink(parent, link, id) {
+						input := instructionGraphInput{Source: parent, Link: link}
+						if !slices.Contains(node.Inputs, input) {
+							node.Inputs = append(node.Inputs, input)
+						}
 					}
 				}
 			}
 		}
 		if resultID != "" && !associated {
-			return nil, fmt.Errorf("selected graph result %s has no persisted key association", resultID)
+			return cache.GraphRecord{}, "", fmt.Errorf("selected graph result %s has no persisted key association", resultID)
 		}
-		return ids, nil
 	}
-	var graphErr error
-	metadata.Roots, graphErr = visit(selected.vertex, selected.result)
-	if graphErr != nil {
-		return cache.GraphRecord{}, "", graphErr
-	}
+	metadata.Roots = matched[selected.vertex]
 	if len(metadata.Roots) == 0 {
 		return cache.GraphRecord{}, "", errors.New("solver result has no persisted graph association")
 	}
@@ -313,23 +496,7 @@ func (p *instructionGraphPortable) snapshot(ctx context.Context, root digest.Dig
 		metadata.Nodes = append(metadata.Nodes, *node)
 	}
 	slices.SortFunc(metadata.Nodes, func(a, b instructionGraphNode) int { return bytes.Compare([]byte(a.ID), []byte(b.ID)) })
-	dir, err := os.MkdirTemp(p.cache.stagingDir, "graph-*")
-	if err != nil {
-		return cache.GraphRecord{}, "", err
-	}
-	layout := filepath.Join(dir, "layout")
-	keep := false
-	defer func() {
-		if !keep {
-			_ = os.RemoveAll(dir)
-		}
-	}()
-	destination, err := orasoci.New(layout)
-	if err != nil {
-		return cache.GraphRecord{}, "", err
-	}
 	record := cache.GraphRecord{Version: cache.GraphRecordVersion, CreatedAt: time.Now().UTC(), Root: root}
-	var images []v1.Descriptor
 	seen := map[string]bool{}
 	for _, node := range metadata.Nodes {
 		for _, result := range node.Results {
@@ -342,7 +509,6 @@ func (p *instructionGraphPortable) snapshot(ctx context.Context, root digest.Dig
 				return cache.GraphRecord{}, "", err
 			}
 			record.Results = append(record.Results, portable)
-			images = append(images, portable.Image)
 		}
 	}
 	record.Metadata, err = json.Marshal(metadata)
@@ -352,12 +518,11 @@ func (p *instructionGraphPortable) snapshot(ctx context.Context, root digest.Dig
 	if err := record.Validate(root); err != nil {
 		return cache.GraphRecord{}, "", err
 	}
-	// Verify shared payloads once across the selected complete image closures.
-	if err := cache.CopyGraphImages(ctx, exports.layout, destination, images); err != nil {
+	// PutGraph verifies the selected closure in the invocation-owned export layout.
+	if err := ctx.Err(); err != nil {
 		return cache.GraphRecord{}, "", err
 	}
-	keep = true
-	return record, layout, nil
+	return record, filepath.Join(exports.dir, "layout"), nil
 }
 
 // Export solved outputs rather than every result ever associated with a key.
@@ -397,24 +562,49 @@ func (p *instructionGraphPortable) snapshotResult(key, selected string) (*solver
 }
 
 func instructionGraphKeyIDs(keys solver.CacheKeyStorage, vertex *instructionVertex) ([]string, error) {
-	if vertex.parent == nil {
-		return []string{solver.NewCacheKey(vertex.key, "", 0).ID}, nil
-	}
-	parents, err := instructionGraphKeyIDs(keys, vertex.parent)
+	vertices, err := instructionGraphOrder(vertex)
 	if err != nil {
 		return nil, err
 	}
-	var ids []string
-	for _, parent := range parents {
-		if err := keys.WalkLinks(parent, solver.CacheInfoLink{Digest: vertex.key}, func(id string) error {
-			ids = append(ids, id)
-			return nil
-		}); err != nil {
+	matched := map[*instructionVertex][]string{}
+	for _, current := range vertices {
+		inputs := make([][]string, len(current.inputVertices()))
+		for slot, input := range current.inputVertices() {
+			inputs[slot] = matched[input]
+		}
+		matched[current], err = instructionGraphLinkedIDs(keys, current.key, inputs)
+		if err != nil {
 			return nil, err
 		}
 	}
+	return matched[vertex], nil
+}
+
+func instructionGraphLinkedIDs(keys solver.CacheKeyStorage, key digest.Digest, inputs [][]string) ([]string, error) {
+	if len(inputs) == 0 {
+		return []string{solver.NewCacheKey(key, "", 0).ID}, nil
+	}
+	var candidates map[string]bool
+	for slot, parents := range inputs {
+		found := map[string]bool{}
+		for _, parent := range parents {
+			if err := keys.WalkLinks(parent, solver.CacheInfoLink{Input: solver.Index(slot), Digest: key}, func(id string) error {
+				if slot == 0 || candidates[id] {
+					found[id] = true
+				}
+				return nil
+			}); err != nil {
+				return nil, err
+			}
+		}
+		candidates = found
+	}
+	ids := make([]string, 0, len(candidates))
+	for id := range candidates {
+		ids = append(ids, id)
+	}
 	slices.Sort(ids)
-	return slices.Compact(ids), nil
+	return ids, nil
 }
 
 func decodeInstructionGraphJSON(raw []byte, target any) error {
@@ -456,7 +646,7 @@ func (p *instructionGraphPortable) restoreRecord(ctx context.Context, record *ca
 		if err := decodeInstructionGraphJSON(result.Metadata, &r); err != nil {
 			return err
 		}
-		if r.ID() != result.ID || r.Entry.ManifestDigest != result.Image.Digest || r.Entry.ImageID != "" || r.ParentLayers < 0 || r.ParentLayers > 2048 || r.CreatedAt.IsZero() || result.BaseImage != nil || r.Entry.BaseImageID != "" || len(r.Entry.LogicalConfig) != 0 || r.Entry.CommandSet != nil || r.Entry.RetainsCaller != nil {
+		if r.ID() != result.ID || r.Entry.ManifestDigest != result.Image.Digest || r.Entry.ImageID != "" || r.ParentLayers < 0 || r.ParentLayers > 2048 || r.CreatedAt.IsZero() || result.BaseImage != nil || validateInstructionResultState(&r) != nil {
 			return errors.New("portable graph result identity or restoration metadata differs")
 		}
 		if r.Boundary != "" && r.Boundary.Validate() != nil {
@@ -482,11 +672,15 @@ func (p *instructionGraphPortable) restoreRecord(ctx context.Context, record *ca
 		item := &instructionPortableResult{value: *results[i], record: result, layout: layout, source: source, owner: p, gate: make(chan struct{}, 1)}
 		item.gate <- struct{}{}
 		item.importImage = func(ctx context.Context) (string, error) {
-			selected, err := item.ensureLayout(ctx)
+			selected, chosen, err := item.ensureLayout(ctx)
 			if err != nil {
 				return "", err
 			}
-			return importInstructionCacheImage(ctx, p.executor.store, p.executor.system, selected, result.Image)
+			image, err := importInstructionCacheImage(ctx, p.executor.store, p.executor.system, selected, result.Image)
+			if err == nil {
+				chosen.MarkUsed(result.ID)
+			}
+			return image, err
 		}
 		pending[i] = item
 	}

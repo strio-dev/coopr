@@ -144,6 +144,10 @@ func hasPortableXattrs(path, ambientSELinux string) (bool, error) {
 		return false, err
 	}
 	for _, attr := range attrs {
+		// Overlay bookkeeping is storage infrastructure, not logical image metadata.
+		if strings.HasPrefix(attr, "user.overlay.") || strings.HasPrefix(attr, "trusted.overlay.") {
+			continue
+		}
 		if attr == "security.selinux" {
 			value, err := system.Lgetxattr(path, attr)
 			if err != nil {

@@ -34,9 +34,17 @@ func TestBuildPlanWarmSimpleCopyUsesNativeAppliedDigest(t *testing.T) {
 	wantXattr := ""
 	build := func(name string, force bool, wantCache string) digest.Digest {
 		t.Helper()
+		currentPlan := plan
+		if name == "warm" {
+			// Miss only the aggregate so this test still checks native COPY reuse.
+			currentPlan = testPlan(t, `from "scratch" {
+    copy "source" "/new-parent/renamed"
+    label cache_probe="native-copy"
+}`)
+		}
 		layout := filepath.Join(root, name)
 		lookup := ""
-		if _, err := BuildPlan(ctx, plan, PlanOptions{
+		if _, err := BuildPlan(ctx, currentPlan, PlanOptions{
 			Store: store, ContextDir: contextDir, Isolation: "rootless", Output: Output{Path: layout}, NoCache: force,
 			Progress: func(event OperationProgress) {
 				if event.Instruction == "copy" && event.Operation == 2 && event.Phase == "lookup" && event.State == "completed" {

@@ -56,6 +56,8 @@ type orasReadSource struct {
 	remaining  []orasEndpoint
 }
 
+var _ registry.ReferenceFetcher = (*orasArtifactRepository)(nil)
+
 type orasNamespaceClient struct {
 	client    remote.Client
 	host      string
@@ -162,6 +164,7 @@ func isArtifactManifest(desc v1.Descriptor) bool {
 }
 
 var _ oras.Target = (*orasArtifactRepository)(nil)
+var _ registry.ReferencePusher = (*orasArtifactRepository)(nil)
 
 func (r *Resolver) repository(ref registry.Reference) (*orasArtifactRepository, error) {
 	return &orasArtifactRepository{resolver: r, ref: ref, sources: make(map[digest.Digest]orasReadSource)}, nil
@@ -179,6 +182,15 @@ func (r *orasArtifactRepository) primaryRepository(ctx context.Context) (*remote
 	}
 	r.primary = repo
 	return repo, nil
+}
+
+// ResolvedFromPrimary recognizes an admitted artifact read directly from the
+// write destination, without a mirror, remap or remaining fallback source.
+func (r *orasArtifactRepository) ResolvedFromPrimary(artifact v1.Descriptor) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	selected := r.sources[artifact.Digest]
+	return r.primary != nil && selected.repository == r.primary && len(selected.remaining) == 0
 }
 
 func (r *orasArtifactRepository) readRepositories(selector string) ([]orasEndpoint, error) {
@@ -224,14 +236,25 @@ func (r *orasArtifactRepository) readRepositories(selector string) ([]orasEndpoi
 }
 
 func (r *orasArtifactRepository) Resolve(ctx context.Context, selector string) (v1.Descriptor, error) {
-	repositories, err := r.readRepositories(selector)
+	descriptor, reader, err := r.FetchReference(ctx, selector)
 	if err != nil {
 		return v1.Descriptor{}, err
+	}
+	return descriptor, reader.Close()
+}
+
+// FetchReference returns a verified metadata body with its descriptor, retaining
+// native endpoint selection and retries without a second manifest request.
+func (r *orasArtifactRepository) FetchReference(ctx context.Context, selector string) (v1.Descriptor, io.ReadCloser, error) {
+	repositories, err := r.readRepositories(selector)
+	if err != nil {
+		return v1.Descriptor{}, nil, err
 	}
 	var failures []error
 	for index, open := range repositories {
 		var repo *remote.Repository
 		var descriptor v1.Descriptor
+		var data []byte
 		err := retry.IfNecessary(ctx, func() error {
 			var err error
 			repo, err = open(ctx)
@@ -243,19 +266,26 @@ func (r *orasArtifactRepository) Resolve(ctx context.Context, selector string) (
 			if err != nil {
 				return err
 			}
-			_, err = readArtifactMetadata(reader, descriptor)
+			data, err = readArtifactMetadata(reader, descriptor)
 			return err
 		}, r.resolver.artifactRetryOptions())
 		if err != nil {
 			failures = append(failures, err)
 			continue
 		}
+		source := orasReadSource{repository: repo, remaining: repositories[index+1:]}
+		if err := r.recordArtifactChildren(descriptor, data, source); err != nil {
+			return v1.Descriptor{}, nil, err
+		}
 		r.mu.Lock()
-		r.sources[descriptor.Digest] = orasReadSource{repository: repo, remaining: repositories[index+1:]}
+		r.sources[descriptor.Digest] = source
 		r.mu.Unlock()
-		return descriptor, nil
+		return descriptor, io.NopCloser(bytes.NewReader(data)), nil
 	}
-	return v1.Descriptor{}, errors.Join(failures...)
+	if len(failures) == 0 {
+		return v1.Descriptor{}, nil, errors.New("no artifact read endpoints")
+	}
+	return v1.Descriptor{}, nil, errors.Join(failures...)
 }
 
 func (r *orasArtifactRepository) Fetch(ctx context.Context, descriptor v1.Descriptor) (io.ReadCloser, error) {
@@ -307,28 +337,42 @@ func (r *orasArtifactRepository) Fetch(ctx context.Context, descriptor v1.Descri
 		if !isArtifactManifest(descriptor) {
 			return reader, nil
 		}
-		var children []v1.Descriptor
-		if descriptor.MediaType == v1.MediaTypeImageIndex || descriptor.MediaType == dockerIndexType {
-			var index v1.Index
-			if err := json.Unmarshal(data, &index); err != nil {
-				return nil, err
-			}
-			children = index.Manifests
-		} else {
-			var manifest v1.Manifest
-			if err := json.Unmarshal(data, &manifest); err != nil {
-				return nil, err
-			}
-			children = append(manifest.Layers, manifest.Config)
+		if err := r.recordArtifactChildren(descriptor, data, orasReadSource{repository: repo, remaining: repositories[index+1:]}); err != nil {
+			return nil, err
 		}
-		r.mu.Lock()
-		for _, child := range children {
-			r.sources[child.Digest] = orasReadSource{repository: repo, remaining: repositories[index+1:]}
-		}
-		r.mu.Unlock()
 		return io.NopCloser(bytes.NewReader(data)), nil
 	}
 	return nil, errors.Join(failures...)
+}
+
+// Descriptor fetches update child locations only: a fallback digest read must
+// not replace the endpoint that supplied an earlier mutable tag resolution.
+func (r *orasArtifactRepository) recordArtifactChildren(descriptor v1.Descriptor, data []byte, source orasReadSource) error {
+	if !isArtifactManifest(descriptor) {
+		return nil
+	}
+	var children []v1.Descriptor
+	if descriptor.MediaType == v1.MediaTypeImageIndex || descriptor.MediaType == dockerIndexType {
+		var index v1.Index
+		if err := json.Unmarshal(data, &index); err != nil {
+			return err
+		}
+		children = index.Manifests
+	} else {
+		var manifest v1.Manifest
+		if err := json.Unmarshal(data, &manifest); err != nil {
+			return err
+		}
+		children = append(manifest.Layers, manifest.Config)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, child := range children {
+		if child.Digest != descriptor.Digest {
+			r.sources[child.Digest] = source
+		}
+	}
+	return nil
 }
 
 // readArtifactMetadata bounds allocation before using the upstream size and
@@ -350,12 +394,23 @@ func (r *orasArtifactRepository) Exists(ctx context.Context, descriptor v1.Descr
 		// the manifest while a child blob needs to be republished.
 		return false, nil
 	}
-	return (orasArtifactBlobs{resolver: r.resolver, ref: r.ref}).Exists(ctx, descriptor)
+	return r.blobExists(ctx, descriptor)
 }
 
 func (r *orasArtifactRepository) Push(ctx context.Context, descriptor v1.Descriptor, reader io.Reader) error {
 	if !isArtifactManifest(descriptor) {
-		return (orasArtifactBlobs{resolver: r.resolver, ref: r.ref}).Push(ctx, descriptor, reader)
+		return r.pushBlob(ctx, descriptor, reader)
+	}
+	return r.pushManifest(ctx, descriptor, reader, descriptor.Digest.String())
+}
+
+func (r *orasArtifactRepository) PushReference(ctx context.Context, descriptor v1.Descriptor, reader io.Reader, reference string) error {
+	return r.pushManifest(ctx, descriptor, reader, reference)
+}
+
+func (r *orasArtifactRepository) pushManifest(ctx context.Context, descriptor v1.Descriptor, reader io.Reader, reference string) error {
+	if descriptor.Size > maxMetadataBytes {
+		return fmt.Errorf("metadata descriptor too large: %d bytes", descriptor.Size)
 	}
 	file, err := spoolArtifact(reader, descriptor)
 	if err != nil {
@@ -368,11 +423,11 @@ func (r *orasArtifactRepository) Push(ctx context.Context, descriptor v1.Descrip
 			return err
 		}
 		// Manifest publication owns one retry budget; request retries stay disabled.
-		repo, err := r.resolver.orasRepository(ctx, r.ref.Registry+"/"+r.ref.Repository, nil, r.resolver.SystemContext(), 0)
+		repo, err := r.primaryRepository(ctx)
 		if err != nil {
 			return err
 		}
-		return repo.Push(ctx, descriptor, io.NopCloser(file))
+		return repo.PushReference(ctx, descriptor, io.NopCloser(file), reference)
 	}, r.resolver.artifactRetryOptions())
 }
 

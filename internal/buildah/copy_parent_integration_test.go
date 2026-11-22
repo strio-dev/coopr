@@ -87,7 +87,7 @@ func assertCopyParentLayerCount(t *testing.T, options StoreOptions, want int) {
 	if err != nil || len(containers) != 0 {
 		t.Fatalf("working containers = %v: %v", containers, err)
 	}
-	dir := filepath.Join(lease.store.GraphRoot(), "coopr-graph-cache-v1")
+	dir := filepath.Join(lease.store.GraphRoot(), instructionSolverDirectory)
 	keys, err := newGraphCacheKeyStorage(t.Context(), filepath.Join(dir, "keys.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -100,7 +100,7 @@ func assertCopyParentLayerCount(t *testing.T, options StoreOptions, want int) {
 			if err != nil {
 				return err
 			}
-			if r.Boundary == "" && r.Entry.ImageID != "" {
+			if r.Boundary == "" && r.Entry.ImageID != "" && len(r.Entry.LogicalConfig) == 0 {
 				seen++
 				if r.ParentLayers != want {
 					return fmt.Errorf("COPY parent layers = %d, want %d", r.ParentLayers, want)

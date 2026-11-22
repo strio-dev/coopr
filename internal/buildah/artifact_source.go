@@ -46,6 +46,10 @@ func resolveFileSourceSelection(ctx context.Context, resolver *oci.Resolver, ref
 	if err := ctx.Err(); err != nil {
 		return ResolvedImageSource{}, err
 	}
+	// A distinct caller policy must pass the native copy's override check.
+	if system != nil && system.SignaturePolicyPath != "" && system.SignaturePolicyPath != resolver.SystemContext().SignaturePolicyPath {
+		materialize = true
+	}
 	if strings.HasPrefix(reference, "sha256:") || dockerreference.IsFullIdentifier(reference) {
 		if !materialize {
 			return selectImageSource(ctx, resolver, reference, platform, store)

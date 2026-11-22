@@ -82,7 +82,7 @@ func TestCacheTTLRejectsBeforeHydration(t *testing.T) {
 						}
 						if kind == "image" {
 							// Only cache artifact/config metadata may be fetched.
-							if len(counted.fetches) != 2 {
+							if len(counted.fetches) != 3 {
 								t.Fatalf("expired image graph fetched beyond cache metadata: %v", counted.fetches)
 							}
 						}

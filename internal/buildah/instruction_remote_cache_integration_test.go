@@ -75,12 +75,12 @@ func testExactInstructionImageFromRegistryAcrossStores(t *testing.T, format stri
 	}
 	cold := build("cold", "", host+"/coopr/cache")
 	warm := build("warm", localCache, host+"/coopr/cache")
-	if cold.CacheStats.Misses != stages || cold.CacheStats.Stored != stages || cold.CacheStats.Hits != 0 {
+	if cold.CacheStats.Misses != stages || cold.CacheStats.Stored != stages+1 || cold.CacheStats.Hits != 0 {
 		t.Fatalf("cold instruction cache stats = %+v", cold.CacheStats)
 	}
-	// Each recovered graph is written to both explicitly writable destinations:
-	// the local cache and the registry. Execution reuse is counted separately.
-	if warm.CacheStats.Hits != stages || warm.CacheStats.Misses != 0 || warm.CacheStats.Stored != 2*stages || warm.CacheStats.Errors != 0 {
+	// Only the terminal aggregate is loaded and seeds one complete local graph;
+	// its unchanged source registry is reused without publication.
+	if warm.CacheStats.Hits != 1 || warm.CacheStats.Misses != 0 || warm.CacheStats.Stored != 1 || warm.CacheStats.Errors != 0 {
 		t.Fatalf("warm instruction cache stats = %+v", warm.CacheStats)
 	}
 	if warm.ManifestDigest != cold.ManifestDigest {
@@ -89,11 +89,11 @@ func testExactInstructionImageFromRegistryAcrossStores(t *testing.T, format stri
 		t.Fatalf("restored manifest = %s, want exact %s; cold config (%v)=%s; warm config (%v)=%s", warm.ManifestDigest, cold.ManifestDigest, coldErr, coldConfig, warmErr, warmConfig)
 	}
 	warmStore := StoreOptions{RunRoot: filepath.Join(root, "warm", "run"), GraphRoot: filepath.Join(root, "warm", "graph"), GraphDriverName: "vfs"}
-	if count := instructionCacheRecordCount(t, warmStore); count != stages {
-		t.Fatalf("remote hit seeded %d local instruction records, want %d", count, stages)
+	if count := instructionCacheRecordCount(t, warmStore); count != 0 {
+		t.Fatalf("terminal remote hit seeded %d unnecessary instruction records", count)
 	}
 	offline := build("offline", localCache, "")
-	if offline.CacheStats.Hits != stages || offline.CacheStats.Misses != 0 {
+	if offline.CacheStats.Hits != 1 || offline.CacheStats.Misses != 0 {
 		t.Fatalf("local seeded instruction cache stats = %+v", offline.CacheStats)
 	}
 	if offline.ManifestDigest != cold.ManifestDigest {
@@ -143,7 +143,7 @@ func TestBuildPlanReusesDeclaredInputInstructionsFromRegistryAcrossStores(t *tes
 `
 		cold := build("network-cold", "network", planText)
 		warm := build("network-warm", "network", planText)
-		if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 1 || warm.CacheStats.Hits != 1 {
+		if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 2 || warm.CacheStats.Hits != 1 {
 			t.Fatalf("default-network portable cache stats: cold=%+v warm=%+v", cold.CacheStats, warm.CacheStats)
 		}
 		if warm.ManifestDigest != cold.ManifestDigest {
@@ -160,7 +160,7 @@ func TestBuildPlanReusesDeclaredInputInstructionsFromRegistryAcrossStores(t *tes
 `
 		cold := build("cache-mount-cold", "cache-mount", planText)
 		warm := build("cache-mount-warm", "cache-mount", planText)
-		if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 1 || warm.CacheStats.Hits != 1 || warm.ManifestDigest != cold.ManifestDigest {
+		if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 2 || warm.CacheStats.Hits != 1 || warm.ManifestDigest != cold.ManifestDigest {
 			t.Fatalf("cache-mount portable result: cold=%s %+v warm=%s %+v", cold.ManifestDigest, cold.CacheStats, warm.ManifestDigest, warm.CacheStats)
 		}
 	})
@@ -179,7 +179,7 @@ func TestBuildPlanReusesDeclaredInputInstructionsFromRegistryAcrossStores(t *tes
 		}
 		cold := build("secret-cold", "secret", planText, secret("cold", "first\n"))
 		warm := build("secret-warm", "secret", planText, secret("warm", "second\n"))
-		if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 1 || warm.CacheStats.Hits != 1 || warm.ManifestDigest != cold.ManifestDigest {
+		if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 2 || warm.CacheStats.Hits != 1 || warm.ManifestDigest != cold.ManifestDigest {
 			t.Fatalf("secret portable result: cold=%s %+v warm=%s %+v", cold.ManifestDigest, cold.CacheStats, warm.ManifestDigest, warm.CacheStats)
 		}
 	})
@@ -203,7 +203,7 @@ func TestBuildPlanReusesDeclaredInputInstructionsFromRegistryAcrossStores(t *tes
 		}
 		cold := build("ssh-cold", "ssh", planText, withAgent("cold-agent"))
 		warm := build("ssh-warm", "ssh", planText, withAgent("warm-agent"))
-		if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 1 || warm.CacheStats.Hits != 1 || warm.ManifestDigest != cold.ManifestDigest {
+		if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 2 || warm.CacheStats.Hits != 1 || warm.ManifestDigest != cold.ManifestDigest {
 			t.Fatalf("SSH portable result: cold=%s %+v warm=%s %+v", cold.ManifestDigest, cold.CacheStats, warm.ManifestDigest, warm.CacheStats)
 		}
 	})
@@ -229,7 +229,7 @@ func TestBuildPlanReusesDeclaredInputInstructionsFromRegistryAcrossStores(t *tes
 		write("one\n")
 		cold := build("bind-cold", "bind", planText)
 		warm := build("bind-warm", "bind", planText)
-		if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 1 || warm.CacheStats.Hits != 1 {
+		if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 2 || warm.CacheStats.Hits != 1 {
 			t.Fatalf("bind portable cache stats: cold=%+v warm=%+v", cold.CacheStats, warm.CacheStats)
 		}
 		if warm.ManifestDigest != cold.ManifestDigest {
@@ -255,7 +255,7 @@ from "` + base + `" {
 `
 		cold := build("stage-cold", "stage", planText)
 		warm := build("stage-warm", "stage", planText)
-		if cold.CacheStats.Misses != 2 || cold.CacheStats.Stored != 2 || warm.CacheStats.Hits != 2 {
+		if cold.CacheStats.Misses != 2 || cold.CacheStats.Stored != 3 || warm.CacheStats.Hits != 1 {
 			t.Fatalf("stage-COPY portable cache stats: cold=%+v warm=%+v", cold.CacheStats, warm.CacheStats)
 		}
 		if warm.ManifestDigest != cold.ManifestDigest {
@@ -278,7 +278,7 @@ from "` + base + `" {
 `
 		cold := build("remote-add-cold", "remote-add", planText)
 		warm := build("remote-add-warm", "remote-add", planText)
-		if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 1 || warm.CacheStats.Hits != 1 || warm.ManifestDigest != cold.ManifestDigest {
+		if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 2 || warm.CacheStats.Hits != 1 || warm.ManifestDigest != cold.ManifestDigest {
 			t.Fatalf("pinned remote ADD portable result: cold=%s %+v warm=%s %+v", cold.ManifestDigest, cold.CacheStats, warm.ManifestDigest, warm.CacheStats)
 		}
 		if got := requests.Load(); got != 1 {
@@ -302,7 +302,7 @@ from "` + base + `" {
 `
 				cold := build(name+"-cold", name, planText)
 				warm := build(name+"-warm", name, planText)
-				if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 1 || warm.CacheStats.Hits != 1 || warm.ManifestDigest != cold.ManifestDigest {
+				if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 2 || warm.CacheStats.Hits != 1 || warm.ManifestDigest != cold.ManifestDigest {
 					t.Fatalf("pinned Git ADD portable result: cold=%s %+v warm=%s %+v", cold.ManifestDigest, cold.CacheStats, warm.ManifestDigest, warm.CacheStats)
 				}
 				manifest, _ := readPlanImage(t, filepath.Join(root, name+"-warm", "layout"))
@@ -354,7 +354,7 @@ func TestBuildPlanNoCacheReplacesPortableInstructionImage(t *testing.T) {
 	if refreshed.ManifestDigest == cold.ManifestDigest {
 		t.Fatalf("NoCache build reused portable manifest %s", cold.ManifestDigest)
 	}
-	if refreshed.CacheStats.Hits != 0 || refreshed.CacheStats.Misses != 0 || refreshed.CacheStats.Stored != 1 {
+	if refreshed.CacheStats.Hits != 0 || refreshed.CacheStats.Misses != 0 || refreshed.CacheStats.Stored != 2 {
 		t.Fatalf("NoCache portable instruction stats = %+v", refreshed.CacheStats)
 	}
 	warm := build("warm", false)
@@ -400,7 +400,7 @@ func TestBuildPlanReusesScratchCopyFromRegistryAcrossStores(t *testing.T) {
 	}
 	cold := build("cold")
 	warm := build("warm")
-	if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 1 || cold.CacheStats.Hits != 0 {
+	if cold.CacheStats.Misses != 1 || cold.CacheStats.Stored != 2 || cold.CacheStats.Hits != 0 {
 		t.Fatalf("cold scratch cache stats = %+v", cold.CacheStats)
 	}
 	if warm.CacheStats.Hits != 1 || warm.CacheStats.Misses != 0 {
@@ -497,7 +497,7 @@ func TestFailedBuildDoesNotPublishInstructionImages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.CacheStats.Hits != 0 || result.CacheStats.Misses != 1 || result.CacheStats.Stored != 1 {
+	if result.CacheStats.Hits != 0 || result.CacheStats.Misses != 1 || result.CacheStats.Stored != 2 {
 		t.Fatalf("build after failed publication stats = %+v", result.CacheStats)
 	}
 }

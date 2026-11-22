@@ -9,16 +9,22 @@ import (
 
 	digest "github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/strio-dev/coopr/internal/oci"
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
 
 func TestGraphSourceHandoffRetainsMetadataAfterOwnerAndSourceRemoval(t *testing.T) {
 	original, source, store, record, _, target := graphSourceFixture(t)
+	// Model the native caller's primary-admitted successful selected import.
+	source.primary = true
+	source.MarkUsed(record.Results[0].ID)
 	snapshot := source.Metadata()
 	originalSnapshot := source.Metadata()
 	// Metadata exported to a caller cannot alter the admitted source.
+	snapshot.Index[0] = '['
 	snapshot.Manifest[0] = '['
 	snapshot.Record[0] = '['
+	snapshot.UsedResults[0] = "not-bound"
 	if !reflect.DeepEqual(source.Metadata(), originalSnapshot) {
 		t.Fatal("metadata export aliases admitted bytes")
 	}
@@ -30,9 +36,13 @@ func TestGraphSourceHandoffRetainsMetadataAfterOwnerAndSourceRemoval(t *testing.
 	if err := json.Unmarshal(snapshot.Manifest, &manifest); err != nil {
 		t.Fatal(err)
 	}
+	var index v1.Index
+	if err := json.Unmarshal(snapshot.Index, &index); err != nil {
+		t.Fatal(err)
+	}
 	layout := target.Target.(*orasoci.Store)
 	layout.AutoGC = false // Remove metadata only; retain deferred image payloads.
-	for _, descriptor := range append([]v1.Descriptor{snapshot.Artifact, manifest.Config}, manifest.Layers[len(graphImages(record)):]...) {
+	for _, descriptor := range []v1.Descriptor{snapshot.Artifact, index.Manifests[0], manifest.Config} {
 		if err := layout.Delete(t.Context(), descriptor); err != nil {
 			t.Fatal(err)
 		}
@@ -52,9 +62,22 @@ func TestGraphSourceHandoffRetainsMetadataAfterOwnerAndSourceRemoval(t *testing.
 		t.Fatal(err)
 	}
 	defer func() { _ = restored.Close() }()
-	next, err := restored.RestoreMetadata(t.Context(), store, record.Root, snapshot)
+	metadataOnly := snapshot
+	metadataOnly.UsedResults = nil
+	next, err := restored.RestoreMetadata(t.Context(), store, record.Root, metadataOnly)
 	if err != nil {
 		t.Fatal(err)
+	}
+	next.MarkUsed(record.Results[0].ID)
+	if reuse, err := next.CanReuseAt(t.Context(), store, record.Root, record.Results[0]); err != nil || reuse {
+		t.Fatal("generic metadata restore manufactured primary use", reuse, err)
+	}
+	next, err = restored.RestoreMetadata(t.Context(), store, record.Root, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reuse, err := next.CanReuseAt(t.Context(), store, record.Root, record.Results[0]); err != nil || !reuse {
+		t.Fatal("trusted source-bound selected-use receipt was lost", reuse, err)
 	}
 	target.mu.Lock()
 	if !reflect.DeepEqual(before, target.fetches) {
@@ -62,6 +85,7 @@ func TestGraphSourceHandoffRetainsMetadataAfterOwnerAndSourceRemoval(t *testing.
 	}
 	target.mu.Unlock()
 	// Mutating a caller's snapshot after verification cannot mutate the handle.
+	snapshot.Index[0] = '['
 	snapshot.Manifest[0] = '['
 	snapshot.Record[0] = '['
 	got, err := next.Record()
@@ -95,10 +119,34 @@ func TestGraphSourceHandoffRejectsChangedBindings(t *testing.T) {
 	}{
 		{"artifact digest", func(s *GraphSourceMetadata, _ *digest.Digest) { s.Artifact.Digest = digest.FromString("different") }},
 		{"artifact size", func(s *GraphSourceMetadata, _ *digest.Digest) { s.Artifact.Size++ }},
+		{"legacy manifest root", func(s *GraphSourceMetadata, _ *digest.Digest) { s.Artifact.MediaType = v1.MediaTypeImageManifest }},
+		{"index", func(s *GraphSourceMetadata, _ *digest.Digest) { s.Index = append(s.Index, ' ') }},
+		{"index image binding", func(s *GraphSourceMetadata, _ *digest.Digest) {
+			var index v1.Index
+			if err := json.Unmarshal(s.Index, &index); err != nil {
+				t.Fatal(err)
+			}
+			index.Manifests[1].Digest = digest.FromString("different image")
+			var err error
+			s.Index, err = json.Marshal(index)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.Artifact = oci.Descriptor(v1.MediaTypeImageIndex, s.Index)
+		}},
 		{"manifest", func(s *GraphSourceMetadata, _ *digest.Digest) { s.Manifest = append(s.Manifest, ' ') }},
 		{"record", func(s *GraphSourceMetadata, _ *digest.Digest) { s.Record = append(s.Record, ' ') }},
+		{"unknown used result", func(s *GraphSourceMetadata, _ *digest.Digest) { s.UsedResults = []string{"not-bound"} }},
+		{"duplicate used result", func(s *GraphSourceMetadata, _ *digest.Digest) {
+			s.UsedResults = []string{record.Results[0].ID, record.Results[0].ID}
+		}},
+		{"too many used results", func(s *GraphSourceMetadata, _ *digest.Digest) {
+			s.UsedResults = make([]string, len(record.Results)+1)
+		}},
 		{"root", func(_ *GraphSourceMetadata, r *digest.Digest) { *r = digest.FromString("different root") }},
 		{"empty manifest", func(s *GraphSourceMetadata, _ *digest.Digest) { s.Manifest = nil }},
+		{"empty index", func(s *GraphSourceMetadata, _ *digest.Digest) { s.Index = nil }},
+		{"oversized index", func(s *GraphSourceMetadata, _ *digest.Digest) { s.Index = make([]byte, maxGraphRecordBytes+1) }},
 		{"oversized record", func(s *GraphSourceMetadata, _ *digest.Digest) { s.Record = make([]byte, maxGraphRecordBytes+1) }},
 		{"unknown record field", func(s *GraphSourceMetadata, _ *digest.Digest) { s.Record = []byte(`{"unknown":true}`) }},
 	} {

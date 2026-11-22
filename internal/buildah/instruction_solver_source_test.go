@@ -122,7 +122,7 @@ func TestInstructionSelectedGraphSourceFetchAndCompleteExport(t *testing.T) {
 		}
 		pending.importImage = func(ctx context.Context) (string, error) {
 			imports.Add(1)
-			if _, err := pending.ensureLayout(ctx); err != nil {
+			if _, _, err := pending.ensureLayout(ctx); err != nil {
 				return "", err
 			}
 			return result.Image.Digest.String(), nil
@@ -139,25 +139,13 @@ func TestInstructionSelectedGraphSourceFetchAndCompleteExport(t *testing.T) {
 		t.Fatal("selection did not import exactly one native result")
 	}
 	// Export all retained alternatives directly from verified source layouts.
-	// The already imported selected image is seeded into this test exporter to
-	// avoid invoking real storage transport on the deliberately fake store.
+	// The selected result is already native, so falling back to its native
+	// transport instead of retaining its OCI bytes fails on this fake store.
 	export, err := newInstructionGraphExport(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = os.RemoveAll(export.dir) }()
-	export.images[selected.Image.Digest] = selected.Image
-	selectedLayout, err := engine.results.lazy.get(selected.ID).ensureLayout(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	source, err := orasoci.New(selectedLayout)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := cache.CopyGraphImages(t.Context(), source, export.layout, []v1.Descriptor{selected.Image}); err != nil {
-		t.Fatal(err)
-	}
 	for _, result := range record.Results {
 		got, err := export.result(t.Context(), engine.portable, result.ID)
 		if err != nil {
@@ -219,12 +207,7 @@ func TestInstructionGraphSourceWorkerHandoffSurvivesChildAndMetadataRemoval(t *t
 	if err := json.Unmarshal(snapshot.Manifest, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	descriptors := []v1.Descriptor{snapshot.Artifact, manifest.Config}
-	for _, layer := range manifest.Layers {
-		if layer.MediaType == cache.GraphResultMediaType {
-			descriptors = append(descriptors, layer)
-		}
-	}
+	descriptors := []v1.Descriptor{snapshot.Artifact, manifest.Config, oci.Descriptor(v1.MediaTypeImageManifest, snapshot.Manifest)}
 	for _, descriptor := range descriptors {
 		if err := layout.Delete(t.Context(), descriptor); err != nil {
 			t.Fatal(err)

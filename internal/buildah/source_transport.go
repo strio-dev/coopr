@@ -98,6 +98,14 @@ func resolveBaseSource(ctx context.Context, resolver *oci.Resolver, reference st
 }
 
 func resolveBaseSourceWithPolicy(ctx context.Context, resolver *oci.Resolver, reference string, platform v1.Platform, store storage.Store, system *types.SystemContext, contextDir string, policy *sourcepolicy.Policy) (ResolvedImageSource, error) {
+	return baseSourceWithPolicy(ctx, resolver, reference, platform, store, system, contextDir, policy, true)
+}
+
+func selectBaseSourceWithPolicy(ctx context.Context, resolver *oci.Resolver, reference string, platform v1.Platform, store storage.Store, system *types.SystemContext, contextDir string, policy *sourcepolicy.Policy) (ResolvedImageSource, error) {
+	return baseSourceWithPolicy(ctx, resolver, reference, platform, store, system, contextDir, policy, false)
+}
+
+func baseSourceWithPolicy(ctx context.Context, resolver *oci.Resolver, reference string, platform v1.Platform, store storage.Store, system *types.SystemContext, contextDir string, policy *sourcepolicy.Policy, materialize bool) (ResolvedImageSource, error) {
 	reference, err := policyImageSource(reference, policy)
 	if err != nil {
 		return ResolvedImageSource{}, err
@@ -107,6 +115,11 @@ func resolveBaseSourceWithPolicy(ctx context.Context, resolver *oci.Resolver, re
 		return ResolvedImageSource{}, err
 	}
 	if !transport {
+		if !materialize && resolver != nil && resolver.PullPolicy() != oci.PullNewer {
+			if system == nil || system.SignaturePolicyPath == "" || system.SignaturePolicyPath == resolver.SystemContext().SignaturePolicyPath {
+				return selectImageSource(ctx, resolver, reference, platform, store)
+			}
+		}
 		return ResolveImageSource(ctx, resolver, reference, platform, store, system)
 	}
 	var policyReference types.ImageReference

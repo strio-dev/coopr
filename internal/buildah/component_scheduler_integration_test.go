@@ -15,6 +15,16 @@ import (
 	"github.com/strio-dev/coopr/internal/planner"
 )
 
+func componentFixtureRootIndices(stages []planner.Stage) []int {
+	var roots []int
+	for index, stage := range stages {
+		if len(stage.Dependencies) == 0 {
+			roots = append(roots, index)
+		}
+	}
+	return roots
+}
+
 func TestComponentReturnSchedulesLateEarlierDependencies(t *testing.T) {
 	for _, jobs := range []int{1, 2} {
 		t.Run(fmt.Sprintf("jobs=%d", jobs), func(t *testing.T) {
@@ -194,9 +204,9 @@ from "scratch" { copy "/proof" "/left" from="left"; copy "/proof" "/right" from=
 	if err != nil {
 		t.Fatal(err)
 	}
-	ready, err := readyGraphStages(stages, nil, nil, 2)
-	if err != nil || len(ready) != 2 {
-		t.Fatalf("requires two initially-ready isolated branches: %v %v", ready, err)
+	ready := componentFixtureRootIndices(stages)
+	if len(ready) != 2 {
+		t.Fatalf("requires two initially-ready isolated branches: %v", ready)
 	}
 	options := f.options
 	options.Output = Output{Path: filepath.Join(f.root, "isolated-selected"), DisableCompression: true}
@@ -300,13 +310,13 @@ from "scratch" { copy "/unused" "/unused" from="recursive"; copy "/unused" "/ind
 					caller = fmt.Sprintf(`from "scratch" { component %q; }`, reference)
 				}
 				callerPlan := testPlan(t, caller)
-				ready, err := readyGraphStages(callerPlan.Stages, nil, nil, 2)
+				ready := componentFixtureRootIndices(callerPlan.Stages)
 				wantReady := 2
 				if singleCaller {
 					wantReady = 1
 				}
-				if err != nil || len(ready) != wantReady {
-					t.Fatalf("caller topology ready=%v want=%d error=%v", ready, wantReady, err)
+				if len(ready) != wantReady {
+					t.Fatalf("caller topology ready=%v want=%d", ready, wantReady)
 				}
 				// With a single ready caller, the root executes in process. Its
 				// component has two ready branches and retains Jobs=2, so those
@@ -320,9 +330,9 @@ from "scratch" { copy "/unused" "/unused" from="recursive"; copy "/unused" "/ind
 				if resolveErr != nil || closeErr != nil {
 					t.Fatalf("inspect component topology: %v %v", resolveErr, closeErr)
 				}
-				ready, err = readyGraphStages(resolved.Plan.Stages, nil, nil, 2)
-				if err != nil || len(ready) != 2 {
-					t.Fatalf("component must have two initially-ready branches: %v %v", ready, err)
+				ready = componentFixtureRootIndices(resolved.Plan.Stages)
+				if len(ready) != 2 {
+					t.Fatalf("component must have two initially-ready branches: %v", ready)
 				}
 				if singleCaller {
 					recursive := resolved.Plan.Stages[ready[0]]

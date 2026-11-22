@@ -5,10 +5,81 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 
+	"github.com/strio-dev/coopr/internal/definition"
+	"github.com/strio-dev/coopr/internal/planner"
 	upstream "go.podman.io/buildah"
 )
+
+func TestRunControlsPreserveEmptyOverrides(t *testing.T) {
+	var keys, controlDigests []string
+	for _, test := range []struct {
+		name      string
+		caps, cdi []string
+	}{{"default", nil, nil}, {"empty-capabilities", []string{}, nil}, {"empty-cdi-directories", nil, []string{}}} {
+		t.Run(test.name, func(t *testing.T) {
+			controls := RunControls{BaseCapabilities: test.caps, CDISpecDirs: test.cdi}
+			want := rootCapabilities()
+			if test.caps != nil {
+				want = test.caps
+			}
+			slices.Sort(want)
+			wantCDI := "/configured/cdi"
+			if test.cdi != nil {
+				wantCDI = ""
+			}
+			data, err := json.Marshal(stageWorkerRequest{workerExecutionOptions: workerExecutionOptions{RunControls: controls}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var transferred stageWorkerRequest
+			if err := json.Unmarshal(data, &transferred); err != nil {
+				t.Fatal(err)
+			}
+			for _, effective := range []RunControls{controls, transferred.RunControls} {
+				options := upstream.BuilderOptions{Capabilities: rootCapabilities(), CDIConfigDir: "/configured/cdi"}
+				if err := effective.applyBuilderOptions(&options); err != nil {
+					t.Fatal(err)
+				}
+				if !slices.Equal(options.Capabilities, want) {
+					t.Errorf("native capabilities before/after worker transfer = %v, want %v", options.Capabilities, want)
+				}
+				if options.CDIConfigDir != wantCDI {
+					t.Errorf("native CDI directory before/after worker transfer = %q, want %q", options.CDIConfigDir, wantCDI)
+				}
+			}
+			input := instructionCacheTestInput(planner.Operation{Instruction: definition.Instruction{Name: "run", Form: "shell", Arguments: []string{"grep CapEff /proc/self/status > /proof"}}})
+			input.RunControls = controls
+			key, eligible, err := instructionCacheKey(input)
+			if err != nil || !eligible {
+				t.Fatalf("RUN cache key eligibility=%t: %v", eligible, err)
+			}
+			keys = append(keys, key.String())
+			input.RunControls = transferred.RunControls
+			transferredKey, eligible, err := instructionCacheKey(input)
+			if err != nil || !eligible || transferredKey != key {
+				t.Fatalf("worker transfer changed RUN cache identity: %s/%s eligible=%t: %v", key, transferredKey, eligible, err)
+			}
+			identity, err := cacheRunControlsDigest(controls)
+			if err != nil {
+				t.Fatal(err)
+			}
+			controlDigests = append(controlDigests, identity.String())
+		})
+	}
+	if len(keys) != 3 || len(controlDigests) != 3 {
+		t.Fatal("empty override cases did not produce all cache identities")
+	}
+	for i := range keys {
+		for j := range i {
+			if keys[i] == keys[j] || controlDigests[i] == controlDigests[j] {
+				t.Fatalf("distinct empty overrides share cache identity: cases %d and %d", i, j)
+			}
+		}
+	}
+}
 
 func TestParseRunControlsCanonicalizesBuildahSettings(t *testing.T) {
 	controls, err := ParseRunControls(RunControlInput{

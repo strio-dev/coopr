@@ -180,22 +180,18 @@ func publicationCacheManifestCount(t *testing.T, cacheDir, artifactType string) 
 	if artifactType == "" {
 		return len(index.Manifests)
 	}
-	count := 0
-	for _, root := range index.Manifests {
-		data, err := os.ReadFile(filepath.Join(cacheDir, "blobs", root.Digest.Algorithm().String(), root.Digest.Encoded()))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var manifest v1.Manifest
-		if err := json.Unmarshal(data, &manifest); err != nil {
-			t.Fatal(err)
-		}
-		if manifest.ArtifactType == artifactType {
-			if manifest.Config.MediaType != cache.GraphConfigMediaType {
-				t.Fatalf("graph artifact has config type %q", manifest.Config.MediaType)
-			}
-			count++
+	if artifactType != cache.GraphArtifactType {
+		t.Fatalf("unsupported cache artifact count %q", artifactType)
+	}
+	roots := instructionGraphArtifactResults(t, cacheDir)
+	store, err := cache.NewLocalStore(t.Context(), cacheDir, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for root := range roots {
+		if _, _, err := store.LookupGraph(t.Context(), root); err != nil {
+			t.Fatalf("invalid graph cache artifact: %v", err)
 		}
 	}
-	return count
+	return len(roots)
 }

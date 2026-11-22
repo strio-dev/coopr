@@ -83,13 +83,29 @@ func TestConfiguredStoreInteroperatesWithPodmanNativeNames(t *testing.T) {
 			podman("tag", "docker.io/library/external-next:latest", nativeBase)
 		}
 		output := filepath.Join(root, payload+"-output")
-		runPodmanCompatibilityCLI(t, "build", definition, "--pull=never", "--tag", "coopr-output", "--output", output, "--quiet")
+		runPodmanCompatibilityCLI(t, "build", definition, "--pull=never", "--layers=true", "--tag", "coopr-output", "--output", output, "--quiet")
 		data, err := os.ReadFile(filepath.Join(output, "payload"))
 		if err != nil || string(data) != payload {
 			t.Fatalf("offline FROM after native retag: payload=%q error=%v want=%q", data, err, payload)
 		}
 		if tags := podman("image", "inspect", "coopr-output", "--format", "{{json .RepoTags}}"); !strings.Contains(tags, "localhost/coopr-output:latest") {
 			t.Fatalf("Coopr output is missing its Podman-visible native name: %s", tags)
+		}
+		var names []string
+		if err := json.Unmarshal([]byte(podman("image", "inspect", "coopr-output", "--format", "{{json .RepoTags}}")), &names); err != nil {
+			t.Fatal(err)
+		}
+		graphAlias := false
+		for _, name := range names {
+			if strings.HasPrefix(name, "coopr.internal/graph-result/v2/") {
+				if !strings.HasSuffix(name, ":latest") {
+					t.Fatalf("graph result has a noncanonical native alias: %q", name)
+				}
+				graphAlias = true
+			}
+		}
+		if !graphAlias {
+			t.Fatal("cached build did not retain a Podman-visible graph result alias")
 		}
 	}
 	listing := runPodmanCompatibilityCLI(t, "image", "ls")

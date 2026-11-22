@@ -9,6 +9,7 @@ import (
 	"github.com/strio-dev/coopr/internal/buildcontext"
 	"github.com/strio-dev/coopr/internal/cache"
 	"github.com/strio-dev/coopr/internal/imageconfig"
+	"github.com/strio-dev/coopr/internal/oci"
 	"github.com/strio-dev/coopr/internal/planner"
 	"io"
 	"os"
@@ -585,6 +586,14 @@ func TestPortableGraphCachePreservesSnapshotsAcrossOutputCompression(t *testing.
 		t.Fatal(err)
 	}
 	coldManifest, coldConfig := readPlanImage(t, cold.Layout)
+	coldRoot, err := oci.LayoutRoot(cold.Layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coldManifestData, err := os.ReadFile(filepath.Join(cold.Layout, "blobs", coldRoot.Digest.Algorithm().String(), coldRoot.Digest.Encoded()))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(coldManifest.Layers) != 2 {
 		t.Fatalf("cold output layer count: %d", len(coldManifest.Layers))
 	}
@@ -599,6 +608,7 @@ func TestPortableGraphCachePreservesSnapshotsAcrossOutputCompression(t *testing.
 	}
 	imageCount := 0
 	graphResults := 0
+	aggregateResults := 0
 	cacheManifests := map[string][]byte{}
 	for _, entry := range entries {
 		data, err := os.ReadFile(filepath.Join(cacheDir, "blobs", "sha256", entry.Name()))
@@ -619,6 +629,12 @@ func TestPortableGraphCachePreservesSnapshotsAcrossOutputCompression(t *testing.
 				if err != nil || digest.FromBytes(selected) != result.Image.Digest {
 					t.Fatalf("selected immutable cache manifest differs: %v", err)
 				}
+				if len(checkpoint.Entry.LogicalConfig) != 0 {
+					if result.Image.Digest != coldRoot.Digest || result.Image.Size != coldRoot.Size || result.Image.MediaType != coldRoot.MediaType || !bytes.Equal(selected, coldManifestData) {
+						t.Fatal("aggregate cache descriptor differs from the exact selected final output")
+					}
+					aggregateResults++
+				}
 				graphResults++
 			}
 		}
@@ -628,9 +644,11 @@ func TestPortableGraphCachePreservesSnapshotsAcrossOutputCompression(t *testing.
 		}
 		imageCount++
 		cacheManifests[entry.Name()] = data
-		for _, layer := range manifest.Layers {
-			if layer.MediaType != v1.MediaTypeImageLayer && layer.MediaType != v1.MediaTypeImageLayerGzip {
-				t.Fatalf("cache snapshot did not retain native layer representation: %#v", layer)
+		if entry.Name() != coldRoot.Digest.Encoded() {
+			for _, layer := range manifest.Layers {
+				if layer.MediaType != v1.MediaTypeImageLayer && layer.MediaType != v1.MediaTypeImageLayerGzip {
+					t.Fatalf("instruction snapshot did not retain native layer representation: %#v", layer)
+				}
 			}
 		}
 		configData, err := os.ReadFile(filepath.Join(cacheDir, "blobs", manifest.Config.Digest.Algorithm().String(), manifest.Config.Digest.Encoded()))
@@ -645,8 +663,8 @@ func TestPortableGraphCachePreservesSnapshotsAcrossOutputCompression(t *testing.
 			t.Fatalf("cached snapshot ancestry differs from exported image: %#v %#v", checkpoint.RootFS, coldConfig.RootFS)
 		}
 	}
-	if imageCount < 2 || graphResults < 2 {
-		t.Fatalf("portable graph images=%d results=%d", imageCount, graphResults)
+	if imageCount < 3 || graphResults < 3 || aggregateResults != 1 {
+		t.Fatalf("portable graph images=%d results=%d aggregate=%d", imageCount, graphResults, aggregateResults)
 	}
 	options.Store = cacheTestStore(filepath.Join(root, "warm"))
 	options.Output.Path = filepath.Join(root, "warm-layout")
@@ -656,7 +674,7 @@ func TestPortableGraphCachePreservesSnapshotsAcrossOutputCompression(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cold.CacheStats.Stored != 2 || warm.CacheStats.Hits != 2 || warm.CacheStats.Misses != 0 || cold.CacheStats.Errors != 0 || warm.CacheStats.Errors != 0 {
+	if cold.CacheStats.Stored != 3 || warm.CacheStats.Hits != 1 || warm.CacheStats.Misses != 0 || cold.CacheStats.Errors != 0 || warm.CacheStats.Errors != 0 {
 		t.Fatalf("compressed cache reuse: cold=%#v warm=%#v", cold.CacheStats, warm.CacheStats)
 	}
 	warmManifest, warmConfig := readPlanImage(t, warm.Layout)
@@ -665,7 +683,7 @@ func TestPortableGraphCachePreservesSnapshotsAcrossOutputCompression(t *testing.
 			t.Fatalf("warm final output ignored requested zstd: %#v", layer)
 		}
 	}
-	if len(warmManifest.Layers) != 2 || len(coldConfig.History) != len(warmConfig.History) || len(warmConfig.RootFS.DiffIDs) != 2 || !slices.Equal(coldConfig.RootFS.DiffIDs, warmConfig.RootFS.DiffIDs) {
+	if warm.ManifestDigest != cold.ManifestDigest || len(warmManifest.Layers) != 2 || len(coldConfig.History) != len(warmConfig.History) || len(warmConfig.RootFS.DiffIDs) != 2 || !slices.Equal(coldConfig.RootFS.DiffIDs, warmConfig.RootFS.DiffIDs) {
 		t.Fatalf("compressed cache history/rootfs mismatch: %#v %#v", coldConfig, warmConfig)
 	}
 	for name, original := range cacheManifests {

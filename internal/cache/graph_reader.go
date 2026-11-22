@@ -8,7 +8,6 @@ import (
 
 	digest "github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
-	"oras.land/oras-go/v2/content"
 	orasoci "oras.land/oras-go/v2/content/oci"
 )
 
@@ -105,7 +104,8 @@ func (reader *GraphReader) Close() error {
 
 type graphReaderDestination struct {
 	*orasoci.Store
-	verified map[digest.Digest]v1.Descriptor
+	verified      map[digest.Digest]v1.Descriptor
+	validatedPass bool
 }
 
 func (destination graphReaderDestination) Exists(ctx context.Context, descriptor v1.Descriptor) (bool, error) {
@@ -114,15 +114,18 @@ func (destination graphReaderDestination) Exists(ctx context.Context, descriptor
 	// Always let upstream traverse non-leaf nodes, retaining nested graph and
 	// unknown-media behavior instead of treating raw blob existence as closure.
 	previous, known := destination.verified[descriptor.Digest]
-	if known && !content.Equal(previous, descriptor) {
+	if known && !sameGraphPayload(previous, descriptor) {
 		return false, errors.New("graph copy conflicts with a previously verified descriptor")
 	}
-	// ORAS ignores Push's AlreadyExists response. Verify every retained blob,
-	// including opaque leaves copied through the recursive fallback path.
 	exists, err := destination.Store.Exists(ctx, descriptor)
 	if err != nil || !exists {
 		return false, err
 	}
+	if destination.validatedPass && known && isImageGraphLeaf(descriptor.MediaType) {
+		return true, nil
+	}
+	// ORAS ignores Push's AlreadyExists response. Unadmitted bytes, including
+	// opaque leaves copied through recursive traversal, still need verification.
 	if err := verifyGraphBlob(ctx, destination.Store, descriptor); err != nil {
 		return false, err
 	}

@@ -119,10 +119,10 @@ type RunControls struct {
 	CgroupManager    string                   `json:"cgroup_manager,omitempty"`
 	CgroupManagerSet bool                     `json:"cgroup_manager_set,omitempty"`
 	ConfigModules    []string                 `json:"config_modules,omitempty"`
-	CDISpecDirs      []string                 `json:"cdi_spec_dirs,omitempty"`
+	CDISpecDirs      []string                 `json:"cdi_spec_dirs"`
 	NetworkConfigDir string                   `json:"network_config_dir,omitempty"`
 	NetworkCmdPath   string                   `json:"network_cmd_path,omitempty"`
-	BaseCapabilities []string                 `json:"base_capabilities,omitempty"`
+	BaseCapabilities []string                 `json:"base_capabilities"`
 }
 
 func ParseRunControls(input RunControlInput) (RunControls, error) {

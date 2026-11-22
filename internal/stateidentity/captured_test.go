@@ -21,6 +21,59 @@ func capturedFilesystemIdentity(ctx context.Context, records []CapturedEntry) (d
 	return index.Digest(), nil
 }
 
+func TestCapturedIndexSelectCopyOmitsOnlyTimestamps(t *testing.T) {
+	records := []CapturedEntry{
+		{Header: rootHeader()},
+		{Header: &tar.Header{Name: "dir", Typeflag: tar.TypeDir, Mode: 0750, ModTime: time.Unix(123, 0)}},
+		{Header: &tar.Header{Name: "dir/file", Typeflag: tar.TypeReg, Mode: 0640, Size: 7, ModTime: time.Unix(123, 0)}, Content: digest.FromString("payload")},
+	}
+	selectFrom := func(records []CapturedEntry, copied bool) digest.Digest {
+		t.Helper()
+		index, err := NewCapturedIndex(t.Context(), records)
+		if err != nil {
+			t.Fatal(err)
+		}
+		selectInput := index.Select
+		if copied {
+			selectInput = index.SelectCopy
+		}
+		got, err := selectInput(t.Context(), []string{"dir"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	want, bind := selectFrom(records, true), selectFrom(records, false)
+	for _, record := range records {
+		record.Header.ModTime = record.Header.ModTime.Add(time.Second)
+	}
+	if got := selectFrom(records, true); got != want {
+		t.Fatal("COPY timestamp-only change invalidated its input", got, want)
+	}
+	if got := selectFrom(records, false); got == bind {
+		t.Fatal("COPY projection changed timestamp-sensitive bind selection")
+	}
+	for name, mutate := range map[string]func(*CapturedEntry){
+		"payload": func(record *CapturedEntry) { record.Content = digest.FromString("changed") },
+		"mode":    func(record *CapturedEntry) { record.Header.Mode ^= 0100 },
+		"uid":     func(record *CapturedEntry) { record.Header.Uid++ },
+		"gid":     func(record *CapturedEntry) { record.Header.Gid++ },
+		"xattr": func(record *CapturedEntry) {
+			record.Header.PAXRecords = map[string]string{"SCHILY.xattr.user.copy": "changed"}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := slices.Clone(records)
+			header := *changed[2].Header
+			changed[2].Header = &header
+			mutate(&changed[2])
+			if got := selectFrom(changed, true); got == want {
+				t.Fatal("COPY omitted selected " + name)
+			}
+		})
+	}
+}
+
 func TestCapturedIndexSelectMetadataAndOutsideAliases(t *testing.T) {
 	build := func(records []CapturedEntry, sources ...string) digest.Digest {
 		t.Helper()
