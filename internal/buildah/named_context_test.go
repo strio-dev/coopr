@@ -131,7 +131,9 @@ func TestNormalizeGitNamedContextURL(t *testing.T) {
 		fetchByCommit                          bool
 	}{
 		{name: "default", source: "https://example.com/source.git", clone: "https://example.com/source.git#HEAD", submodules: true},
-		{name: "legacy fragment", source: "git://example.com/source.git#main:src", clone: "git://example.com/source.git#main:src", submodules: true},
+		{name: "legacy fragment", source: "git://example.com/source.git#main:src", message: "query selectors"},
+		{name: "empty fragment", source: "https://example.com/source.git#", message: "query selectors"},
+		{name: "empty fragment with query", source: "https://example.com/source.git?branch=main#", message: "query selectors"},
 		{name: "branch query", source: "https://example.com/source.git?branch=main&subdir=src&checksum=abcdef", clone: "https://example.com/source.git#refs/heads/main:src", checksum: "abcdef", submodules: true},
 		{name: "colon in query subdir", source: "https://example.com/source.git?subdir=src%3Agenerated", clone: "https://example.com/source.git#HEAD:src:generated", submodules: true},
 		{name: "hash in query subdir", source: "https://example.com/source.git?subdir=src%23generated", clone: "https://example.com/source.git#HEAD:src#generated", submodules: true},
@@ -143,16 +145,18 @@ func TestNormalizeGitNamedContextURL(t *testing.T) {
 		{name: "SSH query", source: "ssh://git@example.com/source.git?branch=main", clone: "ssh://git@example.com/source.git#refs/heads/main", submodules: true},
 		{name: "SCP query", source: "git@example.com:team/source.git?tag=v1", clone: "git@example.com:team/source.git#refs/tags/v1", submodules: true},
 		{name: "commit alias", source: "https://example.com/source.git?ref=pull/42/head&commit=012345", clone: "https://example.com/source.git#pull/42/head", checksum: "012345", submodules: true},
+		{name: "consistent checksum and commit", source: "https://example.com/source.git?checksum=abcdef&commit=abcdef", clone: "https://example.com/source.git#HEAD", checksum: "abcdef", submodules: true},
+		{name: "conflicting checksum and commit", source: "https://example.com/source.git?checksum=abcdef&commit=012345", message: "checksum and commit selectors disagree"},
 		{name: "controls", source: "https://example.com/source.git?submodules=false&keep-git-dir=true", clone: "https://example.com/source.git#HEAD", keepGitDir: true},
 		{name: "conflicting branch and tag", source: "https://example.com/source.git?branch=main&tag=v1", message: "branch conflicts with tag"},
 		{name: "conflicting ref and branch", source: "https://example.com/source.git?ref=refs/heads/other&branch=main", message: "ref and branch selectors disagree"},
 		{name: "conflicting ref and tag", source: "https://example.com/source.git?ref=refs/tags/other&tag=v1", message: "ref and tag selectors disagree"},
 		{name: "unknown query", source: "https://example.com/source.git?depth=2", message: "unsupported"},
-		{name: "fragment with control query", source: "https://example.com/source.git?submodules=false#main:src", clone: "https://example.com/source.git#main:src"},
-		{name: "consistent fragment and query selectors", source: "https://example.com/source.git?branch=main&subdir=src#refs/heads/main:src", clone: "https://example.com/source.git#refs/heads/main:src", submodules: true},
-		{name: "normalized branch conflicts with short fragment", source: "https://example.com/source.git?branch=main#main", message: "ref selectors disagree"},
-		{name: "conflicting fragment ref", source: "https://example.com/source.git?branch=main#other", message: "ref selectors disagree"},
-		{name: "conflicting fragment subdir", source: "https://example.com/source.git?subdir=src#main:other", message: "subdir selectors disagree"},
+		{name: "fragment with control query", source: "https://example.com/source.git?submodules=false#main:src", message: "query selectors"},
+		{name: "consistent fragment and query selectors", source: "https://example.com/source.git?branch=main&subdir=src#refs/heads/main:src", message: "query selectors"},
+		{name: "normalized branch conflicts with short fragment", source: "https://example.com/source.git?branch=main#main", message: "query selectors"},
+		{name: "conflicting fragment ref", source: "https://example.com/source.git?branch=main#other", message: "query selectors"},
+		{name: "conflicting fragment subdir", source: "https://example.com/source.git?subdir=src#main:other", message: "query selectors"},
 		{name: "valueless submodules", source: "https://example.com/source.git?submodules", clone: "https://example.com/source.git#HEAD", submodules: true},
 		{name: "numeric false submodules", source: "https://example.com/source.git?submodules=0", clone: "https://example.com/source.git#HEAD"},
 		{name: "invalid submodules", source: "https://example.com/source.git?submodules=recursive", message: "must be a boolean"},
@@ -184,6 +188,56 @@ func TestNormalizeGitNamedContextURL(t *testing.T) {
 			if err != nil || options.cloneSource != test.clone || options.checksum != test.checksum || options.submodules != test.submodules || options.keepGitDir != test.keepGitDir ||
 				test.mtime != "" && options.mtime != test.mtime || options.fetchByCommit != test.fetchByCommit {
 				t.Fatalf("normalize = %+v, %v; want clone=%q checksum=%q submodules=%t keepGitDir=%t", options, err, test.clone, test.checksum, test.submodules, test.keepGitDir)
+			}
+		})
+	}
+}
+
+func TestGitNamedContextRejectsFragmentsBeforeFetching(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		http.Error(writer, "unexpected context fetch", http.StatusNotFound)
+	}))
+	defer server.Close()
+	store, system := namedContextTestStore(t, t.TempDir())
+	platform := v1.Platform{OS: "linux", Architecture: runtime.GOARCH}
+	for _, suffix := range []string{"#main:src", "?branch=main#refs/heads/main", "?submodules=false#main:src", "#"} {
+		spec := buildcontext.Spec{Name: "source", Kind: buildcontext.Git, Reference: server.URL + "/source.git" + suffix}
+		_, err := MaterializeNamedContext(context.Background(), spec, platform, store, system, nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "query selectors") {
+			t.Errorf("named fragment %q error = %v", suffix, err)
+		}
+		_, cleanup, err := MaterializePrimaryContext(context.Background(), spec, nil, nil)
+		if cleanup != nil {
+			_ = cleanup()
+			t.Errorf("primary fragment %q returned cleanup", suffix)
+		}
+		if err == nil || !strings.Contains(err.Error(), "query selectors") {
+			t.Errorf("primary fragment %q error = %v", suffix, err)
+		}
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("invalid Git contexts made %d HTTP requests", got)
+	}
+}
+
+func TestGitNamedContextQuerySelectsFixtureSubdirectory(t *testing.T) {
+	source, commit := gitHTTPSubmoduleFixture(t, "")
+	for _, pin := range []string{"checksum", "commit"} {
+		t.Run(pin, func(t *testing.T) {
+			options, err := normalizeGitNamedContextURL(source + "?ref=" + commit + "&subdir=deps/submodule&" + pin + "=" + commit[:12])
+			if err != nil {
+				t.Fatal(err)
+			}
+			contextDir, err := cloneGitSource(context.Background(), buildCredentialSource{}, options.cloneSource,
+				filepath.Join(t.TempDir(), "repository"), gitCloneOptions{submodules: options.submodules, checksum: options.checksum})
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(filepath.Join(contextDir, "deps/nested/nested-proof"))
+			if err != nil || string(data) != "nested submodule\n" {
+				t.Fatalf("query-selected nested proof = %q, %v", data, err)
 			}
 		})
 	}

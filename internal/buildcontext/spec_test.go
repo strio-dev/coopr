@@ -18,9 +18,9 @@ func TestParseNormalizesSupportedContexts(t *testing.T) {
 		"compatible=container-image://registry.example/compatible:latest",
 		"layout=oci-layout://./images/app:stable",
 		"pinned=oci-layout://./images/app@sha256:0123456789abcdef",
-		"repository=https://example.com/source.git#main:subdir",
+		"repository=https://example.com/source.git?branch=main&subdir=subdir",
 		"ssh=ssh://git@example.com/source.git?branch=main",
-		"scp=git@example.com:team/source.git#main",
+		"scp=git@example.com:team/source.git?ref=main",
 		"archive=https://example.com/context.tar.gz",
 	})
 	if err != nil {
@@ -32,9 +32,9 @@ func TestParseNormalizesSupportedContexts(t *testing.T) {
 		{Name: "compatible", Kind: DockerImage, Reference: "registry.example/compatible:latest"},
 		{Name: "layout", Kind: OCILayout, Path: filepath.Join(root, "images/app"), Reference: "stable"},
 		{Name: "pinned", Kind: OCILayout, Path: filepath.Join(root, "images/app"), Reference: "sha256:0123456789abcdef"},
-		{Name: "repository", Kind: Git, Reference: "https://example.com/source.git#main:subdir"},
+		{Name: "repository", Kind: Git, Reference: "https://example.com/source.git?branch=main&subdir=subdir"},
 		{Name: "ssh", Kind: Git, Reference: "ssh://git@example.com/source.git?branch=main"},
-		{Name: "scp", Kind: Git, Reference: "git@example.com:team/source.git#main"},
+		{Name: "scp", Kind: Git, Reference: "git@example.com:team/source.git?ref=main"},
 		{Name: "archive", Kind: HTTPArchive, Reference: "https://example.com/context.tar.gz"},
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -55,6 +55,10 @@ func TestParseRejectsInvalidContexts(t *testing.T) {
 		{"source=ssh://git:password@example.com/repo.git", "must not contain credentials"},
 		{"source=https://user:secret@example.com/context.tar", "must not contain credentials"},
 		{"source=ftp://example.com/context", "unsupported build context scheme"},
+		{"source=https://example.com/source.git#main:src", "query selectors"},
+		{"source=https://example.com/source.git?branch=main#refs/heads/main", "query selectors"},
+		{"source=git@example.com:team/source.git#main", "query selectors"},
+		{"source=git://example.com/source.git#", "query selectors"},
 		{"base=docker-image://", "invalid build context"},
 		{"base=container-image://", "invalid build context"},
 		{"base=docker://", "invalid build context"},
@@ -91,6 +95,11 @@ func TestParsePrimary(t *testing.T) {
 				t.Fatalf("primary context = %#v", spec)
 			}
 		})
+	}
+	for _, source := range []string{"https://example.com/source.git#main:src", "https://example.com/source.git?branch=main#refs/heads/main", "git@example.com:team/source.git#"} {
+		if _, err := ParsePrimary(source, local); err == nil || !strings.Contains(err.Error(), "query selectors") {
+			t.Errorf("ParsePrimary(%q) error = %v", source, err)
+		}
 	}
 	if _, err := ParsePrimary("docker-image://example.com/base:latest", local); err == nil {
 		t.Fatal("accepted image as the primary filesystem context")

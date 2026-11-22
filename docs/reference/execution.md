@@ -160,7 +160,7 @@ For regular COPY, destination directories created implicitly use the Unix epoch,
 
 A positional definition path uses its parent directory as context. With `--file FILE`, the context is the positional operand or the current directory. A relative FILE resolves from the working directory first; when absent there, Coopr looks inside the selected local, extracted archive, or remote context. Repeated files resolve independently against that shared context and append their global declarations and complete stage blocks in order.
 
-Definition and primary context are independent inputs. Either can use stdin, but both cannot do so in one request. Contexts accept directories, local tar archives, stdin tar, Git checkouts, or HTTP(S) tar archives. `--file` also accepts an HTTP(S) definition. Definitions selected inside remote/archive contexts must remain inside them after symlink resolution; explicit local definitions may live outside the context.
+Definition and primary context are independent inputs. Either can use stdin, but both cannot do so in one request. Contexts accept directories, local tar archives, stdin tar, Git checkouts, or HTTP(S) tar archives. Git checkouts use [query selectors](cli.md#named-inputs). `--file` also accepts an HTTP(S) definition. Definitions selected inside remote/archive contexts must remain inside them after symlink resolution; explicit local definitions may live outside the context.
 
 Ignore selection is `--ignorefile`, otherwise the first context-root file: `.cooprignore`, `.containerignore`, `.dockerignore`. Docker/Podman patterns filter local COPY/ADD, RUN binds, and local component definitions; filtered inputs enter cache identity. Definition placement does not change ignore selection. Paths/symlinks cannot escape the selected context.
 
@@ -215,7 +215,7 @@ Repeatable `--tag` assigns local names to one retained immutable result. With `-
 
 `--metadata-file` records `containerimage.digest`, `containerimage.descriptor`, `coopr.platforms`, `coopr.references`, and per-destination `coopr.outputs`. A single-platform image also includes `containerimage.config.digest` when available; multi-platform image configuration digests appear in the per-platform entries.
 
-Image `--iidfile` writes the algorithm-prefixed native image or manifest-list ID. `--iidfile-raw` (alias `--raw-iidfile`) writes the unprefixed image ID and requires one platform. Both files omit a trailing newline and suppress the final build ID line, including in logfiles. File-output parents are checked before execution.
+Image `--iidfile` writes the algorithm-prefixed native image or manifest-list ID. `--iidfile-raw` writes the unprefixed image ID and requires one platform. Both files omit a trailing newline and suppress the final build ID line, including in logfiles. File-output parents are checked before execution.
 
 Successful execution retains the result/checkpoints before transfers. Destinations commit independently; there is no transaction spanning engines or registries.
 

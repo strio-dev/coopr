@@ -205,7 +205,6 @@ func newBuildCommandWithGlobals(standalone bool) *cobra.Command {
 	imageControls.addTo(cmd)
 	addSBOMFlags(cmd)
 	signing.addTo(cmd)
-	f.StringVar(&native.IidfileRaw, "raw-iidfile", "", "alias for --iidfile-raw")
 	f.BoolVar(&push, "push", false, "publish the image to the registry named by --tag")
 	addPullFlags(cmd, &pullPolicy)
 	f.StringVar(&network, "network", "default", "RUN network mode: default, private, none, host, ns:PATH, pasta[:OPTIONS], or named network")
