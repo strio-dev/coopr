@@ -96,10 +96,17 @@ func (executor *graphExecutor) finalizeOutput(ctx context.Context, result Result
 			}
 			cleanup = remove
 			defer func() { retErr = errors.Join(retErr, cleanup()) }()
+			platform := v1.Platform{OS: "linux", Architecture: runtime.GOARCH}
 			for i := range scans {
-				resolved, err := executor.resolveBaseImage(ctx, scans[i].Image, v1.Platform{OS: "linux", Architecture: runtime.GOARCH})
+				resolved, err := executor.resolveBaseImage(ctx, scans[i].Image, platform)
 				if err != nil {
 					return Result{}, fmt.Errorf("resolve SBOM scanner %s: %w", scans[i].Image, err)
+				}
+				if resolved.Remote {
+					resolved, err = materializeImageSource(ctx, executor.options.Resolver, resolved.Reference, platform, executor.store, platformSystemContext(executor.system, platform), resolved)
+					if err != nil {
+						return Result{}, fmt.Errorf("materialize SBOM scanner %s: %w", scans[i].Image, err)
+					}
 				}
 				scans[i].Image = resolved.ImageID
 				scans[i].PullPolicy = define.PullNever
