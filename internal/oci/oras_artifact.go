@@ -250,42 +250,17 @@ func (r *orasArtifactRepository) FetchReference(ctx context.Context, selector st
 	if err != nil {
 		return v1.Descriptor{}, nil, err
 	}
-	var failures []error
-	for index, open := range repositories {
-		var repo *remote.Repository
-		var descriptor v1.Descriptor
-		var data []byte
-		err := retry.IfNecessary(ctx, func() error {
-			var err error
-			repo, err = open(ctx)
-			if err != nil {
-				return err
-			}
-			var reader io.ReadCloser
-			descriptor, reader, err = repo.FetchReference(ctx, selector)
-			if err != nil {
-				return err
-			}
-			data, err = readArtifactMetadata(reader, descriptor)
-			return err
-		}, r.resolver.artifactRetryOptions())
-		if err != nil {
-			failures = append(failures, err)
-			continue
-		}
-		source := orasReadSource{repository: repo, remaining: repositories[index+1:]}
-		if err := r.recordArtifactChildren(descriptor, data, source); err != nil {
-			return v1.Descriptor{}, nil, err
-		}
-		r.mu.Lock()
-		r.sources[descriptor.Digest] = source
-		r.mu.Unlock()
-		return descriptor, io.NopCloser(bytes.NewReader(data)), nil
+	descriptor, reader, source, err := r.fetchArtifact(ctx, repositories, selector, v1.Descriptor{})
+	if err != nil {
+		return v1.Descriptor{}, nil, err
 	}
-	if len(failures) == 0 {
+	if reader == nil {
 		return v1.Descriptor{}, nil, errors.New("no artifact read endpoints")
 	}
-	return v1.Descriptor{}, nil, errors.Join(failures...)
+	r.mu.Lock()
+	r.sources[descriptor.Digest] = source
+	r.mu.Unlock()
+	return descriptor, reader, nil
 }
 
 func (r *orasArtifactRepository) Fetch(ctx context.Context, descriptor v1.Descriptor) (io.ReadCloser, error) {
@@ -312,6 +287,13 @@ func (r *orasArtifactRepository) Fetch(ctx context.Context, descriptor v1.Descri
 			return nil, err
 		}
 	}
+	_, reader, _, err := r.fetchArtifact(ctx, repositories, "", descriptor)
+	return reader, err
+}
+
+// fetchArtifact shares endpoint retries and verified metadata reads. An empty
+// selector fetches a known descriptor; opaque descriptor bodies remain streamed.
+func (r *orasArtifactRepository) fetchArtifact(ctx context.Context, repositories []orasEndpoint, selector string, descriptor v1.Descriptor) (v1.Descriptor, io.ReadCloser, orasReadSource, error) {
 	var failures []error
 	for index, open := range repositories {
 		var repo *remote.Repository
@@ -323,8 +305,12 @@ func (r *orasArtifactRepository) Fetch(ctx context.Context, descriptor v1.Descri
 			if err != nil {
 				return err
 			}
-			reader, err = repo.Fetch(ctx, descriptor)
-			if err != nil || !isArtifactManifest(descriptor) {
+			if selector != "" {
+				descriptor, reader, err = repo.FetchReference(ctx, selector)
+			} else {
+				reader, err = repo.Fetch(ctx, descriptor)
+			}
+			if err != nil || selector == "" && !isArtifactManifest(descriptor) {
 				return err
 			}
 			data, err = readArtifactMetadata(reader, descriptor)
@@ -334,15 +320,16 @@ func (r *orasArtifactRepository) Fetch(ctx context.Context, descriptor v1.Descri
 			failures = append(failures, err)
 			continue
 		}
-		if !isArtifactManifest(descriptor) {
-			return reader, nil
+		source := orasReadSource{repository: repo, remaining: repositories[index+1:]}
+		if selector == "" && !isArtifactManifest(descriptor) {
+			return descriptor, reader, source, nil
 		}
-		if err := r.recordArtifactChildren(descriptor, data, orasReadSource{repository: repo, remaining: repositories[index+1:]}); err != nil {
-			return nil, err
+		if err := r.recordArtifactChildren(descriptor, data, source); err != nil {
+			return v1.Descriptor{}, nil, orasReadSource{}, err
 		}
-		return io.NopCloser(bytes.NewReader(data)), nil
+		return descriptor, io.NopCloser(bytes.NewReader(data)), source, nil
 	}
-	return nil, errors.Join(failures...)
+	return v1.Descriptor{}, nil, orasReadSource{}, errors.Join(failures...)
 }
 
 // Descriptor fetches update child locations only: a fallback digest read must

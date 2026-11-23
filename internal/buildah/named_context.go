@@ -250,17 +250,19 @@ type gitNamedContextOptions struct {
 
 func normalizeGitNamedContextURL(source string) (gitNamedContextOptions, error) {
 	options := gitNamedContextOptions{submodules: true, mtime: "checkout"}
-	base, fragment, hasFragment := strings.Cut(source, "#")
-	if hasFragment && strings.ContainsAny(fragment, "#?") {
-		return gitNamedContextOptions{}, errors.New("git context fragment cannot contain '#' or '?'")
-	}
-	remote, rawQuery, hasQuery := strings.Cut(base, "?")
-	if !hasQuery {
-		if !hasFragment {
-			options.cloneSource = source + "#HEAD"
-			return options, nil
+	if remote, fragment, hasFragment := strings.Cut(source, "#"); hasFragment {
+		if strings.ContainsRune(remote, '?') {
+			return gitNamedContextOptions{}, errors.New("git contexts cannot combine query selectors and URL fragments")
+		}
+		if strings.ContainsAny(fragment, "#?") {
+			return gitNamedContextOptions{}, errors.New("git context fragment cannot contain '#' or '?'")
 		}
 		options.cloneSource = source
+		return options, nil
+	}
+	remote, rawQuery, hasQuery := strings.Cut(source, "?")
+	if !hasQuery {
+		options.cloneSource = source + "#HEAD"
 		return options, nil
 	}
 	query, err := url.ParseQuery(rawQuery)
@@ -317,30 +319,11 @@ func normalizeGitNamedContextURL(source string) (gitNamedContextOptions, error) 
 		}
 		queryRef = branch
 	}
-	fragmentRef, fragmentSubdir := "", ""
-	if hasFragment {
-		fragmentRef, fragmentSubdir, _ = strings.Cut(fragment, ":")
-		if fragmentRef == "" {
-			fragmentRef = "HEAD"
-		}
-	}
-	if queryRef != "" && fragmentRef != "" && fragmentRef != queryRef {
-		return gitNamedContextOptions{}, errors.New("git context fragment and query ref selectors disagree")
-	}
 	ref := queryRef
 	if ref == "" {
-		ref = fragmentRef
-		if ref == "" {
-			ref = "HEAD"
-		}
+		ref = "HEAD"
 	}
 	subdir := query.Get("subdir")
-	if subdir != "" && fragmentSubdir != "" && subdir != fragmentSubdir {
-		return gitNamedContextOptions{}, errors.New("git context fragment and query subdir selectors disagree")
-	}
-	if subdir == "" {
-		subdir = fragmentSubdir
-	}
 	if strings.ContainsAny(ref, "#:") {
 		return gitNamedContextOptions{}, errors.New("git context ref cannot contain '#' or ':' with embedded Buildah")
 	}

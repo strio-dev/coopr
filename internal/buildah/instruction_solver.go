@@ -212,16 +212,17 @@ func (s *instructionResultStorage) LoadRemotes(context.Context, solver.CacheResu
 }
 
 type instructionSolver struct {
-	portable *instructionGraphPortable
-	ctx      context.Context
-	keys     *instructionGraphKeyOverlay
-	results  *instructionResultStorage
-	manager  solver.CacheManager
-	solver   *solver.Solver
-	job      *solver.Job
-	serial   atomic.Uint64
-	mu       sync.Mutex
-	retained []solver.CachedResult
+	requireCacheHit bool
+	portable        *instructionGraphPortable
+	ctx             context.Context
+	keys            *instructionGraphKeyOverlay
+	results         *instructionResultStorage
+	manager         solver.CacheManager
+	solver          *solver.Solver
+	job             *solver.Job
+	serial          atomic.Uint64
+	mu              sync.Mutex
+	retained        []solver.CachedResult
 }
 
 func newInstructionSolver(ctx context.Context, store storage.Store, ttl *time.Duration) (*instructionSolver, error) {
@@ -388,6 +389,12 @@ func (v *instructionVertex) Exec(ctx context.Context, job solver.JobContext, in 
 
 func (operation *instructionOperation) Exec(ctx context.Context, _ solver.JobContext, in []solver.Result) ([]solver.Result, error) {
 	v := operation.instructionVertex
+	// BuildKit calls Exec when no usable result matches, including when
+	// loading an admitted cache result fails. Never fall back to a stage
+	// callback or instruction execution when the caller requires a hit.
+	if v.owner.requireCacheHit && v.source == nil {
+		return nil, fmt.Errorf("required cache result unavailable for %s", v.name)
+	}
 	if v.run != nil {
 		inputs := make([]*instructionSolverResult, len(in))
 		for i, result := range in {

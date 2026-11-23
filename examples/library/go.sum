@@ -351,8 +351,8 @@ github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+
 github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
 github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWDWE=
 github.com/stretchr/testify v1.12.1/go.mod h1:MDEgiDPPsNp5cuIrHPPCyornHKgEVbtFUmoNlxoYthg=
-github.com/strio-dev/bale v0.1.3 h1:nzSPB8qUuQlfSDo93qAzDBoQoel64wZuLef9YrFGHgo=
-github.com/strio-dev/bale v0.1.3/go.mod h1:6kz8w4UVLeNxxpLyEP/yvxNhYY/AcQCzdsU10uURbKo=
+github.com/strio-dev/bale v0.1.4-0.20261122231221-007373f6c3dc h1:Qrv0BOMG8Vbcs5lVVfm6MQEO8yHXVP8B4zsDWkj3kDU=
+github.com/strio-dev/bale v0.1.4-0.20261122231221-007373f6c3dc/go.mod h1:6kz8w4UVLeNxxpLyEP/yvxNhYY/AcQCzdsU10uURbKo=
 github.com/sylabs/sif/v2 v2.24.2 h1:rdkFf6z3xLC6yKweU7S9marlKfkS91Ht0ruIri6YWFY=
 github.com/sylabs/sif/v2 v2.24.2/go.mod h1:bbrkk0JhTX+xNJcnUtmDkivoO2r4DGWM3LxNR0U2ooA=
 github.com/tchap/go-patricia/v2 v2.3.3 h1:xfNEsODumaEcCcY3gI0hYPZ/PcpVv5ju6RMAhgwZDDc=

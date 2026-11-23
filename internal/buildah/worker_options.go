@@ -30,6 +30,7 @@ type workerExecutionOptions struct {
 	CacheRepository    string               `json:"cache_repository,omitempty"`
 	CacheFrom          []CacheSpec          `json:"cache_from,omitempty"`
 	CacheTo            []CacheSpec          `json:"cache_to,omitempty"`
+	RequireCacheHit    bool                 `json:"require_cache_hit,omitempty"`
 	NoCache            bool                 `json:"no_cache,omitempty"`
 	Network            string               `json:"network,omitempty"`
 	AddHosts           []string             `json:"add_hosts,omitempty"`
@@ -74,6 +75,7 @@ func (options workerExecutionOptions) planOptions() PlanOptions {
 		CacheFrom:               options.CacheFrom,
 		CacheTo:                 options.CacheTo,
 		NoCache:                 options.NoCache,
+		RequireCacheHit:         options.RequireCacheHit,
 		Network:                 options.Network,
 		AddHosts:                options.AddHosts,
 		RunControls:             options.RunControls,

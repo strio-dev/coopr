@@ -74,6 +74,7 @@ type PlanOptions struct {
 	CacheRepository         string // Optional caller-selected OCI registry repository.
 	CacheFrom               []CacheSpec
 	CacheTo                 []CacheSpec
+	RequireCacheHit         bool
 	NoCache                 bool   // Bypass existing cache entries while saving fresh results.
 	Network                 string // Default RUN network mode: default, none, or host.
 	AddHosts                []string

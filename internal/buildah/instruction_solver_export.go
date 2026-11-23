@@ -101,19 +101,25 @@ func (e *instructionGraphExport) result(ctx context.Context, portable *instructi
 		if _, exists := e.images[pending.record.Image.Digest]; !exists {
 			layout, _, err := pending.ensureLayout(ctx)
 			if err != nil {
-				if ctx.Err() == nil && instructionGraphInputIntegrityOnly(err) {
-					return cache.GraphResult{}, &instructionGraphInputIntegrityError{id: id, err: err}
+				// A verified native hit does not depend on the optional read
+				// source still serving the payload. Export it below, where the
+				// native path must still verify exact manifest identity.
+				if readErr != nil || ctx.Err() != nil || errors.Is(err, cache.ErrGraphSourceClose) {
+					if ctx.Err() == nil && instructionGraphInputIntegrityOnly(err) {
+						return cache.GraphResult{}, &instructionGraphInputIntegrityError{id: id, err: err}
+					}
+					return cache.GraphResult{}, err
 				}
-				return cache.GraphResult{}, err
+			} else {
+				source, err := orasoci.New(layout)
+				if err != nil {
+					return cache.GraphResult{}, err
+				}
+				if err := cache.CopyGraphImages(ctx, source, e.layout, []v1.Descriptor{pending.record.Image}); err != nil {
+					return cache.GraphResult{}, err
+				}
+				e.images[pending.record.Image.Digest] = pending.record.Image
 			}
-			source, err := orasoci.New(layout)
-			if err != nil {
-				return cache.GraphResult{}, err
-			}
-			if err := cache.CopyGraphImages(ctx, source, e.layout, []v1.Descriptor{pending.record.Image}); err != nil {
-				return cache.GraphResult{}, err
-			}
-			e.images[pending.record.Image.Digest] = pending.record.Image
 		}
 		if readErr != nil {
 			e.results[id] = pending.record

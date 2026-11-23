@@ -113,16 +113,19 @@ func TestArtifactRegistryMetadataRejectsAdvertisedSize(t *testing.T) {
 
 func TestArtifactRegistryChunkedMetadataRejectsTrailingBytes(t *testing.T) {
 	data := []byte(`{"schemaVersion":2}`)
-	descriptor := Descriptor(v1.MediaTypeImageManifest, data)
-	for _, operation := range []string{"resolve", "fetch-reference", "fetch"} {
+	for _, operation := range []string{"resolve", "fetch-reference", "fetch-reference-opaque", "fetch"} {
 		t.Run(operation, func(t *testing.T) {
+			descriptor := Descriptor(v1.MediaTypeImageManifest, data)
+			if operation == "fetch-reference-opaque" {
+				descriptor.MediaType = "application/vnd.coopr.test.metadata.v1+json"
+			}
 			body := &artifactTrackedBody{reader: io.MultiReader(bytes.NewReader(data), io.LimitReader(zeroReader{}, 1<<20))}
 			target, _ := artifactMetadataTarget(t, descriptor, body, true)
 			var err error
 			switch operation {
 			case "resolve":
 				_, err = target.Resolve(t.Context(), "stable")
-			case "fetch-reference":
+			case "fetch-reference", "fetch-reference-opaque":
 				_, _, err = oras.Fetch(t.Context(), target, "stable", oras.DefaultFetchOptions)
 			default:
 				_, err = target.Fetch(t.Context(), descriptor)

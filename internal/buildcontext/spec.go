@@ -96,6 +96,9 @@ func parseOne(value string) (Spec, error) {
 	case remoteURLHasCredentials(source):
 		return Spec{}, errors.New("remote build context URL must not contain credentials")
 	case IsGitSource(source):
+		if remote, _, hasFragment := strings.Cut(source, "#"); hasFragment && strings.ContainsRune(remote, '?') {
+			return Spec{}, errors.New("git contexts cannot combine query selectors and URL fragments")
+		}
 		return Spec{Name: name, Kind: Git, Reference: source}, nil
 	}
 	native, err := nativeparse.GetAdditionalBuildContext(source)

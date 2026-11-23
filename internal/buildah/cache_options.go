@@ -79,7 +79,7 @@ func cacheBindings(options PlanOptions) ([]cacheBinding, error) {
 		binding := bindings[key]
 		binding.spec = normalized
 		binding.read = binding.read || read
-		binding.write = binding.write || write
+		binding.write = binding.write || write && !options.RequireCacheHit
 		bindings[key] = binding
 		return nil
 	}

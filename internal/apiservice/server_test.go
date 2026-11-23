@@ -44,6 +44,12 @@ func TestInfoAdvertisesRegistryCacheAndPreservesDirectionalRequest(t *testing.T)
 	if !slices.Contains(info.Capabilities, api.CapabilityBuildPlatform) {
 		t.Fatalf("missing native build-platform capability: %+v", info)
 	}
+	if !slices.Contains(info.Capabilities, api.CapabilityOptionalOCIOutput) {
+		t.Fatal("optional OCI output capability missing")
+	}
+	if !slices.Contains(info.Capabilities, api.CapabilitySelectedFileExports) {
+		t.Fatalf("missing selected file-export capability: %+v", info)
+	}
 	if !slices.Contains(info.Capabilities, api.CapabilityNamedContexts) {
 		t.Fatalf("missing named-context negotiation: %+v", info)
 	}

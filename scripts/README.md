@@ -28,6 +28,8 @@ just nix-component-acceptance /absolute/new-component-results
 
 Each command builds this checkout, then checks Coopr's use of Nix-built inputs. Choose a new absolute result directory for each run. The checks use the pinned development tools and `/var/tmp` for temporary files; pass a second path to choose another disk-backed scratch directory.
 
+Each native phase uses a private VFS storage configuration with no additional image or layer stores. Inherited storage overrides are ignored.
+
 Results stay in the chosen directory for inspection. Successful runs use Podman to remove their temporary storage. Failed runs keep that storage and record its path in the result directory.
 
 ## Run benchmarks

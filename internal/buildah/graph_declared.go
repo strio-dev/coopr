@@ -36,6 +36,26 @@ type declaredStageGraph struct {
 	outputID  string
 }
 
+// declaredStageOutputKey is the v2 image-output projection. Keep the
+// historical field names, order and zero values in the marshaled key; new
+// Output fields, such as file export destinations, do not belong here.
+type declaredStageOutputKey struct {
+	Path                 string
+	Reference            string
+	Format               string
+	Squash               bool
+	SquashAll            bool
+	DisableCompression   bool
+	BlobDirectory        string
+	CompressionFormat    string
+	CompressionLevel     *int
+	ForceCompression     *bool
+	ConfidentialWorkload upstreamdefine.ConfidentialWorkloadOptions
+	SBOM                 []upstreamdefine.SBOMScanOptions
+	Filesystem           FilesystemOutput
+	Filesystems          []FilesystemOutput
+}
+
 func newDeclaredStageGraph(ctx context.Context, executor *graphExecutor, plan *planner.Plan, stages []planner.Stage, outputID string, bindings *graphBindings, observing bool) (*declaredStageGraph, error) {
 	modules, err := cacheModuleVersions()
 	if err != nil {
@@ -185,25 +205,28 @@ func (graph *declaredStageGraph) declare(ctx context.Context, plan *planner.Plan
 				content = append(content, input)
 			}
 		}
-		keyOutput := options.Output
-		keyOutput.Path, keyOutput.Reference, keyOutput.BlobDirectory = "", "", ""
-		// Filesystem destinations are replayed after selecting the image, just
-		// like the OCI destination. They do not change that image's identity.
-		keyOutput.Filesystem, keyOutput.Filesystems = FilesystemOutput{}, nil
+		// Only image-affecting settings are copied. Historical destination
+		// fields remain in the projection with their serialized zero values.
+		keyOutput := declaredStageOutputKey{
+			Format: output.Format, Squash: output.Squash, SquashAll: output.SquashAll,
+			DisableCompression: output.DisableCompression, CompressionFormat: output.CompressionFormat,
+			CompressionLevel: output.CompressionLevel, ForceCompression: output.ForceCompression,
+			ConfidentialWorkload: output.ConfidentialWorkload, SBOM: output.SBOM,
+		}
 		raw, err := json.Marshal(struct {
 			Namespace                  string
 			Stage                      planner.Stage
 			Inputs                     []digest.Digest
 			Sources                    map[string]digest.Digest
 			Final                      bool
-			Output                     Output
+			Output                     declaredStageOutputKey
 			Controls                   ImageControls
 			Run                        RunControls
 			Lifecycle                  LifecycleControls
 			AddHosts                   []string
 			Timestamp, SourceDateEpoch *int64
 			RewriteTimestamp           bool
-		}{graph.namespace, stage, content, sources[stage.ID], stage.ID == graph.outputID, keyOutput, options.ImageControls, options.RunControls, options.Lifecycle, options.AddHosts, options.Timestamp, options.SourceDateEpoch, options.RewriteTimestamp})
+		}{graph.namespace, stage, content, sources[stage.ID], stage.ID == graph.outputID && options.Output.Path != "", keyOutput, options.ImageControls, options.RunControls, options.Lifecycle, options.AddHosts, options.Timestamp, options.SourceDateEpoch, options.RewriteTimestamp})
 		if err != nil {
 			return err
 		}

@@ -61,27 +61,18 @@ coopr.overrideAttrs (old: {
   ldflags = old.ldflags ++ [
     "-X go.podman.io/image/v5/signature/internal/sequoia.sequoiaLibraryDir=${podman-sequoia}/lib"
   ];
-  postInstall =
-    # Preserve the shared Go/license installation without building Coopr's
-    # unrelated runtime helper in this separately installed signing package.
-    lib.replaceStrings
-      [
-        ''CGO_ENABLED=0 go build -trimpath -o "$out/libexec/coopr/coopr-run-sequence" ./cmd/coopr-run-sequence''
-      ]
-      [ "" ]
-      old.postInstall
-    + ''
-      cp -r ${nativeAttribution.licenseBundle}/share/licenses/coopr/container "$out/share/licenses/coopr/native"
-      chmod u+w "$out/share/licenses/coopr/native"
-      mkdir -p "$out/share/licenses/coopr/native/rust"
-      tar -xzf ${rustPlatform.rust.rustc.src} \
-        --strip-components=1 -C "$out/share/licenses/coopr/native/rust" \
-        rustc-${rustPlatform.rust.rustc.version}-src/LICENSE-APACHE \
-        rustc-${rustPlatform.rust.rustc.version}-src/LICENSE-MIT \
-        rustc-${rustPlatform.rust.rustc.version}-src/COPYRIGHT \
-        rustc-${rustPlatform.rust.rustc.version}-src/LICENSES
+  postInstall = old.postInstall + ''
+    cp -r ${nativeAttribution.licenseBundle}/share/licenses/coopr/container "$out/share/licenses/coopr/native"
+    chmod u+w "$out/share/licenses/coopr/native"
+    mkdir -p "$out/share/licenses/coopr/native/rust"
+    tar -xzf ${rustPlatform.rust.rustc.src} \
+      --strip-components=1 -C "$out/share/licenses/coopr/native/rust" \
+      rustc-${rustPlatform.rust.rustc.version}-src/LICENSE-APACHE \
+      rustc-${rustPlatform.rust.rustc.version}-src/LICENSE-MIT \
+      rustc-${rustPlatform.rust.rustc.version}-src/COPYRIGHT \
+      rustc-${rustPlatform.rust.rustc.version}-src/LICENSES
 
-    '';
+  '';
   passthru = (old.passthru or { }) // {
     inherit podman-sequoia nativeAttribution sources;
   };

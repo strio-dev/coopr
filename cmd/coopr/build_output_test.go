@@ -53,7 +53,7 @@ func TestBuildCommandResultAndIIDFiles(t *testing.T) {
     label result="native"
 }
 `)
-	for _, option := range []string{"", "--iidfile", "--iidfile-raw", "--raw-iidfile"} {
+	for _, option := range []string{"", "--iidfile", "--iidfile-raw"} {
 		t.Run(option, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			args := []string{"build", file, "--quiet", "--platform", "linux/amd64"}
@@ -131,6 +131,8 @@ func TestBuildOutputFlags(t *testing.T) {
 		{"invalid filesystem output", []string{"--output", "type=oci,dest=out"}, "output requires"},
 		{"invalid output shorthand", []string{"-o", "type=local,dest=-"}, "output requires"},
 		{"removed arg flag", []string{"--arg", "name=value"}, "unknown flag"},
+		{"removed raw iidfile alias", []string{"--raw-iidfile", filepath.Join(t.TempDir(), "iid")}, "unknown flag: --raw-iidfile"},
+		{"raw iidfile requires one platform", []string{"--iidfile-raw", filepath.Join(t.TempDir(), "iid"), "--platform", "linux/amd64,linux/arm64"}, "--iidfile-raw can only store one image ID"},
 		{"empty tag", []string{"--tag", ""}, "--tag requires a nonempty image name"},
 		{"transport is not a tag", []string{"--tag", "oci-archive:/tmp/image.tar"}, "invalid local image"},
 		{"push without tag", []string{"--push"}, "--push requires --tag"},
@@ -170,10 +172,13 @@ func TestBuildHelpExplainsOutputModes(t *testing.T) {
 	if status := run([]string{"build", "--help"}, &out, &errOut); status != 0 {
 		t.Fatalf("help failed: %s", errOut.String())
 	}
-	for _, text := range []string{"--tag", "--build-arg", "--format", "--push", "--pull", "--no-cache", "--network", "--add-host", "--allow", "--output", "--squash", "--squash-all", "--sbom", "--sign-by", "--sign-by-sigstore-private-key", "--manifest", "--all-platforms", "--cache-ttl", "--timestamp", "--unsetenv", "network.host", "save fresh results to the build cache", "base image pull policy", "native container storage", "embedded Buildah"} {
+	for _, text := range []string{"--tag", "--build-arg", "--format", "--push", "--pull", "--no-cache", "--network", "--add-host", "--allow", "--output", "--iidfile-raw", "--squash", "--squash-all", "--sbom", "--sign-by", "--sign-by-sigstore-private-key", "--manifest", "--all-platforms", "--cache-ttl", "--timestamp", "--unsetenv", "network.host", "save fresh results to the build cache", "base image pull policy", "native container storage", "embedded Buildah"} {
 		if !strings.Contains(out.String(), text) {
 			t.Errorf("help missing %q", text)
 		}
+	}
+	if strings.Contains(out.String(), "--raw-iidfile") {
+		t.Fatalf("help advertises the removed raw image ID alias: %s", out.String())
 	}
 	if strings.Contains(out.String(), "--load") || strings.Contains(out.String(), "--arg") || strings.Contains(out.String(), "nerdctl:") || strings.Contains(out.String(), "CONTAINER_HOST") {
 		t.Fatalf("help still advertises the removed runtime load mode: %s", out.String())

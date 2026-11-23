@@ -11,10 +11,34 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/strio-dev/coopr/api"
 	"github.com/strio-dev/coopr/internal/buildah"
 	"github.com/strio-dev/coopr/internal/buildcontext"
 	"github.com/strio-dev/coopr/internal/planner"
 )
+
+func TestLiteralFileExportsRetainOnlySelectedStateClosures(t *testing.T) {
+	program := Program{Output: "final", States: []State{
+		{ID: "base", From: Source{Image: "scratch"}},
+		{ID: "selected", From: Source{State: "base"}},
+		{ID: "unused", From: Source{Image: "scratch"}},
+		{ID: "final", From: Source{Image: "scratch"}},
+	}}
+	plan, err := compileSelected(program, []StateID{"selected"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, stage := range plan.Stages {
+		ids = append(ids, stage.ID)
+	}
+	if !reflect.DeepEqual(ids, []string{"0", "1", "3"}) || !reflect.DeepEqual(plan.Outputs, []string{"3"}) {
+		t.Fatalf("export selection changed final role, numbering or closure: ids=%v outputs=%v", ids, plan.Outputs)
+	}
+	if _, err := compileSelected(program, []StateID{"unknown"}); err == nil {
+		t.Fatal("unknown export state admitted")
+	}
+}
 
 func TestLiteralProgramAndDependencies(t *testing.T) {
 	literal := `$VALUE "quoted" \\ path`
@@ -369,5 +393,45 @@ func TestLocalNamedContextDirectoriesAndResourceOwnership(t *testing.T) {
 		if err := validateContextResources(spec, resource); err == nil {
 			t.Fatalf("accepted context/resource overlap %#v", resource)
 		}
+	}
+}
+
+func TestSelectedFileExportsRejectSharedInputsAndFinalOutputs(t *testing.T) {
+	wasInitialized := initialized.Swap(true)
+	defer initialized.Store(wasInitialized)
+	for _, resource := range []string{"oci", "filesystem", "named-context", "live-bind"} {
+		t.Run(resource, func(t *testing.T) {
+			root := t.TempDir()
+			input := filepath.Join(root, "input")
+			if err := os.Mkdir(input, 0700); err != nil {
+				t.Fatal(err)
+			}
+			program := Program{Output: "out", States: []State{{ID: "out", From: Source{Image: "scratch"}}}}
+			contextDir := filepath.Join(root, "context")
+			if err := os.Mkdir(contextDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			options := Options{ContextDir: contextDir, Isolation: "invalid-test-isolation", Output: Output{OCI: filepath.Join(root, "image"), Filesystem: filepath.Join(root, "rootfs")}}
+			destination := options.Output.OCI
+			switch resource {
+			case "filesystem":
+				destination = options.Output.Filesystem
+			case "named-context":
+				options.Contexts = map[string]string{"assets": input}
+				destination = filepath.Join(input, "report")
+			case "live-bind":
+				program.States[0].Operations = []Operation{Run{Args: []string{"true"}, Mounts: []Mount{{Type: "bind", HostPath: input, Target: "/live"}}}}
+				destination = filepath.Join(input, "report")
+			}
+			options.Output.Exports = []api.FileExport{{Source: "/report", Destination: destination}}
+			_, err := Execute(t.Context(), program, options)
+			if err == nil || !strings.Contains(err.Error(), "selected export overlaps") {
+				t.Fatalf("output boundary was not rejected before native setup: %v", err)
+			}
+			entries, err := os.ReadDir(root)
+			if err != nil || len(entries) != 2 || entries[0].Name() != "context" || entries[1].Name() != "input" {
+				t.Fatalf("preflight mutated resources: %v %v", entries, err)
+			}
+		})
 	}
 }

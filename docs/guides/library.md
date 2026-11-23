@@ -108,8 +108,11 @@ features. The typed library clears inherited ONBUILD triggers without running th
 ## Manage stores, cache and outputs
 
 The caller owns the context directory, native store roots, portable cache and
-successful output paths. Use absolute, distinct store roots. `Output.OCI` is
-required; `Output.Filesystem` is optional. Each output destination must be fresh
+successful output paths. Use absolute, distinct store roots. Both `Output.OCI` and
+`Output.Filesystem` are optional. Without OCI output, execution retains its native
+image in the store and returns `ImageID`, with empty `OCI` and `ManifestDigest`.
+Selected file exports work independently, including reports from an ordinary
+failed RUN. Each requested output destination must be fresh
 and absolute, with an existing parent directory. The library never overwrites
 an existing output. Successful outputs are promoted individually; promoting
 both outputs is not one filesystem transaction.

@@ -107,7 +107,7 @@ These options apply to image builds. Component artifacts retain their component 
 
 Scanner, signing, and confidential-workload options may require external tools, scanner images, or native runtime capabilities. Use `coopr build --help` for their individual parameters. Shared RUN, namespace, resource, and lifecycle flags are indexed in [execution controls](execution.md#build-request-controls).
 
-`--iidfile PATH` writes the algorithm-prefixed native image ID, or native manifest-list ID for an aggregate output. `--iidfile-raw PATH` (alias `--raw-iidfile`) writes the image ID without its prefix and requires one platform. Neither adds a trailing newline. Either option suppresses the build's final ID line.
+`--iidfile PATH` writes the algorithm-prefixed native image ID, or native manifest-list ID for an aggregate output. `--iidfile-raw PATH` writes the image ID without its prefix and requires one platform. Neither adds a trailing newline. Either option suppresses the build's final ID line.
 
 Image-layer compression controls are `--compression-format gzip|zstd|zstd:chunked`, `--compression-level N`, and `--force-compression`. Specifying a format defaults force-compression to true; set `--force-compression=false` to permit reuse of compatible compressed blobs. See [output compression](execution.md#output-compression) for format and storage behavior.
 
@@ -126,7 +126,7 @@ Each entry records the instruction, phase, cache outcome and duration. Cache loo
 
 `--build-context NAME=VALUE` accepts local directories, image references with `docker-image://`, `container-image://` or `docker://`, selected `oci-layout://PATH:TAG`, public HTTP(S) tar archives, and HTTP(S)/Git/SSH/SCP-style Git repositories.
 
-Git query options are `branch`, `tag`, or `ref`; optional `subdir` and `checksum`/`commit`; `submodules=false`; `keep-git-dir=true`; `mtime=commit`; and `fetch-by-commit=true`. The last requires a full lowercase commit SHA in `checksum`. Nested submodules fetch by default. Legacy `#ref:subdir` remains accepted. These query controls belong to named contexts; ADD retains its instruction-level Git options.
+Primary and named Git contexts accept standalone `#ref:subdir`, `#ref`, or `#:subdir` fragments, or query selectors such as `https://example.com/source.git?branch=main&subdir=src`. Do not combine query selectors and fragments. Query options are `branch`, `tag`, or `ref`; optional `subdir` and `checksum`/`commit`; `submodules=false`; `keep-git-dir=true`; `mtime=commit`; and `fetch-by-commit=true`. The last requires a full lowercase commit SHA in `checksum`. Nested submodules fetch by default. ADD retains its instruction-level Git options.
 
 ## Names and transfer destinations
 
